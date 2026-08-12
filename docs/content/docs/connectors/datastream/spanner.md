@@ -461,6 +461,43 @@ The record's own `valueCaptureType` and `columnTypes` describe the configuration
 Returning `null` from the deserializer skips that data-change record and increments `recordsSkipped`.
 Heartbeats and child-partitions records do not call the user deserializer.
 
+### Output filters
+
+The source can filter tables and project columns after decoding a data-change record and before calling the user deserializer.
+Each entry in the four filter lists is a Java regular expression matched against the complete identifier, not a substring.
+Table expressions see the record's Spanner-reported `tableName`.
+Column expressions see `tableName + "." + columnName`, so `orders\.status` does not select a same-named column from `audit_orders`.
+The connector does not fold case or interpret quoting, so patterns must use the exact table and column names carried by the decoded record.
+
+An include list retains an identifier when any expression matches, while an exclude list removes an identifier when any expression matches.
+The builder rejects setting both lists for the same table or column scope.
+Primary-key columns and their type metadata are always retained, even when a column expression matches them.
+For every other column, projection removes the same member from `columnTypes` and from every mod's old and new value objects.
+Absent values and explicit JSON `null` remain distinct.
+
+```java
+SpannerChangeStreamSource<OrderChange> source =
+        SpannerChangeStreamSource.<OrderChange>builder()
+                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .changeStreamName("all_changes")
+                .deserializer(new OrderChangeDeserializer())
+                .tableIncludeList(List.of("orders", "order_items"))
+                .columnExcludeList(List.of("orders\\.internal_note", ".*\\.debug_payload"))
+                .build();
+```
+
+If projection removes every reported non-key value, the default still calls the deserializer with empty projected value objects.
+This preserves transaction activity that a downstream consumer might need.
+Setting `skipMessagesWithoutChange(true)` instead skips that record before deserialization.
+
+Filters are evaluated from each record's own table and column metadata, so a later schema addition does not require an `INFORMATION_SCHEMA` lookup or a source restart.
+Changing the filter configuration on a restored job leaves the checkpointed split positions unchanged and applies the new filters to records processed from those positions.
+The filter change does not itself move or replay a position, but the source's normal inclusive restore can repeat records at the checkpoint boundary.
+
+These options are connector-side output filters.
+Spanner still returns the complete record to the source process, so they do not reduce partition-query concurrency, Spanner processing, or traffic between Spanner and Flink, and they do not prevent an excluded value from entering the TaskManager process.
+Use the Change Stream DDL watch definition when the service must exclude tables or columns before producing records.
+
 ### Partition queries and capacity
 
 The coordinator begins with the null partition token and schedules children only after every parent they name has finished.
@@ -568,6 +605,9 @@ Registered on the split enumerator's coordinator group and on each source reader
 | `unassignedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest scheduled partition no reader owns, or zero when none are scheduled |
 | `numRecordsIn` | counter (Flink standard) | Deserialized data-change records handed downstream |
 | `recordsSkipped` | counter | Data-change records whose deserializer returned `null` |
+| `changeStreamRecordsFilteredByTable` | counter | Data-change records removed by table filters before deserialization |
+| `changeStreamRecordsSkippedWithoutChange` | counter | Data-change records skipped because column projection left no reported non-key values |
+| `changeStreamColumnOccurrencesFiltered` | counter | Column metadata and old/new value members removed from records passed to the deserializer |
 | `changeStreamQueriesStarted` | counter | TVF partition queries opened in this reader subtask, including restored reopens |
 | `activeChangeStreamQueries` | gauge | TVF partition queries currently open in this reader subtask |
 | `queuedChangeStreamPartitions` | gauge | Assigned partitions waiting for a query slot in this reader subtask |
@@ -581,6 +621,8 @@ Registered on the split enumerator's coordinator group and on each source reader
 
 On Flink 2.2, heartbeats move that split's `currentWatermark`; on every supported version they move the source watermark without incrementing `numRecordsIn`.
 Child-partitions records and query-completion signals are coordinator events, so neither counter treats them as user records.
+Table-filtered records and records skipped without a projected change advance partition progress but do not increment `numRecordsIn` or `recordsSkipped`.
+`changeStreamColumnOccurrencesFiltered` counts one occurrence for removed `columnTypes` metadata and one for each removed member in each old or new value object, and counts only records passed to the deserializer.
 The connector does not register its own copies of the standard metrics: the Flink source runtime derives the metrics available in that Flink version from the commit timestamps and split watermarks the reader emits.
 No metric uses a partition token as a label, because split and merge would make those labels unbounded.
 

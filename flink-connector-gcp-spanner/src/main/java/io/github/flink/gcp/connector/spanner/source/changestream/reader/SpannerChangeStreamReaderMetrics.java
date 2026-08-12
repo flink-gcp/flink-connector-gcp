@@ -41,6 +41,9 @@ final class SpannerChangeStreamReaderMetrics {
 
     private final Counter queriesStarted;
     private final Counter recordsSkipped;
+    private final Counter recordsFilteredByTable;
+    private final Counter recordsSkippedWithoutChange;
+    private final Counter columnOccurrencesFiltered;
     private final AtomicInteger queuedPartitions = new AtomicInteger();
     private final AtomicLong oldestQueuedPositionMillis = new AtomicLong(NO_POSITION);
     private final AtomicLong lastRecordWaitMillis = new AtomicLong();
@@ -58,6 +61,12 @@ final class SpannerChangeStreamReaderMetrics {
                 Preconditions.checkNotNull(currentTimeMillis, "currentTimeMillis must not be null");
         queriesStarted = group.counter(SpannerMetricNames.CHANGE_STREAM_QUERIES_STARTED);
         recordsSkipped = group.counter(SpannerMetricNames.RECORDS_SKIPPED);
+        recordsFilteredByTable =
+                group.counter(SpannerMetricNames.CHANGE_STREAM_RECORDS_FILTERED_BY_TABLE);
+        recordsSkippedWithoutChange =
+                group.counter(SpannerMetricNames.CHANGE_STREAM_RECORDS_SKIPPED_WITHOUT_CHANGE);
+        columnOccurrencesFiltered =
+                group.counter(SpannerMetricNames.CHANGE_STREAM_COLUMN_OCCURRENCES_FILTERED);
         group.gauge(
                 SpannerMetricNames.ACTIVE_CHANGE_STREAM_QUERIES,
                 (Gauge<Integer>) activeQueries::size);
@@ -127,6 +136,18 @@ final class SpannerChangeStreamReaderMetrics {
 
     void skipped() {
         recordsSkipped.inc();
+    }
+
+    void filteredByTable() {
+        recordsFilteredByTable.inc();
+    }
+
+    void skippedWithoutChange() {
+        recordsSkippedWithoutChange.inc();
+    }
+
+    void columnOccurrencesFiltered(long occurrences) {
+        columnOccurrencesFiltered.inc(occurrences);
     }
 
     void queued(Collection<SpannerChangeStreamPartitionSplit> splits) {

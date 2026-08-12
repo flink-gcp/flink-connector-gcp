@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerChangeStreamQueryClientFactory;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
@@ -46,6 +47,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
     final long heartbeatMillis;
     final SpannerRpcPriority rpcPriority;
     final int maxConcurrentQueriesPerSubtask;
+    final SpannerChangeStreamRecordFilter recordFilter;
     @Nullable final Instant endTimestamp;
     final SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     final SpannerChangeStreamQueryClientFactory queryClientFactory;
@@ -60,6 +62,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
             long heartbeatMillis,
             SpannerRpcPriority rpcPriority,
             int maxConcurrentQueriesPerSubtask,
+            SpannerChangeStreamRecordFilter recordFilter,
             @Nullable Instant endTimestamp,
             SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory,
             SpannerChangeStreamQueryClientFactory queryClientFactory) {
@@ -72,6 +75,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         this.heartbeatMillis = heartbeatMillis;
         this.rpcPriority = rpcPriority;
         this.maxConcurrentQueriesPerSubtask = maxConcurrentQueriesPerSubtask;
+        this.recordFilter = recordFilter;
         this.endTimestamp = endTimestamp;
         this.coordinatorClientFactory = coordinatorClientFactory;
         this.queryClientFactory = queryClientFactory;
@@ -111,6 +115,10 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
 
     public int getMaxConcurrentQueriesPerSubtask() {
         return maxConcurrentQueriesPerSubtask;
+    }
+
+    public SpannerChangeStreamRecordFilter getRecordFilter() {
+        return recordFilter;
     }
 
     @Nullable

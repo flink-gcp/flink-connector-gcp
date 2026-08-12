@@ -31,9 +31,11 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 
 import java.io.IOException;
@@ -55,6 +57,7 @@ public final class SpannerChangeStreamReader<T>
     private final SourceReaderContext context;
     private final SpannerDatabase database;
     private final SpannerChangeStreamDeserializationSchema<T> deserializer;
+    private final SpannerChangeStreamRecordFilter recordFilter;
     private final int maximumQueries;
     private final SpannerChangeStreamQueryClient client;
     private final SpannerChangeStreamReaderMetrics metrics;
@@ -76,6 +79,7 @@ public final class SpannerChangeStreamReader<T>
                 context,
                 config.getDatabase(),
                 config.getDeserializer(),
+                config.getRecordFilter(),
                 config.getMaxConcurrentQueriesPerSubtask(),
                 config.getQueryClientFactory().create());
     }
@@ -87,10 +91,29 @@ public final class SpannerChangeStreamReader<T>
             SpannerChangeStreamDeserializationSchema<T> deserializer,
             int maximumQueries,
             SpannerChangeStreamQueryClient client) {
+        this(
+                context,
+                database,
+                deserializer,
+                SpannerChangeStreamRecordFilter.none(),
+                maximumQueries,
+                client);
+    }
+
+    @VisibleForTesting
+    SpannerChangeStreamReader(
+            SourceReaderContext context,
+            SpannerDatabase database,
+            SpannerChangeStreamDeserializationSchema<T> deserializer,
+            SpannerChangeStreamRecordFilter recordFilter,
+            int maximumQueries,
+            SpannerChangeStreamQueryClient client) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
+        this.recordFilter =
+                Preconditions.checkNotNull(recordFilter, "recordFilter must not be null");
         Preconditions.checkArgument(maximumQueries > 0, "maximumQueries must be positive");
         this.maximumQueries = maximumQueries;
         this.client = Preconditions.checkNotNull(client, "client must not be null");
@@ -144,12 +167,23 @@ public final class SpannerChangeStreamReader<T>
         Instant watermark = query.split.getWatermark();
         if (record instanceof SpannerChangeStreamRecord.Data) {
             SpannerChangeStreamRecord.Data data = (SpannerChangeStreamRecord.Data) record;
-            T deserialized = deserializer.deserialize(data.record);
-            if (deserialized == null) {
-                metrics.skipped();
+            SpannerChangeStreamRecordFilter.Result filtered = recordFilter.filter(data.record);
+            if (filtered.getDisposition()
+                    == SpannerChangeStreamRecordFilter.Result.Disposition.TABLE_FILTERED) {
+                metrics.filteredByTable();
+            } else if (filtered.getDisposition()
+                    == SpannerChangeStreamRecordFilter.Result.Disposition.SKIPPED_WITHOUT_CHANGE) {
+                metrics.skippedWithoutChange();
             } else {
-                output.createOutputForSplit(query.split.splitId())
-                        .collect(deserialized, data.record.getCommitTimestamp().toEpochMilli());
+                metrics.columnOccurrencesFiltered(filtered.getRemovedColumnOccurrences());
+                DataChangeRecord projected = filtered.getRecord();
+                T deserialized = deserializer.deserialize(projected);
+                if (deserialized == null) {
+                    metrics.skipped();
+                } else {
+                    output.createOutputForSplit(query.split.splitId())
+                            .collect(deserialized, projected.getCommitTimestamp().toEpochMilli());
+                }
             }
         } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
             watermark = later(watermark, record.position());

@@ -24,11 +24,20 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
+import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
+import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
+import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.DefaultSpannerChangeStreamQueryClientFactory;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -50,6 +59,8 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(defaults.getHeartbeatMillis()).isEqualTo(2_000);
         assertThat(defaults.getRpcPriority()).isEqualTo(SpannerRpcPriority.HIGH);
         assertThat(defaults.getMaxConcurrentQueriesPerSubtask()).isEqualTo(8);
+        DataChangeRecord unfiltered = record("orders");
+        assertThat(defaults.getRecordFilter().filter(unfiltered).getRecord()).isSameAs(unfiltered);
         assertThat(defaults.getQueryClientFactory())
                 .isInstanceOf(DefaultSpannerChangeStreamQueryClientFactory.class);
 
@@ -61,7 +72,10 @@ class SpannerChangeStreamSourceBuilderTest {
                                 .absentRetentionFallback(Duration.ofDays(3))
                                 .heartbeatInterval(Duration.ofMillis(1_500))
                                 .rpcPriority(SpannerRpcPriority.LOW)
-                                .maxConcurrentQueriesPerSubtask(19));
+                                .maxConcurrentQueriesPerSubtask(19)
+                                .tableIncludeList(Collections.singletonList("orders"))
+                                .columnExcludeList(Collections.singletonList("orders\\.secret"))
+                                .skipMessagesWithoutChange(true));
 
         assertThat(configured.getStartPosition()).isEqualTo(StartPosition.earliest());
         assertThat(configured.getResumeFallback()).contains(StartPosition.latest());
@@ -69,6 +83,11 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(configured.getHeartbeatMillis()).isEqualTo(1_500);
         assertThat(configured.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
         assertThat(configured.getMaxConcurrentQueriesPerSubtask()).isEqualTo(19);
+        assertThat(configured.getRecordFilter().filter(record("orders")).getDisposition())
+                .isEqualTo(
+                        SpannerChangeStreamRecordFilter.Result.Disposition.SKIPPED_WITHOUT_CHANGE);
+        assertThat(configured.getRecordFilter().filter(record("audit")).getDisposition())
+                .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.TABLE_FILTERED);
     }
 
     @Test
@@ -81,11 +100,33 @@ class SpannerChangeStreamSourceBuilderTest {
 
     @Test
     void sourceAndItsFactoriesSurviveJobGraphSerialization() throws Exception {
-        SpannerChangeStreamSource<Long> copy = InstantiationUtil.clone(builder().build());
+        SpannerChangeStreamSource<Long> copy =
+                InstantiationUtil.clone(
+                        builder()
+                                .tableIncludeList(Collections.singletonList("orders"))
+                                .columnExcludeList(Collections.singletonList("orders\\.secret"))
+                                .skipMessagesWithoutChange(true)
+                                .build());
 
         assertThat(copy.getConfig().getDatabase()).isEqualTo(DATABASE);
         assertThat(copy.getConfig().getChangeStreamName()).isEqualTo("changes");
         assertThat(copy.getProducedType()).isEqualTo(TypeInformation.of(Long.class));
+        assertThat(copy.getConfig().getRecordFilter().filter(record("orders")).getDisposition())
+                .isEqualTo(
+                        SpannerChangeStreamRecordFilter.Result.Disposition.SKIPPED_WITHOUT_CHANGE);
+        assertThat(copy.getConfig().getRecordFilter().filter(record("audit")).getDisposition())
+                .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.TABLE_FILTERED);
+    }
+
+    @Test
+    void tableExcludeListReachesTheConfiguration() {
+        SpannerChangeStreamSourceConfig<Long> configured =
+                config(builder().tableExcludeList(Collections.singletonList("audit")));
+
+        assertThat(configured.getRecordFilter().filter(record("orders")).getDisposition())
+                .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.DELIVER);
+        assertThat(configured.getRecordFilter().filter(record("audit")).getDisposition())
+                .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.TABLE_FILTERED);
     }
 
     @Test
@@ -128,6 +169,45 @@ class SpannerChangeStreamSourceBuilderTest {
     }
 
     @Test
+    void invalidPatternsFailAtTheirSetterAndCollectionsAreDefensivelyCopied() {
+        assertThatThrownBy(() -> builder().tableIncludeList(Collections.singletonList("[broken")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("tableIncludeList")
+                .hasMessageContaining("index 0");
+
+        List<String> patterns = new ArrayList<>(Collections.singletonList("orders"));
+        SpannerChangeStreamSourceBuilder<Long> configured = builder().tableIncludeList(patterns);
+        patterns.set(0, "audit");
+
+        assertThat(config(configured).getRecordFilter().filter(record("orders")).getDisposition())
+                .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.DELIVER);
+    }
+
+    @Test
+    void includeAndExcludeListsForTheSameScopeAreMutuallyExclusiveAtBuild() {
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .tableIncludeList(Collections.singletonList("orders"))
+                                        .tableExcludeList(Collections.singletonList("audit"))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("tableIncludeList(...)")
+                .hasMessageContaining("tableExcludeList(...)");
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .columnIncludeList(
+                                                Collections.singletonList("orders\\.visible"))
+                                        .columnExcludeList(
+                                                Collections.singletonList("orders\\.secret"))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("columnIncludeList(...)")
+                .hasMessageContaining("columnExcludeList(...)");
+    }
+
+    @Test
     void namesAndNullsAreRejectedAtTheirSetter() {
         assertThatThrownBy(() -> builder().changeStreamName(" "))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -144,6 +224,11 @@ class SpannerChangeStreamSourceBuilderTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> builder().rpcPriority(null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder().tableIncludeList(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(
+                        () -> builder().columnExcludeList(Arrays.asList("orders\\.secret", null)))
+                .isInstanceOf(NullPointerException.class);
     }
 
     private static SpannerChangeStreamSourceBuilder<Long> builder() {
@@ -157,6 +242,26 @@ class SpannerChangeStreamSourceBuilderTest {
     private static SpannerChangeStreamSourceConfig<Long> config(
             SpannerChangeStreamSourceBuilder<Long> builder) {
         return builder.build().getConfig();
+    }
+
+    private static DataChangeRecord record(String table) {
+        return new DataChangeRecord(
+                Instant.parse("2026-08-12T00:00:00Z"),
+                "1",
+                "tx",
+                true,
+                table,
+                Arrays.asList(
+                        new DataChangeRecord.ColumnType("id", "{\"code\":\"INT64\"}", true, 1),
+                        new DataChangeRecord.ColumnType(
+                                "secret", "{\"code\":\"STRING\"}", false, 2)),
+                Collections.singletonList(new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)),
+                ModType.UPDATE,
+                ValueCaptureType.NEW_VALUES,
+                1,
+                1,
+                "",
+                false);
     }
 
     private static final class CommitSecondDeserializer

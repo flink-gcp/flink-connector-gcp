@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.DefaultSpannerChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.DefaultSpannerChangeStreamQueryClientFactory;
@@ -36,7 +37,13 @@ import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /** Builds a {@link SpannerChangeStreamSource}. */
 @PublicEvolving
@@ -58,6 +65,11 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     private Duration heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
     private SpannerRpcPriority rpcPriority = SpannerRpcPriority.HIGH;
     private int maxConcurrentQueriesPerSubtask = DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK;
+    private List<Pattern> tableIncludeList = Collections.emptyList();
+    private List<Pattern> tableExcludeList = Collections.emptyList();
+    private List<Pattern> columnIncludeList = Collections.emptyList();
+    private List<Pattern> columnExcludeList = Collections.emptyList();
+    private boolean skipMessagesWithoutChange;
     @Nullable private Instant endTimestamp;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
@@ -150,6 +162,65 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Includes tables whose Spanner-reported names fully match at least one Java regular
+     * expression.
+     *
+     * <p>An empty collection disables this filter. It is mutually exclusive with {@link
+     * #tableExcludeList(Collection)}.
+     */
+    public SpannerChangeStreamSourceBuilder<T> tableIncludeList(Collection<String> patterns) {
+        this.tableIncludeList = compilePatterns(patterns, "tableIncludeList");
+        return this;
+    }
+
+    /**
+     * Excludes tables whose Spanner-reported names fully match at least one Java regular
+     * expression.
+     *
+     * <p>An empty collection disables this filter. It is mutually exclusive with {@link
+     * #tableIncludeList(Collection)}.
+     */
+    public SpannerChangeStreamSourceBuilder<T> tableExcludeList(Collection<String> patterns) {
+        this.tableExcludeList = compilePatterns(patterns, "tableExcludeList");
+        return this;
+    }
+
+    /**
+     * Includes non-key columns whose {@code table.column} identifiers fully match at least one Java
+     * regular expression.
+     *
+     * <p>Primary-key columns are always retained. An empty collection disables this filter. It is
+     * mutually exclusive with {@link #columnExcludeList(Collection)}.
+     */
+    public SpannerChangeStreamSourceBuilder<T> columnIncludeList(Collection<String> patterns) {
+        this.columnIncludeList = compilePatterns(patterns, "columnIncludeList");
+        return this;
+    }
+
+    /**
+     * Excludes non-key columns whose {@code table.column} identifiers fully match at least one Java
+     * regular expression.
+     *
+     * <p>Primary-key columns are always retained. An empty collection disables this filter. It is
+     * mutually exclusive with {@link #columnIncludeList(Collection)}.
+     */
+    public SpannerChangeStreamSourceBuilder<T> columnExcludeList(Collection<String> patterns) {
+        this.columnExcludeList = compilePatterns(patterns, "columnExcludeList");
+        return this;
+    }
+
+    /**
+     * Skips a data-change record when column filtering removes every non-key value it reported.
+     *
+     * <p>The default is {@code false}, which delivers the record with empty projected value objects
+     * so that transaction activity remains visible.
+     */
+    public SpannerChangeStreamSourceBuilder<T> skipMessagesWithoutChange(boolean skip) {
+        this.skipMessagesWithoutChange = skip;
+        return this;
+    }
+
     public SpannerChangeStreamSourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
         this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
         return this;
@@ -183,6 +254,12 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                 "A change-stream name is required: set changeStreamName(...).");
         Preconditions.checkState(
                 deserializer != null, "A deserializer is required: set deserializer(...).");
+        Preconditions.checkState(
+                tableIncludeList.isEmpty() || tableExcludeList.isEmpty(),
+                "tableIncludeList(...) and tableExcludeList(...) must not both be set.");
+        Preconditions.checkState(
+                columnIncludeList.isEmpty() || columnExcludeList.isEmpty(),
+                "columnIncludeList(...) and columnExcludeList(...) must not both be set.");
         SpannerChangeStreamCoordinatorClientFactory coordinatorFactory =
                 coordinatorClientFactory != null
                         ? coordinatorClientFactory
@@ -211,8 +288,36 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                         heartbeatInterval.toMillis(),
                         rpcPriority,
                         maxConcurrentQueriesPerSubtask,
+                        new SpannerChangeStreamRecordFilter(
+                                tableIncludeList,
+                                tableExcludeList,
+                                columnIncludeList,
+                                columnExcludeList,
+                                skipMessagesWithoutChange),
                         endTimestamp,
                         coordinatorFactory,
                         readerFactory));
+    }
+
+    private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {
+        Preconditions.checkNotNull(patterns, option + " must not be null");
+        List<Pattern> compiled = new ArrayList<>(patterns.size());
+        int index = 0;
+        for (String pattern : patterns) {
+            Preconditions.checkNotNull(pattern, option + " must not contain null");
+            try {
+                compiled.add(Pattern.compile(pattern));
+            } catch (PatternSyntaxException e) {
+                throw new IllegalArgumentException(
+                        option
+                                + " pattern at index "
+                                + index
+                                + " is invalid: "
+                                + e.getDescription(),
+                        e);
+            }
+            index++;
+        }
+        return Collections.unmodifiableList(compiled);
     }
 }

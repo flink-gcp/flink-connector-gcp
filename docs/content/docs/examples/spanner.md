@@ -234,6 +234,32 @@ new SpannerStructDeserializationSchema<Order>() {
 
 A row you could not read is a different thing: throw, and the job fails rather than losing it.
 
+## Filtering Change Streams records
+
+Table and column filters run after the connector decodes Spanner's record and before the user deserializer runs.
+Each Java regular expression matches a complete table name or `table.column` identifier.
+
+```java
+SpannerChangeStreamSource<OrderChange> source =
+        SpannerChangeStreamSource.<OrderChange>builder()
+                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .changeStreamName("all_changes")
+                .deserializer(new OrderChangeDeserializer())
+                .startPosition(StartPosition.latest())
+                .tableIncludeList(List.of("orders", "order_items"))
+                .columnExcludeList(
+                        List.of("orders\\.internal_note", "order_items\\.debug_payload"))
+                .skipMessagesWithoutChange(false)
+                .build();
+```
+
+Primary keys remain in `keys` and `columnTypes` even when a column expression matches them.
+The default above delivers a record whose projected old and new values are empty.
+Set `skipMessagesWithoutChange(true)` only when downstream processing does not need that transaction activity.
+
+These filters do not change the Change Stream query or prevent excluded values from entering the source process.
+Restrict the Change Stream's DDL watch definition when exclusion must happen inside Spanner.
+
 ## Running against the emulator
 
 ```sh

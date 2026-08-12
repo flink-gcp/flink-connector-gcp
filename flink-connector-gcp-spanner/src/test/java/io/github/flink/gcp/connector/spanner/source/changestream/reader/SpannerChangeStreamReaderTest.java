@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
@@ -48,6 +49,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -245,6 +247,122 @@ class SpannerChangeStreamReaderTest {
     }
 
     @Test
+    void tableFilteringBypassesTheDeserializerButStillCheckpointsProgress() throws Exception {
+        RecordingDeserializer deserializer = new RecordingDeserializer();
+        reader = reader(1, deserializer, filter("included", null, null, null, false));
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
+        TrackingOutput<String> output = new TrackingOutput<>();
+        reader.pollNext(output);
+
+        assertThat(deserializer.records).isEmpty();
+        assertThat(output.records).isEmpty();
+        assertThat(counter("changeStreamRecordsFilteredByTable")).isEqualTo(1);
+        assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isZero();
+        assertThat(counter("changeStreamColumnOccurrencesFiltered")).isZero();
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(4));
+        assertThat(context.sourceEvents())
+                .singleElement()
+                .isInstanceOf(PartitionProgressEvent.class);
+    }
+
+    @Test
+    void columnProjectionReachesTheDeserializerAndCountsRemovedOccurrences() throws Exception {
+        RecordingDeserializer deserializer = new RecordingDeserializer();
+        reader = reader(1, deserializer, filter(null, null, "table\\.visible", null, false));
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(dataWithSecret("1", START.plusSeconds(4))));
+        TrackingOutput<String> output = new TrackingOutput<>();
+        reader.pollNext(output);
+
+        assertThat(output.records).containsExactly("1");
+        assertThat(deserializer.records).singleElement().satisfies(this::assertEmptyProjection);
+        assertThat(counter("changeStreamColumnOccurrencesFiltered")).isEqualTo(2);
+        assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isZero();
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+    }
+
+    @Test
+    void optInSkipsAnEmptyProjectionWithoutUsingTheDeserializerSkipMetric() throws Exception {
+        RecordingDeserializer deserializer = new RecordingDeserializer();
+        reader = reader(1, deserializer, filter(null, null, "table\\.visible", null, true));
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(dataWithSecret("1", START.plusSeconds(4))));
+        TrackingOutput<String> output = new TrackingOutput<>();
+        reader.pollNext(output);
+
+        assertThat(output.records).isEmpty();
+        assertThat(deserializer.records).isEmpty();
+        assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isEqualTo(1);
+        assertThat(counter("changeStreamColumnOccurrencesFiltered")).isZero();
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(4));
+    }
+
+    @Test
+    void restoredProgressIsUnchangedWhileTheNewReaderUsesChangedFilters() throws Exception {
+        MetricListener firstMetrics = new MetricListener();
+        InternalSourceReaderMetricGroup firstMetricGroup =
+                InternalSourceReaderMetricGroup.mock(firstMetrics.getMetricGroup());
+        FakeSourceReaderContext firstContext = new FakeSourceReaderContext(firstMetricGroup);
+        ScriptedClient firstClient = new ScriptedClient();
+        SpannerChangeStreamReader<String> firstReader =
+                new SpannerChangeStreamReader<>(
+                        firstContext,
+                        DATABASE,
+                        new RecordingDeserializer(),
+                        filter("other", null, null, null, false),
+                        1,
+                        firstClient);
+        firstReader.addSplits(Collections.singletonList(split("a")));
+        firstReader.start();
+        firstClient.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
+        firstReader.pollNext(new TrackingOutput<>());
+        List<SpannerChangeStreamPartitionSplit> restored = firstReader.snapshotState(1);
+        firstReader.close();
+
+        assertThat(restored)
+                .singleElement()
+                .satisfies(
+                        split ->
+                                assertThat(split.getCurrentPosition())
+                                        .isEqualTo(START.plusSeconds(4)));
+
+        RecordingDeserializer restoredDeserializer = new RecordingDeserializer();
+        reader = reader(1, restoredDeserializer, filter("table", null, null, null, false));
+        reader.addSplits(restored);
+        reader.start();
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(5))));
+        TrackingOutput<String> output = new TrackingOutput<>();
+        reader.pollNext(output);
+
+        assertThat(output.records).containsExactly("2");
+        assertThat(restoredDeserializer.records)
+                .extracting(DataChangeRecord::getRecordSequence)
+                .containsExactly("2");
+        assertThat(reader.snapshotState(2).get(0).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(5));
+    }
+
+    @Test
     void queryFailureFailsTheTaskWithoutFinishingOrDroppingTheSplit() throws Exception {
         reader = reader(1, new SequenceDeserializer());
         reader.addSplits(Collections.singletonList(split("a")));
@@ -280,6 +398,22 @@ class SpannerChangeStreamReaderTest {
     private SpannerChangeStreamReader<String> reader(
             int maximum, SpannerChangeStreamDeserializationSchema<String> deserializer) {
         return new SpannerChangeStreamReader<>(context, DATABASE, deserializer, maximum, client);
+    }
+
+    private SpannerChangeStreamReader<String> reader(
+            int maximum,
+            SpannerChangeStreamDeserializationSchema<String> deserializer,
+            SpannerChangeStreamRecordFilter filter) {
+        return new SpannerChangeStreamReader<>(
+                context, DATABASE, deserializer, filter, maximum, client);
+    }
+
+    private void assertEmptyProjection(DataChangeRecord record) {
+        assertThat(record.getColumnTypes())
+                .extracting(DataChangeRecord.ColumnType::getName)
+                .containsExactly("id");
+        assertThat(record.getMods().get(0).getKeysJson()).isEqualTo("{\"id\":1}");
+        assertThat(record.getMods().get(0).getNewValuesJson()).contains("{}");
     }
 
     private long counter(String name) {
@@ -320,6 +454,46 @@ class SpannerChangeStreamReaderTest {
                 false);
     }
 
+    private static DataChangeRecord dataWithSecret(String sequence, Instant timestamp) {
+        return new DataChangeRecord(
+                timestamp,
+                sequence,
+                "tx",
+                true,
+                "table",
+                java.util.Arrays.asList(
+                        new DataChangeRecord.ColumnType("id", "{\"code\":\"INT64\"}", true, 1),
+                        new DataChangeRecord.ColumnType(
+                                "secret", "{\"code\":\"STRING\"}", false, 2)),
+                Collections.singletonList(new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)),
+                ModType.UPDATE,
+                ValueCaptureType.NEW_VALUES,
+                1,
+                1,
+                "",
+                false);
+    }
+
+    private static SpannerChangeStreamRecordFilter filter(
+            String tableInclude,
+            String tableExclude,
+            String columnInclude,
+            String columnExclude,
+            boolean skip) {
+        return new SpannerChangeStreamRecordFilter(
+                patterns(tableInclude),
+                patterns(tableExclude),
+                patterns(columnInclude),
+                patterns(columnExclude),
+                skip);
+    }
+
+    private static List<Pattern> patterns(String expression) {
+        return expression == null
+                ? Collections.emptyList()
+                : Collections.singletonList(Pattern.compile(expression));
+    }
+
     private static final class SequenceDeserializer
             implements SpannerChangeStreamDeserializationSchema<String> {
 
@@ -344,6 +518,25 @@ class SpannerChangeStreamReaderTest {
         @Override
         public String deserialize(DataChangeRecord record) {
             return null;
+        }
+
+        @Override
+        public TypeInformation<String> getProducedType() {
+            return TypeInformation.of(String.class);
+        }
+    }
+
+    private static final class RecordingDeserializer
+            implements SpannerChangeStreamDeserializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final List<DataChangeRecord> records = new ArrayList<>();
+
+        @Override
+        public String deserialize(DataChangeRecord record) {
+            records.add(record);
+            return record.getRecordSequence();
         }
 
         @Override
