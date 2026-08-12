@@ -103,7 +103,7 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   operator, deterministic BigQuery job ids with get-then-submit re-attach for exactly-once
   retries, 1.5 GB size-based file rolling, best-effort cleanup); for
   STORAGE_API_EXACTLY_ONCE, the `BigQueryBufferedWriter`/`BigQueryCommitter` design (one
-  buffered stream per subtask reused across checkpoints and tracked in writer state, the
+  buffered stream per active destination per subtask, reused across checkpoints and tracked in writer state, the
   restore-time validation append that adopts or abandons the restored stream, inclusive flush
   offsets in the committable) — `BigQueryBufferedStreamWriter` and `BufferedStreamCommitter`
   are independent implementations of that protocol over Flink 2.x `SupportsWriterState`/

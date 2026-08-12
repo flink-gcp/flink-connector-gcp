@@ -31,8 +31,8 @@ import java.util.Objects;
 
 /**
  * Options specific to {@link WriteMethod#STORAGE_API_EXACTLY_ONCE}: how large append requests may
- * grow, how the connector-driven recovery schedule backs off, and how the SDK retries retriable
- * append failures in-stream.
+ * grow, how long inactive destinations stay cached, how the connector-driven recovery schedule
+ * backs off, and how the SDK retries retriable append failures in-stream.
  *
  * <p>Two groups of knobs configure two distinct layers:
  *
@@ -71,6 +71,9 @@ public final class BufferedStreamOptions implements Serializable {
      */
     public static final long DEFAULT_MAX_APPEND_REQUEST_BYTES = 512 * 1024;
 
+    /** Default for {@link Builder#destinationIdleTimeout(Duration)}. */
+    public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
+
     /** Default for {@link Builder#recoveryInitialBackoff(Duration)}. */
     public static final Duration DEFAULT_RECOVERY_INITIAL_BACKOFF = Duration.ofMillis(500);
 
@@ -102,6 +105,7 @@ public final class BufferedStreamOptions implements Serializable {
     public static final Duration DEFAULT_MAX_RETRY_DURATION = Duration.ofMinutes(5);
 
     private final long maxAppendRequestBytes;
+    private final Duration destinationIdleTimeout;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
@@ -118,6 +122,7 @@ public final class BufferedStreamOptions implements Serializable {
         this.retryMaxAttempts = builder.retryMaxAttempts;
         this.maxRetryDuration = builder.maxRetryDuration;
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
+        this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
@@ -135,6 +140,16 @@ public final class BufferedStreamOptions implements Serializable {
     /** Returns the largest serialized-row payload sent in one append request, in bytes. */
     public long getMaxAppendRequestBytes() {
         return maxAppendRequestBytes;
+    }
+
+    /** Returns how long a clean destination may stay idle before its local writer is evicted. */
+    public Duration getDestinationIdleTimeout() {
+        // A job graph serialized before this field existed restores it as null because this
+        // options type deliberately retains serialVersionUID 1. Preserve the behavior that version
+        // would have received after upgrading: the new default, rather than an NPE at task start.
+        return destinationIdleTimeout == null
+                ? DEFAULT_DESTINATION_IDLE_TIMEOUT
+                : destinationIdleTimeout;
     }
 
     /** Returns the first backoff of the connector-driven recovery schedule. */
@@ -201,6 +216,7 @@ public final class BufferedStreamOptions implements Serializable {
         }
         BufferedStreamOptions that = (BufferedStreamOptions) o;
         return maxAppendRequestBytes == that.maxAppendRequestBytes
+                && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
@@ -215,6 +231,7 @@ public final class BufferedStreamOptions implements Serializable {
     public int hashCode() {
         return Objects.hash(
                 maxAppendRequestBytes,
+                getDestinationIdleTimeout(),
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
@@ -229,6 +246,8 @@ public final class BufferedStreamOptions implements Serializable {
     public String toString() {
         return "BufferedStreamOptions{maxAppendRequestBytes="
                 + maxAppendRequestBytes
+                + ", destinationIdleTimeout="
+                + getDestinationIdleTimeout()
                 + ", recoveryInitialBackoff="
                 + recoveryInitialBackoff
                 + ", recoveryMaxBackoff="
@@ -253,6 +272,7 @@ public final class BufferedStreamOptions implements Serializable {
     public static final class Builder {
 
         private long maxAppendRequestBytes = DEFAULT_MAX_APPEND_REQUEST_BYTES;
+        private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private Duration recoveryInitialBackoff = DEFAULT_RECOVERY_INITIAL_BACKOFF;
         private Duration recoveryMaxBackoff = DEFAULT_RECOVERY_MAX_BACKOFF;
         private int recoveryMaxAttempts = DEFAULT_RECOVERY_MAX_ATTEMPTS;
@@ -278,6 +298,25 @@ public final class BufferedStreamOptions implements Serializable {
                     "maxAppendRequestBytes must be positive: %s",
                     maxAppendRequestBytes);
             this.maxAppendRequestBytes = maxAppendRequestBytes;
+            return this;
+        }
+
+        /**
+         * Sets how long an inactive destination remains cached after its latest checkpoint
+         * snapshot. Once a later successful non-end-of-input flush finds it strictly older than
+         * this timeout and unchanged since that snapshot, the connector closes its local appender
+         * and removes the destination from writer state. A later record creates a new buffered
+         * stream; the old remote stream is not finalized and expires under BigQuery's stream
+         * retention policy. Defaults to {@link #DEFAULT_DESTINATION_IDLE_TIMEOUT}.
+         *
+         * @param destinationIdleTimeout the positive idle timeout, expressible in nanoseconds
+         * @return this builder
+         */
+        public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
+            OptionChecks.checkPositive(destinationIdleTimeout, "destinationIdleTimeout");
+            this.destinationIdleTimeout =
+                    OptionChecks.checkExpressibleInNanos(
+                            destinationIdleTimeout, "destinationIdleTimeout");
             return this;
         }
 

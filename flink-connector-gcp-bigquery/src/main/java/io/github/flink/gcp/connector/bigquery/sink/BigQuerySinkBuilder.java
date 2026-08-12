@@ -381,12 +381,6 @@ public class BigQuerySinkBuilder<T> {
                 writeMethod.name());
         Preconditions.checkState(
                 writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
-                        || destinationResolver instanceof FixedDestinationResolver,
-                "WriteMethod.STORAGE_API_EXACTLY_ONCE requires a fixed destination(...);"
-                        + " destinationResolver(...) (dynamic destinations) is not supported for"
-                        + " this write method yet.");
-        Preconditions.checkState(
-                writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
                         || !schemaUpdateOptions.isEnabled(),
                 "schemaUpdateOptions(...) is not supported for"
                         + " WriteMethod.STORAGE_API_EXACTLY_ONCE: a buffered stream's schema is"

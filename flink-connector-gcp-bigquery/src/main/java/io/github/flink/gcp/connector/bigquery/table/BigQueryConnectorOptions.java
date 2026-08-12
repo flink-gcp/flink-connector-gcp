@@ -475,6 +475,15 @@ public final class BigQueryConnectorOptions {
                             "The size at which the sink splits a batch into several append"
                                     + " requests, below the Storage Write API's own request limit.");
 
+    public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT =
+            ConfigOptions.key("sink.buffered-stream.destination-idle-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a checkpoint-clean destination may go unwritten before its"
+                                    + " local appender and writer state are dropped. A later row"
+                                    + " creates a new buffered stream.");
+
     public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.buffered-stream.recovery.initial-backoff")
                     .durationType()

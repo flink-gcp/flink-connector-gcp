@@ -56,6 +56,9 @@ class BufferedStreamOptionsMapperTest {
                 "maxAppendRequestBytes",
                 BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES);
         SETTER_TO_OPTION.put(
+                "destinationIdleTimeout",
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT);
+        SETTER_TO_OPTION.put(
                 "recoveryInitialBackoff",
                 BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF);
         SETTER_TO_OPTION.put(
@@ -90,15 +93,13 @@ class BufferedStreamOptionsMapperTest {
 
     @Test
     void everyBufferedStreamKnobHasAnOption() {
-        // Not filtered on arity or name: a knob of any shape must appear, which is the whole point
-        // of this guard.
+        // Not filtered on arity or name: every knob of any shape must appear.
         Set<String> setters =
                 Arrays.stream(BufferedStreamOptions.Builder.class.getDeclaredMethods())
                         .filter(m -> Modifier.isPublic(m.getModifiers()))
                         .filter(m -> m.getReturnType() == BufferedStreamOptions.Builder.class)
                         .map(Method::getName)
                         .collect(Collectors.toSet());
-
         // Both directions: a new knob without an option, and an option whose knob was removed.
         assertThat(setters).isEqualTo(SETTER_TO_OPTION.keySet());
     }
@@ -152,6 +153,7 @@ class BufferedStreamOptionsMapperTest {
     void mapsEveryOptionOntoItsKnob() {
         Map<String, String> options = new HashMap<>();
         options.put(key("maxAppendRequestBytes"), "1 mb");
+        options.put(key("destinationIdleTimeout"), "2 h");
         options.put(key("recoveryInitialBackoff"), "1 s");
         options.put(key("recoveryMaxBackoff"), "20 s");
         options.put(key("recoveryMaxAttempts"), "11");
@@ -164,6 +166,7 @@ class BufferedStreamOptionsMapperTest {
         BufferedStreamOptions mapped = map(options);
 
         assertThat(mapped.getMaxAppendRequestBytes()).isEqualTo(1024L * 1024L);
+        assertThat(mapped.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(2));
         assertThat(mapped.getRecoveryInitialBackoff()).isEqualTo(Duration.ofSeconds(1));
         assertThat(mapped.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(11);

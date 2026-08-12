@@ -296,6 +296,7 @@ the SDK's connection pool, so there is nothing for its sizing knobs to size.
 | Option | Type | Maps to |
 |---|---|---|
 | `sink.buffered-stream.max-append-request-bytes` | MemorySize | `maxAppendRequestBytes(...)` |
+| `sink.buffered-stream.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)` |
 | `sink.buffered-stream.recovery.initial-backoff` | Duration | `recoveryInitialBackoff(...)` |
 | `sink.buffered-stream.recovery.max-backoff` | Duration | `recoveryMaxBackoff(...)` |
 | `sink.buffered-stream.recovery.max-attempts` | Integer | `recoveryMaxAttempts(...)` |

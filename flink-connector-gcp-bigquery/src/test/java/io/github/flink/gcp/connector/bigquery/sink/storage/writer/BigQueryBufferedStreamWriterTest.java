@@ -199,10 +199,7 @@ class BigQueryBufferedStreamWriterTest {
 
         assertThat(writer.prepareCommit()).isEmpty();
         assertThat(service.createdStreams).isEmpty();
-        List<BufferedStreamWriterState> states = writer.snapshotState(1);
-        assertThat(states)
-                .containsExactly(
-                        new BufferedStreamWriterState(BufferedStreamWriterState.NO_STREAM, 0, 1));
+        assertThat(writer.snapshotState(1)).isEmpty();
         writer.close();
     }
 
@@ -328,7 +325,7 @@ class BigQueryBufferedStreamWriterTest {
         assertThat(committable.getSubtaskId()).isEqualTo(0);
 
         assertThat(writer.snapshotState(7))
-                .containsExactly(new BufferedStreamWriterState(stream, 2, 7));
+                .containsExactly(new BufferedStreamWriterState(DESTINATION, stream, 2, 7));
 
         // A quiet checkpoint emits nothing.
         writer.flush(false);
@@ -606,9 +603,7 @@ class BigQueryBufferedStreamWriterTest {
 
         assertThat(handler.rows).hasSize(2);
         assertThat(writer.prepareCommit()).isEmpty();
-        assertThat(writer.snapshotState(1))
-                .containsExactly(
-                        new BufferedStreamWriterState(BufferedStreamWriterState.NO_STREAM, 0, 1));
+        assertThat(writer.snapshotState(1)).isEmpty();
     }
 
     @Test

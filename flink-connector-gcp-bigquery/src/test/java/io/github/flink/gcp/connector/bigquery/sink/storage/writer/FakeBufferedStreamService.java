@@ -73,6 +73,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
     public final List<String> createdStreams = new ArrayList<>();
     public final List<String> openedAppenders = new ArrayList<>();
+    public final List<String> closedAppenders = new ArrayList<>();
     public final List<AppendCall> appends = new ArrayList<>();
     public final List<FlushCall> flushes = new ArrayList<>();
 
@@ -142,6 +143,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
             @Override
             public void close() {
+                closedAppenders.add(streamName);
                 if (appenderCloseFailure != null) {
                     ExceptionUtils.rethrow(appenderCloseFailure);
                 }

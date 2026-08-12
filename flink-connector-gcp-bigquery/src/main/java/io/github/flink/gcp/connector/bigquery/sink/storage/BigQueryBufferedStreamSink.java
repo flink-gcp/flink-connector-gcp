@@ -40,6 +40,8 @@ import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CrossVersionSink;
+import io.github.flink.gcp.connector.bigquery.sink.FixedDestinationResolver;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.storage.committer.BufferedStreamCommitter;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriter;
@@ -58,15 +60,15 @@ import java.util.function.Supplier;
 
 /**
  * The {@link WriteMethod#STORAGE_API_EXACTLY_ONCE} sink: each writer subtask appends rows to one
- * application-created BUFFERED Storage Write API stream at explicit offsets (see {@link
- * BigQueryBufferedStreamWriter}), and the committer makes each completed checkpoint's rows visible
- * by flushing every committable's stream up to its offset (see {@link BufferedStreamCommitter}) —
- * two-phase commit on Flink checkpoints.
+ * application-created BUFFERED Storage Write API stream per active destination at explicit offsets
+ * (see {@link BigQueryBufferedStreamWriter}), and the committer makes each completed checkpoint's
+ * rows visible by flushing every committable's stream up to its offset (see {@link
+ * BufferedStreamCommitter}) — two-phase commit on Flink checkpoints.
  *
- * <p>The stream is reused across checkpoints and tracked in writer state; one {@code
- * CreateWriteStream} per writer lifetime keeps well within the API's intended usage, and {@code
- * FlushRows} once per subtask per checkpoint is far below its quota, so no checkpoint-cadence guard
- * is needed (unlike FILE_LOADS with its per-table daily load-job limit).
+ * <p>Each destination's stream is reused across checkpoints and tracked in writer state; idle,
+ * checkpoint-clean destinations are evicted after the configured timeout. {@code FlushRows} runs
+ * once per changed destination per checkpoint, so no checkpoint-cadence guard is needed (unlike
+ * FILE_LOADS with its per-table daily load-job limit).
  *
  * <p>The execution mode must be explicit: {@link RuntimeExecutionMode#AUTOMATIC} is rejected when
  * the pre-commit topology is added, because were it to resolve to streaming with checkpointing
@@ -210,7 +212,15 @@ public class BigQueryBufferedStreamSink<T>
 
     @Override
     public SimpleVersionedSerializer<BufferedStreamWriterState> getWriterStateSerializer() {
-        return new BufferedStreamWriterStateSerializer();
+        return new BufferedStreamWriterStateSerializer(legacyFixedDestination());
+    }
+
+    /** Supplies the destination omitted by version-1 fixed-destination serializer payloads. */
+    private TableDestination legacyFixedDestination() {
+        if (config.getDestinationResolver() instanceof FixedDestinationResolver) {
+            return ((FixedDestinationResolver) config.getDestinationResolver()).getDestination();
+        }
+        return null;
     }
 
     @Override

@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-28 ([#54], with the naming revised on user feedback 2026-07-29); buffered-path
-  knobs 2026-08-01 ([#198])
-- Issues: [#54], [#198]
+  knobs 2026-08-01 ([#198]); buffered-path eviction 2026-08-13 ([#76])
+- Issues: [#54], [#76], [#198]
 - Modules: bigquery (`sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Tuning;
   `docs/content/docs/reference/bigquery.md` for the values
@@ -80,6 +80,13 @@ not choosing, so only the "rejected for other methods" half carries safety and o
   fail a checkpoint). `lastAccessNanos` lives on `DestinationState`, is refreshed in `write()`
   only, and is initialized at creation so a state rebuilt by a repair is not instantly idle;
   the boundary is strict (`> timeout` evicts), pinned by test.
+- **[#76] applies that eviction contract to `BufferedStreamOptions` too.**
+  A buffered destination is eligible only when its stream name and next offset still equal the
+  latest snapshot, so a destination with rows added since that snapshot cannot disappear.
+  Eviction closes only the local appender, deliberately never finalizes the remote stream, removes
+  that destination from the next writer-state snapshot, and creates a new stream if the table
+  receives another record.
+  The default remains one hour and the same nanosecond upper bound applies.
 - **`flushInterval`** (default disabled) registers a recurring processing-time timer from the
   writer constructor via `WriterInitContext.getProcessingTimeService()` — the first
   `ProcessingTimeService` use in the repository; safe because timer callbacks run on the
@@ -96,6 +103,7 @@ not choosing, so only the "rejected for other methods" half carries safety and o
 
 [#15]: https://github.com/laughingman7743/flink-connector-gcp/issues/15
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
+[#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
 [#121]: https://github.com/laughingman7743/flink-connector-gcp/issues/121
 [#147]: https://github.com/laughingman7743/flink-connector-gcp/issues/147
 [#197]: https://github.com/laughingman7743/flink-connector-gcp/issues/197

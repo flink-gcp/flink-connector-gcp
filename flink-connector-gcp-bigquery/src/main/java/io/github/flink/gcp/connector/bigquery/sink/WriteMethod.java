@@ -38,12 +38,11 @@ public enum WriteMethod {
      * two-phase commit protocol on Flink checkpoints: rows are appended at explicit offsets and
      * become visible only when a completed checkpoint's commit flushes them.
      *
-     * <p>Exactly-once semantics. Requires a fixed {@code destination(...)} (dynamic destinations
-     * are not supported yet) and {@code bufferedStreamOptions(...)}. Each subtask reuses one
-     * buffered stream across checkpoints (tracked in writer state). Streaming execution requires
-     * exactly-once checkpointing with checkpoints-after-tasks-finish; batch execution commits at
-     * end of input. The table schema is pinned at stream creation — mid-stream schema evolution is
-     * not supported.
+     * <p>Exactly-once semantics. Supports fixed and dynamic destinations and requires {@code
+     * bufferedStreamOptions(...)}. Each subtask reuses one buffered stream per active destination
+     * across checkpoints (tracked in writer state). Streaming execution requires exactly-once
+     * checkpointing with checkpoints-after-tasks-finish; batch execution commits at end of input.
+     * The table schema is pinned at stream creation — mid-stream schema evolution is not supported.
      */
     STORAGE_API_EXACTLY_ONCE,
 

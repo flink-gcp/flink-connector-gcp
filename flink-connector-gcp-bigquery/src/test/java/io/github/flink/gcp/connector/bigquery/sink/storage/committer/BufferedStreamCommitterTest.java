@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.protobuf.Any;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.FakeBufferedStreamService;
@@ -42,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BufferedStreamCommitterTest {
 
     private static final String STREAM = "projects/p/datasets/d/tables/t/streams/s1";
+    private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
 
     /** Commit request whose retry signals are never expected to be called. */
     private static final class TestCommitRequest
@@ -89,6 +91,11 @@ class BufferedStreamCommitterTest {
                 .collect(java.util.stream.Collectors.toList());
     }
 
+    private static BufferedStreamCommittable committable(
+            String streamName, long flushOffset, int subtaskId) {
+        return new BufferedStreamCommittable(streamName, flushOffset, subtaskId);
+    }
+
     private static BufferedStreamCommitter committer(FakeBufferedStreamService service) {
         return committer(service, CreateDisposition.CREATE_IF_NEEDED);
     }
@@ -122,9 +129,7 @@ class BufferedStreamCommitterTest {
         BufferedStreamCommitter committer = committer(service);
 
         committer.commit(
-                requests(
-                        new BufferedStreamCommittable(STREAM, 41, 0),
-                        new BufferedStreamCommittable(STREAM + "-other", 7, 1)));
+                requests(committable(STREAM, 41, 0), committable(STREAM + "-other", 7, 1)));
 
         assertThat(service.flushes).hasSize(2);
         assertThat(service.flushes.get(0).streamName).isEqualTo(STREAM);
@@ -166,7 +171,7 @@ class BufferedStreamCommitterTest {
                                 null));
         BufferedStreamCommitter committer = committer(service);
 
-        committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
+        committer.commit(requests(committable(STREAM, 41, 0)));
 
         assertThat(service.flushes).hasSize(1);
     }
@@ -179,7 +184,7 @@ class BufferedStreamCommitterTest {
                         null, GrpcStatusCode.of(Status.Code.ALREADY_EXISTS), false));
         BufferedStreamCommitter committer = committer(service);
 
-        committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
+        committer.commit(requests(committable(STREAM, 41, 0)));
 
         assertThat(service.flushes).hasSize(1);
     }
@@ -192,7 +197,7 @@ class BufferedStreamCommitterTest {
                         null, GrpcStatusCode.of(Status.Code.UNAVAILABLE), true));
         BufferedStreamCommitter committer = committer(service);
 
-        committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
+        committer.commit(requests(committable(STREAM, 41, 0)));
 
         assertThat(service.flushes).hasSize(2);
         assertThat(service.flushes.get(1).offset).isEqualTo(41);
@@ -208,10 +213,7 @@ class BufferedStreamCommitterTest {
         }
         BufferedStreamCommitter committer = committer(service);
 
-        assertThatThrownBy(
-                        () ->
-                                committer.commit(
-                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+        assertThatThrownBy(() -> committer.commit(requests(committable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("retry budget is exhausted");
         assertThat(service.flushes).hasSize(3);
@@ -227,10 +229,7 @@ class BufferedStreamCommitterTest {
                         null, GrpcStatusCode.of(Status.Code.INVALID_ARGUMENT), false));
         BufferedStreamCommitter committer = committer(service);
 
-        assertThatThrownBy(
-                        () ->
-                                committer.commit(
-                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+        assertThatThrownBy(() -> committer.commit(requests(committable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Failed to flush BigQuery stream");
         assertThat(service.flushes).hasSize(1);
@@ -245,7 +244,7 @@ class BufferedStreamCommitterTest {
         service.flushResults.add(maskedAsPermissionDenied("TABLES_UPDATE_DATA"));
         BufferedStreamCommitter committer = committer(service);
 
-        committer.commit(requests(new BufferedStreamCommittable(STREAM, 41, 0)));
+        committer.commit(requests(committable(STREAM, 41, 0)));
 
         assertThat(service.flushes).hasSize(2);
         assertThat(service.flushes.get(1).offset).isEqualTo(41);
@@ -263,10 +262,7 @@ class BufferedStreamCommitterTest {
                         null, GrpcStatusCode.of(Status.Code.NOT_FOUND), false));
         BufferedStreamCommitter committer = committer(service);
 
-        assertThatThrownBy(
-                        () ->
-                                committer.commit(
-                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+        assertThatThrownBy(() -> committer.commit(requests(committable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Failed to flush BigQuery stream");
         assertThat(service.flushes).hasSize(1);
@@ -280,10 +276,7 @@ class BufferedStreamCommitterTest {
         service.flushResults.add(maskedAsPermissionDenied("TABLES_UPDATE_DATA"));
         BufferedStreamCommitter committer = committer(service, CreateDisposition.CREATE_NEVER);
 
-        assertThatThrownBy(
-                        () ->
-                                committer.commit(
-                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+        assertThatThrownBy(() -> committer.commit(requests(committable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Failed to flush BigQuery stream");
         assertThat(service.flushes).hasSize(1);
@@ -299,10 +292,7 @@ class BufferedStreamCommitterTest {
         }
         BufferedStreamCommitter committer = committer(service);
 
-        assertThatThrownBy(
-                        () ->
-                                committer.commit(
-                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+        assertThatThrownBy(() -> committer.commit(requests(committable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("retry budget is exhausted");
         assertThat(service.flushes).hasSize(3);
@@ -314,10 +304,7 @@ class BufferedStreamCommitterTest {
         service.flushResults.add(40L);
         BufferedStreamCommitter committer = committer(service);
 
-        assertThatThrownBy(
-                        () ->
-                                committer.commit(
-                                        requests(new BufferedStreamCommittable(STREAM, 41, 0))))
+        assertThatThrownBy(() -> committer.commit(requests(committable(STREAM, 41, 0))))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("although offset");
     }
@@ -326,7 +313,7 @@ class BufferedStreamCommitterTest {
     void closeClosesTheService() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         BufferedStreamCommitter committer = committer(service);
-        committer.commit(requests(new BufferedStreamCommittable(STREAM, 1, 0)));
+        committer.commit(requests(committable(STREAM, 1, 0)));
 
         committer.close();
 
