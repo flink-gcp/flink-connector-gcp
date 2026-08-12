@@ -37,6 +37,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -138,6 +139,72 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(returned.getCurrentPosition()).isEqualTo(coordinatorProgress);
         assertThat(returned.getWatermark()).isEqualTo(returnedWatermark);
         assertThat(context.counter(SpannerMetricNames.SPLITS_RETURNED)).isEqualTo(1);
+        enumerator.close();
+    }
+
+    @Test
+    void discoveryCounterCountsNewChildTokensButNotDuplicateReports() throws Exception {
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, new ScriptedClient(), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        SpannerChangeStreamPartitionSplit initial = context.assignedSplits(0).get(0);
+
+        ChildPartitionsEvent children =
+                children(initial, initial.getCurrentPosition().plusSeconds(1), "a", "b");
+        enumerator.handleSourceEvent(0, children);
+        enumerator.handleSourceEvent(0, children);
+
+        assertThat(context.counter("changeStreamPartitionsDiscovered")).isEqualTo(2);
+        enumerator.close();
+    }
+
+    @Test
+    void unassignedLagTracksTheOldestScheduledPositionAcrossAssignment() throws Exception {
+        Instant recent = Instant.now().minus(Duration.ofHours(1));
+        SpannerChangeStreamPartitionSplit initial = finishedInitial(recent.minusSeconds(1));
+        SpannerChangeStreamPartitionSplit older =
+                child("older", recent, initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.SCHEDULED);
+        SpannerChangeStreamPartitionSplit sameAge =
+                child("same-age", recent, initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.SCHEDULED);
+        SpannerChangeStreamPartitionSplit newer =
+                child("newer", recent.plusMillis(500), initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.SCHEDULED);
+        SpannerChangeStreamEnumeratorState restored =
+                new SpannerChangeStreamEnumeratorState(
+                        Arrays.asList(initial, older, sameAge, newer));
+        AtomicLong now = new AtomicLong(recent.plusSeconds(1).toEpochMilli());
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                new SpannerChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedClient::new,
+                        StartPosition.latest(),
+                        Optional.empty(),
+                        null,
+                        2_000,
+                        restored,
+                        now::get);
+
+        enumerator.start();
+        context.runAsyncCalls();
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis"))
+                .isEqualTo(1_000L);
+        assertThat(context.counter("changeStreamPartitionsDiscovered")).isZero();
+
+        enumerator.handleSplitRequest(0, "localhost");
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis"))
+                .isEqualTo(1_000L);
+        enumerator.handleSplitRequest(0, "localhost");
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis")).isEqualTo(500L);
+        enumerator.handleSplitRequest(0, "localhost");
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis")).isZero();
+        now.set(recent.minusSeconds(1).toEpochMilli());
+        assertThat(context.<Long>gauge("unassignedChangeStreamPartitionLagMillis")).isZero();
         enumerator.close();
     }
 

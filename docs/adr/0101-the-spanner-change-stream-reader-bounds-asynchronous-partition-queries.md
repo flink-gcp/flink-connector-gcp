@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-12
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
-  [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536)
+  [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
+  [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -60,10 +61,17 @@ The reader checkpoints the greatest consumed record timestamp and watermark for 
 Restore uses that timestamp as the next query's inclusive start.
 This can repeat the boundary record and gives the source at-least-once delivery; advancing past it could skip another record with the same commit timestamp.
 
+The enumerator counts child partitions when it first accepts them and reports both scheduled-partition count and oldest scheduled-position lag.
+Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and the wait for the latest non-heartbeat result.
+The gauges aggregate partition state within their coordinator or reader-subtask scope and never use partition tokens as labels.
+The source emits commit timestamps and split watermarks through Flink's source output so the runtime supplies `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, and `sourceIdleTime` on both supported lines, plus per-split `currentWatermark` on Flink 2.2; the connector does not duplicate those names.
+
 ## Evidence
 
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
 Reader tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, watermarks, child-before-finish ordering, nullable deserialization, query failure, and bounded completion.
+Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
+The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, and proves a later scale-in preserves the positions of four queued splits.
 Emulator MiniCluster tests run the production source for both dialects across a schema and value-capture change.
 A separate failover test restarts each dialect and requires every record plus a repeated inclusive boundary.
 
@@ -83,4 +91,5 @@ A separate failover test restarts each dialect and requires every record plus a 
 - Increasing the concurrency option spends one callback thread, one transaction, and one active query per additional slot in each subtask.
 - A restart can repeat records at the last checkpointed timestamp, so downstream consumers that need uniqueness must deduplicate.
 - The emulator proves connector wiring and both dialect adapters, not real-service split, merge, retention, or fallback behavior.
-  That acceptance remains in #535, while operational query-capacity measurements and metrics remain in #551.
+  That acceptance remains in #535.
+- The connector exposes capacity and lag signals but does not change Flink operator parallelism; deployment autoscaling remains outside the Source API.

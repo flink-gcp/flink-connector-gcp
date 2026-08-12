@@ -22,7 +22,6 @@ import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.core.io.InputStatus;
-import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 
@@ -59,7 +58,7 @@ class SpannerChangeStreamReaderTest {
     private static final Instant START = Instant.parse("2026-01-01T00:00:00Z");
 
     private final MetricListener metrics = new MetricListener();
-    private final SourceReaderMetricGroup metricGroup =
+    private final InternalSourceReaderMetricGroup metricGroup =
             InternalSourceReaderMetricGroup.mock(metrics.getMetricGroup());
     private final FakeSourceReaderContext context = new FakeSourceReaderContext(metricGroup);
     private final ScriptedClient client = new ScriptedClient();
@@ -86,6 +85,8 @@ class SpannerChangeStreamReaderTest {
         assertThat(client.openIds())
                 .containsExactly("change-stream-token:a", "change-stream-token:b");
         assertThat(context.splitRequests()).isEqualTo(2);
+        assertThat(counter("changeStreamQueriesStarted")).isEqualTo(2);
+        assertThat(gauge("activeChangeStreamQueries")).isEqualTo(2);
 
         client.finish("change-stream-token:a");
         assertThat(reader.pollNext(new TrackingOutput<>()))
@@ -116,6 +117,8 @@ class SpannerChangeStreamReaderTest {
                         "change-stream-token:a", "change-stream-token:b", "change-stream-token:c");
         assertThat(client.maximumOpen()).isEqualTo(2);
         assertThat(context.splitRequests()).isZero();
+        assertThat(gauge("queuedChangeStreamPartitions")).isEqualTo(0);
+        assertThat(gauge("activeChangeStreamQueries")).isEqualTo(2);
     }
 
     @Test
@@ -257,6 +260,7 @@ class SpannerChangeStreamReaderTest {
                 .containsExactly("change-stream-token:a");
         assertThat(context.sourceEvents())
                 .noneMatch(event -> event instanceof PartitionFinishedEvent);
+        assertThat(gauge("activeChangeStreamQueries")).isEqualTo(0);
     }
 
     @Test
@@ -276,6 +280,14 @@ class SpannerChangeStreamReaderTest {
     private SpannerChangeStreamReader<String> reader(
             int maximum, SpannerChangeStreamDeserializationSchema<String> deserializer) {
         return new SpannerChangeStreamReader<>(context, DATABASE, deserializer, maximum, client);
+    }
+
+    private long counter(String name) {
+        return metrics.getCounter(name).orElseThrow(AssertionError::new).getCount();
+    }
+
+    private Object gauge(String name) {
+        return metrics.getGauge(name).orElseThrow(AssertionError::new).getValue();
     }
 
     private static SpannerChangeStreamPartitionSplit split(String token) {
@@ -415,7 +427,7 @@ class SpannerChangeStreamReaderTest {
         }
     }
 
-    private static final class TrackingOutput<T> implements ReaderOutput<T> {
+    private static class TrackingOutput<T> implements ReaderOutput<T> {
 
         private final List<T> records = new ArrayList<>();
         private final List<Long> timestamps = new ArrayList<>();

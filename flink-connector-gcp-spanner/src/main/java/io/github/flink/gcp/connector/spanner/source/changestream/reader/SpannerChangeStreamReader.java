@@ -24,13 +24,11 @@ import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.core.io.InputStatus;
-import org.apache.flink.metrics.Counter;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
-import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
@@ -59,7 +57,7 @@ public final class SpannerChangeStreamReader<T>
     private final SpannerChangeStreamDeserializationSchema<T> deserializer;
     private final int maximumQueries;
     private final SpannerChangeStreamQueryClient client;
-    private final Counter recordsSkipped;
+    private final SpannerChangeStreamReaderMetrics metrics;
 
     private final Deque<SpannerChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveQuery> active = new LinkedHashMap<>();
@@ -96,7 +94,7 @@ public final class SpannerChangeStreamReader<T>
         Preconditions.checkArgument(maximumQueries > 0, "maximumQueries must be positive");
         this.maximumQueries = maximumQueries;
         this.client = Preconditions.checkNotNull(client, "client must not be null");
-        this.recordsSkipped = context.metricGroup().counter(SpannerMetricNames.RECORDS_SKIPPED);
+        this.metrics = new SpannerChangeStreamReaderMetrics(context.metricGroup());
     }
 
     @Override
@@ -130,6 +128,7 @@ public final class SpannerChangeStreamReader<T>
             finishQuery(query, output);
         } else {
             emit(result.record, query, output);
+            metrics.resumed(query.timing);
             query.handle.resume();
         }
         resetAvailability();
@@ -147,7 +146,7 @@ public final class SpannerChangeStreamReader<T>
             SpannerChangeStreamRecord.Data data = (SpannerChangeStreamRecord.Data) record;
             T deserialized = deserializer.deserialize(data.record);
             if (deserialized == null) {
-                recordsSkipped.inc();
+                metrics.skipped();
             } else {
                 output.createOutputForSplit(query.split.splitId())
                         .collect(deserialized, data.record.getCommitTimestamp().toEpochMilli());
@@ -224,6 +223,7 @@ public final class SpannerChangeStreamReader<T>
     public void addSplits(List<SpannerChangeStreamPartitionSplit> splits) {
         requestOutstanding = false;
         queued.addAll(splits);
+        metrics.queued(queued);
         if (started) {
             startQueuedQueries();
             requestIfCapacity();
@@ -244,9 +244,12 @@ public final class SpannerChangeStreamReader<T>
             active.put(split.splitId(), query);
             try {
                 query.handle = client.open(split, query);
+                metrics.opened(query.timing);
             } catch (Exception e) {
+                metrics.openFailed(query.timing);
                 active.remove(split.splitId());
                 queued.addFirst(split);
+                metrics.queued(queued);
                 throw new FlinkRuntimeException(
                         "Failed to open Spanner Change Streams split "
                                 + split.splitId()
@@ -256,6 +259,7 @@ public final class SpannerChangeStreamReader<T>
                         e);
             }
         }
+        metrics.queued(queued);
     }
 
     private void requestIfCapacity() {
@@ -312,6 +316,7 @@ public final class SpannerChangeStreamReader<T>
         closing.add(client);
         active.clear();
         queued.clear();
+        metrics.closed();
         signalAvailable();
         Closers.closeAll(closing);
     }
@@ -321,24 +326,29 @@ public final class SpannerChangeStreamReader<T>
 
         private SpannerChangeStreamPartitionSplit split;
         private final AtomicReference<QueryResult> handover = new AtomicReference<>();
+        private final SpannerChangeStreamReaderMetrics.QueryTiming timing;
         private SpannerChangeStreamQueryClient.QueryHandle handle;
 
         private ActiveQuery(SpannerChangeStreamPartitionSplit split) {
             this.split = split;
+            this.timing = metrics.opening(split);
         }
 
         @Override
         public void record(SpannerChangeStreamRecord record) {
+            metrics.recordReturned(timing, record instanceof SpannerChangeStreamRecord.Heartbeat);
             publish(QueryResult.record(record));
         }
 
         @Override
         public void finished() {
+            metrics.terminated(timing);
             publish(QueryResult.finished());
         }
 
         @Override
         public void failed(Throwable error) {
+            metrics.terminated(timing);
             if (!closed) {
                 publish(QueryResult.failed(error));
             }
