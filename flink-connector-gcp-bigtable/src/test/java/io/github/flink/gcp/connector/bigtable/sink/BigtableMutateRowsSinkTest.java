@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.sink;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.api.connector.sink2.WriterInitContext;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
@@ -131,7 +132,7 @@ class BigtableMutateRowsSinkTest {
                         .serviceAccountKeyFile(path)
                         .build();
 
-        assertThatThrownBy(() -> sink.createWriter(null))
+        assertThatThrownBy(() -> sink.createWriter((WriterInitContext) null))
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessage("Failed to load the configured Bigtable service-account key file.")
                 .hasNoCause()
