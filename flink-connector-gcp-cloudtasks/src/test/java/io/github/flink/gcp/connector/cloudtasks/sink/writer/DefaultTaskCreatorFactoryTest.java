@@ -18,13 +18,51 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.gax.core.FixedCredentialsProvider;
+import com.google.api.gax.core.GoogleCredentialsProvider;
+import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.tasks.v2.CloudTasksSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link DefaultTaskCreatorFactory}. */
 class DefaultTaskCreatorFactoryTest {
+
+    @TempDir Path tempDir;
+
+    @Test
+    void configuredCredentialsReachTheClientSettings() throws Exception {
+        Path keyFile = ServiceAccountKeyFileTestUtil.write(tempDir);
+
+        CloudTasksSettings settings =
+                DefaultTaskCreatorFactory.productionSettings(keyFile.toString()).build();
+
+        assertThat(settings.getCredentialsProvider()).isInstanceOf(FixedCredentialsProvider.class);
+        assertThat(settings.getCredentialsProvider().getCredentials())
+                .isInstanceOf(ServiceAccountCredentials.class);
+    }
+
+    @Test
+    void absentConfiguredCredentialsLeaveApplicationDefaultsInEffect() throws Exception {
+        CloudTasksSettings settings = DefaultTaskCreatorFactory.productionSettings(null).build();
+
+        assertThat(settings.getCredentialsProvider()).isInstanceOf(GoogleCredentialsProvider.class);
+    }
+
+    @Test
+    void buildsAndClosesAProductionCreatorWithConfiguredCredentials() throws Exception {
+        Path keyFile = ServiceAccountKeyFileTestUtil.write(tempDir);
+
+        TaskCreator creator = new DefaultTaskCreatorFactory(keyFile.toString(), null).create();
+
+        assertThat(creator).isNotNull();
+        creator.close();
+    }
 
     @Test
     void buildsAndClosesAnEmulatorBackedCreatorWithoutCredentials() throws Exception {

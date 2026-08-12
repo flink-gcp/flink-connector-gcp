@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 import org.apache.flink.annotation.Internal;
 
 import com.google.api.core.ApiFuture;
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.rpc.UnaryCallable;
 import com.google.cloud.tasks.v2.CloudTasksClient;
@@ -38,8 +39,8 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Creates a {@link TaskCreator} backed by a {@code google-cloud-tasks} {@link CloudTasksClient},
- * connecting either to production Cloud Tasks with application-default credentials or to an
- * emulator over a plaintext channel with no credentials.
+ * connecting either to production Cloud Tasks with application-default or configured
+ * service-account credentials, or to an emulator over a plaintext channel with no credentials.
  *
  * <p>The client's own retry configuration is left alone: it retries {@code CreateTask} on nothing
  * at all, which is the reason the writer owns retrying (see {@code CloudTasksWriterOptions}).
@@ -53,13 +54,14 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
     private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
 
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
      * Creates a factory connecting to production Cloud Tasks with application-default credentials.
      */
     public DefaultTaskCreatorFactory() {
-        this(null);
+        this(null, null);
     }
 
     /**
@@ -69,6 +71,19 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
      *     for production Cloud Tasks
      */
     public DefaultTaskCreatorFactory(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(null, emulatorEndpoint);
+    }
+
+    /**
+     * Creates the factory.
+     *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Cloud Tasks
+     */
+    public DefaultTaskCreatorFactory(
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -76,11 +91,14 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
     public TaskCreator create() throws IOException {
         ManagedChannel ownedChannel = null;
         try {
-            CloudTasksSettings.Builder settings = CloudTasksSettings.newBuilder();
+            CloudTasksSettings.Builder settings;
             if (emulatorEndpoint != null) {
+                settings = CloudTasksSettings.newBuilder();
                 ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
                 settings.setTransportChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
                         .setCredentialsProvider(NoCredentialsProvider.create());
+            } else {
+                settings = productionSettings(serviceAccountKeyFile);
             }
             return new CloudTasksClientAdapter(
                     CloudTasksClient.create(settings.build()), ownedChannel);
@@ -91,6 +109,16 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
             }
             throw e;
         }
+    }
+
+    static CloudTasksSettings.Builder productionSettings(@Nullable String serviceAccountKeyFile)
+            throws IOException {
+        CloudTasksSettings.Builder settings = CloudTasksSettings.newBuilder();
+        CredentialsProvider credentials = CloudTasksCredentials.load(serviceAccountKeyFile);
+        if (credentials != null) {
+            settings.setCredentialsProvider(credentials);
+        }
+        return settings;
     }
 
     /** Adapts the SDK {@link CloudTasksClient} to the writer-facing {@link TaskCreator}. */

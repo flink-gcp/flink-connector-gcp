@@ -48,6 +48,7 @@ public class CloudTasksSinkBuilder<T> {
     @Nullable private TaskIdExtractor<? super T> taskIdExtractor;
     private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.defaults();
     private FailureHandler<? super FailedTask> failedTaskHandler = FailureHandler.failJob();
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
 
     CloudTasksSinkBuilder() {}
@@ -145,6 +146,29 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
+     * Authenticates the sink with the service-account JSON key at the given path instead of
+     * application-default credentials. The file is read on each TaskManager when its writer is
+     * created, so the same path must be readable by every TaskManager that can run this sink.
+     * Optional; when unset the sink uses application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel deliberately carries no
+     * credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the sink at a Cloud Tasks emulator instead of the production service. The connection
      * to the given {@code host:port} uses a plaintext channel with no credentials, so this must
      * only ever be used against an emulator. Optional; when unset the sink connects to Cloud Tasks
@@ -173,6 +197,11 @@ public class CloudTasksSinkBuilder<T> {
         Preconditions.checkState(
                 destinationResolver != null,
                 "A destination is required: set queue(...) or destinationResolver(...).");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         return new CloudTasksCreateTaskSink<>(
                 new CloudTasksSinkConfig<>(
                         destinationResolver,
@@ -180,6 +209,7 @@ public class CloudTasksSinkBuilder<T> {
                         taskIdExtractor,
                         writerOptions,
                         failedTaskHandler,
+                        serviceAccountKeyFile,
                         emulatorEndpoint));
     }
 }
