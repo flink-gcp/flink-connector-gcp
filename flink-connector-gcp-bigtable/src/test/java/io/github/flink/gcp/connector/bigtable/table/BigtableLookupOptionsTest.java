@@ -18,9 +18,12 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
+import org.apache.flink.table.connector.source.lookup.LookupOptions.ReloadStrategy;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger;
+import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger.ScheduleMode;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 
 import org.junit.jupiter.api.Test;
@@ -72,25 +75,50 @@ class BigtableLookupOptionsTest {
     }
 
     @Test
-    void buildsBothStandardFullCacheReloadTriggers() {
-        assertThat(
-                        options(
-                                        "lookup.cache",
-                                        "full",
-                                        "lookup.full-cache.periodic-reload.interval",
-                                        "1 min")
-                                .createFullReloadTrigger())
+    void retainsThePeriodicReloadIntervalAndScheduleMode() {
+        BigtableLookupConfig options =
+                options(
+                        "lookup.cache",
+                        "full",
+                        "lookup.full-cache.periodic-reload.interval",
+                        "7 min",
+                        "lookup.full-cache.periodic-reload.schedule-mode",
+                        "fixed_rate");
+
+        assertThat(options.createFullReloadTrigger())
                 .isInstanceOf(PeriodicCacheReloadTrigger.class);
+        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_RELOAD_STRATEGY))
+                .isEqualTo(ReloadStrategy.PERIODIC);
+        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL))
+                .isEqualTo(Duration.ofMinutes(7));
         assertThat(
-                        options(
-                                        "lookup.cache",
-                                        "full",
-                                        "lookup.full-cache.reload-strategy",
-                                        "timed",
-                                        "lookup.full-cache.timed-reload.iso-time",
-                                        "10:15Z")
-                                .createFullReloadTrigger())
-                .isInstanceOf(TimedCacheReloadTrigger.class);
+                        options.asConfiguration()
+                                .get(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE))
+                .isEqualTo(ScheduleMode.FIXED_RATE);
+    }
+
+    @Test
+    void retainsTheTimedReloadTimeAndDayInterval() {
+        BigtableLookupConfig options =
+                options(
+                        "lookup.cache",
+                        "full",
+                        "lookup.full-cache.reload-strategy",
+                        "timed",
+                        "lookup.full-cache.timed-reload.iso-time",
+                        "10:15:30+09:00",
+                        "lookup.full-cache.timed-reload.interval-in-days",
+                        "3");
+
+        assertThat(options.createFullReloadTrigger()).isInstanceOf(TimedCacheReloadTrigger.class);
+        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_RELOAD_STRATEGY))
+                .isEqualTo(ReloadStrategy.TIMED);
+        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME))
+                .isEqualTo("10:15:30+09:00");
+        assertThat(
+                        options.asConfiguration()
+                                .get(LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS))
+                .isEqualTo(3);
     }
 
     @Test

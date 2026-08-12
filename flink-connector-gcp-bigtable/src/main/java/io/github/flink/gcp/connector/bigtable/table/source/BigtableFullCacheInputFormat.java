@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.io.GenericInputFormat;
 import org.apache.flink.core.io.GenericInputSplit;
 import org.apache.flink.table.data.RowData;
@@ -37,6 +38,7 @@ import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -53,6 +55,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     @Nullable private final String appProfileId;
     @Nullable private final String emulatorEndpoint;
     private final RowToRowDataConverter converter;
+    @Nullable private final RowStreamOpener rowStreamOpener;
 
     @Nullable private transient BigtableDataClient client;
     private transient Iterator<ByteStringRange> remainingRanges = Collections.emptyIterator();
@@ -67,12 +70,36 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
             @Nullable String emulatorEndpoint) {
+        this(
+                destination,
+                schema,
+                projectedFields,
+                nullStringLiteral,
+                filter,
+                ranges,
+                appProfileId,
+                emulatorEndpoint,
+                null);
+    }
+
+    @VisibleForTesting
+    BigtableFullCacheInputFormat(
+            TableDestination destination,
+            BigtableTableSchema schema,
+            @Nullable int[] projectedFields,
+            String nullStringLiteral,
+            Filters.Filter filter,
+            List<ByteStringRange> ranges,
+            @Nullable String appProfileId,
+            @Nullable String emulatorEndpoint,
+            @Nullable RowStreamOpener rowStreamOpener) {
         this.destination = destination;
         this.filter = filter;
         this.ranges = ranges;
         this.appProfileId = appProfileId;
         this.emulatorEndpoint = emulatorEndpoint;
         this.converter = new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
+        this.rowStreamOpener = rowStreamOpener;
     }
 
     Filters.Filter getFilter() {
@@ -91,12 +118,14 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             return;
         }
         try {
-            EmulatorEndpoint endpoint =
-                    emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
-            client =
-                    BigtableDataClient.create(
-                            BigtableDataClients.settings(destination, appProfileId, endpoint)
-                                    .build());
+            if (rowStreamOpener == null) {
+                EmulatorEndpoint endpoint =
+                        emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
+                client =
+                        BigtableDataClient.create(
+                                BigtableDataClients.settings(destination, appProfileId, endpoint)
+                                        .build());
+            }
             remainingRanges = ranges.iterator();
             if (remainingRanges.hasNext()) {
                 advanceRange();
@@ -121,10 +150,12 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     }
 
     private void advanceRange() {
-        Query query =
-                Query.create(TableId.of(destination.getTable()))
-                        .range(remainingRanges.next())
-                        .filter(filter);
+        ByteStringRange range = remainingRanges.next();
+        if (rowStreamOpener != null) {
+            rows = rowStreamOpener.open(range);
+            return;
+        }
+        Query query = Query.create(TableId.of(destination.getTable())).range(range).filter(filter);
         ServerStream<Row> stream = client.readRows(query);
         rows = stream.iterator();
     }
@@ -137,5 +168,11 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             client.close();
             client = null;
         }
+    }
+
+    @FunctionalInterface
+    interface RowStreamOpener extends Serializable {
+
+        Iterator<Row> open(ByteStringRange range);
     }
 }
