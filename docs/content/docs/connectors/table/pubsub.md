@@ -206,6 +206,7 @@ The source reads the file on the JobManager for subscription administration and 
 The same path must therefore be readable in every eligible process.
 Each writer, reader or enumerator loads the file once and shares the resulting provider among the Pub/Sub clients it creates.
 A read or parse failure reports neither the path nor credential material.
+The DataStream page's [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) note covers Kubernetes Secret mounts, session clusters and key rotation for both APIs.
 
 Service-account keys are long-lived secrets, so prefer an attached service account or Workload Identity where the deployment supports one.
 Raw JSON, Base64-encoded JSON, access tokens, and custom credential-provider classes are not accepted by this option.

@@ -78,6 +78,7 @@ API notes:
   with the service-account JSON key at `path`.
   The file is read when each writer starts, so the same path must be readable on every TaskManager
   that can run the sink.
+  See [Credential file deployment](#credential-file-deployment) for the Kubernetes, session-cluster and rotation requirements.
   When the setter is absent, application-default credentials remain in effect, including
   `GOOGLE_APPLICATION_CREDENTIALS`.
   Service-account keys are long-lived secrets, so prefer an attached service account or Workload
@@ -93,6 +94,28 @@ API notes:
   setter, so a malformed `host:port` is rejected at `build()` on the client rather than
   surfacing as a connection failure on a task manager
   ([#235]({{< param BookRepo >}}/issues/235)).
+
+## Credential file deployment
+
+> **Authentication recommendation.** Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).
+> Prefer keyless application-default credentials from an attached service account or Workload Identity over a service-account key file.
+> Use `serviceAccountKeyFile(path)` only when the job must select an explicit service account that the process environment cannot provide.
+>
+> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may load it.
+> A sink needs the path on every eligible TaskManager; a source also needs it on the JobManager.
+> This path is inside the container, not a path that merely exists on the Kubernetes node.
+> Do not store credential material in a `ConfigMap`, SQL DDL or a connector option.
+> Mount the Secret directory rather than one file through `subPath` when in-place rotation is expected, because Kubernetes does not update a Secret mounted with `subPath`.
+>
+> On a session cluster, the same path must remain readable by every eligible JobManager and TaskManager process, including replacement or newly allocated TaskManagers.
+> Each writer, reader or enumerator reads the file once when that runtime component starts.
+> Replacing or rotating the mounted file does not hot-reload credentials.
+> Wait until a normally projected Secret has updated in every eligible pod before restarting the affected job; with a `subPath` mount, recreate the affected pods or cluster first.
+> Replace the key in every workload that uses it and validate those workloads before disabling the replaced key.
+> Monitor them after disabling it, then delete it after confirming that they still work, following Google's [service-account key rotation guidance](https://cloud.google.com/iam/docs/key-rotation#process).
+>
+> Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
+> Prefer an application/per-job cluster with Workload Identity when jobs require separate identities.
 
 ## Publisher options
 
@@ -917,6 +940,7 @@ API notes:
   service-account JSON key at `path`.
   The file is read on the JobManager for subscription administration and on each TaskManager that
   creates a reader, so the same path must be readable in every eligible process.
+  See [Credential file deployment](#credential-file-deployment) for the Kubernetes, session-cluster and rotation requirements.
   When the setter is absent, application-default credentials remain in effect, including
   `GOOGLE_APPLICATION_CREDENTIALS`.
   Service-account keys are long-lived secrets, so prefer an attached service account or Workload
@@ -1035,9 +1059,16 @@ it is in flight wait for it to finish. That fence is also what keeps a subscribe
 subscription mid-seek. These are start-time snapshots, not invariants: flipping a subscription's
 settings under a running job is not noticed.
 
-The job manager's credentials need `pubsub.subscriptions.get` on every configured subscription
-(roles/pubsub.viewer), plus `create` when auto-creating and `update` when seeking —
-roles/pubsub.editor covers all three.
+The job manager's credentials need `pubsub.subscriptions.get` on every configured subscription for
+the startup check.
+Every non-default start position also makes the job manager seek by timestamp, which needs
+`pubsub.subscriptions.consume`.
+Auto-creation on the job manager additionally needs `pubsub.subscriptions.create` on the containing
+project and `pubsub.topics.attachSubscription` on the requested topic.
+Each task manager reader needs `pubsub.subscriptions.consume` to pull, acknowledge and modify
+acknowledgement deadlines.
+`roles/pubsub.viewer` plus `roles/pubsub.subscriber` cover an existing subscription;
+`roles/pubsub.editor` covers the full create and consume path.
 
 ### Subscription auto-creation
 

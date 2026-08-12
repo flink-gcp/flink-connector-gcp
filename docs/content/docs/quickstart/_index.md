@@ -109,17 +109,21 @@ unrelocated.
 
 ## Credentials
 
-Every connector authenticates with **application default credentials** and nothing else — there is
-no credentials option on any builder. Locally:
+Every connector uses **application default credentials** by default. Locally:
 
 ```sh
 gcloud auth application-default login
 gcloud config set project my-project
 ```
 
-On GKE, Dataproc or Compute Engine the workload's own service account is picked up with no
-configuration. Service account key files work through `GOOGLE_APPLICATION_CREDENTIALS`, but
-workload identity is the better answer wherever it is available.
+On supported Google Cloud runtimes, ADC needs no connector credential configuration after the
+platform identity and its IAM access are configured.
+For GKE, configure Workload Identity Federation for GKE; for Dataproc or Compute Engine, attach
+the intended service account.
+Service account key files work through `GOOGLE_APPLICATION_CREDENTIALS`, but workload identity is
+the better answer wherever it is available.
+Pub/Sub also accepts an explicit service-account key-file path on its DataStream builders and as a
+Table option; its [deployment note]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) covers the process, Kubernetes and rotation requirements.
 
 Two environment facts a first run trips over:
 
@@ -140,7 +144,7 @@ What each connector asks for:
 |---|---|
 | BigQuery | `bigquery.tables.create` on the dataset under the default create disposition; `bigquery.tables.get` and `bigquery.tables.update` when schema updates or `FILE_LOADS` are enabled, plus BigQuery data-editor and job-user access, and Cloud Storage read/write on the staging bucket for `FILE_LOADS` |
 | Pub/Sub sink | `pubsub.topics.publish`, plus `pubsub.topics.create` (roles/pubsub.editor) when topic auto-creation may trigger |
-| Pub/Sub source | `pubsub.subscriptions.get` (roles/pubsub.viewer) on every configured subscription for the startup check, plus `create` when auto-creating and `update` when seeking — roles/pubsub.editor covers all three |
+| Pub/Sub source | The JobManager needs `pubsub.subscriptions.get` for the startup check and `pubsub.subscriptions.consume` for every non-default start position's timestamp seek. Auto-creation on the JobManager additionally needs `pubsub.subscriptions.create` on the containing project and `pubsub.topics.attachSubscription` on the requested topic. TaskManager readers need `pubsub.subscriptions.consume` for pulling and acknowledgement handling. `roles/pubsub.viewer` plus `roles/pubsub.subscriber` cover an existing subscription; `roles/pubsub.editor` covers the full create and consume path |
 | Cloud Tasks | `cloudtasks.tasks.create` ([roles/cloudtasks.enqueuer](https://cloud.google.com/tasks/docs/secure-queue-configuration)), which binds to a single queue as well as to the project. The sink never creates a queue |
 | Bigtable | `bigtable.tables.mutateRows` ([roles/bigtable.user](https://cloud.google.com/bigtable/docs/access-control)), which binds to a single table as well as to the instance. `createDisposition(CREATE_IF_NEEDED)` additionally needs `bigtable.tables.create` and `bigtable.tables.update`; under the default `CREATE_NEVER` the sink creates neither the table nor its column families. The source needs `bigtable.tables.readRows` and `bigtable.tables.sampleRowKeys` ([roles/bigtable.reader](https://cloud.google.com/bigtable/docs/access-control)) and creates nothing |
 | Spanner | `spanner.databases.write` for the mutations, plus `spanner.databases.select` and the read-only-transaction and session permissions the schema read goes through — the sink reads `INFORMATION_SCHEMA` at start-up to weigh mutations against Spanner's per-request limit. [roles/spanner.databaseUser](https://cloud.google.com/spanner/docs/iam) covers all of them |

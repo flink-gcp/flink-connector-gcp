@@ -102,11 +102,11 @@ class PubSubSubscriptionAdminIamRealGcpITCase extends AbstractPubSubRealGcpITCas
      * contract.
      */
     @Test
-    void seekWithoutTheUpdatePermissionNamesThePermissionAndRole() {
+    void seekWithoutTheConsumePermissionNamesThePermissionAndRole() {
         assertThatThrownBy(() -> deniedAdmin().seek(existingSubscription, Instant.now()))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("pubsub.subscriptions.update")
-                .hasMessageContaining("roles/pubsub.editor")
+                .hasMessageContaining("pubsub.subscriptions.consume")
+                .hasMessageContaining("roles/pubsub.subscriber")
                 .hasCauseInstanceOf(ApiException.class);
     }
 

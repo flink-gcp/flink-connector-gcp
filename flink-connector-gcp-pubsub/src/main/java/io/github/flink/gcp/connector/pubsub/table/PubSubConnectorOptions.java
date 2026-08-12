@@ -90,9 +90,11 @@ public final class PubSubConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Path to a service-account JSON key file readable from every job and"
-                                    + " task manager. Uses application-default credentials when"
-                                    + " unset and cannot be combined with emulator-endpoint.");
+                            "Path to a service-account JSON key file readable from every eligible"
+                                    + " runtime process: sink writers on task managers, or a source"
+                                    + " enumerator on the job manager and readers on task managers."
+                                    + " Uses application-default credentials when unset and cannot"
+                                    + " be combined with emulator-endpoint.");
 
     // ------------------------------------------------------------------------
     //  Source — subscriptions
