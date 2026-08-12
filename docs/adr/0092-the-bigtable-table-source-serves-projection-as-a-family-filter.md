@@ -105,17 +105,25 @@ everything into `Serializable` state at construction because the schema itself i
 - An undeclared qualifier of a declared family arrives and is dropped; nothing pre-validates it,
   for the same reason nothing pre-validates families.
 
-**The `scan.*` surface is one UTF-8 row range plus repeatable prefixes.**
+**The `scan.*` surface is one row range plus repeatable prefixes under one encoding.**
 `scan.row-range.start-closed` / `scan.row-range.end-open` build a single range from
 `ByteStringRange.unbounded()`, so a one-sided bound is expressible; `scan.row-prefix` is a list,
 additive with the range (the builder coalesces overlaps, ADR-0080); `scan.app-profile-id` is
-separate from `sink.app-profile-id` because a Data Boost profile reads and cannot write. Range
-keys are UTF-8 text — a `base64` mode for binary row keys and N ranges in one DDL are follow-ups,
-named in the option descriptions. The factory rejects an **empty-string** bound or prefix element:
-an empty key means "before every row", so the client would silently widen an empty `start-closed`
-or prefix to the whole table, and an empty `end-open` to nothing — and a DDL empty string is far
-more likely a templating slip than either intent. An *inverted* range stays with the builder's own
-rejection, whose message reads fine from a `WITH` clause.
+separate from `sink.app-profile-id` because a Data Boost profile reads and cannot write.
+`scan.row-key-encoding` applies to every prefix and endpoint: `UTF8` is the backward-compatible
+default, while `BASE64` accepts canonical padded RFC 4648 standard Base64 and produces the exact
+`ByteString` the DataStream builder receives.
+The standard alphabet contains no semicolon, so `scan.row-prefix` remains a semicolon-separated
+list that the factory splits before decoding each element.
+URL-safe characters, whitespace, missing or non-canonical padding and malformed Base64 are rejected
+when the planner builds the source.
+The factory also rejects any value that decodes to an **empty row key**: an empty key means "before
+every row", so the client would silently normalize an empty prefix or either range endpoint to an
+unbounded side and broaden the configured selection.
+An *inverted* range stays with the builder's own rejection, whose message reads fine from a `WITH`
+clause.
+The decoded bytes are retained by `BigtableDynamicSource`, so bounded scans, point-lookup range
+membership and FULL-cache loading cannot reinterpret the option text independently.
 
 ### Filter-pushdown refinement (Issue #518)
 
@@ -179,6 +187,9 @@ file):
   emulator suite checks the returned rows and configured-range intersection.
   The gated suite verifies that real Bigtable accepts the condition/projection composition with SQL
   row-key bounds.
+- **Binary bounds are pinned without the service**: decoder golden vectors cover zero and non-UTF-8
+  bytes and every rejected Base64 form; factory tests inspect exact `ByteStringRange` values; and
+  the emulator suite reads binary keys through a bounded scan and every lookup cache mode.
 
 ## Alternatives declined
 

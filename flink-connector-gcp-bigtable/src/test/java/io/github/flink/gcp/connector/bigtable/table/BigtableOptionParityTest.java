@@ -179,6 +179,10 @@ class BigtableOptionParityTest {
                 "selects the table runtime provider shape; the DataStream scan source has no"
                         + " lookup concept");
         map.put(
+                BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING.key(),
+                "selects how the table factory decodes scan bounds before it calls the source"
+                        + " builder");
+        map.put(
                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS.key(),
                 "builds the GcRule every created family takes");
         map.put(

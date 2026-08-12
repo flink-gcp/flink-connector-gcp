@@ -41,6 +41,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
@@ -93,9 +94,9 @@ public final class BigtableDynamicSource
     private final TableDestination destination;
     private final String nullStringLiteral;
     @Nullable private final String appProfileId;
-    private final List<String> prefixes;
-    @Nullable private final String rangeStartClosed;
-    @Nullable private final String rangeEndOpen;
+    private final List<ByteString> prefixes;
+    @Nullable private final ByteString rangeStartClosed;
+    @Nullable private final ByteString rangeEndOpen;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
     private final BigtableLookupConfig lookupOptions;
@@ -272,7 +273,7 @@ public final class BigtableDynamicSource
 
     private List<ByteStringRange> configuredRanges() {
         List<ByteStringRange> ranges = new ArrayList<>();
-        for (String prefix : prefixes) {
+        for (ByteString prefix : prefixes) {
             ranges.add(ByteStringRange.prefix(prefix));
         }
         if (rangeStartClosed != null || rangeEndOpen != null) {
@@ -413,9 +414,9 @@ public final class BigtableDynamicSource
         private TableDestination destination;
         private String nullStringLiteral;
         @Nullable private String appProfileId;
-        private List<String> prefixes = Collections.emptyList();
-        @Nullable private String rangeStartClosed;
-        @Nullable private String rangeEndOpen;
+        private List<ByteString> prefixes = Collections.emptyList();
+        @Nullable private ByteString rangeStartClosed;
+        @Nullable private ByteString rangeEndOpen;
         @Nullable private String emulatorEndpoint;
         @Nullable private Integer parallelism;
         private BigtableLookupConfig lookupOptions;
@@ -460,28 +461,28 @@ public final class BigtableDynamicSource
         }
 
         /**
-         * @param prefixes the UTF-8 row-key prefixes to scan, possibly empty
+         * @param prefixes the row-key prefixes to scan, possibly empty
          * @return this builder
          */
-        public Builder prefixes(List<String> prefixes) {
+        public Builder prefixes(List<ByteString> prefixes) {
             this.prefixes = new ArrayList<>(prefixes);
             return this;
         }
 
         /**
-         * @param rangeStartClosed the range's inclusive UTF-8 start key, or {@code null} for open
+         * @param rangeStartClosed the range's inclusive start key, or {@code null} for open
          * @return this builder
          */
-        public Builder rangeStartClosed(@Nullable String rangeStartClosed) {
+        public Builder rangeStartClosed(@Nullable ByteString rangeStartClosed) {
             this.rangeStartClosed = rangeStartClosed;
             return this;
         }
 
         /**
-         * @param rangeEndOpen the range's exclusive UTF-8 end key, or {@code null} for open
+         * @param rangeEndOpen the range's exclusive end key, or {@code null} for open
          * @return this builder
          */
-        public Builder rangeEndOpen(@Nullable String rangeEndOpen) {
+        public Builder rangeEndOpen(@Nullable ByteString rangeEndOpen) {
             this.rangeEndOpen = rangeEndOpen;
             return this;
         }

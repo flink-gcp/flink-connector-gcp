@@ -88,6 +88,33 @@ class BigtableTablePlanTest {
     }
 
     @Test
+    void malformedBase64IsAcceptedByCreateTableAndRefusedWhenASelectIsPlanned() {
+        TableEnvironment tEnv = tableEnvironment();
+        String options =
+                WITH_CLAUSE.replace(
+                        "\n)",
+                        ",\n"
+                                + "  'scan.row-key-encoding' = 'BASE64',\n"
+                                + "  'scan.row-prefix' = 'YQ'\n"
+                                + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.executeSql(
+                                        "CREATE TABLE bt (\n"
+                                                + "  rowkey STRING,\n"
+                                                + "  cf ROW<q STRING>\n"
+                                                + ") "
+                                                + options))
+                .doesNotThrowAnyException();
+
+        assertThatThrownBy(() -> tEnv.explainSql("SELECT * FROM bt"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("'scan.row-prefix'")
+                .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+    }
+
+    @Test
     void theDocumentationsOwnExampleParses() {
         // Copied from docs/content/docs/connectors/table/bigtable.md, which is the first code
         // block a reader meets. Pinned because a column family is a *column name* here, so the

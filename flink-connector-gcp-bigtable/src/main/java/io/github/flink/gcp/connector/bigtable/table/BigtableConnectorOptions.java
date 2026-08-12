@@ -40,9 +40,9 @@ import java.util.List;
  *       getOptional(...).ifPresent(...)}, so "absent from the DDL" and "left at the connector's
  *       default" are the same state. The exception is an option the <em>table layer itself</em>
  *       owns, which has no connector default to be a second copy of: {@link #NULL_STRING_LITERAL},
- *       {@link #LOOKUP_ASYNC} and {@link #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS} are the three
- *       here, and the parity test asserts that partition exactly rather than tolerating a default
- *       anywhere.
+ *       {@link #SCAN_ROW_KEY_ENCODING}, {@link #LOOKUP_ASYNC} and {@link
+ *       #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS} are the four here, and the parity test asserts
+ *       that partition exactly rather than tolerating a default anywhere.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Bigtable row is a schema this DDL describes —
@@ -52,8 +52,9 @@ import java.util.List;
  * </ol>
  *
  * <p>An enum-valued option accepts the spelling its enum's {@code toString()} returns. Connector
- * enums use hyphenated lower case; imported Flink lookup enums retain their underscore spelling.
- * Flink matches enum options case-insensitively and normalizes nothing else.
+ * enums override it when the DDL needs hyphenated lower case; otherwise they retain the constant's
+ * spelling, as imported Flink lookup enums do. Flink matches enum options case-insensitively and
+ * normalizes nothing else.
  */
 @PublicEvolving
 public final class BigtableConnectorOptions {
@@ -124,24 +125,35 @@ public final class BigtableConnectorOptions {
                                     + " and cannot write, so one table legitimately scans and"
                                     + " writes under different profiles.");
 
+    public static final ConfigOption<RowKeyEncoding> SCAN_ROW_KEY_ENCODING =
+            ConfigOptions.key("scan.row-key-encoding")
+                    .enumType(RowKeyEncoding.class)
+                    .defaultValue(RowKeyEncoding.UTF8)
+                    .withDescription(
+                            "How scan row-key prefixes and range bounds are represented. UTF8"
+                                    + " preserves the original text behavior. BASE64 accepts only"
+                                    + " canonical padded RFC 4648 standard Base64 and decodes it"
+                                    + " to the exact row-key bytes.");
+
     public static final ConfigOption<List<String>> SCAN_ROW_PREFIX =
             ConfigOptions.key("scan.row-prefix")
                     .stringType()
                     .asList()
                     .noDefaultValue()
                     .withDescription(
-                            "Scan only the rows whose key starts with one of these UTF-8 prefixes."
+                            "Scan only the rows whose key starts with one of these prefixes."
                                     + " Repeatable — the list separator is ';' — and additive with"
                                     + " 'scan.row-range.*': overlapping selections are merged, so"
-                                    + " no row is read twice. Binary row keys have no DDL form"
-                                    + " here; a scan needing one stays on the DataStream API.");
+                                    + " no row is read twice. 'scan.row-key-encoding' controls"
+                                    + " whether each element is UTF-8 text or Base64.");
 
     public static final ConfigOption<String> SCAN_ROW_RANGE_START_CLOSED =
             ConfigOptions.key("scan.row-range.start-closed")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Scan from this UTF-8 row key, inclusive. May be given without"
+                            "Scan from this row key, inclusive. 'scan.row-key-encoding' controls"
+                                    + " whether it is UTF-8 text or Base64. May be given without"
                                     + " 'scan.row-range.end-open', which leaves the range open"
                                     + " above. One range per DDL; a scan needing several uses"
                                     + " 'scan.row-prefix' or stays on the DataStream API.");
@@ -151,7 +163,8 @@ public final class BigtableConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Scan up to this UTF-8 row key, exclusive. May be given without"
+                            "Scan up to this row key, exclusive. 'scan.row-key-encoding' controls"
+                                    + " whether it is UTF-8 text or Base64. May be given without"
                                     + " 'scan.row-range.start-closed', which leaves the range open"
                                     + " below.");
 

@@ -36,6 +36,8 @@ import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
@@ -461,6 +463,47 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void base64ScanBoundsReachTheSourceAsExactBytes() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.row-key-encoding", "BASE64");
+        options.put("scan.row-prefix", "AA==;/g==");
+        options.put("scan.row-range.start-closed", "gAA=");
+        options.put("scan.row-range.end-open", "gP8=");
+
+        BigtableSourceConfig<?> config = builtSource(SCHEMA, options);
+
+        assertThat(config.getRanges())
+                .containsExactly(
+                        ByteStringRange.prefix(ByteString.copyFrom(new byte[] {0x00})),
+                        ByteStringRange.unbounded()
+                                .startClosed(ByteString.copyFrom(new byte[] {(byte) 0x80, 0x00}))
+                                .endOpen(
+                                        ByteString.copyFrom(new byte[] {(byte) 0x80, (byte) 0xff})),
+                        ByteStringRange.prefix(ByteString.copyFrom(new byte[] {(byte) 0xfe})));
+    }
+
+    @Test
+    void theDefaultRowKeyEncodingRemainsUtf8() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.row-range.start-closed", "\u00e9");
+
+        assertThat(builtSource(SCHEMA, options).getRanges())
+                .containsExactly(
+                        ByteStringRange.unbounded().startClosed(ByteString.copyFromUtf8("\u00e9")));
+    }
+
+    @Test
+    void malformedBase64IsRejectedWhenTheFactoryBuildsTheSource() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.row-key-encoding", "BASE64");
+        options.put("scan.row-range.start-closed", "YQ");
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+    }
+
+    @Test
     void acceptsEveryStandardLookupCacheOption() {
         Map<String, String> options = minimalOptions();
         options.put("lookup.cache", "partial");
@@ -531,20 +574,21 @@ class BigtableDynamicTableFactoryTest {
             assertThatThrownBy(() -> source(options))
                     .as("with '%s' empty", key)
                     .isInstanceOf(ValidationException.class)
-                    .hasStackTraceContaining("is the empty string, which is not a row key");
+                    .hasStackTraceContaining("decodes to an empty row key");
         }
     }
 
     @Test
-    void rejectsAnEmptyPrefixElement() {
-        Map<String, String> options = minimalOptions();
-        // Concatenated so the adjacent list separators do not read as a double semicolon to the
-        // one-semicolon style check; the value under test is a three-element list whose middle
-        // element is empty.
-        options.put("scan.row-prefix", "a;" + ";b");
+    void rejectsEveryEmptyPrefixElement() {
+        for (String value : new String[] {"", ";", ";a", "a;", "a;" + ";b"}) {
+            Map<String, String> options = minimalOptions();
+            options.put("scan.row-prefix", value);
 
-        assertThatThrownBy(() -> source(options))
-                .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("contains an empty prefix");
+            assertThatThrownBy(() -> source(options))
+                    .as("with scan.row-prefix='%s'", value)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("decodes to an empty row key")
+                    .hasStackTraceContaining("Remove the empty value");
+        }
     }
 }

@@ -24,6 +24,7 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -172,6 +173,52 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                                         + "ON f.f0 = b.rowkey"))
                 .containsExactlyInAnyOrder(
                         Row.of("tenant-a/r1", "alice"), Row.of("tenant-b/r1", null));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void everyLookupModeHonorsBase64BinaryPrefixes(String mode, String[] lookupOptions)
+            throws Exception {
+        String tableId = "sql-lookup-binary-" + mode;
+        byte[] included = {0x00, (byte) 0x80};
+        byte[] excluded = {0x01, (byte) 0x80};
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, ByteString.copyFrom(included), "cf1", "name", "included");
+        writeCell(destination, ByteString.copyFrom(excluded), "cf1", "name", "excluded");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData(included, excluded),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.BYTES())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey BYTES,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                tableId,
+                                append(
+                                        lookupOptions,
+                                        "scan.row-key-encoding",
+                                        "BASE64",
+                                        "scan.row-prefix",
+                                        "AA==")));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT f.f0, b.cf1.name FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.f0 = b.rowkey"))
+                .containsExactlyInAnyOrder(Row.of(included, "included"), Row.of(excluded, null));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -366,6 +413,37 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
         assertThat(collect(tEnv, "SELECT rowkey FROM start_only"))
                 .as("[c, *): a one-sided bound leaves the other end open")
                 .containsExactlyInAnyOrder(Row.of("c"), Row.of("c1"), Row.of("d"), Row.of("d1"));
+    }
+
+    @Test
+    void aBase64RowRangeBoundsBinaryKeys() throws Exception {
+        byte[] start = {0x00, 0x00};
+        byte[] nonUtf8 = {0x00, (byte) 0xff};
+        byte[] end = {0x01, 0x00};
+        byte[] after = {(byte) 0x80, 0x00};
+        TableDestination destination = createTable("sql-binary-range");
+        writeCell(destination, ByteString.copyFrom(start), "cf", "q", "start");
+        writeCell(destination, ByteString.copyFrom(nonUtf8), "cf", "q", "non-utf8");
+        writeCell(destination, ByteString.copyFrom(end), "cf", "q", "end");
+        writeCell(destination, ByteString.copyFrom(after), "cf", "q", "after");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey BYTES,\n"
+                        + "  cf ROW<q STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                "sql-binary-range",
+                                "scan.row-key-encoding",
+                                "BASE64",
+                                "scan.row-range.start-closed",
+                                "AAA=",
+                                "scan.row-range.end-open",
+                                "AQA="));
+
+        assertThat(collect(tEnv, "SELECT rowkey FROM bt"))
+                .containsExactlyInAnyOrder(Row.of(start), Row.of(nonUtf8));
     }
 
     @Test
