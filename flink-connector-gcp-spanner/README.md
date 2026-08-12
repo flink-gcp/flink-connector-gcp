@@ -2,7 +2,8 @@
 
 Cloud Spanner connector for Apache Flink. The sink applies one `Mutation` per record through
 `batchWriteAtLeastOnce` into the tables of one database; the bounded source reads a database at one
-snapshot, on partitions the service planned. Both dialects, GoogleSQL and PostgreSQL.
+snapshot, on partitions the service planned; and the unbounded source reads a Change Stream.
+Both dialects, GoogleSQL and PostgreSQL.
 
 | Feature | Status |
 |---|---|
@@ -11,7 +12,7 @@ snapshot, on partitions the service planned. Both dialects, GoogleSQL and Postgr
 | Index-aware mutation-cell batching, read from `INFORMATION_SCHEMA` | Implemented ([#220](https://github.com/laughingman7743/flink-connector-gcp/issues/220)) |
 | Emulator integration tests, both dialects | Implemented ([#220](https://github.com/laughingman7743/flink-connector-gcp/issues/220)) |
 | DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/laughingman7743/flink-connector-gcp/issues/221)) |
-| Change streams source | Planned ([#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222)) |
+| DataStream Change Streams source, both dialects | Implemented ([#534](https://github.com/laughingman7743/flink-connector-gcp/issues/534), [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536)); real-GCP acceptance is [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535) |
 | Table API / SQL sink, native type mapping, and DDL factory | Implemented ([#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502)) |
 | Table API / SQL bounded scan and projection | Planned ([#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503)) |
 | Table API / SQL lookup source | Planned ([#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504)) |
@@ -65,7 +66,7 @@ rather than figures the service is documented to enforce on this RPC. The
 [Spanner connector for Apache Spark](https://github.com/GoogleCloudDataproc/spark-spanner-connector)
 and [debezium-connector-spanner](https://github.com/debezium/debezium-connector-spanner) (both
 Apache-2.0) were read as further design references for the batch source and the planned
-change-stream source. The design otherwise
+change-stream work. The implemented Change Streams source design otherwise
 follows the Cloud Tasks sink in this repository, whose writer likewise owns its retry loop.
 
 No source code has been copied into this module.

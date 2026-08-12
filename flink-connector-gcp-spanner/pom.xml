@@ -72,6 +72,14 @@ limitations under the License.
             <artifactId>google-cloud-spanner</artifactId>
         </dependency>
         <dependency>
+            <!-- Direct dependency: Change Streams returns JSON in PostgreSQL and JSON-valued
+                 fields in GoogleSQL. The record SPI preserves those values and type descriptors
+                 without mapping them through the client library's current type enum. Version
+                 managed by the libraries BOM. -->
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+        </dependency>
+        <dependency>
             <!-- Direct dependency: BatchWriteResponse is what batchWriteAtLeastOnce streams
                  back, and the writer reads its group indexes and per-group status off it —
                  the client library exposes no wrapper for either. Version managed by the

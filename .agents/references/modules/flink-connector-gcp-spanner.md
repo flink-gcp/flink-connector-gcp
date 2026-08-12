@@ -164,6 +164,29 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `MUTABLE_KEY_RANGE` is rejected before assignment. Its partition start, end, move-in and move-out
   records are a different protocol, not extra records this immutable-key-range ledger can ignore.
 
+## Change Streams reader (`docs/adr/0101`, `docs/adr/0099`)
+
+- Each reader subtask opens at most `maxConcurrentQueriesPerSubtask` asynchronous TVF queries,
+  default eight. Excess restored splits stay in a FIFO owned by the reader and remain in its
+  checkpoint until capacity returns.
+- One query may hand the mailbox only one undrained result. Its `AsyncResultSet` callback returns
+  `PAUSE`, and the reader calls `resume()` only after the mailbox emits or processes that result.
+  A query error fails the task while retaining the split; only successful end-of-query sends the
+  separate partition-finished event.
+- Every query uses `executeQueryAsync` on a strong single-use read-only transaction. GoogleSQL is
+  decoded from its nested `ARRAY<STRUCT>` envelope and PostgreSQL from the JSON TVF; Change Streams
+  does not enable Data Boost.
+- `DataChangeRecord.ColumnType` keeps the complete recursive descriptor as normalized JSON with
+  object members sorted recursively. Do not flatten it to the pinned SDK's `Type.Code`:
+  `TOKENLIST`, annotations, nested arrays, and future service codes have to survive. `Mod` also
+  preserves absent values separately from explicit JSON `null`.
+- A checkpoint stores the active and queued splits with their greatest consumed timestamp and
+  watermark. Restore queries that timestamp inclusively, so the boundary can repeat and delivery
+  is at least once; advancing it would skip records that share a commit timestamp.
+- Data records carry their commit timestamp as the Flink event timestamp. Heartbeats advance the
+  per-split watermark, while child-partitions records are coordinator events rather than user
+  records.
+
 ## Testing
 
 - Emulator ITs pin `gcr.io/cloud-spanner-emulator/emulator`, **not** the `google-cloud-cli` bundle

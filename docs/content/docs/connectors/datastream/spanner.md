@@ -22,10 +22,9 @@ limitations under the License.
 
 # Spanner connector
 
-An at-least-once sink that applies one Spanner `Mutation` per record, and a bounded source that
-reads a database at one snapshot on partitions the service planned. Both dialects — GoogleSQL and
-PostgreSQL — are supported from the same code; the dialect is a property of the database, and the
-sink reads it rather than being told.
+An at-least-once sink applies one Spanner `Mutation` per record.
+The module also provides a bounded snapshot source and an unbounded Change Streams source.
+Both dialects, GoogleSQL and PostgreSQL, are supported from the same code; the dialect is a property of the database rather than a builder option.
 
 Every option is listed on the [Spanner options]({{< relref "docs/reference/spanner" >}}) page. What
 is implemented and what is planned is in the
@@ -418,11 +417,90 @@ one direction that is easy to get backwards. Measured against `emulator:1.5.56` 
 | No IAM | `PERMISSION_DENIED` on a read is never exercised | Still not exercised: the E2E account holds `roles/spanner.editor`, which carries every permission the suite uses, so there is no unauthorized identity in it to refuse |
 | It accepts extra DDL in a `CreateDatabase` request for a PostgreSQL-dialect database | A harness that creates its schema in one call works here | Refuses it — "DDL statements other than &lt;CREATE DATABASE&gt; are not allowed in database creation request for PostgreSQL-enabled databases" — so the gated harness issues a separate `updateDatabaseDdl` for that dialect |
 
+## Change Streams source
+
+The Change Streams source continuously reads data-change records from the generated Spanner read function.
+It uses the checkpointed partition lineage described in [ADR-0099](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) and the bounded asynchronous reader in [ADR-0101](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0101-the-spanner-change-stream-reader-bounds-asynchronous-partition-queries.md).
+
+```java
+SpannerChangeStreamSource<OrderChange> source =
+        SpannerChangeStreamSource.<OrderChange>builder()
+                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .changeStreamName("order_changes")
+                .deserializer(new OrderChangeDeserializer())
+                .startPosition(StartPosition.latest())
+                .maxConcurrentQueriesPerSubtask(8)
+                .build();
+
+env.fromSource(
+                source,
+                WatermarkStrategy.noWatermarks(),
+                "spanner-order-changes")
+        .setParallelism(4);
+```
+
+The complete builder surface is in [the reference]({{< relref "docs/reference/spanner" >}}#spannerchangestreamsourcebuilder).
+In this example the configured query capacity is 32: four subtasks multiplied by eight concurrent queries per subtask.
+That product is a connector bound, not a published Spanner quota.
+TaskManagers and slots must provide resources for that parallelism, but they do not distribute partition queries by themselves.
+Changing source parallelism redistributes checkpointed split ownership only when the job restarts from a checkpoint or savepoint with the new parallelism.
+
+### Records and schema changes
+
+The deserializer receives one `DataChangeRecord` for every data-change record returned by Spanner.
+It includes the commit timestamp, transaction and partition counts, record sequence, transaction tag, table, modification type, value-capture type, watched column descriptors, and row modifications.
+
+Each `Mod` exposes keys, new values, and old values as normalized JSON with object members sorted recursively.
+An empty optional means that Spanner omitted that member, while a present `"null"` means that the member was present as JSON `null`.
+This distinction matters because value-capture modes deliberately omit different halves of a change.
+
+Each column keeps the complete recursive type descriptor as normalized JSON with object members sorted recursively rather than reducing it to the client library's current type enum.
+Nested array descriptors, annotations, `TOKENLIST`, and service codes added before a client-library release therefore survive deserialization and Java serialization.
+The record's own `valueCaptureType` and `columnTypes` describe the configuration and schema in effect when that change was captured, so a running job can cross both kinds of change without rebuilding the source.
+
+Returning `null` from the deserializer skips that data-change record and increments `recordsSkipped`.
+Heartbeats and child-partitions records do not call the user deserializer.
+
+### Partition queries and capacity
+
+The coordinator begins with the null partition token and schedules children only after every parent they name has finished.
+Each reader subtask opens several scheduled partition queries concurrently, up to `maxConcurrentQueriesPerSubtask`, and keeps excess restored splits in a checkpointed FIFO until capacity returns.
+
+Each query uses `executeQueryAsync` on a strong single-use read-only transaction.
+The callback hands the reader one undrained record and pauses; the Flink mailbox emits or processes it before resuming that query.
+This keeps callback threads out of Flink output and bounds buffered query results to one per active query.
+A query failure fails the task and retains its split, while only successful end-of-query reports the partition finished.
+
+Change Streams queries do not use Data Boost.
+The builder's `rpcPriority` applies to every query in both dialects.
+
+### Checkpoints and delivery
+
+A reader checkpoint contains every active and queued split with its greatest consumed record timestamp and watermark.
+Recovery starts the partition query at that timestamp inclusively because several records can share one commit timestamp.
+The boundary can therefore be delivered again; advancing past it could skip another record from the same timestamp.
+
+The source is **at least once**.
+Downstream state that requires uniqueness should deduplicate with a domain key that includes enough of the Spanner record identity, such as the server transaction id and record sequence, rather than assuming the commit timestamp is unique.
+
+The start position is resolved once on the coordinator.
+A valid restored partition ledger takes precedence over the configured fresh start.
+If any unfinished restored position has expired, the default is to fail; configuring `resumeFallback` permits discarding the whole stale ledger and starting one new null-token query, which loses the unavailable interval and can repeat records at or after the fallback.
+An absent explicit retention row uses `absentRetentionFallback`, seven days by default.
+
+### Event time
+
+Data records carry their Spanner commit timestamp as the Flink event timestamp.
+Heartbeat records advance the watermark for their partition, and Flink combines active split watermarks before exposing the source watermark.
+The default two-second heartbeat can be configured from one second through five minutes.
+
+`WatermarkStrategy.noWatermarks()` in the example prevents downstream timestamp assignment from replacing these source watermarks.
+A job that supplies another strategy is choosing that strategy's timestamp and watermark behavior instead.
+
 ### Not here yet
 
 - Table API and SQL, which is [#223]({{< param BookRepo >}}/issues/223).
-- A change-stream source, which is [#222]({{< param BookRepo >}}/issues/222) — a different API with
-  different semantics, and a source of its own.
+- Real-service Change Streams split, merge, retention, and fallback acceptance, tracked by [#535]({{< param BookRepo >}}/issues/535).
 
 ## Metrics
 
@@ -454,7 +532,7 @@ bill the connector should sign on your behalf.
 `currentSendTime` is deliberately unset: a batch write's latency covers a whole request of unrelated
 mutations, so attributing it to records would say nothing an operator can act on.
 
-### Source metrics
+### Batch source metrics
 
 Registered on the split enumerator's group, on the coordinator, and on the source reader's group, on
 each subtask.
@@ -477,13 +555,28 @@ and says nothing about what it cost on the wire, so any byte figure would be thi
 arithmetic wearing the look of the quantity Spanner bills for; and a partition is an opaque token, so
 nothing knows how many rows are left inside one.
 
+### Change Streams source metrics
+
+Registered on the split enumerator's coordinator group and on each source reader's group.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `splitsAssigned` | counter | Change Stream partition queries handed to readers |
+| `splitsReturned` | counter | Partitions returned by failed readers for reassignment |
+| `unassignedSplits` | gauge (Flink standard) | Scheduled partitions no reader holds yet |
+| `numRecordsIn` | counter (Flink standard) | Deserialized data-change records handed downstream |
+| `recordsSkipped` | counter | Data-change records whose deserializer returned `null` |
+| `currentWatermark` | gauge (Flink standard) | Minimum watermark across active Change Stream partition outputs |
+
+Heartbeats move `currentWatermark` without incrementing `numRecordsIn`.
+Child-partitions records and query-completion signals are coordinator events, so neither counter treats them as user records.
+Operational measurements for query capacity and additional query-state metrics remain tracked by [#551]({{< param BookRepo >}}/issues/551).
+
 ## Testing
 
-Functional coverage runs against the
-[Cloud Spanner emulator](https://github.com/GoogleCloudPlatform/cloud-spanner-emulator) in
-testcontainers, over both dialects, driving the sink's production writer-creation path — so the
-client, the schema read and the batch write are all the real ones. A MiniCluster job test covers the
-path a real job takes, with flushes driven by checkpoint barriers.
+Functional coverage runs against the [Cloud Spanner emulator](https://github.com/GoogleCloudPlatform/cloud-spanner-emulator) in testcontainers over both dialects.
+The sink tests drive the production writer-creation path, so the client, schema read, and batch write are the real ones.
+The Change Streams tests run the production source through a MiniCluster across schema and value-capture changes, and separate failover jobs require complete at-least-once output after recovery in both dialects.
 
 The emulator image is pinned separately from the other connectors' `google-cloud-cli` bundle: the
 Spanner emulator implements the `BatchWrite` RPC only from v1.5.31, and the bundled one predates it,

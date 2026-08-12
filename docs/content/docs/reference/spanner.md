@@ -106,3 +106,21 @@ is under [Source]({{< relref "docs/connectors/datastream/spanner" >}}#source).
 
 There is no per-fetch record cap here, and no options object: the cap is a correctness floor rather
 than a knob, and promoting it would need a measurement.
+
+## `SpannerChangeStreamSource.builder()`
+
+The unbounded Change Streams source.
+Its partition lifecycle, checkpoint recovery, and delivery semantics are under [Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
+
+| Option | Default | What it does |
+|---|---|---|
+| `database` | **required** | The database containing the change stream |
+| `changeStreamName` | **required** | The change stream whose generated read function each partition query calls |
+| `deserializer` | **required** | Turns a `DataChangeRecord` into an output record, or into `null` to skip it |
+| `startPosition` | `StartPosition.latest()` | Where a fresh ledger begins. Absolute, latest, and relative start positions resolve once on the coordinator |
+| `resumeFallback` | *unset ⇒ fail an expired restore* | Where to restart after restored partition positions fall outside retention. Setting it permits discarding the whole stale partition ledger and can lose the unavailable interval |
+| `absentRetentionFallback` | `7 days` | Retention to assume when `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` has no explicit retention row. It must be longer than the one-minute safety margin used at the moving retention boundary |
+| `heartbeatInterval` | `2 s` | Service heartbeat interval, from 1 second through 5 minutes. Heartbeats advance per-partition watermarks |
+| `rpcPriority` | `HIGH` | `LOW`, `MEDIUM`, or `HIGH`, applied to every partition query |
+| `maxConcurrentQueriesPerSubtask` | `8` | Maximum partition queries one source subtask opens concurrently. Source parallelism multiplied by this value is the job's configured capacity, not a published Spanner quota |
+| `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |

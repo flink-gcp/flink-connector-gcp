@@ -40,8 +40,8 @@ import java.util.Objects;
  * database — the emulator endpoint, the RPC priority — belongs here; those are options of the
  * direction that takes them, because they choose a path to the data rather than the data's address.
  *
- * <p>This type sits at the module root rather than under {@code sink} because the source takes the
- * same value, as the planned change-stream source will.
+ * <p>This type sits at the module root rather than under {@code sink} because both source APIs take
+ * the same value.
  *
  * <p>Instances are immutable and cheap to reuse.
  */
