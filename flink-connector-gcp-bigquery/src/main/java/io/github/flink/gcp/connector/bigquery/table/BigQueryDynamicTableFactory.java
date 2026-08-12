@@ -24,7 +24,9 @@ import org.apache.flink.configuration.ExecutionOptions;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
+import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -41,10 +43,13 @@ import io.github.flink.gcp.connector.bigquery.table.sink.DefaultStreamOptionsMap
 import io.github.flink.gcp.connector.bigquery.table.sink.FileLoadsOptionsMapper;
 import io.github.flink.gcp.connector.bigquery.table.sink.RowDataSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.table.sink.TableCreateOptionsMapper;
+import io.github.flink.gcp.connector.bigquery.table.source.BigQueryDynamicSource;
 
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -54,7 +59,8 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * Creates the {@code bigquery} table sink from a {@code CREATE TABLE} statement's options.
+ * Creates the {@code bigquery} table source or sink from a {@code CREATE TABLE} statement's
+ * options.
  *
  * <p>This is the only place a DDL option becomes a value. Value validation stays in the connector's
  * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
@@ -77,7 +83,8 @@ import java.util.Set;
  * fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
  */
 @Internal
-public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
+public class BigQueryDynamicTableFactory
+        implements DynamicTableSinkFactory, DynamicTableSourceFactory {
 
     /** The value of {@code 'connector'} that selects this factory. */
     public static final String IDENTIFIER = "bigquery";
@@ -89,20 +96,34 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
 
     @Override
     public Set<ConfigOption<?>> requiredOptions() {
-        return new HashSet<>(
-                Arrays.asList(
-                        BigQueryConnectorOptions.PROJECT,
-                        BigQueryConnectorOptions.DATASET,
-                        BigQueryConnectorOptions.TABLE));
+        // Every destination component is conditional: a sink and direct source require all three,
+        // while a query source may name only source.parent-project. The creation methods report
+        // the missing direction-specific keys before constructing a connector builder.
+        return Collections.emptySet();
     }
 
     @Override
     public Set<ConfigOption<?>> optionalOptions() {
         return new HashSet<>(
                 Arrays.asList(
+                        BigQueryConnectorOptions.PROJECT,
+                        BigQueryConnectorOptions.DATASET,
+                        BigQueryConnectorOptions.TABLE,
                         BigQueryConnectorOptions.EMULATOR_ENDPOINT,
                         BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT,
                         BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
+                        BigQueryConnectorOptions.SOURCE_PARENT_PROJECT,
+                        BigQueryConnectorOptions.SOURCE_QUERY,
+                        BigQueryConnectorOptions.SOURCE_MATERIALIZE_VIEWS,
+                        BigQueryConnectorOptions.SOURCE_QUERY_LOCATION,
+                        BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET,
+                        BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN,
+                        BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION,
+                        BigQueryConnectorOptions.SOURCE_SNAPSHOT_TIME,
+                        BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT,
+                        BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT,
+                        BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH,
+                        BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
@@ -153,7 +174,8 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_BACKOFF,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_ATTEMPTS,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_PER_DESTINATION_METRICS,
-                        FactoryUtil.SINK_PARALLELISM));
+                        FactoryUtil.SINK_PARALLELISM,
+                        FactoryUtil.SOURCE_PARALLELISM));
     }
 
     @Override
@@ -179,6 +201,7 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
         checkSchemaUpdatesAreSupported(config, writeMethod, schemaUpdateOptions);
         checkEmulatorEndpointsAreSupported(config, writeMethod);
         checkCredentials(config);
+        TableDestination destination = destination(config, "sink");
 
         // Built from the write method rather than from key presence, unlike the default-stream
         // family: the builder requires each of these for its write method, so a DDL that selects
@@ -201,11 +224,7 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
         DataType physicalDataType = context.getPhysicalRowDataType();
         return BigQueryDynamicSink.builder()
                 .physicalDataType(physicalDataType)
-                .destination(
-                        TableDestination.of(
-                                config.get(BigQueryConnectorOptions.PROJECT),
-                                config.get(BigQueryConnectorOptions.DATASET),
-                                config.get(BigQueryConnectorOptions.TABLE)))
+                .destination(destination)
                 .schemaOptions(schemaOptions(config))
                 .writeMethod(configuredWriteMethod.orElse(null))
                 .createDisposition(
@@ -229,6 +248,125 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
                 .build();
+    }
+
+    @Override
+    public DynamicTableSource createDynamicTableSource(Context context) {
+        FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        helper.validate();
+
+        ReadableConfig config = helper.getOptions();
+        checkCredentials(config);
+        Optional<String> query = config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY);
+        if (query.isPresent() && query.get().isBlank()) {
+            throw new ValidationException(
+                    "Option '"
+                            + BigQueryConnectorOptions.SOURCE_QUERY.key()
+                            + "' must not be blank.");
+        }
+        boolean materializeViews =
+                config.getOptional(BigQueryConnectorOptions.SOURCE_MATERIALIZE_VIEWS).orElse(false);
+        if (query.isPresent() && materializeViews) {
+            throw new ValidationException(
+                    "Options '"
+                            + BigQueryConnectorOptions.SOURCE_QUERY.key()
+                            + "' and '"
+                            + BigQueryConnectorOptions.SOURCE_MATERIALIZE_VIEWS.key()
+                            + "' cannot be combined: a query is already materialized.");
+        }
+
+        DataType physicalDataType = context.getPhysicalRowDataType();
+        RowType physicalRowType = (RowType) physicalDataType.getLogicalType();
+        if (physicalRowType.getFieldCount() == 0) {
+            throw new ValidationException(
+                    "A 'bigquery' source table must declare at least one physical column.");
+        }
+        TableDestination table = query.isPresent() ? null : destination(config, "source");
+        Optional<String> project = config.getOptional(BigQueryConnectorOptions.PROJECT);
+        String parentProject =
+                config.getOptional(BigQueryConnectorOptions.SOURCE_PARENT_PROJECT)
+                        .orElseGet(
+                                () ->
+                                        project.orElseThrow(
+                                                () ->
+                                                        new ValidationException(
+                                                                "A 'bigquery' query source"
+                                                                        + " requires option '"
+                                                                        + BigQueryConnectorOptions
+                                                                                .PROJECT
+                                                                                .key()
+                                                                        + "' or '"
+                                                                        + BigQueryConnectorOptions
+                                                                                .SOURCE_PARENT_PROJECT
+                                                                                .key()
+                                                                        + "'.")));
+        boolean runsQuery = query.isPresent() || materializeViews;
+
+        return new BigQueryDynamicSource(
+                physicalDataType,
+                table,
+                query.orElse(null),
+                parentProject,
+                materializeViews,
+                config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_LOCATION).orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET)
+                        .orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN)
+                        .orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION).orElse(null),
+                snapshotTime(config),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT).orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT)
+                        .orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH)
+                        .orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS).orElse(null),
+                config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
+                config.getOptional(BigQueryConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                runsQuery
+                        ? config.getOptional(BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT)
+                                .orElse(null)
+                        : null,
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+    }
+
+    private static TableDestination destination(ReadableConfig config, String direction) {
+        List<String> missing = new ArrayList<>();
+        Optional<String> project = config.getOptional(BigQueryConnectorOptions.PROJECT);
+        Optional<String> dataset = config.getOptional(BigQueryConnectorOptions.DATASET);
+        Optional<String> table = config.getOptional(BigQueryConnectorOptions.TABLE);
+        if (!project.isPresent()) {
+            missing.add(BigQueryConnectorOptions.PROJECT.key());
+        }
+        if (!dataset.isPresent()) {
+            missing.add(BigQueryConnectorOptions.DATASET.key());
+        }
+        if (!table.isPresent()) {
+            missing.add(BigQueryConnectorOptions.TABLE.key());
+        }
+        if (!missing.isEmpty()) {
+            throw new ValidationException(
+                    "A 'bigquery' " + direction + " requires options " + missing + ".");
+        }
+        return TableDestination.of(project.get(), dataset.get(), table.get());
+    }
+
+    @Nullable
+    private static Instant snapshotTime(ReadableConfig config) {
+        Optional<String> value = config.getOptional(BigQueryConnectorOptions.SOURCE_SNAPSHOT_TIME);
+        if (!value.isPresent()) {
+            return null;
+        }
+        try {
+            return Instant.parse(value.get());
+        } catch (DateTimeParseException e) {
+            throw new ValidationException(
+                    "Option '"
+                            + BigQueryConnectorOptions.SOURCE_SNAPSHOT_TIME.key()
+                            + "' must be an ISO-8601 instant: "
+                            + value.get(),
+                    e);
+        }
     }
 
     private static void checkCredentials(ReadableConfig config) {

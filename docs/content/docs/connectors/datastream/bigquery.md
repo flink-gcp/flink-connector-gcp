@@ -1596,9 +1596,10 @@ than there are subtasks is how this source gets its elasticity. A `preferredMinS
 applies them before anything is transferred. What that saves differs between the two:
 `selectedFields` leaves whole columns unscanned, which is what BigQuery charges for;
 `rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
-partitioning or clustering column. They are also the seam a later Table API source maps
-`SupportsProjectionPushDown` and `SupportsFilterPushDown` onto
-([#57]({{< param BookRepo >}}/issues/57)).
+partitioning or clustering column. The Table API source maps `selectedFields` onto
+`SupportsProjectionPushDown`. It deliberately does not advertise SQL filter pushdown:
+`rowRestriction` and `snapshotTime` remain explicit options because a BigQuery restriction is not a
+Flink SQL expression ([#57]({{< param BookRepo >}}/issues/57)).
 
 `snapshotTime` is served from BigQuery's time-travel window, which is seven days by default: an
 instant outside it is rejected when the session is created, with `INVALID_ARGUMENT: time travel

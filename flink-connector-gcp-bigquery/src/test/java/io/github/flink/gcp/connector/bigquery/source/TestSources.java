@@ -38,6 +38,11 @@ public final class TestSources {
 
     private TestSources() {}
 
+    /** Returns the configuration carried by a source for tests in sibling packages. */
+    public static BigQuerySourceConfig<?> configOf(BigQueryStorageReadSource<?> source) {
+        return source.getConfig();
+    }
+
     /** Returns the configuration of a source built with the defaults. */
     public static BigQuerySourceConfig<GenericRecord> config() {
         return config(UnaryOperator.identity());
