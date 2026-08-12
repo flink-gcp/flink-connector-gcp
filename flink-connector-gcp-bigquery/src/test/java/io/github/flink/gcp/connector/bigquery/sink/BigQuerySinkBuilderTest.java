@@ -43,6 +43,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link BigQuerySinkBuilder}. */
 class BigQuerySinkBuilderTest {
 
+    private static final String SERVICE_ACCOUNT_KEY_FILE = "/var/run/secrets/bigquery-key.json";
+
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my_dataset", "my_table");
 
@@ -84,6 +86,91 @@ class BigQuerySinkBuilderTest {
                         .build();
 
         assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+
+    @Test
+    void serviceAccountKeyFileDefaultsToNull() {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+
+        assertThat(sink.getConfig().getServiceAccountKeyFile()).isNull();
+    }
+
+    @Test
+    void serviceAccountKeyFileReachesEveryWriteMethodAndSurvivesSerialization() throws Exception {
+        BigQueryDefaultStreamSink<String> defaultStream =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                .build();
+        BigQueryBufferedStreamSink<String> bufferedStream =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                .build();
+        BigQueryFileLoadsSink<String> fileLoads =
+                (BigQueryFileLoadsSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .fileLoadsOptions(
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://staging-bucket")
+                                                .build())
+                                .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                .build();
+
+        assertThat(InstantiationUtil.clone(defaultStream).getConfig().getServiceAccountKeyFile())
+                .isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
+        assertThat(InstantiationUtil.clone(bufferedStream).getConfig().getServiceAccountKeyFile())
+                .isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
+        assertThat(InstantiationUtil.clone(fileLoads).getConfig().getServiceAccountKeyFile())
+                .isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
+    }
+
+    @Test
+    void serviceAccountKeyFileRejectsNullAndBlankValues() {
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
+    }
+
+    @Test
+    void serviceAccountKeyFileCannotBeCombinedWithEitherEmulatorEndpoint() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                        .emulatorEndpoint("localhost:9060")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)");
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                        .emulatorRestEndpoint("localhost:9050")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)");
     }
 
     /** Unlike the other write-method option objects, the default-stream one is optional. */

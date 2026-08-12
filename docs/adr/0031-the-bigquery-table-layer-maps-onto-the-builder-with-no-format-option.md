@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-06
-- Issues: [#287] (under [#57]; ADR-0014 holds the shared mapping rules)
+- Issues: [#287], [#542] (under [#57]; ADR-0014 holds the shared mapping rules)
 - Modules: bigquery (`table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -61,6 +61,12 @@ the Pub/Sub rules (ADR-0014) apply unchanged. What is this module's own:
   fails at plan time rather than being silently ignored; ingestion-time partitioning has no
   column to name, so the clause could never have covered the whole feature.
 - `perDestinationMetrics` has a `ConfigOption` since this landed.
+- **`service-account-key-file` remains a direct builder mapping.**
+  The table layer carries the path to `serviceAccountKeyFile(...)`; it does not parse credential
+  JSON or place a credential object in the job graph.
+  Blank paths and combinations with either credential-free emulator endpoint fail in the factory
+  with DDL option names, while the builder keeps the equivalent DataStream checks.
 
 [#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
 [#287]: https://github.com/laughingman7743/flink-connector-gcp/issues/287
+[#542]: https://github.com/laughingman7743/flink-connector-gcp/issues/542

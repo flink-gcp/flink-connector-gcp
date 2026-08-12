@@ -36,6 +36,7 @@ import com.google.cloud.bigquery.LoadJobConfiguration;
 import com.google.cloud.bigquery.ParquetOptions;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
@@ -51,7 +52,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * {@link LoadJobRunner} over the BigQuery REST client with application-default credentials.
+ * {@link LoadJobRunner} over the BigQuery REST client with configured credentials or ADC.
  *
  * <p><b>Exactly-once via deterministic job ids.</b> BigQuery job ids are single-use per project, so
  * a deterministic id doubles as an idempotency key: before submitting, the runner looks the id up
@@ -82,6 +83,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
 
     private final RetrySchedule pollSchedule;
     @Nullable private final String location;
+    @Nullable private final String serviceAccountKeyFile;
     private final Map<String, Job> activeJobs = new HashMap<>();
     private final Map<DatasetId, String> datasetLocations = new HashMap<>();
     private BigQuery client;
@@ -94,8 +96,24 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
      * @param pollSchedule how completion polling backs off
      */
     public BigQueryLoadJobRunner(@Nullable String location, RetrySchedule pollSchedule) {
+        this(location, pollSchedule, null);
+    }
+
+    /** Creates a runner with optional runtime-loaded production credentials. */
+    public BigQueryLoadJobRunner(
+            @Nullable String location,
+            RetrySchedule pollSchedule,
+            @Nullable String serviceAccountKeyFile) {
         this.location = location;
         this.pollSchedule = pollSchedule;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
+    }
+
+    /** Returns the configured key-file path, or {@code null} for ADC. */
+    @VisibleForTesting
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     @VisibleForTesting
@@ -103,6 +121,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         this.client = client;
         this.location = location;
         this.pollSchedule = pollSchedule;
+        this.serviceAccountKeyFile = null;
     }
 
     @Override
@@ -196,7 +215,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     public void deleteTable(TableDestination table) {
         try {
             client().delete(BigQueryTableAdmin.toTableId(table));
-        } catch (RuntimeException e) {
+        } catch (IOException | RuntimeException e) {
             LOG.warn("Failed to delete temporary table {}", table, e);
         }
     }
@@ -395,9 +414,13 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         return dataset.getLocation();
     }
 
-    private BigQuery client() {
+    private BigQuery client() throws IOException {
         if (client == null) {
-            client = BigQueryOptions.getDefaultInstance().getService();
+            client =
+                    serviceAccountKeyFile == null
+                            ? BigQueryOptions.getDefaultInstance().getService()
+                            : BigQueryCredentials.bigQueryOptions(serviceAccountKeyFile)
+                                    .getService();
         }
         return client;
     }

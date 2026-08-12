@@ -35,11 +35,13 @@ import io.github.flink.gcp.connector.bigquery.StubBigQuery.JobAnswer;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -58,6 +60,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class BigQueryLoadJobRunnerTest {
 
+    @TempDir Path tempDir;
+
     private static final String JOB_ID = "bq-1";
     private static final String LOCATION = "asia-northeast1";
 
@@ -66,6 +70,18 @@ class BigQueryLoadJobRunnerTest {
     private static final DatasetId DATASET = DatasetId.of("p", "d");
 
     private static final Schema SCHEMA = Schema.of(Field.of("f1", StandardSQLTypeName.STRING));
+
+    @Test
+    void configuredCredentialsAreLoadedWhenTheLoadJobClientIsFirstUsed() {
+        String missingPath = tempDir.resolve("missing-load-job-secret.json").toString();
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(LOCATION, FAST, missingPath);
+
+        assertThatThrownBy(() -> runner.submitLoad(JOB_ID, loadSpec(List.of())))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured BigQuery service-account key file.")
+                .hasNoCause()
+                .hasMessageNotContaining(missingPath);
+    }
 
     /**
      * One millisecond is the fastest a {@link RetrySchedule} may be built (its initial backoff must

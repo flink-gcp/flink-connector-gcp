@@ -106,6 +106,15 @@ public final class BigQueryConnectorOptions {
                                     + " 'emulator-endpoint' because BigQuery serves the two"
                                     + " transports on different ports.");
 
+    public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
+            ConfigOptions.key("service-account-key-file")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A service-account JSON key-file path available to every Task Manager"
+                                    + " that opens a BigQuery or Cloud Storage client. When absent,"
+                                    + " clients use application-default credentials.");
+
     // ------------------------------------------------------------------------
     //  Sink — shared
     // ------------------------------------------------------------------------

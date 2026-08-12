@@ -113,10 +113,16 @@ is how a dependency gets silently dropped from a jar instead of failing a build.
 
 ### Credentials
 
-Not configurable, here or anywhere else in this project: the connector authenticates with
-**application default credentials**. There is no option for a key file, and none is planned. A
-TaskManager needs `GOOGLE_APPLICATION_CREDENTIALS`, a Workload Identity binding, or whatever its
-platform provides.
+The connector uses **application default credentials** when `service-account-key-file` is absent.
+Set that option to a service-account JSON key-file path to use the same explicit identity for every
+BigQuery client and, under `file-loads`, for GCS staging too.
+
+Only the path enters the job graph.
+The file is read when runtime clients open, so it must exist at the same path on every TaskManager
+that can run a sink writer or committer, including after failover or rescaling.
+Only service-account JSON is accepted, and failures do not include the path or parser cause.
+The option is rejected with either emulator endpoint because emulator connections are
+credential-free.
 
 ### Licensing
 
@@ -151,6 +157,7 @@ or the SDK already uses — the default is never restated here. The full list of
 | `table` | String | The table part of `destination(...)`. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Write API's gRPC endpoint as `host:port` — parsed when the planner builds the sink, so a malformed value fails there. Rejected under `file-loads` |
 | `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, the table-metadata REST endpoint. Separate because BigQuery serves the two transports on different ports. Rejected under `file-loads`, as above |
+| `service-account-key-file` | String | `serviceAccountKeyFile(...)`; a service-account JSON key-file path loaded on TaskManagers at runtime. Absent uses ADC; rejected with either emulator endpoint |
 
 ### Sink
 

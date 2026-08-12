@@ -81,7 +81,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
             // task-thread-only state.
             return new BigQueryDefaultStreamWriter<>(
                     config,
-                    new StreamWriterRowAppenderFactory(options, config.getEmulatorEndpoint()),
+                    createRowAppenderFactory(),
                     createTableAdmin(),
                     context.metricGroup(),
                     options,
@@ -101,6 +101,13 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
         }
     }
 
+    /** Returns the runtime appender factory wired from this sink's configuration. */
+    @VisibleForTesting
+    StreamWriterRowAppenderFactory createRowAppenderFactory() {
+        return new StreamWriterRowAppenderFactory(
+                options, config.getServiceAccountKeyFile(), config.getEmulatorEndpoint());
+    }
+
     /**
      * The admin the writer creates tables through: the REST one, wrapped so a creation the
      * per-table quota rate-limits is repeated rather than failing the write (#383).
@@ -116,7 +123,8 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
     @VisibleForTesting
     TableAdmin createTableAdmin() {
         return new RetryingTableAdmin(
-                new BigQueryTableAdmin(config.getEmulatorRestEndpoint()),
+                new BigQueryTableAdmin(
+                        config.getServiceAccountKeyFile(), config.getEmulatorRestEndpoint()),
                 options.toRecoverySchedule());
     }
 

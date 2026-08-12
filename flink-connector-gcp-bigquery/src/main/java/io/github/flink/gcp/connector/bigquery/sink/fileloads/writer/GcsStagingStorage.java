@@ -17,14 +17,18 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.WriteChannel;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -32,7 +36,7 @@ import java.nio.channels.Channels;
 import java.util.List;
 
 /**
- * {@link StagingStorage} over the Cloud Storage client with application-default credentials.
+ * {@link StagingStorage} over the Cloud Storage client with configured credentials or ADC.
  *
  * <p>GCS resumable uploads buffer one chunk in memory per open object; the chunk size is lowered
  * from the client default (16 MiB) to bound the writer's footprint, which grows with the number of
@@ -54,6 +58,24 @@ public final class GcsStagingStorage implements StagingStorage {
     private static final int DELETE_BATCH_SIZE = 100;
 
     private transient Storage storage;
+    @Nullable private final String serviceAccountKeyFile;
+
+    /** Creates staging storage using application-default credentials. */
+    public GcsStagingStorage() {
+        this(null);
+    }
+
+    /** Creates staging storage with optional runtime-loaded service-account credentials. */
+    public GcsStagingStorage(@Nullable String serviceAccountKeyFile) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
+    }
+
+    /** Returns the configured key-file path, or {@code null} for ADC. */
+    @VisibleForTesting
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
+    }
 
     @Override
     public OutputStream createObject(String gcsUri) throws IOException {
@@ -79,7 +101,7 @@ public final class GcsStagingStorage implements StagingStorage {
                         failed++;
                     }
                 }
-            } catch (RuntimeException e) {
+            } catch (IOException | RuntimeException e) {
                 failed += chunk.size();
                 LOG.warn("Failed to delete a batch of {} staging objects", chunk.size(), e);
             }
@@ -93,10 +115,21 @@ public final class GcsStagingStorage implements StagingStorage {
         }
     }
 
-    private Storage storage() {
+    private Storage storage() throws IOException {
         if (storage == null) {
-            storage = StorageOptions.getDefaultInstance().getService();
+            storage =
+                    serviceAccountKeyFile == null
+                            ? StorageOptions.getDefaultInstance().getService()
+                            : productionOptions(serviceAccountKeyFile).getService();
         }
         return storage;
+    }
+
+    /** Builds production options carrying the configured service-account credentials. */
+    @VisibleForTesting
+    static StorageOptions productionOptions(String serviceAccountKeyFile) throws IOException {
+        return StorageOptions.newBuilder()
+                .setCredentials(BigQueryCredentials.load(serviceAccountKeyFile))
+                .build();
     }
 }

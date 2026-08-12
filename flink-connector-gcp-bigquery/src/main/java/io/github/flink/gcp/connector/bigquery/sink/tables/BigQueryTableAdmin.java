@@ -37,6 +37,7 @@ import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.slf4j.Logger;
@@ -90,11 +91,12 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     private BigQuery client;
 
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /** Creates an admin using application-default credentials. */
     public BigQueryTableAdmin() {
-        this((EmulatorEndpoint) null);
+        this(null, null);
     }
 
     /**
@@ -105,7 +107,21 @@ public class BigQueryTableAdmin implements TableAdmin {
      * @param emulatorEndpoint the emulator's REST endpoint as {@code host:port}, or {@code null}
      */
     public BigQueryTableAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(null, emulatorEndpoint);
+    }
+
+    /** Creates an admin with optional runtime-loaded production credentials. */
+    public BigQueryTableAdmin(
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+    }
+
+    /** Returns the configured key-file path, or {@code null} for ADC. */
+    @VisibleForTesting
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /**
@@ -115,6 +131,7 @@ public class BigQueryTableAdmin implements TableAdmin {
      */
     public BigQueryTableAdmin(BigQuery client) {
         this.client = client;
+        this.serviceAccountKeyFile = null;
         this.emulatorEndpoint = null;
     }
 
@@ -390,13 +407,15 @@ public class BigQueryTableAdmin implements TableAdmin {
         return TableInfo.newBuilder(toTableId(destination), definition.build()).build();
     }
 
-    private BigQuery client(TableDestination destination) {
+    private BigQuery client(TableDestination destination) throws IOException {
         if (client == null) {
-            client =
-                    emulatorEndpoint == null
-                            ? BigQueryOptions.getDefaultInstance().getService()
-                            : emulatorOptions(emulatorEndpoint, destination.getProject())
-                                    .getService();
+            if (emulatorEndpoint != null) {
+                client = emulatorOptions(emulatorEndpoint, destination.getProject()).getService();
+            } else if (serviceAccountKeyFile == null) {
+                client = BigQueryOptions.getDefaultInstance().getService();
+            } else {
+                client = BigQueryCredentials.bigQueryOptions(serviceAccountKeyFile).getService();
+            }
         }
         return client;
     }

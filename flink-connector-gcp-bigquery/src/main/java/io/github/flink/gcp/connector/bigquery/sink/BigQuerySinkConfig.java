@@ -45,6 +45,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final SchemaUpdateOptions schemaUpdateOptions;
     private final FailureHandler<? super FailedRow> failedRowHandler;
     private final String location;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final EmulatorEndpoint emulatorRestEndpoint;
 
@@ -56,6 +57,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             SchemaUpdateOptions schemaUpdateOptions,
             FailureHandler<? super FailedRow> failedRowHandler,
             String location,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable EmulatorEndpoint emulatorRestEndpoint) {
         this.destinationResolver = destinationResolver;
@@ -65,6 +67,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         this.schemaUpdateOptions = schemaUpdateOptions;
         this.failedRowHandler = failedRowHandler;
         this.location = location;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.emulatorRestEndpoint = emulatorRestEndpoint;
     }
@@ -105,6 +108,17 @@ public final class BigQuerySinkConfig<T> implements Serializable {
      */
     public String getLocation() {
         return location;
+    }
+
+    /**
+     * Returns the service-account JSON key-file path, or {@code null} when clients use ADC.
+     *
+     * <p>Only the path is serialized into the job graph; runtime components load the file when they
+     * create their clients.
+     */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /**

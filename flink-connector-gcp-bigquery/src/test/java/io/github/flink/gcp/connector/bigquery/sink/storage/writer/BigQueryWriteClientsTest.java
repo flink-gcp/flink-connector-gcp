@@ -18,16 +18,35 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link BigQueryWriteClients}. */
 class BigQueryWriteClientsTest {
+
+    @TempDir Path tempDir;
+
+    @Test
+    void productionSettingsCarryTheConfiguredCredentials() throws Exception {
+        BigQueryWriteSettings settings =
+                BigQueryWriteClients.productionSettings(
+                        ServiceAccountKeyFiles.create(tempDir).toString());
+
+        assertThat(settings.getCredentialsProvider().getCredentials())
+                .isInstanceOf(ServiceAccountCredentials.class)
+                .extracting(
+                        credentials -> ((ServiceAccountCredentials) credentials).getClientEmail())
+                .isEqualTo(ServiceAccountKeyFiles.CLIENT_EMAIL);
+    }
 
     @Test
     void theEmulatorSettingsKeepTheStorageWriteApisInboundMessageSize() throws IOException {

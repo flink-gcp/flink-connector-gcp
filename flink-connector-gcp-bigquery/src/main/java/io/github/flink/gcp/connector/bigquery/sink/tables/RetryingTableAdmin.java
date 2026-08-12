@@ -133,4 +133,10 @@ public final class RetryingTableAdmin implements TableAdmin {
     public RetrySchedule getSchedule() {
         return schedule;
     }
+
+    /** Returns the wrapped admin so construction wiring can be verified. */
+    @VisibleForTesting
+    public TableAdmin getDelegate() {
+        return delegate;
+    }
 }

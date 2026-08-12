@@ -46,6 +46,37 @@ Sink<MyEvent> sink =
                 .build();
 ```
 
+## Credentials
+
+By default every BigQuery and Cloud Storage client uses application-default credentials (ADC).
+Set `serviceAccountKeyFile(...)` to use one service-account JSON key file instead:
+
+```java
+BigQuerySink.<MyEvent>builder()
+        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+        .serializer(new MyEventProtoSerializer())
+        .serviceAccountKeyFile("/var/run/secrets/bigquery/key.json")
+        .build();
+```
+
+Only the path enters the job graph.
+The key file is read when a writer or committer first creates a client, so the JobManager does not
+need to read it while the graph is assembled.
+The same path must exist on every TaskManager that can run a sink writer or committer, including
+after failover or rescaling.
+
+The configured service account applies to every sink-side client: Storage Write API default and
+buffered streams, REST table administration and schema reconciliation, BigQuery load jobs, and GCS
+staging under `FILE_LOADS`.
+`FILE_LOADS` uses that one identity for both BigQuery and GCS.
+Only service-account JSON is accepted; user credentials and other credential JSON types fail when
+the runtime first loads the file.
+Load failures omit the path and parser cause so mounted-secret names and credential material do not
+enter task failures.
+
+`serviceAccountKeyFile(...)` cannot be combined with either emulator endpoint.
+Emulator connections remain credential-free.
+
 API notes:
 
 - `BigQueryProtoSerializer` is an abstract class exposing `getDescriptor(TableDestination)` in

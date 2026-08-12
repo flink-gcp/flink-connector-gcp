@@ -117,7 +117,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                 metricGroup,
                 () ->
                         new BigQueryLoadJobRunner(
-                                config.getLocation(), options.toLoadJobPollSchedule()),
+                                config.getLocation(),
+                                options.toLoadJobPollSchedule(),
+                                config.getServiceAccountKeyFile()),
                 // Wrapped for the reason the storage writers' admins are (#383): a creation the
                 // per-table metadata quota rate-limits is repeated rather than failing the commit.
                 // This path races less — loads commit on one subtask, so nothing here competes with
@@ -129,7 +131,8 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                 // updateSchema loses is the same per-table budget a creation spends.
                 () ->
                         new RetryingTableAdmin(
-                                new BigQueryTableAdmin(), options.toSchemaReconcileSchedule()));
+                                new BigQueryTableAdmin(config.getServiceAccountKeyFile(), null),
+                                options.toSchemaReconcileSchedule()));
     }
 
     @VisibleForTesting
@@ -189,7 +192,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         // Requests left unsignaled are treated as committed.
     }
 
-    private LoadJobRunner runner() {
+    /** Returns the load-job runner wired from this committer's configuration. */
+    @VisibleForTesting
+    LoadJobRunner runner() {
         if (runner == null) {
             runner = runnerFactory.get();
         }
