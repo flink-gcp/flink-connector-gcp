@@ -78,16 +78,14 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     }
 
     /**
-     * Creates an admin whose clients authenticate with the given credentials instead of
-     * application-default ones. Only the real-GCP permission-denied tests use this — they
-     * impersonate a deliberately unauthorized identity to assert the operator-facing messages of
-     * the catch blocks above, which no production path needs.
+     * Creates an admin whose production clients authenticate with the given credentials instead of
+     * application-default ones. The source's configured service-account key and the real-GCP
+     * permission-denied tests share this injection point.
      *
      * @param emulatorEndpoint see {@link #PubSubSubscriptionAdmin(EmulatorEndpoint)}; the override
      *     is ignored against an emulator, whose channel carries no credentials at all
      * @param credentialsOverride the credentials to use, or {@code null} for application-default
      */
-    @VisibleForTesting
     public PubSubSubscriptionAdmin(
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable CredentialsProvider credentialsOverride) {
@@ -280,28 +278,31 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
 
     private SubscriptionAdminClient newClient() throws IOException {
         try {
-            if (emulatorEndpoint == null) {
-                if (credentialsOverride == null) {
-                    return SubscriptionAdminClient.create();
-                }
-                return SubscriptionAdminClient.create(
-                        SubscriptionAdminSettings.newBuilder()
-                                .setCredentialsProvider(credentialsOverride)
-                                .build());
+            if (emulatorEndpoint == null && credentialsOverride == null) {
+                return SubscriptionAdminClient.create();
             }
-            // The instantiating provider is auto-closed by the client, so the try-with-resources in
-            // each call closes the emulator channel together with the client.
-            return SubscriptionAdminClient.create(
-                    SubscriptionAdminSettings.newBuilder()
-                            .setCredentialsProvider(NoCredentialsProvider.create())
-                            .setTransportChannelProvider(
-                                    EmulatorChannels.plaintextProvider(
-                                            SubscriptionAdminSettings
-                                                    .defaultGrpcTransportProviderBuilder(),
-                                            emulatorEndpoint))
-                            .build());
+            return SubscriptionAdminClient.create(clientSettings());
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Pub/Sub subscription admin client", e);
         }
+    }
+
+    /** Returns the non-default client settings for tests and {@link #newClient()}. */
+    @VisibleForTesting
+    SubscriptionAdminSettings clientSettings() throws IOException {
+        if (emulatorEndpoint == null) {
+            return SubscriptionAdminSettings.newBuilder()
+                    .setCredentialsProvider(credentialsOverride)
+                    .build();
+        }
+        // The instantiating provider is auto-closed by the client, so the try-with-resources in
+        // each call closes the emulator channel together with the client.
+        return SubscriptionAdminSettings.newBuilder()
+                .setCredentialsProvider(NoCredentialsProvider.create())
+                .setTransportChannelProvider(
+                        EmulatorChannels.plaintextProvider(
+                                SubscriptionAdminSettings.defaultGrpcTransportProviderBuilder(),
+                                emulatorEndpoint))
+                .build();
     }
 }

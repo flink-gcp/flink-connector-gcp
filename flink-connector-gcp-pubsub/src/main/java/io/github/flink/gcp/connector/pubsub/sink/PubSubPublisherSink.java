@@ -23,9 +23,11 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
+import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.sink.topics.PubSubTopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.topics.TopicAdmin;
 import io.github.flink.gcp.connector.pubsub.sink.writer.DefaultPublisherFactory;
@@ -75,9 +77,12 @@ public class PubSubPublisherSink<T> implements CrossVersionSink<T> {
         EmulatorEndpoint emulatorEndpoint = config.getEmulatorEndpoint();
         TopicAdmin topicAdmin = null;
         try {
-            topicAdmin = new PubSubTopicAdmin(emulatorEndpoint);
+            CredentialsProvider credentials =
+                    PubSubCredentials.load(config.getServiceAccountKeyFile());
+            topicAdmin = new PubSubTopicAdmin(emulatorEndpoint, credentials);
             return createWriter(
-                    new DefaultPublisherFactory(config.getPublisherOptions(), emulatorEndpoint),
+                    new DefaultPublisherFactory(
+                            config.getPublisherOptions(), emulatorEndpoint, credentials),
                     topicAdmin,
                     context.getMailboxExecutor(),
                     context.metricGroup());

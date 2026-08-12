@@ -34,7 +34,9 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
@@ -54,6 +56,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.function.Supplier;
 
@@ -106,6 +109,7 @@ public class PubSubStreamingPullSource<T>
         deserializationSchema.open(new ReaderInitializationContext(context));
 
         PubSubSubscriberOptions options = config.getSubscriberOptions();
+        CredentialsProvider credentials = PubSubCredentials.load(config.getServiceAccountKeyFile());
         String ackExtensionWarning =
                 ackExtensionHeadroomWarning(context.getConfiguration(), options);
         if (ackExtensionWarning != null) {
@@ -121,7 +125,10 @@ public class PubSubStreamingPullSource<T>
                         options.getFirstCheckpointTimeout(), ackTracker::outstandingAckCount);
         SubscriberFactory subscriberFactory =
                 new DefaultSubscriberFactory(
-                        options, config.getOrderingMode(), config.getEmulatorEndpoint());
+                        options,
+                        config.getOrderingMode(),
+                        config.getEmulatorEndpoint(),
+                        credentials);
         Supplier<SplitReader<PubsubMessage, SubscriptionSplit>> splitReaderSupplier =
                 () ->
                         new PubSubSplitReader(
@@ -197,21 +204,24 @@ public class PubSubStreamingPullSource<T>
 
     @Override
     public SplitEnumerator<SubscriptionSplit, PubSubEnumeratorState> createEnumerator(
-            SplitEnumeratorContext<SubscriptionSplit> context) {
+            SplitEnumeratorContext<SubscriptionSplit> context) throws Exception {
         return new PubSubSplitEnumerator(context, config, newSubscriptionAdmin(), null);
     }
 
     @Override
     public SplitEnumerator<SubscriptionSplit, PubSubEnumeratorState> restoreEnumerator(
-            SplitEnumeratorContext<SubscriptionSplit> context, PubSubEnumeratorState checkpoint) {
+            SplitEnumeratorContext<SubscriptionSplit> context, PubSubEnumeratorState checkpoint)
+            throws Exception {
         return new PubSubSplitEnumerator(context, config, newSubscriptionAdmin(), checkpoint);
     }
 
     /**
      * The enumerator owns the admin and closes it; this is the only admin the job manager builds.
      */
-    private SubscriptionAdmin newSubscriptionAdmin() {
-        return new PubSubSubscriptionAdmin(config.getEmulatorEndpoint());
+    private SubscriptionAdmin newSubscriptionAdmin() throws IOException {
+        return new PubSubSubscriptionAdmin(
+                config.getEmulatorEndpoint(),
+                PubSubCredentials.load(config.getServiceAccountKeyFile()));
     }
 
     @Override

@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-26/27 ([#135], [#136], [#137], settled under [#47]); sink creation settings
-  2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09
+  2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09; explicit service-account key
+  file 2026-08-12 ([#139])
 - Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153]
 - Modules: pubsub (`table`, `table.sink`, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/pubsub.md`
@@ -54,9 +55,22 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   **fails the write** rather than being dropped; `ChangelogMode.insertOnly()` because Pub/Sub
   cannot express a retraction; and an `ordering-key` column without
   `sink.message-ordering.enabled` is rejected in `applyWritableMetadata`, since the writer would
-  otherwise fail on the first record. Credentials stay ADC-only ([#139]) and dynamic per-record
-  topics stay out ([#140], closed as not needed: a `STATEMENT SET` of `INSERT`s covers the SQL
-  fan-out case with topics known at plan time) — both cut from [#47] deliberately.
+  otherwise fail on the first record. Dynamic per-record topics stay out ([#140], closed as not
+  needed: a `STATEMENT SET` of `INSERT`s covers the SQL fan-out case with topics known at plan
+  time) — cut from [#47] deliberately.
+- **Credentials remain a builder mapping, not a Table-only provider abstraction** ([#139]).
+  ADC is still the default, including its existing `GOOGLE_APPLICATION_CREDENTIALS` path.
+  `serviceAccountKeyFile(...)` and `service-account-key-file` add one explicit service-account JSON
+  key path for deployments that cannot select an identity through the process environment.
+  The path, rather than a parsed credentials or gax provider object, crosses Flink serialization;
+  each writer, reader, or enumerator loads and scopes it when it starts, so every eligible
+  JobManager and TaskManager must mount the same path.
+  That runtime component shares its provider among the publisher, subscriber, topic-admin, or
+  subscription-admin clients it creates.
+  The emulator mode rejects it because its plaintext channel deliberately carries no credentials.
+  Raw or Base64-encoded JSON, access tokens, and custom provider classes stay out: they add secret
+  exposure or lifecycle semantics that this issue does not need, while attached service accounts
+  and Workload Identity remain the preferred production choices.
 - **Package layout**: `table` holds the `@PublicEvolving` options class and the factory,
   `table.sink`/`table.source` the `@Internal` implementation — a deliberate departure from
   Kafka, which keeps its whole table layer flat; the root layout rule (public API at the package

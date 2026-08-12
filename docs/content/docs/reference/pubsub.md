@@ -42,6 +42,7 @@ The `WITH` options of the `pubsub` table connector are a separate surface, docum
 | `topicCreateOptions` | Pub/Sub's own defaults | [Settings](#topiccreateoptions) for topics the sink creates. Rejected with `CREATE_NEVER` |
 | `publisherOptions` | [defaults](#pubsubpublisheroptions) | Publisher and writer tuning |
 | `failedMessageHandler` | `FailureHandler.failJob()` | What happens to a message that terminally fails — fail, drop, or dead-letter. Under `enableMessageOrdering(true)`, dropping a keyed message leaves a gap in that key's stream |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key on each TaskManager when the writer starts. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint` |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 ## `PubSubPublisherOptions`
@@ -132,6 +133,7 @@ the sink creates. See
 | `subscriberOptions` | [defaults](#pubsubsubscriberoptions) | Subscriber and reader tuning |
 | `deserializationFailurePolicy` | `FAIL` | What happens to a message the schema cannot convert — fail, drop, or nack |
 | `startPosition` | `continueFromSubscription()` | Where the source begins. Any other value issues a seek, once, at first start |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's enumerator or a TaskManager's reader starts. Every eligible process must see the same path. Rejected beside `emulatorEndpoint` |
 | `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. `PUBSUB_EMULATOR_HOST` is deliberately ignored. Given as `host:port`, and rejected at `build()` if it is not |
 
 ## `PubSubSubscriberOptions`

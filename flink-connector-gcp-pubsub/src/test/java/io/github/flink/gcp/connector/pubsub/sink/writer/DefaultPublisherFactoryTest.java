@@ -202,6 +202,17 @@ class DefaultPublisherFactoryTest {
     }
 
     @Test
+    void configuredCredentialsReachThePublisherBuilder() throws Exception {
+        NoCredentialsProvider credentials = NoCredentialsProvider.create();
+        DefaultPublisherFactory factory =
+                new DefaultPublisherFactory(PubSubPublisherOptions.defaults(), null, credentials);
+
+        Publisher.Builder builder = factory.newBuilder(TOPIC, null);
+
+        assertThat(field(builder, "credentialsProvider")).isSameAs(credentials);
+    }
+
+    @Test
     void theConfiguredShutdownTimeoutReachesTheTeardown() throws Exception {
         DefaultPublisherFactory factory =
                 new DefaultPublisherFactory(
@@ -275,5 +286,11 @@ class DefaultPublisherFactoryTest {
     /** Connects lazily, so no test here needs anything listening. */
     private static ManagedChannel lazyChannel() {
         return ManagedChannelBuilder.forTarget("localhost:1").usePlaintext().build();
+    }
+
+    private static Object field(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 }

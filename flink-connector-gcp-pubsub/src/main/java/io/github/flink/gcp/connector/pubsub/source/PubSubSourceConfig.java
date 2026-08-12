@@ -45,6 +45,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private final PubSubSubscriberOptions subscriberOptions;
     private final DeserializationFailurePolicy deserializationFailurePolicy;
     private final StartPosition startPosition;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     PubSubSourceConfig(
@@ -55,6 +56,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
             PubSubSubscriberOptions subscriberOptions,
             DeserializationFailurePolicy deserializationFailurePolicy,
             StartPosition startPosition,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.subscriptions = subscriptions;
         this.createOptions = createOptions;
@@ -63,6 +65,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
         this.subscriberOptions = subscriberOptions;
         this.deserializationFailurePolicy = deserializationFailurePolicy;
         this.startPosition = startPosition;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -102,6 +105,12 @@ public final class PubSubSourceConfig<T> implements Serializable {
     /** Returns what to do with a message the deserialization schema cannot convert. */
     public DeserializationFailurePolicy getDeserializationFailurePolicy() {
         return deserializationFailurePolicy;
+    }
+
+    /** Returns the service-account key-file path, or {@code null} for ADC. */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /** Returns the emulator endpoint, or {@code null} for production Pub/Sub. */

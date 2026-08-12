@@ -74,6 +74,18 @@ API notes:
 - `TopicDestination` is pure topic identity (`equals`/`hashCode` over project/topic) and serves
   as the key of the writer's per-topic publisher map; publisher settings stay on the sink so
   identity remains stable.
+- `serviceAccountKeyFile(path)` authenticates every publisher and the topic auto-creation admin
+  with the service-account JSON key at `path`.
+  The file is read when each writer starts, so the same path must be readable on every TaskManager
+  that can run the sink.
+  When the setter is absent, application-default credentials remain in effect, including
+  `GOOGLE_APPLICATION_CREDENTIALS`.
+  Service-account keys are long-lived secrets, so prefer an attached service account or Workload
+  Identity where the deployment supports one.
+  The setter accepts a file path only, not raw or Base64-encoded JSON, access tokens, or custom
+  credential-provider classes.
+  A read or parse failure reports neither the path nor credential material.
+  It is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
 - `emulatorEndpoint(host:port)` points the sink at a Pub/Sub emulator: the per-topic publishers
   and the topic auto-creation admin connect over a plaintext channel with no credentials, so it
   must only ever be used against an emulator (for example a testcontainers
@@ -901,6 +913,18 @@ API notes:
   (it is still acknowledged). `dataOnly(...)` wraps a plain Flink `DeserializationSchema` for
   payload-only messages.
 - The Pub/Sub publish time becomes the record's event timestamp.
+- `serviceAccountKeyFile(path)` authenticates the subscription admin and every subscriber with the
+  service-account JSON key at `path`.
+  The file is read on the JobManager for subscription administration and on each TaskManager that
+  creates a reader, so the same path must be readable in every eligible process.
+  When the setter is absent, application-default credentials remain in effect, including
+  `GOOGLE_APPLICATION_CREDENTIALS`.
+  Service-account keys are long-lived secrets, so prefer an attached service account or Workload
+  Identity where the deployment supports one.
+  The setter accepts a file path only, not raw or Base64-encoded JSON, access tokens, or custom
+  credential-provider classes.
+  A read or parse failure reports neither the path nor credential material.
+  It is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
 - `emulatorEndpoint(host:port)` points the source at a Pub/Sub emulator over a plaintext channel
   with no credentials, so it must only ever be used against an emulator — never against production
   Pub/Sub. Unlike the vendored upstream, the source deliberately does **not** honor the

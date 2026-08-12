@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.batching.FlowControlSettings;
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.MessageReceiverWithAckResponse;
@@ -75,6 +76,7 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
     private final PubSubSubscriberOptions options;
     private final OrderingMode orderingMode;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final CredentialsProvider credentialsOverride;
 
     /**
      * Creates the factory.
@@ -88,9 +90,26 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
             PubSubSubscriberOptions options,
             OrderingMode orderingMode,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(options, orderingMode, emulatorEndpoint, null);
+    }
+
+    /**
+     * Creates the factory with an optional production credentials override.
+     *
+     * @param options the subscriber tuning options
+     * @param orderingMode the ordering mode, which decides the streaming-pull connection count
+     * @param emulatorEndpoint the emulator endpoint, or {@code null} for production Pub/Sub
+     * @param credentialsOverride credentials to use in production, or {@code null} for ADC
+     */
+    public DefaultSubscriberFactory(
+            PubSubSubscriberOptions options,
+            OrderingMode orderingMode,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
         this.options = options;
         this.orderingMode = orderingMode;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
@@ -99,14 +118,6 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
         try {
             Subscriber.Builder builder = newBuilder(subscription, consumer);
             configure(builder, options, orderingMode);
-            if (emulatorEndpoint != null) {
-                builder.setChannelProvider(
-                                EmulatorChannels.plaintextProvider(
-                                        SubscriberStubSettings
-                                                .defaultGrpcTransportProviderBuilder(),
-                                        emulatorEndpoint))
-                        .setCredentialsProvider(NoCredentialsProvider.create());
-            }
             return builder.build();
         } catch (RuntimeException e) {
             throw new IOException(
@@ -119,19 +130,35 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
      * SDK interfaces, selected here and nowhere else — which is why everything above this class
      * settles messages through {@link AckHandle}.
      */
-    private Subscriber.Builder newBuilder(
-            SubscriptionDestination subscription, MessageConsumer consumer) {
+    @VisibleForTesting
+    Subscriber.Builder newBuilder(SubscriptionDestination subscription, MessageConsumer consumer) {
         String path = subscription.toSubscriptionPath();
+        Subscriber.Builder builder;
         if (options.getAwaitAckConfirmation() != null) {
-            return Subscriber.newBuilder(
-                    path,
-                    (MessageReceiverWithAckResponse)
-                            (message, reply) -> consumer.receive(message, AckHandle.of(reply)));
+            builder =
+                    Subscriber.newBuilder(
+                            path,
+                            (MessageReceiverWithAckResponse)
+                                    (message, reply) ->
+                                            consumer.receive(message, AckHandle.of(reply)));
+        } else {
+            builder =
+                    Subscriber.newBuilder(
+                            path,
+                            (MessageReceiver)
+                                    (message, reply) ->
+                                            consumer.receive(message, AckHandle.of(reply)));
         }
-        return Subscriber.newBuilder(
-                path,
-                (MessageReceiver)
-                        (message, reply) -> consumer.receive(message, AckHandle.of(reply)));
+        if (emulatorEndpoint != null) {
+            builder.setChannelProvider(
+                            EmulatorChannels.plaintextProvider(
+                                    SubscriberStubSettings.defaultGrpcTransportProviderBuilder(),
+                                    emulatorEndpoint))
+                    .setCredentialsProvider(NoCredentialsProvider.create());
+        } else if (credentialsOverride != null) {
+            builder.setCredentialsProvider(credentialsOverride);
+        }
+        return builder;
     }
 
     /** Applies the options onto the subscriber builder; unset knobs are left at SDK defaults. */

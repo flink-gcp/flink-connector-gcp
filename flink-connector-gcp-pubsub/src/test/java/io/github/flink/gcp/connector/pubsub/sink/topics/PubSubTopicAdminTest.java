@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink.topics;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.pubsub.v1.Topic;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -35,6 +36,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PubSubTopicAdminTest {
 
     private static final TopicDestination DESTINATION = TopicDestination.of("project", "topic");
+
+    @Test
+    void configuredCredentialsReachTheAdminSettings() throws Exception {
+        NoCredentialsProvider credentials = NoCredentialsProvider.create();
+
+        assertThat(
+                        new PubSubTopicAdmin(null, credentials)
+                                .clientSettings()
+                                .getCredentialsProvider())
+                .isSameAs(credentials);
+    }
 
     @Test
     void unsetKnobsLeaveTheirProtoFieldsAlone() {

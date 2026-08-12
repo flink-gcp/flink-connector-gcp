@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source.subscriptions;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.pubsub.v1.Subscription;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
@@ -34,6 +35,17 @@ class PubSubSubscriptionAdminTest {
     private static final TopicDestination TOPIC = TopicDestination.of("other-project", "topic");
     private static final TopicDestination DEAD_LETTER =
             TopicDestination.of("project", "dead-letter");
+
+    @Test
+    void configuredCredentialsReachTheAdminSettings() throws Exception {
+        NoCredentialsProvider credentials = NoCredentialsProvider.create();
+
+        assertThat(
+                        new PubSubSubscriptionAdmin(null, credentials)
+                                .clientSettings()
+                                .getCredentialsProvider())
+                .isSameAs(credentials);
+    }
 
     @Test
     void unsetKnobsLeaveTheirProtoFieldsAlone() {

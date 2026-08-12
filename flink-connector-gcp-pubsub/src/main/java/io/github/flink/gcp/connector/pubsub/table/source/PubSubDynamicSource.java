@@ -71,6 +71,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     @Nullable private final OrderingMode orderingMode;
     @Nullable private final DeserializationFailurePolicy deserializationFailurePolicy;
     private final PubSubSubscriberOptions subscriberOptions;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
 
@@ -109,6 +110,33 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             PubSubSubscriberOptions subscriberOptions,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
+        this(
+                physicalDataType,
+                decodingFormat,
+                subscriptions,
+                createOptions,
+                startPosition,
+                orderingMode,
+                deserializationFailurePolicy,
+                subscriberOptions,
+                null,
+                emulatorEndpoint,
+                parallelism);
+    }
+
+    /** Builds a source with an optional service-account key-file path. */
+    public PubSubDynamicSource(
+            DataType physicalDataType,
+            DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
+            List<SubscriptionDestination> subscriptions,
+            @Nullable SubscriptionCreateOptions createOptions,
+            @Nullable StartPosition startPosition,
+            @Nullable OrderingMode orderingMode,
+            @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
+            PubSubSubscriberOptions subscriberOptions,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable String emulatorEndpoint,
+            @Nullable Integer parallelism) {
         this.physicalDataType =
                 Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
         this.decodingFormat =
@@ -129,6 +157,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         this.deserializationFailurePolicy = deserializationFailurePolicy;
         this.subscriberOptions =
                 Preconditions.checkNotNull(subscriberOptions, "subscriberOptions must not be null");
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.parallelism = parallelism;
         this.producedDataType = physicalDataType;
@@ -215,6 +244,9 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         if (deserializationFailurePolicy != null) {
             builder.deserializationFailurePolicy(deserializationFailurePolicy);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -234,6 +266,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                         orderingMode,
                         deserializationFailurePolicy,
                         subscriberOptions,
+                        serviceAccountKeyFile,
                         emulatorEndpoint,
                         parallelism);
         copy.producedDataType = producedDataType;
@@ -263,6 +296,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                 && orderingMode == that.orderingMode
                 && deserializationFailurePolicy == that.deserializationFailurePolicy
                 && subscriberOptions.equals(that.subscriberOptions)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && producedDataType.equals(that.producedDataType)
@@ -280,6 +314,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                 orderingMode,
                 deserializationFailurePolicy,
                 subscriberOptions,
+                serviceAccountKeyFile,
                 emulatorEndpoint,
                 parallelism,
                 producedDataType,

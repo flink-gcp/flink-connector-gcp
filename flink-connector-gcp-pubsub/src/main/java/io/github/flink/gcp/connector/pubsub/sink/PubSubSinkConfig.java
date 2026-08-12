@@ -42,6 +42,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
     @Nullable private final TopicCreateOptions topicCreateOptions;
     private final PubSubPublisherOptions publisherOptions;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     PubSubSinkConfig(
@@ -51,6 +52,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
             @Nullable TopicCreateOptions topicCreateOptions,
             PubSubPublisherOptions publisherOptions,
             FailureHandler<? super FailedMessage> failedMessageHandler,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
@@ -58,6 +60,7 @@ public final class PubSubSinkConfig<T> implements Serializable {
         this.topicCreateOptions = topicCreateOptions;
         this.publisherOptions = publisherOptions;
         this.failedMessageHandler = failedMessageHandler;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -93,6 +96,12 @@ public final class PubSubSinkConfig<T> implements Serializable {
     /** Returns the policy for messages that terminally fail to be published. */
     public FailureHandler<? super FailedMessage> getFailedMessageHandler() {
         return failedMessageHandler;
+    }
+
+    /** Returns the service-account key-file path, or {@code null} for ADC. */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /** Returns the emulator endpoint, or {@code null} for production Pub/Sub. */

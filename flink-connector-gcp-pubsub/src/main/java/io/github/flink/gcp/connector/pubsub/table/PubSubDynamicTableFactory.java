@@ -79,6 +79,7 @@ public class PubSubDynamicTableFactory
         return new HashSet<>(
                 Arrays.asList(
                         PubSubConnectorOptions.EMULATOR_ENDPOINT,
+                        PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         PubSubConnectorOptions.SUBSCRIPTION,
                         PubSubConnectorOptions.SCAN_ORDERING_MODE,
                         PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY,
@@ -145,6 +146,7 @@ public class PubSubDynamicTableFactory
         helper.validate();
 
         ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
         String topic =
                 config.getOptional(PubSubConnectorOptions.TOPIC)
                         .orElseThrow(
@@ -162,6 +164,7 @@ public class PubSubDynamicTableFactory
                 config.getOptional(PubSubConnectorOptions.SINK_CREATE_DISPOSITION).orElse(null),
                 TopicCreateOptionsMapper.map(config),
                 PublisherOptionsMapper.map(config),
+                config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
     }
@@ -175,6 +178,7 @@ public class PubSubDynamicTableFactory
         helper.validate();
 
         ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
         List<String> subscriptionNames =
                 config.getOptional(PubSubConnectorOptions.SUBSCRIPTION)
                         .orElseThrow(
@@ -200,7 +204,32 @@ public class PubSubDynamicTableFactory
                 config.getOptional(PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY)
                         .orElse(null),
                 SubscriberOptionsMapper.map(config),
+                config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+    }
+
+    private static void validateCredentialsMode(ReadableConfig config) {
+        config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                .ifPresent(
+                        path -> {
+                            if (path.isBlank()) {
+                                throw new ValidationException(
+                                        String.format(
+                                                "Option '%s' must not be blank.",
+                                                PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE
+                                                        .key()));
+                            }
+                        });
+        if (config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).isPresent()
+                && config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Options '%s' and '%s' cannot be combined: an emulator uses a"
+                                    + " plaintext channel with no credentials. Remove one of the"
+                                    + " two options.",
+                            PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
+                            PubSubConnectorOptions.EMULATOR_ENDPOINT.key()));
+        }
     }
 }
