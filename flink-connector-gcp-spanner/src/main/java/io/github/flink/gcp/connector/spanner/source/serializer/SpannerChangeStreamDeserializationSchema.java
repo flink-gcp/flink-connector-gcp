@@ -20,15 +20,14 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
 
-/** Turns one Spanner data-change record into at most one user record. */
+/** Turns one Spanner data-change record into zero or more user records. */
 @PublicEvolving
 public interface SpannerChangeStreamDeserializationSchema<T>
         extends Serializable, ResultTypeQueryable<T> {
@@ -39,11 +38,11 @@ public interface SpannerChangeStreamDeserializationSchema<T>
      * Deserializes one self-describing change record.
      *
      * @param record the record, including the column types active when Spanner captured it
-     * @return the record to emit, or {@code null} to skip this change deliberately
+     * @param out the collector for zero or more output records; it is valid only for this method
+     *     call, so implementations must collect synchronously and must not retain it
      * @throws IOException if the change cannot be deserialized
      */
-    @Nullable
-    T deserialize(DataChangeRecord record) throws IOException;
+    void deserialize(DataChangeRecord record, Collector<T> out) throws IOException;
 
     @Override
     TypeInformation<T> getProducedType();

@@ -24,6 +24,7 @@ import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.core.io.InputStatus;
+import org.apache.flink.util.Collector;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
@@ -37,6 +38,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgre
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -61,6 +64,7 @@ public final class SpannerChangeStreamReader<T>
     private final int maximumQueries;
     private final SpannerChangeStreamQueryClient client;
     private final SpannerChangeStreamReaderMetrics metrics;
+    private final TimestampedCollector timestampedCollector = new TimestampedCollector();
 
     private final Deque<SpannerChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveQuery> active = new LinkedHashMap<>();
@@ -177,12 +181,16 @@ public final class SpannerChangeStreamReader<T>
             } else {
                 metrics.columnOccurrencesFiltered(filtered.getRemovedColumnOccurrences());
                 DataChangeRecord projected = filtered.getRecord();
-                T deserialized = deserializer.deserialize(projected);
-                if (deserialized == null) {
-                    metrics.skipped();
-                } else {
-                    output.createOutputForSplit(query.split.splitId())
-                            .collect(deserialized, projected.getCommitTimestamp().toEpochMilli());
+                timestampedCollector.retarget(
+                        output.createOutputForSplit(query.split.splitId()),
+                        projected.getCommitTimestamp().toEpochMilli());
+                try {
+                    deserializer.deserialize(projected, timestampedCollector);
+                    if (timestampedCollector.emittedRecords == 0) {
+                        metrics.skipped();
+                    }
+                } finally {
+                    timestampedCollector.retarget(null, 0);
                 }
             }
         } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
@@ -336,6 +344,35 @@ public final class SpannerChangeStreamReader<T>
 
     private static Instant later(Instant left, Instant right) {
         return right.isAfter(left) ? right : left;
+    }
+
+    /** Counts and timestamps everything one data-change record produces. */
+    private final class TimestampedCollector implements Collector<T> {
+
+        @Nullable private SourceOutput<T> output;
+        private long timestamp;
+        private int emittedRecords;
+
+        private void retarget(@Nullable SourceOutput<T> output, long timestamp) {
+            this.output = output;
+            this.timestamp = timestamp;
+            emittedRecords = 0;
+        }
+
+        @Override
+        public void collect(T record) {
+            Preconditions.checkState(
+                    output != null,
+                    "The collector handed to a Spanner Change Streams deserializer was used"
+                            + " outside the deserialize call it was handed to.");
+            output.collect(record, timestamp);
+            emittedRecords++;
+        }
+
+        @Override
+        public void close() {
+            // The split output belongs to the reader; a deserializer must not detach it.
+        }
     }
 
     @Override

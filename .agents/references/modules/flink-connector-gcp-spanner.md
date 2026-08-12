@@ -198,6 +198,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Data records carry their commit timestamp as the Flink event timestamp. Heartbeats advance the
   per-split watermark, while child-partitions records are coordinator events rather than user
   records.
+- The Change Streams deserialization SPI is collector-based and may emit zero or more outputs for
+  one `DataChangeRecord`. Every output gets that record's commit timestamp; a successful call with
+  zero outputs increments `recordsSkipped` once; and an exception leaves split progress unchanged
+  for at-least-once replay.
 - The enumerator owns `changeStreamPartitionsDiscovered` and the scheduled-partition lag; each
   reader owns query-open, active-query, queued-partition, queued-lag, missed-heartbeat,
   last-non-heartbeat-wait, and output-filter counters. These are aggregate coordinator or
