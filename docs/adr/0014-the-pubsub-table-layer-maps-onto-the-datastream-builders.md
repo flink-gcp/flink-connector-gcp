@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-26/27 ([#135], [#136], [#137], settled under [#47]); sink creation settings
   2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09; explicit service-account key
-  file 2026-08-12 ([#139])
+  file 2026-08-12 ([#139]); SQL ordering-key routing 2026-08-12 ([#143])
 - Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153]
 - Modules: pubsub (`table`, `table.sink`, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/pubsub.md`
@@ -89,12 +89,18 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   Kafka's is, not on the planner having selected some: only that form can shrink the key set
   back, and the ability permits repeated calls. Calling it unconditionally breaks every table
   with any metadata column; caught by the acceptance IT, never by a unit test.
-- **Per-key ordering is not reachable from SQL** ([#143], open): the guarantee is per writer
-  subtask, the DataStream answer is a `keyBy` before the sink, and SQL has no equivalent —
-  `DISTRIBUTED BY` needs `SupportsBucketing`, which this sink does not implement.
-  `sink.parallelism = 1` is the only correct configuration today; documented rather than
-  enforced, because a distribution the user arranged upstream is legitimate and the sink cannot
-  tell the difference.
+- **Per-key ordering is routed by the table sink** ([#143]): selecting the writable
+  `ordering-key` metadata column makes a `DataStreamSinkProvider` insert a keyed partition before
+  the Sink V2 writer, so every non-empty key reaches one writer at any sink parallelism.
+  Null and empty keys are unordered and receive distinct routing keys so they do not form one hot
+  partition; parallelism one skips the unnecessary exchange.
+  `SupportsBucketing` is not this contract: Flink accepts only physical distribution keys, while
+  `ordering-key` is metadata, and the ability validates a requested distribution but does not
+  create the runtime shuffle.
+  The connector consequently exposes neither `DISTRIBUTED BY` nor `INTO n BUCKETS` semantics;
+  `sink.parallelism` remains only the writer and publisher count.
+  The automatic route deliberately pays a network shuffle above one writer because an upstream
+  distribution is not a connector-visible guarantee, and a hot key remains limited to one writer.
 - **Auto-creation and start position** ([#137]): three setters do not take a `ConfigOption`'s
   shape, and each resolution lives in a mapper under `table.source` (`StartPositionMapper`,
   `SubscriptionCreateOptionsMapper`, joining `SubscriberOptionsMapper`). Start position is

@@ -19,9 +19,14 @@ package io.github.flink.gcp.connector.pubsub.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.ProviderContext;
 import org.apache.flink.table.connector.format.EncodingFormat;
+import org.apache.flink.table.connector.sink.DataStreamSinkProvider;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
@@ -43,6 +48,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * A table sink publishing rows to one Pub/Sub topic.
@@ -189,6 +195,12 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
             builder.emulatorEndpoint(emulatorEndpoint);
         }
         Sink<RowData> sink = builder.build();
+        if (metadataKeys.contains(WritableMetadata.ORDERING_KEY.getKey())) {
+            int orderingKeyIndex =
+                    DataType.getFieldCount(physicalDataType)
+                            + metadataKeys.indexOf(WritableMetadata.ORDERING_KEY.getKey());
+            return new OrderingKeyDataStreamSinkProvider(sink, orderingKeyIndex, parallelism);
+        }
         return SinkV2Provider.of(sink, parallelism);
     }
 
@@ -248,5 +260,73 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 emulatorEndpoint,
                 parallelism,
                 metadataKeys);
+    }
+
+    /** Routes equal ordering keys to one sink writer before attaching the Pub/Sub sink. */
+    private static final class OrderingKeyDataStreamSinkProvider implements DataStreamSinkProvider {
+
+        private final Sink<RowData> sink;
+        private final int orderingKeyIndex;
+        @Nullable private final Integer parallelism;
+
+        private OrderingKeyDataStreamSinkProvider(
+                Sink<RowData> sink, int orderingKeyIndex, @Nullable Integer parallelism) {
+            this.sink = sink;
+            this.orderingKeyIndex = orderingKeyIndex;
+            this.parallelism = parallelism;
+        }
+
+        @Override
+        public DataStreamSink<?> consumeDataStream(
+                ProviderContext providerContext, DataStream<RowData> dataStream) {
+            int writerParallelism =
+                    parallelism != null
+                            ? parallelism
+                            : dataStream.getExecutionEnvironment().getParallelism();
+            DataStream<RowData> routed =
+                    writerParallelism == 1
+                            ? dataStream
+                            : dataStream.keyBy(new OrderingKeySelector(orderingKeyIndex));
+            DataStreamSink<RowData> attached = routed.sinkTo(sink).name("Pub/Sub table sink");
+            providerContext.generateUid("pubsub-sink").ifPresent(attached::uid);
+            if (parallelism != null) {
+                attached.setParallelism(parallelism);
+            }
+            return attached;
+        }
+
+        @Override
+        public Optional<Integer> getParallelism() {
+            return Optional.ofNullable(parallelism);
+        }
+    }
+
+    /** Selects stable keys for ordered messages and distinct keys for unkeyed messages. */
+    static final class OrderingKeySelector implements KeySelector<RowData, String> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final int orderingKeyIndex;
+        private long unkeyedSequence;
+
+        OrderingKeySelector(int orderingKeyIndex) {
+            this.orderingKeyIndex = orderingKeyIndex;
+        }
+
+        @Override
+        public String getKey(RowData row) {
+            if (row.isNullAt(orderingKeyIndex)) {
+                return nextUnkeyedRoutingKey();
+            }
+            String orderingKey = row.getString(orderingKeyIndex).toString();
+            if (orderingKey.isEmpty()) {
+                return nextUnkeyedRoutingKey();
+            }
+            return "ordered:" + orderingKey;
+        }
+
+        private String nextUnkeyedRoutingKey() {
+            return "unkeyed:" + unkeyedSequence++;
+        }
     }
 }

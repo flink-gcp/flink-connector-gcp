@@ -173,8 +173,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   per setter, `getOptional(...).ifPresent(...)`, no default restated, enums carry their DDL
   spelling in `toString()`, and the reflective completeness test holds the two sets equal.
 - No `properties.*` passthrough; metadata is not forwarded to formats;
-  `applyReadableMetadata` is guarded on the format *declaring* metadata; per-key ordering is not
-  reachable from SQL (#143 — document `sink.parallelism = 1`, do not enforce).
+  `applyReadableMetadata` is guarded on the format *declaring* metadata. When writable
+  `ordering-key` metadata is selected, the table sink inserts keyed routing before the writer;
+  non-empty keys are stable, null and empty keys are spread, and parallelism one skips the
+  exchange (#143). This is not bucketing: `sink.parallelism` is the writer count and no bucket
+  count is exposed.
 - The two directions spell resource creation differently on purpose (sink: disposition gate +
   `sink.auto-create.*` settings; source: presence of `scan.auto-create.*` settings is the
   authorization), and **the source never creates a topic**. The `expirationTtl`/`neverExpire`
