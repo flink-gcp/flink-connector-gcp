@@ -45,6 +45,7 @@ public class PubSubSinkBuilder<T> {
     @Nullable private TopicCreateOptions topicCreateOptions;
     private PubSubPublisherOptions publisherOptions = PubSubPublisherOptions.defaults();
     private FailureHandler<? super FailedMessage> failedMessageHandler = FailureHandler.failJob();
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
 
     PubSubSinkBuilder() {}
@@ -167,6 +168,29 @@ public class PubSubSinkBuilder<T> {
     }
 
     /**
+     * Authenticates the sink with the service-account JSON key at the given path instead of
+     * application-default credentials. The file is read on each TaskManager when its writer is
+     * created, so the same path must be readable by every TaskManager that can run this sink.
+     * Optional; when unset the sink uses application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel deliberately carries no
+     * credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public PubSubSinkBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the sink at a Pub/Sub emulator instead of the production service. Connections to the
      * given {@code host:port} — the per-topic publishers and, when topic auto-creation triggers,
      * the admin client — use a plaintext channel with no credentials, so this must only ever be
@@ -201,6 +225,11 @@ public class PubSubSinkBuilder<T> {
                 "topicCreateOptions(...) configures topics the sink creates, but"
                         + " createDisposition(CREATE_NEVER) never creates one. Remove the options"
                         + " or use CREATE_IF_NEEDED.");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         return new PubSubPublisherSink<>(
                 new PubSubSinkConfig<>(
                         destinationResolver,
@@ -209,6 +238,7 @@ public class PubSubSinkBuilder<T> {
                         topicCreateOptions,
                         publisherOptions,
                         failedMessageHandler,
+                        serviceAccountKeyFile,
                         emulatorEndpoint));
     }
 }

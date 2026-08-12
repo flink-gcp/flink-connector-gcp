@@ -64,6 +64,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TopicCreateOptions topicCreateOptions;
     private final PubSubPublisherOptions publisherOptions;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
 
@@ -96,6 +97,29 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
             PubSubPublisherOptions publisherOptions,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
+        this(
+                physicalDataType,
+                encodingFormat,
+                topic,
+                createDisposition,
+                topicCreateOptions,
+                publisherOptions,
+                null,
+                emulatorEndpoint,
+                parallelism);
+    }
+
+    /** Builds a sink with an optional service-account key-file path. */
+    public PubSubDynamicSink(
+            DataType physicalDataType,
+            EncodingFormat<SerializationSchema<RowData>> encodingFormat,
+            TopicDestination topic,
+            @Nullable CreateDisposition createDisposition,
+            @Nullable TopicCreateOptions topicCreateOptions,
+            PubSubPublisherOptions publisherOptions,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable String emulatorEndpoint,
+            @Nullable Integer parallelism) {
         this.physicalDataType =
                 Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
         this.encodingFormat =
@@ -105,6 +129,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
         this.topicCreateOptions = topicCreateOptions;
         this.publisherOptions =
                 Preconditions.checkNotNull(publisherOptions, "publisherOptions must not be null");
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.parallelism = parallelism;
     }
@@ -157,6 +182,9 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
         if (topicCreateOptions != null) {
             builder.topicCreateOptions(topicCreateOptions);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -174,6 +202,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                         createDisposition,
                         topicCreateOptions,
                         publisherOptions,
+                        serviceAccountKeyFile,
                         emulatorEndpoint,
                         parallelism);
         copy.metadataKeys = metadataKeys;
@@ -200,6 +229,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 && createDisposition == that.createDisposition
                 && Objects.equals(topicCreateOptions, that.topicCreateOptions)
                 && publisherOptions.equals(that.publisherOptions)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && metadataKeys.equals(that.metadataKeys);
@@ -214,6 +244,7 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
                 createDisposition,
                 topicCreateOptions,
                 publisherOptions,
+                serviceAccountKeyFile,
                 emulatorEndpoint,
                 parallelism,
                 metadataKeys);

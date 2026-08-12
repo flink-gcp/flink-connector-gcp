@@ -33,6 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PubSubSinkBuilderTest {
 
     private static final TopicDestination TOPIC = TopicDestination.of("my-project", "my-topic");
+    private static final String SERVICE_ACCOUNT_KEY_FILE =
+            "/var/run/secrets/gcp/service-account.json";
 
     private static PubSubSerializationSchema<String> serializer() {
         return PubSubSerializationSchema.dataOnly(new SimpleStringSchema());
@@ -279,6 +281,67 @@ class PubSubSinkBuilderTest {
         assertThat(copy.getConfig().getFailedMessageHandler())
                 .isSameAs(FailureHandler.logAndDrop());
         assertThat(copy.getConfig().getPublisherOptions().isEnableMessageOrdering()).isTrue();
+    }
+
+    @Test
+    void serviceAccountKeyFileDefaultsToNull() {
+        PubSubPublisherSink<String> sink =
+                (PubSubPublisherSink<String>)
+                        PubSubSink.<String>builder().topic(TOPIC).serializer(serializer()).build();
+
+        assertThat(sink.getConfig().getServiceAccountKeyFile()).isNull();
+    }
+
+    @Test
+    void serviceAccountKeyFilePropagatesAndSurvivesJavaSerialization() throws Exception {
+        Sink<String> sink =
+                PubSubSink.<String>builder()
+                        .topic(TOPIC)
+                        .serializer(serializer())
+                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                        .build();
+
+        PubSubPublisherSink<String> copy =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(sink), getClass().getClassLoader());
+
+        assertThat(copy.getConfig().getServiceAccountKeyFile()).isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
+    }
+
+    @Test
+    void rejectsNullOrBlankServiceAccountKeyFile() {
+        assertThatThrownBy(() -> PubSubSink.<String>builder().serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> PubSubSink.<String>builder().serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
+    }
+
+    @Test
+    void rejectsAServiceAccountKeyFileAlongsideAnEmulatorInEitherOrder() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                        .emulatorEndpoint("localhost:8085")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
+        assertThatThrownBy(
+                        () ->
+                                PubSubSink.<String>builder()
+                                        .topic(TOPIC)
+                                        .serializer(serializer())
+                                        .emulatorEndpoint("localhost:8085")
+                                        .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
     }
 
     @Test

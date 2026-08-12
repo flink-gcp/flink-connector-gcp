@@ -197,11 +197,19 @@ not `'topic' = 'projects/my-project/topics/orders'`.
 |---|---|---|
 | `project` | String, required | the project component of `TopicDestination.of(...)` / `SubscriptionDestination.of(...)` |
 | `format` | String, required | format factory discovery, encoding or decoding as the direction needs |
+| `service-account-key-file` | String | `serviceAccountKeyFile(...)`, a service-account JSON key-file path read when each writer, reader or enumerator starts |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)`, which parses it — a malformed `host:port` fails when the planner builds the source or sink |
 
-Credentials are not configurable: the connector uses application default credentials, exactly as
-the DataStream API does. Making them configurable is tracked in
-[#139]({{< param BookRepo >}}/issues/139).
+When `service-account-key-file` is absent, the connector uses application-default credentials.
+That default already honors `GOOGLE_APPLICATION_CREDENTIALS`; set this option only when the job must select an explicit service-account JSON key path independently of its process environment.
+The source reads the file on the JobManager for subscription administration and on each TaskManager that creates a reader, while the sink reads it on each TaskManager that creates a writer.
+The same path must therefore be readable in every eligible process.
+Each writer, reader or enumerator loads the file once and shares the resulting provider among the Pub/Sub clients it creates.
+A read or parse failure reports neither the path nor credential material.
+
+Service-account keys are long-lived secrets, so prefer an attached service account or Workload Identity where the deployment supports one.
+Raw JSON, Base64-encoded JSON, access tokens, and custom credential-provider classes are not accepted by this option.
+`service-account-key-file` and `emulator-endpoint` are mutually exclusive because the emulator channel deliberately uses no credentials.
 
 ### Sink
 

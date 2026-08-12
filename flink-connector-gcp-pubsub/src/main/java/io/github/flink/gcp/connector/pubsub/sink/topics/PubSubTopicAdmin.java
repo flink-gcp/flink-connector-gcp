@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.sink.topics;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
 import com.google.cloud.pubsub.v1.TopicAdminClient;
@@ -55,10 +56,11 @@ public class PubSubTopicAdmin implements TopicAdmin {
     private static final Logger LOG = LoggerFactory.getLogger(PubSubTopicAdmin.class);
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final CredentialsProvider credentialsOverride;
 
     /** Creates an admin using application-default credentials. */
     public PubSubTopicAdmin() {
-        this(null);
+        this(null, null);
     }
 
     /**
@@ -68,7 +70,20 @@ public class PubSubTopicAdmin implements TopicAdmin {
      *     for production Pub/Sub with application-default credentials
      */
     public PubSubTopicAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(emulatorEndpoint, null);
+    }
+
+    /**
+     * Creates an admin with an optional production credentials override.
+     *
+     * @param emulatorEndpoint the emulator endpoint, or {@code null} for production Pub/Sub
+     * @param credentialsOverride credentials to use in production, or {@code null} for ADC
+     */
+    public PubSubTopicAdmin(
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
@@ -129,22 +144,31 @@ public class PubSubTopicAdmin implements TopicAdmin {
 
     private TopicAdminClient newClient() throws IOException {
         try {
-            if (emulatorEndpoint == null) {
+            if (emulatorEndpoint == null && credentialsOverride == null) {
                 return TopicAdminClient.create();
             }
-            // The instantiating provider is auto-closed by the client, so the try-with-resources
-            // in createTopic closes the emulator channel together with the client.
-            return TopicAdminClient.create(
-                    TopicAdminSettings.newBuilder()
-                            .setCredentialsProvider(NoCredentialsProvider.create())
-                            .setTransportChannelProvider(
-                                    EmulatorChannels.plaintextProvider(
-                                            TopicAdminSettings
-                                                    .defaultGrpcTransportProviderBuilder(),
-                                            emulatorEndpoint))
-                            .build());
+            return TopicAdminClient.create(clientSettings());
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Pub/Sub admin client", e);
         }
+    }
+
+    /** Returns the non-default client settings for tests and {@link #newClient()}. */
+    @VisibleForTesting
+    TopicAdminSettings clientSettings() throws IOException {
+        if (emulatorEndpoint == null) {
+            return TopicAdminSettings.newBuilder()
+                    .setCredentialsProvider(credentialsOverride)
+                    .build();
+        }
+        // The instantiating provider is auto-closed by the client, so the try-with-resources in
+        // createTopic closes the emulator channel together with the client.
+        return TopicAdminSettings.newBuilder()
+                .setCredentialsProvider(NoCredentialsProvider.create())
+                .setTransportChannelProvider(
+                        EmulatorChannels.plaintextProvider(
+                                TopicAdminSettings.defaultGrpcTransportProviderBuilder(),
+                                emulatorEndpoint))
+                .build();
     }
 }

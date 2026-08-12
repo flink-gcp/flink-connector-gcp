@@ -16,20 +16,71 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull;
 
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 
+import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
+import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
+import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for the acknowledgement-extension headroom warning of {@link PubSubStreamingPullSource}.
  */
 class PubSubStreamingPullSourceTest {
+
+    @TempDir Path tempDir;
+
+    @Test
+    void loadsTheConfiguredKeyWhenTheReaderIsCreated() {
+        Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
+                sourceWithMissingKeyFile();
+
+        assertThatThrownBy(() -> source.createReader(new FakeSourceReaderContext(null)))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured Pub/Sub service-account key file.");
+    }
+
+    @Test
+    void loadsTheConfiguredKeyWhenTheEnumeratorIsCreated() {
+        Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
+                sourceWithMissingKeyFile();
+
+        assertThatThrownBy(() -> source.createEnumerator(new FakeSplitEnumeratorContext<>(1)))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured Pub/Sub service-account key file.");
+    }
+
+    @Test
+    void loadsTheConfiguredKeyWhenTheEnumeratorIsRestored() {
+        Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
+                sourceWithMissingKeyFile();
+        PubSubEnumeratorState checkpoint =
+                new PubSubEnumeratorState(
+                        List.of(SubscriptionDestination.of("test-project", "test-subscription")),
+                        false);
+
+        assertThatThrownBy(
+                        () ->
+                                source.restoreEnumerator(
+                                        new FakeSplitEnumeratorContext<>(1), checkpoint))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured Pub/Sub service-account key file.");
+    }
 
     @Test
     void saysNothingWhenTheCheckpointIntervalIsNotVisibleToTheReader() {
@@ -111,5 +162,14 @@ class PubSubStreamingPullSourceTest {
         Configuration configuration = new Configuration();
         configuration.set(CheckpointingOptions.CHECKPOINTING_INTERVAL, interval);
         return configuration;
+    }
+
+    private Source<String, SubscriptionSplit, PubSubEnumeratorState> sourceWithMissingKeyFile() {
+        return PubSubSource.<String>builder()
+                .subscription(SubscriptionDestination.of("test-project", "test-subscription"))
+                .deserializationSchema(
+                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                .serviceAccountKeyFile(tempDir.resolve("missing-key.json").toString())
+                .build();
     }
 }

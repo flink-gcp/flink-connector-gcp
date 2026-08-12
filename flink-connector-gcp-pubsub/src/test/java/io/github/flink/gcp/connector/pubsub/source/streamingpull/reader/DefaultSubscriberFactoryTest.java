@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import com.google.api.gax.batching.FlowControlSettings;
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
@@ -165,6 +166,18 @@ class DefaultSubscriberFactoryTest {
         assertThat(subscriber.getFlowControlSettings().getMaxOutstandingElementCount())
                 .isEqualTo(50);
         assertThat(field(subscriber, "numPullers")).isEqualTo(2);
+    }
+
+    @Test
+    void configuredCredentialsReachTheSubscriberBuilder() throws Exception {
+        NoCredentialsProvider credentials = NoCredentialsProvider.create();
+        DefaultSubscriberFactory factory =
+                new DefaultSubscriberFactory(
+                        PubSubSubscriberOptions.defaults(), OrderingMode.NONE, null, credentials);
+
+        Subscriber.Builder builder = factory.newBuilder(SUBSCRIPTION, NO_OP_CONSUMER);
+
+        assertThat(field(builder, "credentialsProvider")).isSameAs(credentials);
     }
 
     @Test

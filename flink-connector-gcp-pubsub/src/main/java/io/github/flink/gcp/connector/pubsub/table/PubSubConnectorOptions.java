@@ -85,6 +85,15 @@ public final class PubSubConnectorOptions {
                                     + " Setting it switches the connector to a plaintext channel"
                                     + " with no credentials. For tests only.");
 
+    public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
+            ConfigOptions.key("service-account-key-file")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Path to a service-account JSON key file readable from every job and"
+                                    + " task manager. Uses application-default credentials when"
+                                    + " unset and cannot be combined with emulator-endpoint.");
+
     // ------------------------------------------------------------------------
     //  Source — subscriptions
     // ------------------------------------------------------------------------

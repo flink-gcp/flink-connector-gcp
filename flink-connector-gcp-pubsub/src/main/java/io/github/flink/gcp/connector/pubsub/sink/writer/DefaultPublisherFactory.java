@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.batching.BatchingSettings;
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.cloud.pubsub.v1.Publisher;
@@ -72,6 +73,7 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
     private final PubSubPublisherOptions options;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final CredentialsProvider credentialsOverride;
 
     /**
      * Creates a factory connecting to production Pub/Sub with application-default credentials.
@@ -79,7 +81,7 @@ public final class DefaultPublisherFactory implements PublisherFactory {
      * @param options the publisher tuning options
      */
     public DefaultPublisherFactory(PubSubPublisherOptions options) {
-        this(options, null);
+        this(options, null, null);
     }
 
     /**
@@ -91,20 +93,33 @@ public final class DefaultPublisherFactory implements PublisherFactory {
      */
     public DefaultPublisherFactory(
             PubSubPublisherOptions options, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(options, emulatorEndpoint, null);
+    }
+
+    /**
+     * Creates the factory with an optional production credentials override.
+     *
+     * @param options the publisher tuning options
+     * @param emulatorEndpoint the emulator endpoint, or {@code null} for production Pub/Sub
+     * @param credentialsOverride credentials to use in production, or {@code null} for ADC
+     */
+    public DefaultPublisherFactory(
+            PubSubPublisherOptions options,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride) {
         this.options = options;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
     public TopicPublisher create(TopicDestination destination) throws IOException {
-        Publisher.Builder builder = Publisher.newBuilder(destination.toTopicPath());
         ManagedChannel ownedChannel = null;
         try {
             if (emulatorEndpoint != null) {
                 ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
-                builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
-                        .setCredentialsProvider(NoCredentialsProvider.create());
             }
+            Publisher.Builder builder = newBuilder(destination, ownedChannel);
             configure(builder, options);
             return new PublisherAdapter(
                     builder.build(), destination, ownedChannel, options.getShutdownTimeout());
@@ -115,6 +130,20 @@ public final class DefaultPublisherFactory implements PublisherFactory {
             }
             throw e;
         }
+    }
+
+    /** Starts the SDK builder with the configured transport and credentials mode. */
+    @VisibleForTesting
+    Publisher.Builder newBuilder(
+            TopicDestination destination, @Nullable ManagedChannel ownedChannel) {
+        Publisher.Builder builder = Publisher.newBuilder(destination.toTopicPath());
+        if (emulatorEndpoint != null) {
+            builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
+                    .setCredentialsProvider(NoCredentialsProvider.create());
+        } else if (credentialsOverride != null) {
+            builder.setCredentialsProvider(credentialsOverride);
+        }
+        return builder;
     }
 
     /** Applies the options onto the publisher builder; unset knobs are left at SDK defaults. */

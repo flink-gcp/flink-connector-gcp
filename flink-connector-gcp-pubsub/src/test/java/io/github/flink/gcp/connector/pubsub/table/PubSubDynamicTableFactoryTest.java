@@ -29,6 +29,9 @@ import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
+import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherSink;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
 import org.junit.jupiter.api.Test;
@@ -43,6 +46,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link PubSubDynamicTableFactory}. */
 class PubSubDynamicTableFactoryTest {
+
+    private static final String SERVICE_ACCOUNT_KEY_FILE =
+            "/var/run/secrets/gcp/service-account.json";
 
     private static final ResolvedSchema SCHEMA =
             ResolvedSchema.of(
@@ -328,6 +334,60 @@ class PubSubDynamicTableFactoryTest {
                 .isInstanceOf(PubSubDynamicSink.class);
         assertThat(FactoryMocks.createTableSource(SCHEMA, options))
                 .isInstanceOf(PubSubDynamicSource.class);
+    }
+
+    @Test
+    void mapsTheServiceAccountKeyFileIntoBothBuilders() {
+        Map<String, String> sinkOptions = minimalSinkOptions();
+        sinkOptions.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
+        SinkV2Provider sinkProvider =
+                (SinkV2Provider)
+                        FactoryMocks.createTableSink(SCHEMA, sinkOptions)
+                                .getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+        PubSubPublisherSink<?> sink = (PubSubPublisherSink<?>) sinkProvider.createSink();
+
+        Map<String, String> sourceOptions = minimalSourceOptions();
+        sourceOptions.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
+        SourceProvider sourceProvider =
+                (SourceProvider)
+                        ((ScanTableSource) FactoryMocks.createTableSource(SCHEMA, sourceOptions))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        PubSubSourceConfig<?> sourceConfig =
+                ((PubSubStreamingPullSource<?>) sourceProvider.createSource()).getConfig();
+
+        assertThat(sink.getConfig().getServiceAccountKeyFile()).isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
+        assertThat(sourceConfig.getServiceAccountKeyFile()).isEqualTo(SERVICE_ACCOUNT_KEY_FILE);
+    }
+
+    @Test
+    void rejectsAServiceAccountKeyFileAlongsideAnEmulatorForBothDirections() {
+        Map<String, String> sinkOptions = minimalSinkOptions();
+        sinkOptions.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
+        sinkOptions.put("emulator-endpoint", "localhost:8085");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, sinkOptions))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot be combined: an emulator uses a plaintext")
+                .hasStackTraceContaining("service-account-key-file")
+                .hasStackTraceContaining("emulator-endpoint");
+
+        Map<String, String> sourceOptions = minimalSourceOptions();
+        sourceOptions.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
+        sourceOptions.put("emulator-endpoint", "localhost:8085");
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, sourceOptions))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot be combined: an emulator uses a plaintext")
+                .hasStackTraceContaining("service-account-key-file")
+                .hasStackTraceContaining("emulator-endpoint");
+    }
+
+    @Test
+    void rejectsABlankServiceAccountKeyFile() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("service-account-key-file", "  ");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option 'service-account-key-file' must not be blank.");
     }
 
     @Test

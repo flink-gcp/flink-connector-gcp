@@ -56,6 +56,7 @@ public class PubSubSourceBuilder<T> {
     private DeserializationFailurePolicy deserializationFailurePolicy =
             DeserializationFailurePolicy.FAIL;
     private StartPosition startPosition = StartPosition.continueFromSubscription();
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
 
     PubSubSourceBuilder() {}
@@ -206,6 +207,30 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
+     * Authenticates the source with the service-account JSON key at the given path instead of
+     * application-default credentials. The file is read on the JobManager for subscription
+     * administration and on each TaskManager that creates a reader, so the same path must be
+     * readable by every JobManager and TaskManager that can run this source. Optional; when unset
+     * the source uses application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel deliberately carries no
+     * credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the source at a Pub/Sub emulator instead of the production service. Subscribers
      * connect to the given {@code host:port} over a plaintext channel with no credentials, so this
      * must only ever be used against an emulator (for example a testcontainers {@code
@@ -260,6 +285,11 @@ public class PubSubSourceBuilder<T> {
                         + " parallelPullCount(...) — ordered subscriptions always use exactly one"
                         + " connection — or use orderingMode(NONE).",
                 parallelPullCount);
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         // Both settings are fixed at a subscription's creation and both are checked at startup, so
         // catching them here is what stops the source creating a subscription it then refuses to
         // consume — leaving an orphan behind and crash-looping.
@@ -293,6 +323,7 @@ public class PubSubSourceBuilder<T> {
                         subscriberOptions,
                         deserializationFailurePolicy,
                         startPosition,
+                        serviceAccountKeyFile,
                         emulatorEndpoint));
     }
 }
