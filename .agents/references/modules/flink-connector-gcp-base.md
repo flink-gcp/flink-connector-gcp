@@ -48,8 +48,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   restore-expiry policy (`docs/adr/0094`). A fresh `latest()` is the only path that needs no
   retention lookup. Keep service error translation and retention discovery in each connector.
 - An expired restore fails unless the builder supplied a fallback. A fallback is resolved against
-  the same startup instant and retained window, and its warning names the affected partition and
-  lost window. Never classify expiry by vendor error-message text.
+  the same startup instant and retained window, and its warning names the affected partition or
+  dependent ledger and lost window. Bigtable restarts each expired range; Spanner must inspect the
+  whole unfinished ledger and replace it with one null-token query if any entry expired, because an
+  advanced old token can skip the child record that carries its descendants. Never classify expiry
+  by vendor error-message text.
 - `PullAssignmentSplitEnumerator` is the assignment protocol every **bounded, pull-assigned**
   source shares: the queue, the parked requests, `serve`, the returned splits, the one-shot
   `callAsync` plan with its `closed` guard, and the close of the seam. `start()`, `close()` and the
