@@ -62,4 +62,41 @@ class SpannerTablePlanTest {
                 .contains("region=region")
                 .contains("account=account");
     }
+
+    @Test
+    void exactCompositePrimaryKeyFiltersAreConsumedByTheSource() {
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(
+                "CREATE TABLE records (tenant STRING, id BIGINT, name STRING, "
+                        + "PRIMARY KEY (tenant, id) NOT ENFORCED) WITH ("
+                        + "'connector'='spanner', 'project'='p', 'instance'='i', "
+                        + "'database'='d', 'table'='records')");
+
+        String plan =
+                table.explainSql(
+                        "SELECT name FROM records WHERE tenant = 'eu' AND id >= 7 AND id < 9");
+
+        assertThat(plan)
+                .contains("filter=[and(=(tenant")
+                .contains(">=(id")
+                .contains("<(id")
+                .doesNotContain("Calc(select=[name]");
+    }
+
+    @Test
+    void secondaryIndexPrefiltersRemainAsFlinkResiduals() {
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(
+                "CREATE TABLE records (tenant STRING, id BIGINT, score BIGINT, name STRING, "
+                        + "PRIMARY KEY (tenant, id) NOT ENFORCED) WITH ("
+                        + "'connector'='spanner', 'project'='p', 'instance'='i', "
+                        + "'database'='d', 'table'='records', "
+                        + "'scan.index'='records_by_score')");
+
+        String plan = table.explainSql("SELECT name FROM records WHERE score = 5");
+
+        assertThat(plan).contains("filter=[]").contains("Calc(select=[name], where=[=(score");
+    }
 }

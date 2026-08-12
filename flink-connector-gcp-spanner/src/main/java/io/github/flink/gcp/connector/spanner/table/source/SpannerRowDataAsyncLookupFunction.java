@@ -48,6 +48,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
     private final StructToRowDataConverter converter;
     private final int maxRetries;
     private final SpannerRowLookup lookup;
+    private final SpannerFilterPushDown.RuntimeState filters;
 
     SpannerRowDataAsyncLookupFunction(
             SpannerDatabase database,
@@ -59,11 +60,34 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
             @Nullable String emulatorEndpoint,
             int maxRetries) {
         this(
+                database,
+                table,
+                columns,
+                schema,
+                projectedFields,
+                keyPositions,
+                emulatorEndpoint,
+                maxRetries,
+                SpannerFilterPushDown.State.empty().runtime());
+    }
+
+    SpannerRowDataAsyncLookupFunction(
+            SpannerDatabase database,
+            String table,
+            List<String> columns,
+            SpannerTableSchemaConverter schema,
+            @Nullable int[] projectedFields,
+            int[] keyPositions,
+            @Nullable String emulatorEndpoint,
+            int maxRetries,
+            SpannerFilterPushDown.RuntimeState filters) {
+        this(
                 schema,
                 projectedFields,
                 keyPositions,
                 maxRetries,
-                new SpannerDatabaseRowLookup(database, table, columns, emulatorEndpoint));
+                new SpannerDatabaseRowLookup(database, table, columns, emulatorEndpoint),
+                filters);
     }
 
     @VisibleForTesting
@@ -73,10 +97,28 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
             int[] keyPositions,
             int maxRetries,
             SpannerRowLookup lookup) {
+        this(
+                schema,
+                projectedFields,
+                keyPositions,
+                maxRetries,
+                lookup,
+                SpannerFilterPushDown.State.empty().runtime());
+    }
+
+    @VisibleForTesting
+    SpannerRowDataAsyncLookupFunction(
+            SpannerTableSchemaConverter schema,
+            @Nullable int[] projectedFields,
+            int[] keyPositions,
+            int maxRetries,
+            SpannerRowLookup lookup,
+            SpannerFilterPushDown.RuntimeState filters) {
         this.keyEncoder = new SpannerLookupKeyEncoder(schema, keyPositions);
         this.converter = new StructToRowDataConverter(schema, projectedFields);
         this.maxRetries = maxRetries;
         this.lookup = lookup;
+        this.filters = filters;
     }
 
     @Override
@@ -91,8 +133,12 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
                 return CompletableFuture.completedFuture(Collections.emptyList());
             }
         }
+        Key key = keyEncoder.encode(keyRow);
+        if (!filters.matchesPrimaryKey(key)) {
+            return CompletableFuture.completedFuture(Collections.emptyList());
+        }
         CompletableFuture<Collection<RowData>> result = new CompletableFuture<>();
-        new LookupAttempt(keyEncoder.encode(keyRow), result).schedule();
+        new LookupAttempt(key, result).schedule();
         return result;
     }
 

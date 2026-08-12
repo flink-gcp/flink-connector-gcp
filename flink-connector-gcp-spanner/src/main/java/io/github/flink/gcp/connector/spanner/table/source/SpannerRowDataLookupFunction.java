@@ -22,6 +22,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.LookupFunction;
 
+import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
@@ -41,6 +42,7 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
     private final StructToRowDataConverter converter;
     private final int maxRetries;
     private final SpannerRowLookup lookup;
+    private final SpannerFilterPushDown.RuntimeState filters;
 
     SpannerRowDataLookupFunction(
             SpannerDatabase database,
@@ -52,11 +54,34 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
             @Nullable String emulatorEndpoint,
             int maxRetries) {
         this(
+                database,
+                table,
+                columns,
+                schema,
+                projectedFields,
+                keyPositions,
+                emulatorEndpoint,
+                maxRetries,
+                SpannerFilterPushDown.State.empty().runtime());
+    }
+
+    SpannerRowDataLookupFunction(
+            SpannerDatabase database,
+            String table,
+            List<String> columns,
+            SpannerTableSchemaConverter schema,
+            @Nullable int[] projectedFields,
+            int[] keyPositions,
+            @Nullable String emulatorEndpoint,
+            int maxRetries,
+            SpannerFilterPushDown.RuntimeState filters) {
+        this(
                 schema,
                 projectedFields,
                 keyPositions,
                 maxRetries,
-                new SpannerDatabaseRowLookup(database, table, columns, emulatorEndpoint));
+                new SpannerDatabaseRowLookup(database, table, columns, emulatorEndpoint),
+                filters);
     }
 
     @VisibleForTesting
@@ -66,10 +91,28 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
             int[] keyPositions,
             int maxRetries,
             SpannerRowLookup lookup) {
+        this(
+                schema,
+                projectedFields,
+                keyPositions,
+                maxRetries,
+                lookup,
+                SpannerFilterPushDown.State.empty().runtime());
+    }
+
+    @VisibleForTesting
+    SpannerRowDataLookupFunction(
+            SpannerTableSchemaConverter schema,
+            @Nullable int[] projectedFields,
+            int[] keyPositions,
+            int maxRetries,
+            SpannerRowLookup lookup,
+            SpannerFilterPushDown.RuntimeState filters) {
         this.keyEncoder = new SpannerLookupKeyEncoder(schema, keyPositions);
         this.converter = new StructToRowDataConverter(schema, projectedFields);
         this.maxRetries = maxRetries;
         this.lookup = lookup;
+        this.filters = filters;
     }
 
     @Override
@@ -82,9 +125,13 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
         if (containsNull(keyRow)) {
             return Collections.emptyList();
         }
+        Key key = keyEncoder.encode(keyRow);
+        if (!filters.matchesPrimaryKey(key)) {
+            return Collections.emptyList();
+        }
         for (int retry = 0; ; retry++) {
             try {
-                return convert(lookup.read(keyEncoder.encode(keyRow)));
+                return convert(lookup.read(key));
             } catch (RuntimeException failure) {
                 if (retry >= maxRetries || !SpannerLookupErrorClassifier.isTransient(failure)) {
                     throw failure;

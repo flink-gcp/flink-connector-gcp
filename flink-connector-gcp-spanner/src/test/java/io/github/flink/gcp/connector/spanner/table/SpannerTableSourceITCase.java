@@ -164,9 +164,50 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         row ->
                                 assertThat(row.getField(0).toString())
                                         .matches("\\{\\\"rank\\\":\\s*1}"));
+        assertThat(rows(table, "SELECT name FROM source WHERE id = 2"))
+                .isEqualTo(rows(table, "SELECT name FROM source WHERE id + 0 = 2"));
         assertThat(rows(table, "SELECT COUNT(*) FROM source"))
                 .singleElement()
                 .satisfies(row -> assertThat((Object) row.getField(0)).isEqualTo(2L));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void scansASecondaryIndexWithAResidualFilter(Dialect dialect) throws Exception {
+        SpannerDatabase database = indexedDatabase(dialect);
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newInsertBuilder("records")
+                                        .set("id")
+                                        .to(1L)
+                                        .set("name")
+                                        .to("Ada")
+                                        .set("metadata")
+                                        .to(json(dialect, "{\"rank\":1}"))
+                                        .build(),
+                                Mutation.newInsertBuilder("records")
+                                        .set("id")
+                                        .to(2L)
+                                        .set("name")
+                                        .to("Grace")
+                                        .set("metadata")
+                                        .to(json(dialect, "{\"rank\":2}"))
+                                        .build()));
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(tableDdl(database, dialect, "records_by_name"));
+
+        assertThat(rows(table, "SELECT id, metadata FROM source WHERE name = 'Grace'"))
+                .singleElement()
+                .satisfies(
+                        row -> {
+                            assertThat((Object) row.getField(0)).isEqualTo(2L);
+                            assertThat(row.getField(1).toString())
+                                    .matches("\\{\\\"rank\\\":\\s*2}");
+                        });
+        assertThat(rows(table, "SELECT id FROM source WHERE name = 'Grace'"))
+                .isEqualTo(rows(table, "SELECT id FROM source WHERE UPPER(name) = 'GRACE'"));
     }
 
     private static List<Row> rows(TableEnvironment table, String sql) throws Exception {
@@ -214,11 +255,28 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         + "PRIMARY KEY (external_id, tenant)");
     }
 
+    private static SpannerDatabase indexedDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE TABLE records (id bigint NOT NULL PRIMARY KEY, name varchar(64), metadata jsonb)",
+                    "CREATE INDEX records_by_name ON records (name) INCLUDE (metadata)");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE TABLE records (id INT64 NOT NULL, name STRING(64), metadata JSON) PRIMARY KEY (id)",
+                "CREATE INDEX records_by_name ON records (name) STORING (metadata)");
+    }
+
     private static Value json(Dialect dialect, String value) {
         return dialect == Dialect.POSTGRESQL ? Value.pgJsonb(value) : Value.json(value);
     }
 
     private static String tableDdl(SpannerDatabase database, Dialect dialect) {
+        return tableDdl(database, dialect, null);
+    }
+
+    private static String tableDdl(SpannerDatabase database, Dialect dialect, String scanIndex) {
         return "CREATE TABLE source (\n"
                 + "  id BIGINT,\n"
                 + "  name STRING,\n"
@@ -240,6 +298,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + dialect.name()
                 + "',\n"
                 + "  'schema.json-field-paths' = 'metadata',\n"
+                + (scanIndex == null ? "" : "  'scan.index' = '" + scanIndex + "',\n")
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'\n"

@@ -87,6 +87,11 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("Field paths to fully qualified Spanner ENUM type names.");
 
+    public static final ConfigOption<String> SCAN_INDEX =
+            ConfigOptions.key("scan.index")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The secondary index used by bounded table scans.");
     public static final ConfigOption<Long> SCAN_PARTITION_MAX_PARTITIONS =
             ConfigOptions.key("scan.partition.max-partitions")
                     .longType()

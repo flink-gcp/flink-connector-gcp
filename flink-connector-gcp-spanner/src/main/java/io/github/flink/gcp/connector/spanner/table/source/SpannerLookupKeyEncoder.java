@@ -16,22 +16,12 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
-import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.TimestampData;
-import org.apache.flink.table.types.logical.LogicalType;
 
-import com.google.cloud.ByteArray;
-import com.google.cloud.Date;
-import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Key;
-import com.google.cloud.spanner.Type;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
-import io.github.flink.gcp.connector.spanner.table.UuidStringParser;
 
 import java.io.Serializable;
-import java.time.Instant;
-import java.time.LocalDate;
 
 /** Encodes a planner lookup-key row in declared Spanner primary-key order. */
 final class SpannerLookupKeyEncoder implements Serializable {
@@ -51,48 +41,8 @@ final class SpannerLookupKeyEncoder implements Serializable {
         for (int i = 0; i < primaryKeyIndexes.length; i++) {
             SpannerTableSchemaConverter.Column column =
                     schema.getColumns().get(primaryKeyIndexes[i]);
-            Object value =
-                    RowData.createFieldGetter(column.getLogicalType(), keyPositions[i])
-                            .getFieldOrNull(row);
-            key.appendObject(
-                    convert(
-                            value,
-                            column.getLogicalType(),
-                            column.getSpannerType(),
-                            column.getName()));
+            key.appendObject(SpannerKeyValueEncoder.rowValue(row, keyPositions[i], column));
         }
         return key.build();
-    }
-
-    private static Object convert(
-            Object value, LogicalType logicalType, Type spannerType, String columnName) {
-        if (value == null) {
-            return null;
-        }
-        switch (spannerType.getCode()) {
-            case BOOL:
-            case INT64:
-            case FLOAT32:
-            case FLOAT64:
-                return value;
-            case NUMERIC:
-                return ((DecimalData) value).toBigDecimal();
-            case STRING:
-                return value.toString();
-            case UUID:
-                return UuidStringParser.parse(value.toString(), columnName);
-            case BYTES:
-                return ByteArray.copyFrom((byte[]) value);
-            case DATE:
-                LocalDate date = LocalDate.ofEpochDay((Integer) value);
-                return Date.fromYearMonthDay(
-                        date.getYear(), date.getMonthValue(), date.getDayOfMonth());
-            case TIMESTAMP:
-                Instant instant = ((TimestampData) value).toInstant();
-                return Timestamp.ofTimeSecondsAndNanos(instant.getEpochSecond(), instant.getNano());
-            default:
-                throw new IllegalArgumentException(
-                        "Spanner type " + spannerType + " cannot be a primary-key part.");
-        }
     }
 }

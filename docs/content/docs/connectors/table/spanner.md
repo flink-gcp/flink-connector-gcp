@@ -107,6 +107,20 @@ Top-level projection is pushed into the requested Spanner column list, so unused
 Nested projection is not advertised.
 If the planner requests no physical column, the connector reads the first declared column as a carrier but emits zero-field rows in the requested shape.
 
+The source translates `=`, `<`, `<=`, `>`, `>=`, and conjunctions over consecutive key columns into Spanner `KeySet` points and lexicographic ranges.
+A complete primary-key equality is an exact point read.
+A leading equality prefix, optionally followed by a range on the next primary-key column, is exact and is removed from Flink's residual filter.
+Predicates on later key columns, `OR`, `IN`, `<>`, computed expressions, null literals, and ordered `FLOAT64` comparisons remain with Flink.
+
+Set `scan.index` to read a bounded scan through a named [secondary index](https://cloud.google.com/spanner/docs/secondary-indexes).
+The connector resolves the live index key order, sort direction, state, null filtering, and readable columns from the [GoogleSQL](https://cloud.google.com/spanner/docs/information-schema) or [PostgreSQL](https://cloud.google.com/spanner/docs/information-schema-pg) `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.
+It then uses matching predicates as a best-effort index-key prefilter and leaves every such predicate with Flink to preserve SQL semantics.
+The selected index must be `READ_WRITE`, belong to the configured table in the default schema, cover every column the scan reads, and be safe for nullable key rows.
+GoogleSQL `STORING` and PostgreSQL `INCLUDE` columns are readable through the index together with its key and the base-table primary key.
+A null-filtered index is accepted only when the pushed filters prove every nullable index key is not null.
+An unusable configured index fails the job during partition planning instead of falling back to the base table.
+Index metadata resolution currently supports only the empty GoogleSQL schema and PostgreSQL `public`; named schemas are outside this option's contract.
+
 Partition count and size are service hints, not exact split controls.
 The default timestamp bound is strong; set either a read timestamp or exact staleness, never both.
 There are deliberately no column-range partition options because Spanner chooses partition boundaries from physical storage.
@@ -116,6 +130,8 @@ There are deliberately no column-range partition options because Spanner chooses
 The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
 Composite keys are encoded in the DDL declaration order even when the planner supplies the predicates in another order.
 A null key or an absent Spanner row produces no joined row.
+Exact pushed primary-key predicates also gate synchronous and asynchronous lookups before an RPC, while Flink evaluates any residual predicate normally.
+`scan.index` does not change lookup keys or lookup access paths.
 
 `lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
 Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
@@ -160,6 +176,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
+| `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
 | `scan.partition.size` | *unset* | Desired partition size passed to Spanner as a hint |
 | `scan.data-boost-enabled` | `false` | Whether scans use Data Boost compute |

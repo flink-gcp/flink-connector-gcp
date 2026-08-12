@@ -16,10 +16,13 @@
 
 package io.github.flink.gcp.connector.spanner.source;
 
+import com.google.cloud.Timestamp;
+import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Statement;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -152,5 +155,32 @@ class SpannerReadOperationTest {
                                         "singers", "by_name", KeySet.all(), COLUMNS)
                                 .toString())
                 .isEqualTo("read of table singers through index by_name columns [id, name]");
+    }
+
+    @Test
+    void aDeferredOperationResolvesAtTheSuppliedSnapshot() throws Exception {
+        DatabaseClient client =
+                (DatabaseClient)
+                        Proxy.newProxyInstance(
+                                DatabaseClient.class.getClassLoader(),
+                                new Class<?>[] {DatabaseClient.class},
+                                (proxy, method, arguments) -> {
+                                    throw new AssertionError(
+                                            "The resolver must not call " + method);
+                                });
+        Timestamp readTimestamp = Timestamp.ofTimeSecondsAndNanos(123, 456);
+        SpannerReadOperation concrete = SpannerReadOperation.read("singers", KeySet.all(), COLUMNS);
+        SpannerReadOperation deferred =
+                SpannerReadOperationResolution.deferred(
+                        (seenClient, seenTimestamp) -> {
+                            assertThat(seenClient).isSameAs(client);
+                            assertThat(seenTimestamp).isEqualTo(readTimestamp);
+                            return concrete;
+                        });
+
+        assertThat(SpannerReadOperationResolution.resolve(deferred, client, readTimestamp))
+                .isSameAs(concrete);
+        assertThat(SpannerReadOperationResolution.resolve(concrete, client, readTimestamp))
+                .isSameAs(concrete);
     }
 }

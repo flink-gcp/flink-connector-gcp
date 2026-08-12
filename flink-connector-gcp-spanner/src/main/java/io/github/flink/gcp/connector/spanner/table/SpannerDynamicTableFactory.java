@@ -70,6 +70,7 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
                         SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES,
+                        SpannerConnectorOptions.SCAN_INDEX,
                         SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         SpannerConnectorOptions.SCAN_PARTITION_SIZE,
                         SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED,

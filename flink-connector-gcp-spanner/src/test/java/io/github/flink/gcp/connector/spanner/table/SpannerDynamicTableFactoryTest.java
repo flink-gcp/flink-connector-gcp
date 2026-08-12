@@ -215,6 +215,27 @@ class SpannerDynamicTableFactoryTest {
     }
 
     @Test
+    void scanIndexDefersThePhysicalReadUntilLiveMetadataIsAvailable() {
+        Map<String, String> options = options();
+        options.put("scan.index", "records_by_name");
+
+        SpannerSourceConfig<?> config = builtSource(SCHEMA, options);
+
+        assertThat(config.getReadOperation().toString())
+                .contains("deferred read")
+                .contains("records_by_name");
+    }
+
+    @Test
+    void rejectsABlankScanIndex() {
+        Map<String, String> options = options();
+        options.put("scan.index", "  ");
+
+        assertThatThrownBy(() -> source(SCHEMA, options))
+                .hasStackTraceContaining("scan.index must not be blank");
+    }
+
+    @Test
     void projectionChangesThePhysicalReadAndZeroProjectionUsesACarrier() {
         SpannerDynamicSource projected = (SpannerDynamicSource) source(SCHEMA, options());
         projected.applyProjection(

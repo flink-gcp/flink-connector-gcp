@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
+import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.Options.QueryOption;
@@ -36,6 +37,7 @@ import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
+import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 
 import javax.annotation.Nullable;
 
@@ -109,8 +111,11 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
             @Nullable SpannerRpcPriority rpcPriority)
             throws IOException {
         BatchReadOnlyTransaction txn = open(bound);
+        SpannerReadOperation resolved =
+                SpannerReadOperationResolution.resolve(
+                        operation, databaseClient(), txn.getReadTimestamp());
         List<Partition> partitions =
-                partition(txn, operation, partitionOptions, dataBoostEnabled, rpcPriority);
+                partition(txn, resolved, partitionOptions, dataBoostEnabled, rpcPriority);
         return new PartitionPlan(txn.getBatchTransactionId(), txn.getReadTimestamp(), partitions);
     }
 
@@ -231,6 +236,19 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
             transaction = opened;
         }
         return opened;
+    }
+
+    private DatabaseClient databaseClient() throws IOException {
+        synchronized (this) {
+            checkOpen();
+            if (spanner == null) {
+                throw new IOException(
+                        "The Spanner partition planner did not open its service handle.");
+            }
+            return spanner.getDatabaseClient(
+                    DatabaseId.of(
+                            database.getProject(), database.getInstance(), database.getDatabase()));
+        }
     }
 
     private void checkOpen() throws IOException {

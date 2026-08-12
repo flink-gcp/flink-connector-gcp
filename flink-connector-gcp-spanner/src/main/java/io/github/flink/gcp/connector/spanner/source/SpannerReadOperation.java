@@ -62,18 +62,21 @@ public final class SpannerReadOperation implements Serializable {
     @Nullable private final String index;
     @Nullable private final KeySet keys;
     @Nullable private final List<String> columns;
+    @Nullable private final SpannerReadOperationResolver resolver;
 
     private SpannerReadOperation(
             @Nullable Statement statement,
             @Nullable String table,
             @Nullable String index,
             @Nullable KeySet keys,
-            @Nullable List<String> columns) {
+            @Nullable List<String> columns,
+            @Nullable SpannerReadOperationResolver resolver) {
         this.statement = statement;
         this.table = table;
         this.index = index;
         this.keys = keys;
         this.columns = columns;
+        this.resolver = resolver;
     }
 
     /**
@@ -84,7 +87,7 @@ public final class SpannerReadOperation implements Serializable {
      */
     public static SpannerReadOperation query(Statement statement) {
         Preconditions.checkNotNull(statement, "statement must not be null");
-        return new SpannerReadOperation(statement, null, null, null, null);
+        return new SpannerReadOperation(statement, null, null, null, null, null);
     }
 
     /**
@@ -102,9 +105,9 @@ public final class SpannerReadOperation implements Serializable {
     /**
      * Reads columns of a table over a key set, through a secondary index.
      *
-     * <p>The key set is interpreted in the <em>index's</em> key space, not the table's, and a
-     * column the index does not store is read back from the base table — which the service does for
-     * you, at the cost of a lookup per row.
+     * <p>The key set is interpreted in the <em>index's</em> key space, not the table's, and a read
+     * can return only index key columns, base-table primary-key columns, and columns included with
+     * {@code STORING} or {@code INCLUDE}.
      *
      * @param table the table name
      * @param index the index name
@@ -129,7 +132,16 @@ public final class SpannerReadOperation implements Serializable {
         for (String column : copy) {
             checkName(column, "column");
         }
-        return new SpannerReadOperation(null, table, index, keys, copy);
+        return new SpannerReadOperation(null, table, index, keys, copy, null);
+    }
+
+    static SpannerReadOperation deferred(SpannerReadOperationResolver resolver) {
+        return new SpannerReadOperation(null, null, null, null, null, resolver);
+    }
+
+    @Nullable
+    SpannerReadOperationResolver getResolver() {
+        return resolver;
     }
 
     private static void checkName(String value, String what) {
@@ -209,18 +221,22 @@ public final class SpannerReadOperation implements Serializable {
                 && Objects.equals(table, that.table)
                 && Objects.equals(index, that.index)
                 && Objects.equals(keys, that.keys)
-                && Objects.equals(columns, that.columns);
+                && Objects.equals(columns, that.columns)
+                && Objects.equals(resolver, that.resolver);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(statement, table, index, keys, columns);
+        return Objects.hash(statement, table, index, keys, columns, resolver);
     }
 
     @Override
     public String toString() {
         if (isQuery()) {
             return "query [" + statement.getSql() + "]";
+        }
+        if (resolver != null) {
+            return "deferred read [" + resolver + "]";
         }
         return "read of table "
                 + table

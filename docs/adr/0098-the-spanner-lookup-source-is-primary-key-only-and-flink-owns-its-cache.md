@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504) (under
+- Issues: [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504), [#529](https://github.com/laughingman7743/flink-connector-gcp/issues/529) (under
   [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
@@ -38,6 +38,9 @@ Synchronous mode uses `readRow`; asynchronous mode uses `readRowAsync`.
 The connector exposes Flink's `NONE` and `PARTIAL` cache modes and delegates partial-cache storage, expiry, and missing-key behavior to Flink.
 It rejects `FULL` because a full cache would require a scan and a separately defined snapshot and reload contract.
 The connector retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point reads within the configured retry budget.
+When the planner also pushes an exact primary-key predicate, both lookup modes reject a non-matching lookup key before opening a point-read RPC.
+Predicates that are not exact primary-key constraints remain Flink residuals.
+The bounded-scan `scan.index` option does not change lookup access paths.
 
 ## Consequences
 
