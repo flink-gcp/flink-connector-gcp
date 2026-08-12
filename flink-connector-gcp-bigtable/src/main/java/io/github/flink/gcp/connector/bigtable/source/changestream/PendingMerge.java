@@ -66,16 +66,6 @@ public final class PendingMerge {
         return lowWatermark;
     }
 
-    public PendingMerge add(ChangeStreamContinuationToken token, Instant parentLowWatermark) {
-        List<ChangeStreamContinuationToken> combined = new ArrayList<>(continuationTokens);
-        if (!combined.contains(token)) {
-            combined.add(token);
-        }
-        Instant combinedLowWatermark =
-                parentLowWatermark.isBefore(lowWatermark) ? parentLowWatermark : lowWatermark;
-        return new PendingMerge(partition, combined, combinedLowWatermark);
-    }
-
     @Override
     public boolean equals(Object o) {
         if (this == o) {

@@ -116,7 +116,14 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 0, transition(left, successorForParent(WHOLE, LEFT, "left-parent")));
 
         assertThat(context.assignedSplits(0)).hasSize(1);
-        assertThat(enumerator.snapshotState(2).getPendingMerges()).hasSize(1);
+        assertThat(enumerator.pendingMergeMaterializations()).isZero();
+        assertThat(enumerator.snapshotState(2).getPendingMerges())
+                .singleElement()
+                .satisfies(
+                        merge ->
+                                assertThat(merge.getContinuationTokens())
+                                        .extracting(ChangeStreamContinuationToken::getToken)
+                                        .containsExactly("left-parent"));
 
         enumerator.handleSourceEvent(
                 1, transition(right, successorForParent(WHOLE, RIGHT, "right-parent")));
@@ -133,6 +140,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
 
     @Test
     void overlappingParentTokensDoNotCompleteAMerge() throws Exception {
+        ByteStringRange target =
+                ByteStringRange.create(ByteString.copyFromUtf8("a"), ByteString.copyFromUtf8("z"));
         ByteStringRange overlappingLeft =
                 ByteStringRange.create(ByteString.copyFromUtf8("a"), ByteString.copyFromUtf8("n"));
         ByteStringRange overlappingRight =
@@ -148,11 +157,17 @@ class BigtableChangeStreamSplitEnumeratorTest {
         ChangeStreamPartitionSplit right = context.assignedSplits(1).get(0);
 
         enumerator.handleSourceEvent(
-                0, transition(left, successorForParent(WHOLE, overlappingLeft, "left-parent")));
+                0, transition(left, successorForParent(target, overlappingLeft, "left-parent")));
         enumerator.handleSourceEvent(
-                1, transition(right, successorForParent(WHOLE, overlappingRight, "right-parent")));
+                1, transition(right, successorForParent(target, overlappingRight, "right-parent")));
 
-        assertThat(enumerator.snapshotState(2).getPendingMerges()).hasSize(1);
+        assertThat(enumerator.snapshotState(2).getPendingMerges())
+                .singleElement()
+                .satisfies(
+                        merge ->
+                                assertThat(merge.getContinuationTokens())
+                                        .extracting(ChangeStreamContinuationToken::getToken)
+                                        .containsExactly("left-parent", "right-parent"));
         assertThat(enumerator.snapshotState(2).getUnassignedSplits()).isEmpty();
         enumerator.close();
     }

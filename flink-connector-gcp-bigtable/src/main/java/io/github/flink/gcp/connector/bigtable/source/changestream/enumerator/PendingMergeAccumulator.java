@@ -1,0 +1,204 @@
+/*
+ * Copyright 2026 laughingman7743
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
+
+import org.apache.flink.util.Preconditions;
+
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
+import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.NavigableSet;
+import java.util.TreeSet;
+
+/** Mutable coordinator-thread accumulator for one pending merge target. */
+final class PendingMergeAccumulator {
+
+    private static final Comparator<TokenEntry> TOKEN_ORDER =
+            PendingMergeAccumulator::compareEntries;
+
+    private final ByteStringRange partition;
+    private final NavigableSet<TokenEntry> tokens = new TreeSet<>(TOKEN_ORDER);
+    private Instant lowWatermark;
+    private int disconnectedPairs;
+    private long adjacencyEvaluations;
+    private long materializations;
+
+    PendingMergeAccumulator(ByteStringRange partition, Instant lowWatermark) {
+        this.partition =
+                RowRanges.copyOf(
+                        Preconditions.checkNotNull(partition, "partition must not be null"));
+        this.lowWatermark =
+                Preconditions.checkNotNull(lowWatermark, "lowWatermark must not be null");
+    }
+
+    static PendingMergeAccumulator restore(PendingMerge merge) {
+        PendingMergeAccumulator accumulator =
+                new PendingMergeAccumulator(merge.getPartition(), merge.getLowWatermark());
+        for (ChangeStreamContinuationToken token : merge.getContinuationTokens()) {
+            accumulator.add(token, merge.getLowWatermark());
+        }
+        return accumulator;
+    }
+
+    void add(ChangeStreamContinuationToken token, Instant parentLowWatermark) {
+        Preconditions.checkNotNull(token, "token must not be null");
+        Preconditions.checkNotNull(parentLowWatermark, "parentLowWatermark must not be null");
+        if (parentLowWatermark.isBefore(lowWatermark)) {
+            lowWatermark = parentLowWatermark;
+        }
+
+        TokenEntry entry = new TokenEntry(token);
+        TokenEntry previous = tokens.lower(entry);
+        TokenEntry next = tokens.higher(entry);
+        if (!tokens.add(entry)) {
+            return;
+        }
+        if (previous != null && next != null && !connected(previous.partition, next.partition)) {
+            disconnectedPairs--;
+        }
+        if (previous != null && !connected(previous.partition, entry.partition)) {
+            disconnectedPairs++;
+        }
+        if (next != null && !connected(entry.partition, next.partition)) {
+            disconnectedPairs++;
+        }
+    }
+
+    boolean isComplete() {
+        return !tokens.isEmpty()
+                && disconnectedPairs == 0
+                && sameStart(tokens.first().partition, partition)
+                && sameEnd(tokens.last().partition, partition);
+    }
+
+    ByteStringRange partitionKey() {
+        return RowRanges.copyOf(partition);
+    }
+
+    Instant getLowWatermark() {
+        return lowWatermark;
+    }
+
+    boolean tokensAreContainedBy(List<ChangeStreamContinuationToken> candidates) {
+        if (candidates.size() < tokens.size()) {
+            return false;
+        }
+        for (TokenEntry token : tokens) {
+            if (!candidates.contains(token.token)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    PendingMerge toPendingMerge() {
+        materializations++;
+        List<ChangeStreamContinuationToken> snapshot = new ArrayList<>(tokens.size());
+        for (TokenEntry entry : tokens) {
+            snapshot.add(entry.token);
+        }
+        return new PendingMerge(partition, snapshot, lowWatermark);
+    }
+
+    long getAdjacencyEvaluations() {
+        return adjacencyEvaluations;
+    }
+
+    long getMaterializations() {
+        return materializations;
+    }
+
+    private boolean connected(ByteStringRange left, ByteStringRange right) {
+        adjacencyEvaluations++;
+        return !isUnboundedEnd(left)
+                && !isUnboundedStart(right)
+                && left.getEnd().equals(right.getStart())
+                && left.getEndBound() != right.getStartBound();
+    }
+
+    private static int compareEntries(TokenEntry left, TokenEntry right) {
+        int result = compareStarts(left.partition, right.partition);
+        if (result != 0) {
+            return result;
+        }
+        result = compareEnds(left.partition, right.partition);
+        if (result != 0) {
+            return result;
+        }
+        return left.token.getToken().compareTo(right.token.getToken());
+    }
+
+    private static int compareStarts(ByteStringRange left, ByteStringRange right) {
+        if (isUnboundedStart(left) || isUnboundedStart(right)) {
+            return Boolean.compare(!isUnboundedStart(left), !isUnboundedStart(right));
+        }
+        int result = RowRanges.compareKeys(left.getStart(), right.getStart());
+        if (result != 0) {
+            return result;
+        }
+        return left.getStartBound().compareTo(right.getStartBound());
+    }
+
+    private static int compareEnds(ByteStringRange left, ByteStringRange right) {
+        if (isUnboundedEnd(left) || isUnboundedEnd(right)) {
+            return Boolean.compare(isUnboundedEnd(left), isUnboundedEnd(right));
+        }
+        int result = RowRanges.compareKeys(left.getEnd(), right.getEnd());
+        if (result != 0) {
+            return result;
+        }
+        return left.getEndBound().compareTo(right.getEndBound());
+    }
+
+    private static boolean sameStart(ByteStringRange left, ByteStringRange right) {
+        return (isUnboundedStart(left) && isUnboundedStart(right))
+                || (left.getStartBound() == right.getStartBound()
+                        && left.getStart().equals(right.getStart()));
+    }
+
+    private static boolean sameEnd(ByteStringRange left, ByteStringRange right) {
+        return (isUnboundedEnd(left) && isUnboundedEnd(right))
+                || (left.getEndBound() == right.getEndBound()
+                        && left.getEnd().equals(right.getEnd()));
+    }
+
+    private static boolean isUnboundedStart(ByteStringRange range) {
+        return range.getStartBound() == BoundType.UNBOUNDED || range.getStart().isEmpty();
+    }
+
+    private static boolean isUnboundedEnd(ByteStringRange range) {
+        return range.getEndBound() == BoundType.UNBOUNDED || range.getEnd().isEmpty();
+    }
+
+    private static final class TokenEntry {
+
+        private final ChangeStreamContinuationToken token;
+        private final ByteStringRange partition;
+
+        private TokenEntry(ChangeStreamContinuationToken token) {
+            this.token = token;
+            this.partition = RowRanges.copyOf(token.getPartition());
+        }
+    }
+}
