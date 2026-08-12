@@ -479,6 +479,14 @@ what it still holds and how long its waits take on **this sink's** writer
 group — documented once, with the queue, under
 [Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics).
 
+`PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
+publisher independently of this Bigtable sink's credentials.
+Each sink writer reads the file when it opens the queue, so the path must be readable on every
+TaskManager that can run the sink.
+If the setting is absent, the queue uses application-default credentials.
+The Pub/Sub [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment)
+note covers Kubernetes Secret mounts, session clusters and rotation.
+
 Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) rather
 than the job status when running anything other than `failJob()`: it counts every mutation the
 handler received. A **serializer** bug rejecting every record shows up only as a rate — serializer

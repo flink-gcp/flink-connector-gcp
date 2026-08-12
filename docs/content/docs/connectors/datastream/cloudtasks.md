@@ -453,6 +453,14 @@ CloudTasksSink.<OrderEvent>builder()
         .build();
 ```
 
+`PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
+publisher independently of this Cloud Tasks sink's credentials.
+Each sink writer reads the file when it opens the queue, so the path must be readable on every
+TaskManager that can run the sink.
+If the setting is absent, the queue uses application-default credentials.
+The Pub/Sub [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment)
+note covers Kubernetes Secret mounts, session clusters and rotation.
+
 | Attribute | Value |
 |---|---|
 | `dlq-connector` | `cloudtasks` here |

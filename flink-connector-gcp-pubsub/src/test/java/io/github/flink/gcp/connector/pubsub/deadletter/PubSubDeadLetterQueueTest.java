@@ -20,6 +20,8 @@ import org.apache.flink.util.InstantiationUtil;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.SettableApiFuture;
+import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.cloud.pubsub.v1.Publisher;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
@@ -31,14 +33,21 @@ import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -70,6 +79,8 @@ class PubSubDeadLetterQueueTest {
     private static final TopicDestination TOPIC = TopicDestination.of("my-project", "dead-letters");
 
     private static final Instant OFFERED_AT = Instant.parse("2026-08-02T04:05:06Z");
+
+    @TempDir Path tempDir;
 
     /**
      * The group {@link #metrics} registers on, read back by the tests that drive {@code
@@ -234,6 +245,12 @@ class PubSubDeadLetterQueueTest {
         PubSubDeadLetterQueue.Builder builder = PubSubDeadLetterQueue.builder();
 
         assertThatThrownBy(() -> builder.topic(null)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder.serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> builder.serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
         assertThatThrownBy(() -> builder.emulatorEndpoint(null))
                 .isInstanceOf(NullPointerException.class);
         // Parsed at the setter, so a typo fails on the client rather than in open() on a
@@ -280,6 +297,22 @@ class PubSubDeadLetterQueueTest {
     }
 
     @Test
+    void rejectsServiceAccountKeyBesideTheEmulator() {
+        assertThatThrownBy(
+                        () ->
+                                PubSubDeadLetterQueue.builder()
+                                        .topic(TOPIC)
+                                        .serviceAccountKeyFile("/mounted/pubsub-key.json")
+                                        .emulatorEndpoint("localhost:8085")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "serviceAccountKeyFile(...) cannot be combined with"
+                                + " emulatorEndpoint(...)")
+                .hasMessageContaining("plaintext channel with no credentials");
+    }
+
+    @Test
     void acceptsTheTwoSpecialOutstandingValues() {
         assertThat(
                         PubSubDeadLetterQueue.builder()
@@ -311,6 +344,83 @@ class PubSubDeadLetterQueueTest {
         // The publisher is created in open(), so the configured instance carries only values.
         assertThat(restored.toString()).isEqualTo(queue.toString());
         assertThat(restored.getOutstandingMessages()).isZero();
+    }
+
+    @Test
+    void serializedQueueCarriesThePathButNotCredentialMaterial() throws Exception {
+        Path keyFile = tempDir.resolve("mounted-pubsub-key.json");
+        String credentialMaterial = serviceAccountKeyJson();
+        Files.writeString(keyFile, credentialMaterial, StandardCharsets.UTF_8);
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .serviceAccountKeyFile(keyFile.toString())
+                        .build();
+
+        byte[] serialized = InstantiationUtil.serializeObject(queue);
+        String bytes = new String(serialized, StandardCharsets.ISO_8859_1);
+
+        assertThat(bytes).contains(keyFile.toString());
+        assertThat(bytes)
+                .doesNotContain("credential-private-key-id-must-not-be-serialized")
+                .doesNotContain("service-account@example.invalid");
+    }
+
+    @Test
+    void loadsTheServiceAccountOnlyWhenTheHostWriterOpensTheQueue() throws Exception {
+        Path keyFile = tempDir.resolve("created-after-serialization.json");
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .serviceAccountKeyFile(keyFile.toString())
+                        .build();
+        byte[] serialized = InstantiationUtil.serializeObject(queue);
+        Files.writeString(keyFile, serviceAccountKeyJson(), StandardCharsets.UTF_8);
+        PubSubDeadLetterQueue restored =
+                InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
+
+        restored.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+        try {
+            assertThat(restored.publisherShutdown).isNotNull();
+        } finally {
+            restored.close();
+        }
+    }
+
+    @Test
+    void missingServiceAccountKeyFailsWithoutLeakingThePathOrCause() {
+        Path keyFile = tempDir.resolve("mounted-secret-name.json");
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .serviceAccountKeyFile(keyFile.toString())
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                queue.open(
+                                        DefaultFailureHandlerContext.of(
+                                                new StubWriterInitContext(0))))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured Pub/Sub service-account key file.")
+                .hasNoCause()
+                .asString()
+                .doesNotContain(keyFile.toString());
+    }
+
+    @Test
+    void configuredCredentialsReachThePublisherBuilderAndNullKeepsAdc() throws Exception {
+        Publisher.Builder builder = Publisher.newBuilder(TOPIC.toTopicPath());
+        Object adc = field(builder, "credentialsProvider");
+
+        PubSubDeadLetterQueue.configureCredentials(builder, null);
+
+        assertThat(field(builder, "credentialsProvider")).isSameAs(adc);
+
+        NoCredentialsProvider configured = NoCredentialsProvider.create();
+        PubSubDeadLetterQueue.configureCredentials(builder, configured);
+
+        assertThat(field(builder, "credentialsProvider")).isSameAs(configured);
     }
 
     @Test
@@ -1034,6 +1144,35 @@ class PubSubDeadLetterQueueTest {
         assertThat(PubSubDeadLetterQueue.builder().topic(TOPIC).build().flushTimeout())
                 .isEqualTo(PubSubDeadLetterQueue.DEFAULT_FLUSH_TIMEOUT)
                 .isEqualTo(Duration.ofSeconds(60));
+    }
+
+    private static String serviceAccountKeyJson() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        KeyPair keyPair = generator.generateKeyPair();
+        String encoded =
+                Base64.getMimeEncoder(64, new byte[] {'\n'})
+                        .encodeToString(keyPair.getPrivate().getEncoded());
+        String privateKey =
+                "-----BEGIN PRIVATE KEY-----\n" + encoded + "\n-----END PRIVATE KEY-----\n";
+        return "{"
+                + "\"type\":\"service_account\","
+                + "\"project_id\":\"test-project\","
+                + "\"private_key_id\":\"credential-private-key-id-must-not-be-serialized\","
+                + "\"private_key\":\""
+                + privateKey.replace("\n", "\\n")
+                + "\","
+                + "\"client_email\":\"service-account@example.invalid\","
+                + "\"client_id\":\"1234567890\","
+                + "\"auth_uri\":\"https://accounts.google.com/o/oauth2/auth\","
+                + "\"token_uri\":\"https://oauth2.googleapis.com/token\""
+                + "}";
+    }
+
+    private static Object field(Object target, String name) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(target);
     }
 
     /**

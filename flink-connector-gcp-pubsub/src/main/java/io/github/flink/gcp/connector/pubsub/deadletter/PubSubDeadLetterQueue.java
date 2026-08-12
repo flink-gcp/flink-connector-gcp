@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.protobuf.ByteString;
@@ -34,6 +35,7 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.grpc.ManagedChannel;
@@ -88,7 +90,7 @@ import java.util.concurrent.TimeoutException;
  * <table>
  *   <caption>Attributes of a dead-lettered message</caption>
  *   <tr><th>Attribute</th><th>Value</th></tr>
- *   <tr><td>{@code dlq-connector}</td><td>{@code bigquery}, {@code pubsub} or {@code cloudtasks}
+ *   <tr><td>{@code dlq-connector}</td><td>{@code bigquery}, {@code bigtable}, {@code pubsub} or {@code cloudtasks}
  *       </td></tr>
  *   <tr><td>{@code dlq-destination}</td><td>the resource the element was bound for</td></tr>
  *   <tr><td>{@code dlq-error}</td><td>the failure description, truncated to Pub/Sub's 1024-byte
@@ -130,6 +132,14 @@ import java.util.concurrent.TimeoutException;
  * page, under "Dead-letter metrics". The count of elements <em>offered</em> is not among them
  * because every sink here already reports it as {@code numRecordsSendErrors} on that same group.
  *
+ * <h2>Credentials</h2>
+ *
+ * <p>Production publishers use application-default credentials unless {@link
+ * Builder#serviceAccountKeyFile(String)} selects a service-account JSON key. The configured path
+ * crosses Flink serialization, and each host sink writer reads the file when it opens the queue.
+ * Parsed credentials are never stored in the job graph. The queue does not inherit the host
+ * connector's credential setting, so the dead-letter publisher may use a separate identity.
+ *
  * <p>Instances are configured on the job graph and serialized to the tasks; the publisher itself is
  * created in {@link #open(FailureHandlerContext)}. Lifecycle, and the at-least-once guarantee that
  * comes with it, are the {@link DeadLetterQueue} contract's.
@@ -170,6 +180,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     public static final Duration DEFAULT_FLUSH_TIMEOUT = Duration.ofSeconds(60);
 
     private final TopicDestination topic;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final int maxOutstandingMessages;
     private final Duration shutdownTimeout;
@@ -207,11 +218,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
     private PubSubDeadLetterQueue(
             TopicDestination topic,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             int maxOutstandingMessages,
             Duration shutdownTimeout,
             Duration flushTimeout) {
         this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.maxOutstandingMessages = maxOutstandingMessages;
         this.shutdownTimeout = shutdownTimeout;
@@ -231,12 +244,15 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     public void open(FailureHandlerContext context) throws IOException {
         subtaskIndex = context.getSubtaskIndex();
         outstanding = new ArrayList<>();
+        CredentialsProvider credentials = PubSubCredentials.load(serviceAccountKeyFile);
         Publisher.Builder builder = Publisher.newBuilder(topic.toTopicPath());
         try {
             if (emulatorEndpoint != null) {
                 ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
                 builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
                         .setCredentialsProvider(NoCredentialsProvider.create());
+            } else {
+                configureCredentials(builder, credentials);
             }
             publisher = builder.build();
             // The channel is released by channelShutdown, the next entry in close()'s list, rather
@@ -271,6 +287,15 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         metrics =
                 new PubSubDeadLetterQueueMetrics(
                         context.getMetricGroup(), this::getOutstandingMessages);
+    }
+
+    /** Applies an explicit provider without replacing the SDK's ADC provider when it is absent. */
+    @VisibleForTesting
+    static void configureCredentials(
+            Publisher.Builder builder, @Nullable CredentialsProvider credentials) {
+        if (credentials != null) {
+            builder.setCredentialsProvider(credentials);
+        }
     }
 
     @Override
@@ -516,6 +541,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     public static final class Builder {
 
         private TopicDestination topic;
+        @Nullable private String serviceAccountKeyFile;
         @Nullable private EmulatorEndpoint emulatorEndpoint;
         private int maxOutstandingMessages = DEFAULT_MAX_OUTSTANDING_MESSAGES;
         private Duration shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
@@ -533,6 +559,34 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          */
         public Builder topic(TopicDestination topic) {
             this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
+            return this;
+        }
+
+        /**
+         * Authenticates the queue with the service-account JSON key at the given path instead of
+         * application-default credentials. The file is read when a host sink writer opens this
+         * queue, so the same path must be readable by every TaskManager that can run that sink.
+         * Optional; when unset the queue uses application-default credentials.
+         *
+         * <p>The queue does not inherit credentials from the host connector. A dead-letter topic
+         * may intentionally use a different identity, and the shared failure-handler contract does
+         * not carry the host connector's credential configuration.
+         *
+         * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+         * Workload Identity where the deployment supports one. This setting cannot be combined with
+         * {@link #emulatorEndpoint(String)}, whose plaintext channel deliberately carries no
+         * credentials.
+         *
+         * @param serviceAccountKeyFile the service-account JSON key-file path
+         * @return this builder
+         */
+        public Builder serviceAccountKeyFile(String serviceAccountKeyFile) {
+            String checked =
+                    Preconditions.checkNotNull(
+                            serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+            Preconditions.checkArgument(
+                    !checked.isBlank(), "serviceAccountKeyFile must not be blank");
+            this.serviceAccountKeyFile = checked;
             return this;
         }
 
@@ -641,8 +695,18 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          */
         public PubSubDeadLetterQueue build() {
             Preconditions.checkState(topic != null, "A dead-letter topic is required.");
+            Preconditions.checkState(
+                    serviceAccountKeyFile == null || emulatorEndpoint == null,
+                    "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                            + " emulator uses a plaintext channel with no credentials. Remove one"
+                            + " of the two settings.");
             return new PubSubDeadLetterQueue(
-                    topic, emulatorEndpoint, maxOutstandingMessages, shutdownTimeout, flushTimeout);
+                    topic,
+                    serviceAccountKeyFile,
+                    emulatorEndpoint,
+                    maxOutstandingMessages,
+                    shutdownTimeout,
+                    flushTimeout);
         }
     }
 }
