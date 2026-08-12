@@ -147,4 +147,12 @@ public abstract class AbstractSpannerEmulatorITCase {
                 DatabaseId.of(
                         database.getProject(), database.getInstance(), database.getDatabase()));
     }
+
+    /** Applies schema changes to an existing emulator database. */
+    protected static void updateDdl(SpannerDatabase database, String... ddl) throws Exception {
+        spanner.getDatabaseAdminClient()
+                .updateDatabaseDdl(
+                        database.getInstance(), database.getDatabase(), Arrays.asList(ddl), null)
+                .get();
+    }
 }

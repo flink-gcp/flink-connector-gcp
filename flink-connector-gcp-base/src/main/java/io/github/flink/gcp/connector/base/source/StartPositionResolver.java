@@ -50,6 +50,17 @@ public final class StartPositionResolver {
 
     static final Duration RETENTION_SAFETY_MARGIN = Duration.ofMinutes(1);
 
+    /** Validates a retention duration against the resolver's moving-boundary safety margin. */
+    public static void validateRetention(Duration retention, String name) {
+        Preconditions.checkNotNull(retention, "%s must not be null", name);
+        Preconditions.checkArgument(
+                retention.compareTo(RETENTION_SAFETY_MARGIN) > 0,
+                "%s must be longer than the %s retention safety margin, but was %s",
+                name,
+                RETENTION_SAFETY_MARGIN,
+                retention);
+    }
+
     private final Instant now;
     private final RetentionLookup retentionLookup;
     private final Logger log;
@@ -249,11 +260,7 @@ public final class StartPositionResolver {
 
         Duration retention = retentionLookup.get();
         Preconditions.checkNotNull(retention, "retentionLookup must not return null");
-        Preconditions.checkArgument(
-                retention.compareTo(RETENTION_SAFETY_MARGIN) > 0,
-                "retention must be longer than the %s safety margin, but was %s",
-                RETENTION_SAFETY_MARGIN,
-                retention);
+        validateRetention(retention, "retention");
         try {
             earliest = now.minus(retention).plus(RETENTION_SAFETY_MARGIN);
         } catch (DateTimeException | ArithmeticException e) {
