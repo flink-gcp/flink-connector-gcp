@@ -379,14 +379,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `v1.0.0` (going public); read each milestone's description for its theme rather than guessing
   from the number. Priority is ordered by *what breaks*, not by urgency — `P0` a shipped path
   breaking silently, down to `P3` future or externally blocked — and is orthogonal to the
-  milestone where one applies. An issue that cannot be completed until another project changes
-  or publishes a release instead retains its `module:` or `area:` label, carries `priority:P3`
-  and `status:blocked-upstream`, but has no milestone; remove the status and assign a release
-  milestone before implementation starts once upstream clears. The status does not cover a
-  temporary external service failure, an unavailable paid resource, or a future scheduling
-  choice. GitHub sub-issues only where a parent genuinely decomposes; a *cluster* sharing one
-  root cause is recorded as a comment on the one to work instead, so each keeps its own closure
-  record
+  milestone where one applies. Externally blocked work has two milestone exceptions. An issue
+  that cannot be completed until another project changes or publishes a release retains its
+  `module:` or `area:` label, carries `priority:P3` and `status:blocked-upstream`, but has no
+  milestone; remove the status and assign a release milestone before implementation starts once
+  upstream clears. An issue whose remaining work requires a contract, paid environment, or
+  representative workload the maintainer cannot access retains its ownership labels, carries
+  `priority:P3` and `help wanted`, but has no milestone when an external contributor must supply
+  that access or evidence. `help wanted` alone does not qualify: name the unavailable capability
+  and what the contributor must provide, then assign a release milestone once the environment
+  and contributor support are available. A temporary external service failure, a resource the
+  maintainer can provision, or a future scheduling choice does not qualify for either exception.
+  GitHub sub-issues only where a parent genuinely decomposes; a *cluster* sharing one root cause
+  is recorded as a comment on the one to work instead, so each keeps its own closure record
 - PRs close their issue with `Closes #N`, written **unformatted** — a closing keyword inside a
   code span is not parsed, the issue silently survives the merge, and nothing reports it. The
   inverse also bites: GitHub parses a closing keyword out of ordinary prose, so a body sentence

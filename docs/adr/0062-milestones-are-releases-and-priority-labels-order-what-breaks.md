@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-07 (the `v0.3.0+` catch-all retired at 50 open issues)
-- Issues: —
+- Issues: [#567], [#577]
 - Modules: all (tracker)
 
 ## Context
@@ -41,12 +41,20 @@ open issues — which expresses neither an order nor a release.
   correctness with a narrower blast radius or a blocker for going public, `P2` is a feature,
   performance or guardrail that breaks nothing by waiting, `P3` is a future feature or one
   blocked outside the repository.
-- **Upstream-blocked work is the one milestone exception**: when an issue cannot be completed
-  until another project changes or publishes a release, it retains its `module:` or `area:`
-  label, carries `priority:P3` and `status:blocked-upstream`, but has no milestone. This status
-  does not cover a temporary external service failure, an unavailable paid resource, or a future
-  scheduling choice. Once the upstream condition clears, remove the status and assign the
-  release milestone before implementation starts.
+- **Externally blocked work has two milestone exceptions**:
+  - When an issue cannot be completed until another project changes or publishes a release, it
+    retains its `module:` or `area:` label, carries `priority:P3` and
+    `status:blocked-upstream`, but has no milestone. Once the upstream condition clears, remove
+    the status and assign the release milestone before implementation starts.
+  - When the remaining work requires a contract, paid environment, or representative workload
+    that the maintainer cannot access, and an external contributor must supply that access or
+    evidence, the issue retains its `module:` or `area:` label, carries `priority:P3` and
+    `help wanted`, but has no milestone. `help wanted` alone does not qualify an issue for this
+    exception: the issue must state the unavailable capability and the evidence or support a
+    contributor must provide ([#248]). Assign a release milestone once the environment and
+    contributor support are available and the work can be scheduled.
+  A temporary external service failure, a resource the maintainer can provision, or a future
+  scheduling choice does not qualify for either exception.
 - **Milestone and priority are orthogonal where a milestone applies** — the milestone says which
   release, while the label says the order inside it, which a milestone alone cannot express.
 - **GitHub sub-issues are used where a parent genuinely decomposes** ([#36] → [#220]–[#225]);
@@ -55,9 +63,12 @@ open issues — which expresses neither an order nor a release.
   [#349]/[#350]/[#351]).
 
 [#36]: https://github.com/laughingman7743/flink-connector-gcp/issues/36
+[#248]: https://github.com/laughingman7743/flink-connector-gcp/issues/248
 [#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
 [#225]: https://github.com/laughingman7743/flink-connector-gcp/issues/225
 [#348]: https://github.com/laughingman7743/flink-connector-gcp/issues/348
 [#349]: https://github.com/laughingman7743/flink-connector-gcp/issues/349
 [#350]: https://github.com/laughingman7743/flink-connector-gcp/issues/350
 [#351]: https://github.com/laughingman7743/flink-connector-gcp/issues/351
+[#567]: https://github.com/laughingman7743/flink-connector-gcp/issues/567
+[#577]: https://github.com/laughingman7743/flink-connector-gcp/issues/577
