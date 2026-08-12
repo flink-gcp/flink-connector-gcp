@@ -35,7 +35,7 @@ at all, so the sink owns the whole retry loop. See
 
 The `spanner` factory requires `project`, `instance`, `database`, and `table`.
 Unset sink options inherit the corresponding `SpannerWriterOptions` default documented below.
-The complete DDL option table, schema mapping, and primary-key behavior are on the [Spanner SQL page]({{< relref "docs/connectors/table/spanner" >}}).
+The complete DDL option table, native UUID and other schema mappings, and primary-key behavior are on the [Spanner SQL page]({{< relref "docs/connectors/table/spanner" >}}).
 
 ## `SpannerSink.builder()`
 

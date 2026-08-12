@@ -67,6 +67,7 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.EMULATOR_ENDPOINT,
                         SpannerConnectorOptions.DIALECT,
                         SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS,
+                        SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
                         SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES,
                         SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
@@ -100,17 +101,7 @@ public final class SpannerDynamicTableFactory
         helper.validate();
         ReadableConfig config = helper.getOptions();
         DataType physicalType = context.getPhysicalRowDataType();
-        SpannerTableSchemaConverter schema =
-                SpannerTableSchemaConverter.of(
-                        (RowType) physicalType.getLogicalType(),
-                        context.getPrimaryKeyIndexes(),
-                        config.get(SpannerConnectorOptions.DIALECT),
-                        config.getOptional(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS)
-                                .orElse(Collections.emptyList()),
-                        config.getOptional(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES)
-                                .orElse(Collections.emptyMap()),
-                        config.getOptional(SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES)
-                                .orElse(Collections.emptyMap()));
+        SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
 
         return SpannerDynamicSink.builder()
                 .schema(schema)
@@ -152,6 +143,8 @@ public final class SpannerDynamicTableFactory
                 context.getPrimaryKeyIndexes(),
                 config.get(SpannerConnectorOptions.DIALECT),
                 config.getOptional(SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS)
+                        .orElse(Collections.emptyList()),
+                config.getOptional(SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS)
                         .orElse(Collections.emptyList()),
                 config.getOptional(SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES)
                         .orElse(Collections.emptyMap()),

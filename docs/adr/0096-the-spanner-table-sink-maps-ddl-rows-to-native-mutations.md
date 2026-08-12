@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528), [#563](https://github.com/laughingman7743/flink-connector-gcp/issues/563) (under
+- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#527](https://github.com/laughingman7743/flink-connector-gcp/issues/527), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528), [#563](https://github.com/laughingman7743/flink-connector-gcp/issues/563) (under
   [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
@@ -36,7 +36,9 @@ The common lossless mappings cover `BOOL`, `INT64`, `FLOAT32`, `FLOAT64`, `STRIN
 PostgreSQL stores a wider physical domain than Flink can declare, so reads require exact representability in the declared Flink shape and fail rather than round or substitute null.
 PostgreSQL `numeric` NaN also fails conversion because Flink `DECIMAL` has no NaN representation.
 The connector rejects nested arrays and key types excluded by Spanner's [GoogleSQL](https://cloud.google.com/spanner/docs/reference/standard-sql/data-types) and [PostgreSQL](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) type contracts before it creates a runtime provider.
-Spanner JSON, PROTO, and ENUM cannot be distinguished from their Flink carrier types, so three explicit field-path options mark them and provide native type names where Spanner requires one.
+Spanner UUID, JSON, PROTO, and ENUM cannot be distinguished from their Flink carrier types, so explicit field-path options mark them and provide native type names where Spanner requires one.
+UUID fields use Flink `STRING` carriers in both dialects and require the complete 36-character hexadecimal form on writes and lookups.
+Reads normalize UUID values to lowercase canonical strings.
 The declared database dialect selects GoogleSQL `JSON` or PostgreSQL `jsonb`.
 PROTO and ENUM markers are rejected for PostgreSQL databases because those named types are GoogleSQL-only.
 Markers may mark an entire array of a special type.
@@ -67,10 +69,12 @@ Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 - Unit tests cover native scalar and composite mappings, special markers, primary-key deletes, insert-only tables, changelog modes, factory validation, and option parity with both DataStream builders.
 - Source tests pin projection order, zero-column carrier reads, native-to-`RowData` conversion, mutually exclusive snapshot options, and both emulator dialects.
 - Issue #563 adds PostgreSQL decimal coverage for multiple Flink shapes, exact scalar and array conversion, nulls, overflow, scale loss, NaN, and production sink-to-bounded-source round trips.
+- Issue #527 adds native UUID scalar, array, null, primary-key, scan, and synchronous and asynchronous lookup coverage for both emulator dialects.
 
 ## Alternatives declined
 
 - **Infer JSON, PROTO, and ENUM from carrier types**: `STRING`, `BYTES`, and `BIGINT` are also ordinary Spanner types, so inference would silently change schemas with the same Flink DDL.
+- **Accept every form parsed by `UUID.fromString`**: Java also accepts shortened component forms, which would make the SQL carrier contract wider and less predictable than the documented Spanner spelling.
 - **Use insert-or-update without a declared key**: Spanner tables always have physical keys, but their columns and order are not available in the DDL; an extra metadata read would make planning depend on the live destination and still leave Flink without an upsert key.
 - **Expose failure handlers as strings**: the shared SPI accepts application code, not a closed enum, so a string surface would represent only an arbitrary subset and diverge from the builder.
 
@@ -78,5 +82,6 @@ Measured 2026-08-11 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 
 A primary key is optional, but it changes the accepted changelog and replay behavior.
 The DDL schema must match the destination's column names and native types; this slice does not read the live schema during planning.
+Changing a physical `STRING` column to `UUID` requires a coordinated database migration and DDL option update; the connector neither validates existing rows in advance nor changes the live schema.
 Because PostgreSQL DDL does not constrain a `numeric` column to the Flink declaration, a stored value outside that declaration fails the scan or lookup with the physical column name and declared decimal shape.
 The lookup source builds on the same type mapping in [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504).

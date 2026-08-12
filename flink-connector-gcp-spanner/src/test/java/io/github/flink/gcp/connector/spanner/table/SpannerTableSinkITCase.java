@@ -111,6 +111,43 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
         }
     }
 
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void roundTripsUuidScalarsArraysAndNulls(Dialect dialect) throws Exception {
+        SpannerDatabase database = uuidDatabase(dialect);
+        TableEnvironment sink =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        sink.executeSql(uuidTableDdl("uuid_sink", database, dialect));
+        sink.executeSql(
+                        "INSERT INTO uuid_sink VALUES "
+                                + "('F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6', "
+                                + "ARRAY['00000000-0000-0000-0000-000000000001', "
+                                + "CAST(NULL AS STRING), "
+                                + "'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF']), "
+                                + "('00000000-0000-0000-0000-000000000000', "
+                                + "CAST(NULL AS ARRAY<STRING>))")
+                .await();
+
+        TableEnvironment source =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        source.executeSql(uuidTableDdl("uuid_source", database, dialect));
+        try (CloseableIterator<Row> rows =
+                source.executeSql("SELECT id, related FROM uuid_source ORDER BY id").collect()) {
+            assertThat(rows)
+                    .toIterable()
+                    .containsExactly(
+                            Row.of("00000000-0000-0000-0000-000000000000", null),
+                            Row.of(
+                                    "f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
+                                    new String[] {
+                                        "00000000-0000-0000-0000-000000000001",
+                                        null,
+                                        "ffffffff-ffff-ffff-ffff-ffffffffffff"
+                                    }));
+        }
+    }
+
     private static SpannerDatabase database(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
@@ -132,6 +169,17 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
         return createDatabase(
                 dialect,
                 "CREATE TABLE numeric_records (id INT64 NOT NULL, amount NUMERIC) PRIMARY KEY (id)");
+    }
+
+    private static SpannerDatabase uuidDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE TABLE uuid_records (id uuid NOT NULL PRIMARY KEY, related uuid[])");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE TABLE uuid_records (id UUID NOT NULL, related ARRAY<UUID>) PRIMARY KEY (id)");
     }
 
     private static String tableDdl(SpannerDatabase database, Dialect dialect) {
@@ -185,6 +233,36 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 + "  'dialect' = '"
                 + dialect.name()
                 + "',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String uuidTableDdl(
+            String tableName, SpannerDatabase database, Dialect dialect) {
+        return "CREATE TABLE "
+                + tableName
+                + " (\n"
+                + "  id STRING,\n"
+                + "  related ARRAY<STRING>,\n"
+                + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + "  'table' = 'uuid_records',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'schema.uuid-field-paths' = 'id;related',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'\n"

@@ -23,6 +23,8 @@ import org.apache.flink.table.types.logical.RowType;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -115,6 +117,67 @@ class SpannerTableSchemaConverterTest {
                         Collections.emptyMap());
 
         assertThat(schema.getColumns().get(0).getSpannerType()).isEqualTo(Type.pgJsonb());
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void uuidMarkersMapStringScalarsAndArraysAndMayBePrimaryKeys(Dialect dialect) {
+        RowType row =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                                        DataTypes.FIELD(
+                                                "related", DataTypes.ARRAY(DataTypes.STRING())))
+                                .getLogicalType();
+
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        row,
+                        new int[] {0},
+                        dialect,
+                        Collections.emptyList(),
+                        Arrays.asList("id", "related"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+
+        assertThat(schema.getColumns())
+                .extracting(SpannerTableSchemaConverter.Column::getSpannerType)
+                .containsExactly(Type.uuid(), Type.array(Type.uuid()));
+        assertThat(schema.getPrimaryKeyIndexes()).containsExactly(0);
+    }
+
+    @Test
+    void uuidMarkersRejectNonStringCarriersAndConflictingMarkers() {
+        RowType bigint =
+                (RowType) DataTypes.ROW(DataTypes.FIELD("id", DataTypes.BIGINT())).getLogicalType();
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableSchemaConverter.of(
+                                        bigint,
+                                        new int[0],
+                                        Dialect.GOOGLE_STANDARD_SQL,
+                                        Collections.emptyList(),
+                                        Collections.singletonList("id"),
+                                        Collections.emptyMap(),
+                                        Collections.emptyMap()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Column 'id'")
+                .hasMessageContaining("UUID must be declared as STRING");
+
+        RowType string =
+                (RowType) DataTypes.ROW(DataTypes.FIELD("id", DataTypes.STRING())).getLogicalType();
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableSchemaConverter.of(
+                                        string,
+                                        new int[0],
+                                        Dialect.GOOGLE_STANDARD_SQL,
+                                        Collections.singletonList("id"),
+                                        Collections.singletonList("id"),
+                                        Collections.emptyMap(),
+                                        Collections.emptyMap()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("more than one special Spanner type marker");
     }
 
     @Test

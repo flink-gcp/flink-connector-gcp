@@ -83,6 +83,7 @@ Spanner's [GoogleSQL data types](https://cloud.google.com/spanner/docs/reference
 | `DECIMAL(38, 9)` | GoogleSQL `NUMERIC` |
 | `DECIMAL(p, s)` | PostgreSQL `numeric` |
 | `CHAR` / `VARCHAR` / `STRING` | `STRING` |
+| marked `CHAR` / `VARCHAR` / `STRING` | `UUID` |
 | `BINARY` / `VARBINARY` / `BYTES` | `BYTES` |
 | `DATE` | `DATE` |
 | `TIMESTAMP_LTZ(0..9)` | `TIMESTAMP` |
@@ -121,21 +122,29 @@ Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL`
 The standard partial-cache expiry, size, and missing-key options apply unchanged.
 `lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
 
-JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
+UUID, JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
 
 ```sql
 WITH (
+  'schema.uuid-field-paths' = 'id;related_ids',
   'schema.json-field-paths' = 'metadata;payloads',
   'schema.proto-type-names' = 'event:example.events.Event',
   'schema.enum-type-names' = 'status:example.events.Status'
 )
 ```
 
-JSON fields use `STRING`, PROTO fields use `BYTES`, and ENUM fields use `BIGINT` in the Flink schema.
+UUID and JSON fields use `STRING`, PROTO fields use `BYTES`, and ENUM fields use `BIGINT` in the Flink schema.
+The UUID marker maps `STRING` and `ARRAY<STRING>` carriers to native UUID columns in both dialects, including primary-key columns and composite lookup keys.
+UUID input must use the complete 36-character `8-4-4-4-12` hexadecimal form, with either letter case; Java's shortened accepted forms are rejected.
+Reads always emit lowercase canonical UUID strings, and nullable UUID scalars, arrays, and array elements remain null.
+Malformed sink or lookup input fails conversion with the physical column name but without including the input value.
 Set `dialect = 'POSTGRESQL'` for PostgreSQL-dialect databases; JSON markers then produce `jsonb` values.
 PROTO and ENUM markers require `GOOGLE_STANDARD_SQL` and are rejected for PostgreSQL databases.
-A marker may name a nested field with dot notation or an entire array field.
+A marker names one top-level physical field or an entire array field.
 Every marker must resolve to exactly one physical field and no field may have more than one marker.
+
+The connector does not inspect or migrate the live Spanner schema.
+Changing an existing column from `STRING` to `UUID` therefore requires coordinating the Spanner DDL and this option before redeploying the Flink job, and every stored string must already be valid canonical UUID input before migration.
 
 ## Options
 
@@ -147,6 +156,7 @@ Every marker must resolve to exactly one physical field and no field may have mo
 | `table` | **required** | The table receiving rows |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery |
 | `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
+| `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |

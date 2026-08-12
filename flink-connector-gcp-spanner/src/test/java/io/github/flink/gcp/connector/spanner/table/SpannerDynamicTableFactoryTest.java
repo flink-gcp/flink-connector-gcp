@@ -155,6 +155,15 @@ class SpannerDynamicTableFactoryTest {
                 .hasStackTraceContaining("missing");
     }
 
+    @Test
+    void rejectsAUuidMarkerOnANonStringCarrierDuringFactoryValidation() {
+        Map<String, String> options = options();
+        options.put("schema.uuid-field-paths", "id");
+
+        assertThatThrownBy(() -> sink(SCHEMA, options))
+                .hasStackTraceContaining("UUID must be declared as STRING");
+    }
+
     private static DynamicTableSource source(ResolvedSchema schema, Map<String, String> options) {
         return FactoryMocks.createTableSource(schema, options);
     }

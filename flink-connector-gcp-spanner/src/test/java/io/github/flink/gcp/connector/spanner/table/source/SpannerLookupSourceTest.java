@@ -57,6 +57,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
@@ -87,6 +88,21 @@ class SpannerLookupSourceTest {
                     new int[] {0},
                     Dialect.POSTGRESQL,
                     Collections.emptyList(),
+                    Collections.emptyMap(),
+                    Collections.emptyMap());
+    private static final SpannerTableSchemaConverter UUID_SCHEMA =
+            SpannerTableSchemaConverter.of(
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD(
+                                                    "external_id", DataTypes.STRING().notNull()),
+                                            DataTypes.FIELD("tenant", DataTypes.BIGINT().notNull()),
+                                            DataTypes.FIELD("name", DataTypes.STRING()))
+                                    .getLogicalType(),
+                    new int[] {0, 1},
+                    Dialect.GOOGLE_STANDARD_SQL,
+                    Collections.emptyList(),
+                    Collections.singletonList("external_id"),
                     Collections.emptyMap(),
                     Collections.emptyMap());
 
@@ -186,6 +202,30 @@ class SpannerLookupSourceTest {
         assertThat(function.lookup(GenericRowData.of(null, StringData.fromString("us")))).isEmpty();
         function.close();
         assertThat(lookup.closed).isTrue();
+    }
+
+    @Test
+    void encodesUuidCompositeKeysInDeclaredOrderAndRejectsShortenedText() throws Exception {
+        FakeLookup lookup = new FakeLookup(Struct.newBuilder().set("name").to("Ada").build());
+        SpannerRowDataLookupFunction function =
+                new SpannerRowDataLookupFunction(
+                        UUID_SCHEMA, new int[] {2}, new int[] {1, 0}, 0, lookup);
+        function.open(null);
+
+        function.lookup(
+                GenericRowData.of(
+                        7L, StringData.fromString("F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6")));
+
+        assertThat(lookup.keys)
+                .containsExactly(
+                        Key.of(UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6"), 7L));
+        assertThatThrownBy(
+                        () ->
+                                function.lookup(
+                                        GenericRowData.of(7L, StringData.fromString("1-1-1-1-1"))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("column 'external_id'");
+        function.close();
     }
 
     @Test

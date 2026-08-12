@@ -27,6 +27,7 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Type;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
+import io.github.flink.gcp.connector.spanner.table.UuidStringParser;
 
 import java.io.Serializable;
 import java.time.Instant;
@@ -53,12 +54,18 @@ final class SpannerLookupKeyEncoder implements Serializable {
             Object value =
                     RowData.createFieldGetter(column.getLogicalType(), keyPositions[i])
                             .getFieldOrNull(row);
-            key.appendObject(convert(value, column.getLogicalType(), column.getSpannerType()));
+            key.appendObject(
+                    convert(
+                            value,
+                            column.getLogicalType(),
+                            column.getSpannerType(),
+                            column.getName()));
         }
         return key.build();
     }
 
-    private static Object convert(Object value, LogicalType logicalType, Type spannerType) {
+    private static Object convert(
+            Object value, LogicalType logicalType, Type spannerType, String columnName) {
         if (value == null) {
             return null;
         }
@@ -72,6 +79,8 @@ final class SpannerLookupKeyEncoder implements Serializable {
                 return ((DecimalData) value).toBigDecimal();
             case STRING:
                 return value.toString();
+            case UUID:
+                return UuidStringParser.parse(value.toString(), columnName);
             case BYTES:
                 return ByteArray.copyFrom((byte[]) value);
             case DATE:

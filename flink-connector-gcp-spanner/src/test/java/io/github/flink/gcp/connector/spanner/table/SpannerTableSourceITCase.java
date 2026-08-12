@@ -33,6 +33,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -73,6 +74,48 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                                 "SELECT f.id, s.name FROM facts AS f LEFT JOIN lookup_source "
                                         + "FOR SYSTEM_TIME AS OF f.event_time AS s "
                                         + "ON f.tenant = s.tenant AND f.id = s.id ORDER BY f.id"))
+                .extracting(row -> row.getField(1))
+                .containsExactly("Ada", null);
+    }
+
+    @ParameterizedTest
+    @MethodSource("lookupCases")
+    void looksUpUuidCompositeKeysInBothDialects(Dialect dialect, boolean async) throws Exception {
+        SpannerDatabase database = uuidLookupDatabase(dialect);
+        UUID id = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newInsertBuilder("uuid_lookup_records")
+                                        .set("external_id")
+                                        .to(Value.uuid(id))
+                                        .set("tenant")
+                                        .to(1L)
+                                        .set("name")
+                                        .to("Ada")
+                                        .build()));
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(uuidLookupTableDdl(database, dialect, async));
+        table.executeSql(
+                "CREATE TABLE uuid_facts (id BIGINT, tenant BIGINT, event_time AS PROCTIME()) "
+                        + "WITH ('connector'='datagen', 'number-of-rows'='2', "
+                        + "'fields.id.kind'='sequence', 'fields.id.start'='1', "
+                        + "'fields.id.end'='2', 'fields.tenant.kind'='sequence', "
+                        + "'fields.tenant.start'='1', 'fields.tenant.end'='2')");
+
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT f.id, s.name FROM uuid_facts AS f "
+                                        + "LEFT JOIN uuid_lookup_source "
+                                        + "FOR SYSTEM_TIME AS OF f.event_time AS s "
+                                        + "ON f.tenant = s.tenant AND "
+                                        + "CASE WHEN f.id = 1 THEN "
+                                        + "'F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6' ELSE "
+                                        + "'00000000-0000-0000-0000-000000000000' END "
+                                        + "= s.external_id ORDER BY f.id"))
                 .extracting(row -> row.getField(1))
                 .containsExactly("Ada", null);
     }
@@ -156,6 +199,21 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE lookup_records (id INT64 NOT NULL, tenant INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id, tenant)");
     }
 
+    private static SpannerDatabase uuidLookupDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE TABLE uuid_lookup_records (external_id uuid NOT NULL, "
+                            + "tenant bigint NOT NULL, name varchar(64), "
+                            + "PRIMARY KEY (external_id, tenant))");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE TABLE uuid_lookup_records (external_id UUID NOT NULL, "
+                        + "tenant INT64 NOT NULL, name STRING(64)) "
+                        + "PRIMARY KEY (external_id, tenant)");
+    }
+
     private static Value json(Dialect dialect, String value) {
         return dialect == Dialect.POSTGRESQL ? Value.pgJsonb(value) : Value.json(value);
     }
@@ -209,6 +267,38 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "  'dialect' = '"
                 + dialect.name()
                 + "',\n"
+                + "  'lookup.async' = '"
+                + async
+                + "',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String uuidLookupTableDdl(
+            SpannerDatabase database, Dialect dialect, boolean async) {
+        return "CREATE TABLE uuid_lookup_source (\n"
+                + "  external_id STRING,\n"
+                + "  tenant BIGINT,\n"
+                + "  name STRING,\n"
+                + "  PRIMARY KEY (external_id, tenant) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + "  'table' = 'uuid_lookup_records',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'schema.uuid-field-paths' = 'external_id',\n"
                 + "  'lookup.async' = '"
                 + async
                 + "',\n"
