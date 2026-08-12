@@ -23,6 +23,7 @@ import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.api.gax.batching.BatchingException;
 import com.google.api.gax.batching.BatchingSettings;
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
@@ -145,6 +146,17 @@ class DefaultMutationBatcherFactoryTest {
         // The emulator mode is the only one that must never present credentials.
         assertThat(settings.getStubSettings().getCredentialsProvider().getClass().getSimpleName())
                 .isEqualTo("NoCredentialsProvider");
+    }
+
+    @Test
+    void injectsTheRuntimeCredentialProvider() {
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+        DefaultMutationBatcherFactory factory =
+                new DefaultMutationBatcherFactory(
+                        null, BigtableWriterOptions.defaults(), null, provider);
+
+        assertThat(factory.settings(TABLE).getStubSettings().getCredentialsProvider())
+                .isSameAs(provider);
     }
 
     @Test

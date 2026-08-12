@@ -47,6 +47,7 @@ resumes a broken `ReadRows` stream from the last key it saw.
 | `destinationResolver` | — | Resolves the table per record. Runs before the serializer; returning `null` fails the job |
 | `serializer` | **required** | Turns a record into a `RowMutationEntry`, or into `null` to skip it |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through, which is what selects the routing policy and the request priority. **A Data Boost profile is read-only** — its eligible methods are `ReadRows`, `SampleRowKeys` and `PingAndWarm`, and it carries neither a request priority nor a routing policy of its own — so naming one here breaks writes. The connector cannot tell locally what kind a profile is, which is why this is documented rather than rejected at `build()` |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when each writer starts and shares it with that writer's data and table-admin clients. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
@@ -148,6 +149,7 @@ Bigtable, whose rejection names what it refused.
 | `prefix` | *unset ⇒ the whole table* | Adds every row whose key starts with a prefix — sugar for the range that prefix describes. Repeatable, and combinable with `rowRange` |
 | `filter` | — | One server-side `Filters.Filter`, applied to every split. What it excludes never leaves the server. Last writer wins; a filter too large for the service is rejected at `build()` |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through. A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost) profile is named here like any other |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's enumerator or a TaskManager's reader starts. Every eligible process must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
 **There is no row limit, and no read-ahead or paging knobs.** A `Query.limit()` is global to a
@@ -171,6 +173,7 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | `table` | **required** | The change-stream-enabled table to read |
 | `deserializer` | **required** | Turns each `ChangeStreamMutation` into zero or more records |
 | `appProfileId` | **required** | A single-cluster-routing application profile used by every change-stream RPC |
+| `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's coordinator or a TaskManager's reader starts. Each component shares the provider among the data, table-admin and instance-admin clients that it owns, and every eligible process must see the same path. See the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |
 | `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position after clearing its stale token. Without it, an expired restore fails |
 | `endTime` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |

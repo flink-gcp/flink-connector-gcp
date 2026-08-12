@@ -49,6 +49,7 @@ public class BigtableSinkBuilder<T> {
     @Nullable private String appProfileId;
     private BigtableWriterOptions writerOptions = BigtableWriterOptions.defaults();
     private FailureHandler<? super FailedMutation> failedMutationHandler = FailureHandler.failJob();
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_NEVER;
     @Nullable private TableCreateOptions tableCreateOptions;
@@ -153,6 +154,28 @@ public class BigtableSinkBuilder<T> {
     }
 
     /**
+     * Authenticates the sink with the service-account JSON key at the given path instead of
+     * application-default credentials. The file is read on each TaskManager when its writer is
+     * created, so every TaskManager that can run the sink must see the same path. Optional; when
+     * unset the sink uses application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel carries no credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public BigtableSinkBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the sink at a Bigtable emulator instead of the production service. The connection to
      * the given {@code host:port} uses a plaintext channel with no credentials, so this must only
      * ever be used against an emulator. Optional; when unset the sink connects to Bigtable with
@@ -226,6 +249,11 @@ public class BigtableSinkBuilder<T> {
                         + " settings, but none are set. A Bigtable table's schema is its column"
                         + " families, which the sink cannot guess: set tableCreateOptions(...)"
                         + " naming them.");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         return new BigtableMutateRowsSink<>(
                 new BigtableSinkConfig<>(
                         destinationResolver,
@@ -233,6 +261,7 @@ public class BigtableSinkBuilder<T> {
                         appProfileId,
                         writerOptions,
                         failedMutationHandler,
+                        serviceAccountKeyFile,
                         emulatorEndpoint,
                         createDisposition,
                         tableCreateOptions));

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.reader;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ServerStream;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
@@ -28,6 +29,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
@@ -64,6 +66,7 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
 
     @Nullable private final String appProfileId;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     /**
      * The client, built on first use.
@@ -74,6 +77,8 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
      * while the previous one is still finishing.
      */
     @Nullable private transient volatile BigtableDataClient client;
+
+    @Nullable private transient CredentialsProvider credentialsOverride;
 
     private transient volatile boolean closed;
 
@@ -87,8 +92,16 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
      */
     public DataClientRowStreamOpener(
             @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(appProfileId, emulatorEndpoint, null);
+    }
+
+    public DataClientRowStreamOpener(
+            @Nullable String appProfileId,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
         this.appProfileId = appProfileId;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -146,8 +159,28 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
      * client looks exactly like one that does.
      */
     @VisibleForTesting
-    BigtableDataSettings settings(TableDestination table) {
-        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint).build();
+    BigtableDataSettings settings(TableDestination table) throws IOException {
+        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials())
+                .build();
+    }
+
+    /** Loads credentials when a TaskManager creates the source reader. */
+    public void loadCredentials() throws IOException {
+        credentials();
+    }
+
+    /** Supplies a runtime provider directly for settings-level tests. */
+    @VisibleForTesting
+    void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
+        this.credentialsOverride = credentialsOverride;
+    }
+
+    @Nullable
+    private CredentialsProvider credentials() throws IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
     }
 
     /**

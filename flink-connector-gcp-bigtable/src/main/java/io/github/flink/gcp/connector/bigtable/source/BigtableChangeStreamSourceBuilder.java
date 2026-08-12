@@ -40,6 +40,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private TableDestination table;
     @Nullable private BigtableChangeStreamDeserializationSchema<T> deserializer;
     @Nullable private String appProfileId;
+    @Nullable private String serviceAccountKeyFile;
     private StartPosition startPosition = StartPosition.latest();
     private Optional<StartPosition> resumeFallback = Optional.empty();
     @Nullable private Instant endTime;
@@ -65,6 +66,28 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         Preconditions.checkArgument(
                 !appProfileId.trim().isEmpty(), "appProfileId must not be blank");
         this.appProfileId = appProfileId;
+        return this;
+    }
+
+    /**
+     * Authenticates Change Streams with the service-account JSON key at the given path instead of
+     * application-default credentials. The JobManager reads it when a fresh or restored coordinator
+     * starts. Each TaskManager reads it when a reader first opens a stream or resolves an expired
+     * restored split. Every eligible process must therefore see the same path.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> serviceAccountKeyFile(
+            String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
         return this;
     }
 
@@ -111,12 +134,17 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         table,
                         deserializer,
                         appProfileId,
+                        serviceAccountKeyFile,
                         startPosition,
                         resumeFallback,
                         endTime,
-                        opener != null ? opener : new DataClientChangeStreamOpener(appProfileId),
+                        opener != null
+                                ? opener
+                                : new DataClientChangeStreamOpener(
+                                        appProfileId, serviceAccountKeyFile),
                         restoreResolver != null
                                 ? restoreResolver
-                                : new DefaultChangeStreamRestoreResolver(table, appProfileId)));
+                                : new DefaultChangeStreamRestoreResolver(
+                                        table, appProfileId, serviceAccountKeyFile)));
     }
 }

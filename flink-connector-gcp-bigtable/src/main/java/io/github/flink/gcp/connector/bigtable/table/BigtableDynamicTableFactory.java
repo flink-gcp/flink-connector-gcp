@@ -87,6 +87,7 @@ public class BigtableDynamicTableFactory
         return new HashSet<>(
                 Arrays.asList(
                         BigtableConnectorOptions.EMULATOR_ENDPOINT,
+                        BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         BigtableConnectorOptions.NULL_STRING_LITERAL,
                         BigtableConnectorOptions.SCAN_APP_PROFILE_ID,
                         BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
@@ -131,6 +132,7 @@ public class BigtableDynamicTableFactory
         helper.validate();
 
         ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
         BigtableTableSchema schema =
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
@@ -147,6 +149,9 @@ public class BigtableDynamicTableFactory
                 .nullStringLiteral(config.get(BigtableConnectorOptions.NULL_STRING_LITERAL))
                 .appProfileId(
                         config.getOptional(BigtableConnectorOptions.SINK_APP_PROFILE_ID)
+                                .orElse(null))
+                .serviceAccountKeyFile(
+                        config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .writerOptions(WriterOptionsMapper.map(config))
                 .createDisposition(
@@ -170,6 +175,7 @@ public class BigtableDynamicTableFactory
         helper.validate();
 
         ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
         BigtableTableSchema schema =
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
@@ -213,6 +219,9 @@ public class BigtableDynamicTableFactory
                 .appProfileId(
                         config.getOptional(BigtableConnectorOptions.SCAN_APP_PROFILE_ID)
                                 .orElse(null))
+                .serviceAccountKeyFile(
+                        config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                                .orElse(null))
                 .prefixes(prefixes)
                 .rangeStartClosed(rangeStartClosed)
                 .rangeEndOpen(rangeEndOpen)
@@ -223,6 +232,30 @@ public class BigtableDynamicTableFactory
                 .lookupOptions(BigtableLookupConfig.from(config))
                 .producedDataType(physicalDataType)
                 .build();
+    }
+
+    private static void validateCredentialsMode(ReadableConfig config) {
+        config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                .ifPresent(
+                        path -> {
+                            if (path.isBlank()) {
+                                throw new ValidationException(
+                                        String.format(
+                                                "Option '%s' must not be blank.",
+                                                BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE
+                                                        .key()));
+                            }
+                        });
+        if (config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).isPresent()
+                && config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Options '%s' and '%s' cannot be combined: an emulator uses a"
+                                    + " plaintext channel with no credentials. Remove one of the"
+                                    + " two options.",
+                            BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
+                            BigtableConnectorOptions.EMULATOR_ENDPOINT.key()));
+        }
     }
 
     private static List<ByteString> decodePrefixes(

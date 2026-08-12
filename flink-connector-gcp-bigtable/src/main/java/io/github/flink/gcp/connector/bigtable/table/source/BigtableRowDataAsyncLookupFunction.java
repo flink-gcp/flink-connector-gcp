@@ -61,6 +61,7 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
+            @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             int maxRetries) {
         this(
@@ -69,7 +70,12 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
                 nullStringLiteral,
                 maxRetries,
                 new BigtableDataClientRowLookup(
-                        destination, filter, ranges, appProfileId, emulatorEndpoint));
+                        destination,
+                        filter,
+                        ranges,
+                        appProfileId,
+                        serviceAccountKeyFile,
+                        emulatorEndpoint));
     }
 
     @VisibleForTesting

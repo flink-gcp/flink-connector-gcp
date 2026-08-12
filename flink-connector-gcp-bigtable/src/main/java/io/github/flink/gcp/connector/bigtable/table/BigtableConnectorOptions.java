@@ -95,6 +95,16 @@ public final class BigtableConnectorOptions {
                                     + " plaintext without credentials, so it is for testing"
                                     + " only.");
 
+    public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
+            ConfigOptions.key("service-account-key-file")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A service-account JSON key-file path read by each Bigtable runtime"
+                                    + " component that opens a client. Uses application-default"
+                                    + " credentials when unset and cannot be combined with"
+                                    + " emulator-endpoint.");
+
     // ------------------------------------------------------------------------
     //  Cell encoding
     // ------------------------------------------------------------------------

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -37,11 +38,19 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
 
     private final TableDestination table;
     private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private transient StartPositionResolver resolver;
+    @Nullable private transient CredentialsProvider credentialsOverride;
 
     public DefaultChangeStreamRestoreResolver(TableDestination table, String appProfileId) {
+        this(table, appProfileId, null);
+    }
+
+    public DefaultChangeStreamRestoreResolver(
+            TableDestination table, String appProfileId, @Nullable String serviceAccountKeyFile) {
         this.table = table;
         this.appProfileId = appProfileId;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -49,7 +58,8 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
             ChangeStreamPartitionSplit split, Optional<StartPosition> fallback) throws Exception {
         if (resolver == null) {
             try (DefaultChangeStreamCoordinatorClient client =
-                    new DefaultChangeStreamCoordinatorClient(table, appProfileId)) {
+                    new DefaultChangeStreamCoordinatorClient(
+                            table, appProfileId, serviceAccountKeyFile, credentialsOverride)) {
                 java.time.Duration retention = client.retention();
                 resolver = StartPositionResolver.create(getClass(), () -> retention);
             }
@@ -58,5 +68,10 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
                 resolver.resolveRestored(
                         RowRanges.format(split.getPartition()), split.getLowWatermark(), fallback);
         return restart.map(split::restartAt).orElse(split);
+    }
+
+    /** Supplies the provider loaded when the TaskManager creates the source reader. */
+    public void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
+        this.credentialsOverride = credentialsOverride;
     }
 }

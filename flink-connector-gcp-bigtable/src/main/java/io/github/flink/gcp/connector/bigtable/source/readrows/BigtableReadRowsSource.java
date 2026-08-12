@@ -36,10 +36,12 @@ import org.apache.flink.util.UserCodeClassLoader;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableRecordEmitter;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSourceReader;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSourceReaderMetrics;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSplitReader;
+import io.github.flink.gcp.connector.bigtable.source.readrows.reader.DataClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
 
@@ -84,12 +86,15 @@ public class BigtableReadRowsSource<T>
     @Override
     public SourceReader<T, RowRangeSplit> createReader(SourceReaderContext context)
             throws Exception {
+        RowStreamOpener opener = config.getOpener();
+        if (opener instanceof DataClientRowStreamOpener) {
+            ((DataClientRowStreamOpener) opener).loadCredentials();
+        }
         BigtableRowDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
         BigtableSourceReaderMetrics metrics =
                 new BigtableSourceReaderMetrics(context.metricGroup());
-        RowStreamOpener opener = config.getOpener();
         Supplier<SplitReader<Row, RowRangeSplit>> splitReaderSupplier =
                 () ->
                         new BigtableSplitReader(
@@ -108,14 +113,23 @@ public class BigtableReadRowsSource<T>
 
     @Override
     public SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> createEnumerator(
-            SplitEnumeratorContext<RowRangeSplit> context) {
+            SplitEnumeratorContext<RowRangeSplit> context) throws Exception {
+        loadEnumeratorCredentials();
         return new BigtableScanSplitEnumerator(context, config, null);
     }
 
     @Override
     public SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> restoreEnumerator(
-            SplitEnumeratorContext<RowRangeSplit> context, BigtableScanEnumeratorState checkpoint) {
+            SplitEnumeratorContext<RowRangeSplit> context, BigtableScanEnumeratorState checkpoint)
+            throws Exception {
+        loadEnumeratorCredentials();
         return new BigtableScanSplitEnumerator(context, config, checkpoint);
+    }
+
+    private void loadEnumeratorCredentials() throws java.io.IOException {
+        if (config.getSampler() instanceof DataClientRowKeySampler) {
+            ((DataClientRowKeySampler) config.getSampler()).loadCredentials();
+        }
     }
 
     @Override

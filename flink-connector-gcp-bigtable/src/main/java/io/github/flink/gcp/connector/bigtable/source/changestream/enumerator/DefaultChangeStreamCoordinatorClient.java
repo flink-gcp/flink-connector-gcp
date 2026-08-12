@@ -19,14 +19,19 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import com.google.cloud.bigtable.admin.v2.models.AppProfile;
 import com.google.cloud.bigtable.admin.v2.models.Table;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.slf4j.Logger;
@@ -49,22 +54,48 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     private final TableDestination table;
     private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final transient Operations testOperations;
 
     @Nullable private transient BigtableDataClient dataClient;
     @Nullable private transient BigtableTableAdminClient tableAdminClient;
     @Nullable private transient BigtableInstanceAdminClient instanceAdminClient;
+    @Nullable private transient CredentialsProvider credentialsOverride;
 
     public DefaultChangeStreamCoordinatorClient(TableDestination table, String appProfileId) {
-        this(table, appProfileId, null);
+        this(table, appProfileId, null, null);
+    }
+
+    public DefaultChangeStreamCoordinatorClient(
+            TableDestination table, String appProfileId, @Nullable String serviceAccountKeyFile) {
+        this(table, appProfileId, serviceAccountKeyFile, null);
+    }
+
+    public DefaultChangeStreamCoordinatorClient(
+            TableDestination table,
+            String appProfileId,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable CredentialsProvider credentialsOverride) {
+        this(table, appProfileId, serviceAccountKeyFile, credentialsOverride, null);
     }
 
     DefaultChangeStreamCoordinatorClient(
             TableDestination table, String appProfileId, @Nullable Operations testOperations) {
+        this(table, appProfileId, null, null, testOperations);
+    }
+
+    private DefaultChangeStreamCoordinatorClient(
+            TableDestination table,
+            String appProfileId,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable CredentialsProvider credentialsOverride,
+            @Nullable Operations testOperations) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.appProfileId =
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         Preconditions.checkArgument(!appProfileId.isEmpty(), "appProfileId must not be empty");
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.credentialsOverride = credentialsOverride;
         this.testOperations = testOperations;
     }
 
@@ -125,26 +156,62 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     private BigtableDataClient dataClient() throws Exception {
         if (dataClient == null) {
-            dataClient =
-                    BigtableDataClient.create(
-                            BigtableDataClients.settings(table, appProfileId, null).build());
+            dataClient = BigtableDataClient.create(dataSettings());
         }
         return dataClient;
     }
 
     private BigtableTableAdminClient tableAdmin() throws Exception {
         if (tableAdminClient == null) {
-            tableAdminClient =
-                    BigtableTableAdminClient.create(table.getProject(), table.getInstance());
+            tableAdminClient = BigtableTableAdminClient.create(tableAdminSettings());
         }
         return tableAdminClient;
     }
 
     private BigtableInstanceAdminClient instanceAdmin() throws Exception {
         if (instanceAdminClient == null) {
-            instanceAdminClient = BigtableInstanceAdminClient.create(table.getProject());
+            instanceAdminClient = BigtableInstanceAdminClient.create(instanceAdminSettings());
         }
         return instanceAdminClient;
+    }
+
+    @Nullable
+    private CredentialsProvider credentials() throws java.io.IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = BigtableCredentials.loadAll(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
+    }
+
+    /** Loads the shared data and admin provider when the JobManager starts the coordinator. */
+    public void loadCredentials() throws java.io.IOException {
+        credentials();
+    }
+
+    BigtableDataSettings dataSettings() throws java.io.IOException {
+        return BigtableDataClients.settings(table, appProfileId, null, credentials()).build();
+    }
+
+    BigtableTableAdminSettings tableAdminSettings() throws java.io.IOException {
+        CredentialsProvider credentials = credentials();
+        BigtableTableAdminSettings.Builder settings =
+                BigtableTableAdminSettings.newBuilder()
+                        .setProjectId(table.getProject())
+                        .setInstanceId(table.getInstance());
+        if (credentials != null) {
+            settings.setCredentialsProvider(credentials);
+        }
+        return settings.build();
+    }
+
+    BigtableInstanceAdminSettings instanceAdminSettings() throws java.io.IOException {
+        CredentialsProvider credentials = credentials();
+        BigtableInstanceAdminSettings.Builder settings =
+                BigtableInstanceAdminSettings.newBuilder().setProjectId(table.getProject());
+        if (credentials != null) {
+            settings.setCredentialsProvider(credentials);
+        }
+        return settings.build();
     }
 
     @Override
@@ -157,6 +224,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         dataClient = null;
         tableAdminClient = null;
         instanceAdminClient = null;
+        credentialsOverride = null;
     }
 
     interface Operations extends AutoCloseable {

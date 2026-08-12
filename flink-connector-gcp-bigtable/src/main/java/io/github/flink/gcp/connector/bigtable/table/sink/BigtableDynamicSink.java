@@ -65,6 +65,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private final TableDestination destination;
     private final String nullStringLiteral;
     @Nullable private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     private final BigtableWriterOptions writerOptions;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
@@ -82,6 +83,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 Preconditions.checkNotNull(
                         builder.nullStringLiteral, "nullStringLiteral must not be null");
         this.appProfileId = builder.appProfileId;
+        this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.writerOptions =
                 Preconditions.checkNotNull(builder.writerOptions, "writerOptions must not be null");
         this.createDisposition = builder.createDisposition;
@@ -158,6 +160,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         if (createDisposition != null) {
             builder.createDisposition(createDisposition);
         }
@@ -178,6 +183,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .destination(destination)
                 .nullStringLiteral(nullStringLiteral)
                 .appProfileId(appProfileId)
+                .serviceAccountKeyFile(serviceAccountKeyFile)
                 .writerOptions(writerOptions)
                 .createDisposition(createDisposition)
                 .tableCreateOptions(tableCreateOptions)
@@ -207,6 +213,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && destination.equals(that.destination)
                 && nullStringLiteral.equals(that.nullStringLiteral)
                 && Objects.equals(appProfileId, that.appProfileId)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && writerOptions.equals(that.writerOptions)
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
@@ -224,6 +231,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 destination,
                 nullStringLiteral,
                 appProfileId,
+                serviceAccountKeyFile,
                 writerOptions,
                 createDisposition,
                 tableCreateOptions,
@@ -241,6 +249,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private TableDestination destination;
         private String nullStringLiteral;
         @Nullable private String appProfileId;
+        @Nullable private String serviceAccountKeyFile;
         private BigtableWriterOptions writerOptions;
         @Nullable private CreateDisposition createDisposition;
         @Nullable private TableCreateOptions tableCreateOptions;
@@ -285,6 +294,15 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder appProfileId(@Nullable String appProfileId) {
             this.appProfileId = appProfileId;
+            return this;
+        }
+
+        /**
+         * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+         * @return this builder
+         */
+        public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
             return this;
         }
 

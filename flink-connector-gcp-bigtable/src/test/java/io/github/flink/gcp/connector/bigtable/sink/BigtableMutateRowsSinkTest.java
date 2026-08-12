@@ -121,6 +121,25 @@ class BigtableMutateRowsSinkTest {
         assertThat(handler.closes).isZero();
     }
 
+    @Test
+    void loadsTheConfiguredCredentialBeforeOpeningSinkRuntimeState() {
+        String path = "/missing/mounted-bigtable-key.json";
+        Sink<String> sink =
+                BigtableSink.<String>builder()
+                        .table(TABLE)
+                        .serializer(SERIALIZER)
+                        .serviceAccountKeyFile(path)
+                        .build();
+
+        assertThatThrownBy(() -> sink.createWriter(null))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessage("Failed to load the configured Bigtable service-account key file.")
+                .hasNoCause()
+                .hasToString(
+                        "java.io.IOException: Failed to load the configured Bigtable"
+                                + " service-account key file.");
+    }
+
     /**
      * Returns options carrying a value their builder rejects, as a deserialized options object can
      * — the case the writer's own precondition exists for.

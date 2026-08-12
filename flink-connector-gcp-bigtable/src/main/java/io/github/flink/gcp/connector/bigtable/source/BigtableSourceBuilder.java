@@ -62,6 +62,7 @@ public class BigtableSourceBuilder<T> {
     private final List<ByteStringRange> ranges = new ArrayList<>();
     private @Nullable Filters.Filter filter;
     private @Nullable String appProfileId;
+    private @Nullable String serviceAccountKeyFile;
     private @Nullable EmulatorEndpoint emulatorEndpoint;
     private @Nullable RowKeySampler sampler;
     private @Nullable RowStreamOpener opener;
@@ -220,6 +221,29 @@ public class BigtableSourceBuilder<T> {
     }
 
     /**
+     * Authenticates the source with the service-account JSON key at the given path instead of
+     * application-default credentials. The JobManager reads the file when a fresh or unplanned
+     * restored enumerator samples row keys, and each TaskManager reads it when its reader first
+     * opens a stream. Every eligible process must therefore see the same path. Optional; when unset
+     * the source uses application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel carries no credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public BigtableSourceBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the source at an emulator, over a plaintext channel with no credentials. Never
      * production.
      *
@@ -272,6 +296,11 @@ public class BigtableSourceBuilder<T> {
         Preconditions.checkState(table != null, "A table is required: set table(...).");
         Preconditions.checkState(
                 deserializer != null, "A deserializer is required: set deserializer(...).");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         checkFilterFits();
         return new BigtableReadRowsSource<>(
                 new BigtableSourceConfig<>(
@@ -280,12 +309,15 @@ public class BigtableSourceBuilder<T> {
                         rangesToRead(),
                         filter,
                         appProfileId,
+                        serviceAccountKeyFile,
                         sampler != null
                                 ? sampler
-                                : new DataClientRowKeySampler(appProfileId, emulatorEndpoint),
+                                : new DataClientRowKeySampler(
+                                        appProfileId, emulatorEndpoint, serviceAccountKeyFile),
                         opener != null
                                 ? opener
-                                : new DataClientRowStreamOpener(appProfileId, emulatorEndpoint),
+                                : new DataClientRowStreamOpener(
+                                        appProfileId, emulatorEndpoint, serviceAccountKeyFile),
                         maxRowsPerFetch));
     }
 

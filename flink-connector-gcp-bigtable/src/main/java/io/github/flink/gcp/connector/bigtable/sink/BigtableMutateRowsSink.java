@@ -23,13 +23,17 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
+import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigtable.sink.writer.BigtableWriter;
 import io.github.flink.gcp.connector.bigtable.sink.writer.DefaultMutationBatcherFactory;
 import io.github.flink.gcp.connector.bigtable.sink.writer.MutationBatcherFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 
@@ -62,12 +66,16 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        CredentialsProvider credentials =
+                BigtableCredentials.loadDataAndTableAdmin(config.getServiceAccountKeyFile());
         return createWriter(
                 context,
                 new DefaultMutationBatcherFactory(
                         config.getAppProfileId(),
                         config.getWriterOptions(),
-                        config.getEmulatorEndpoint()));
+                        config.getEmulatorEndpoint(),
+                        credentials),
+                credentials);
     }
 
     /**
@@ -80,6 +88,14 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
      */
     @VisibleForTesting
     SinkWriter<T> createWriter(WriterInitContext context, MutationBatcherFactory factory)
+            throws IOException {
+        return createWriter(context, factory, null);
+    }
+
+    private SinkWriter<T> createWriter(
+            WriterInitContext context,
+            MutationBatcherFactory factory,
+            @Nullable CredentialsProvider credentials)
             throws IOException {
         try {
             config.getSerializer().open(context.asSerializationSchemaInitializationContext());
@@ -94,7 +110,7 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T> {
         // Both constructed unconditionally, and neither opens a connection: the factory builds a
         // client per instance on the first record routed there, and the admin's client is per-call,
         // built only when a repair actually creates something.
-        TableAdmin tableAdmin = new BigtableTableAdmin(config.getEmulatorEndpoint());
+        TableAdmin tableAdmin = new BigtableTableAdmin(config.getEmulatorEndpoint(), credentials);
         try {
             return createWriter(
                     factory, tableAdmin, context.getMailboxExecutor(), context.metricGroup());

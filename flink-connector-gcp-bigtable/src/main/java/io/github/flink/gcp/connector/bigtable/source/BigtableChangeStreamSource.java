@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.source;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
@@ -30,6 +31,8 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import com.google.api.gax.core.CredentialsProvider;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -37,6 +40,8 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPa
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.BigtableChangeStreamSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.BigtableChangeStreamReader;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DefaultChangeStreamRestoreResolver;
 
 /** FLIP-27 source for Bigtable Change Streams. */
 @PublicEvolving
@@ -55,6 +60,12 @@ public final class BigtableChangeStreamSource<T>
         return new BigtableChangeStreamSourceBuilder<>();
     }
 
+    /** Returns the source configuration for tests. */
+    @VisibleForTesting
+    BigtableChangeStreamSourceConfig<T> getConfig() {
+        return config;
+    }
+
     @Override
     public Boundedness getBoundedness() {
         return config.endTime == null ? Boundedness.CONTINUOUS_UNBOUNDED : Boundedness.BOUNDED;
@@ -63,6 +74,15 @@ public final class BigtableChangeStreamSource<T>
     @Override
     public SourceReader<T, ChangeStreamPartitionSplit> createReader(SourceReaderContext context)
             throws Exception {
+        CredentialsProvider credentials =
+                BigtableCredentials.loadDataAndTableAdmin(config.serviceAccountKeyFile);
+        if (config.opener instanceof DataClientChangeStreamOpener) {
+            ((DataClientChangeStreamOpener) config.opener).setCredentialsOverride(credentials);
+        }
+        if (config.restoreResolver instanceof DefaultChangeStreamRestoreResolver) {
+            ((DefaultChangeStreamRestoreResolver) config.restoreResolver)
+                    .setCredentialsOverride(credentials);
+        }
         config.deserializer.open(new ReaderInitializationContext(context));
         return new BigtableChangeStreamReader<>(context, config);
     }
@@ -87,9 +107,13 @@ public final class BigtableChangeStreamSource<T>
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             BigtableChangeStreamEnumeratorState restored)
             throws Exception {
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(
+                        config.table, config.appProfileId, config.serviceAccountKeyFile);
+        client.loadCredentials();
         return new BigtableChangeStreamSplitEnumerator(
                 context,
-                new DefaultChangeStreamCoordinatorClient(config.table, config.appProfileId),
+                client,
                 config.startPosition,
                 java.util.Optional.ofNullable(config.resumeFallback),
                 restored,

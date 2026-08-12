@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.bigtable.v2.ReadChangeStreamRequest;
 import com.google.bigtable.v2.RowRange;
 import com.google.cloud.bigtable.data.v2.internal.RequestContext;
@@ -31,6 +32,19 @@ import java.util.Collections;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class DataClientChangeStreamOpenerTest {
+
+    @Test
+    void injectsTheRuntimeCredentialProvider() throws Exception {
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile");
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+        opener.setCredentialsOverride(provider);
+
+        assertThat(
+                        opener.settings(TableDestination.of("project", "instance", "table"))
+                                .getStubSettings()
+                                .getCredentialsProvider())
+                .isSameAs(provider);
+    }
 
     @Test
     void openQuerySendsExplicitClosedOpenEmptyKeysForTheWholeKeyspace() {

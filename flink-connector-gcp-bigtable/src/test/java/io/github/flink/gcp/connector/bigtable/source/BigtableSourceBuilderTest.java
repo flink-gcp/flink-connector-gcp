@@ -198,6 +198,49 @@ class BigtableSourceBuilderTest {
 
         assertThat(config.getFilter()).isEqualTo(filter);
         assertThat(config.getAppProfileId()).isEqualTo("batch-profile");
+        assertThat(config.getServiceAccountKeyFile()).isNull();
+    }
+
+    @Test
+    void serviceAccountKeyFilePropagatesWithoutBeingParsedAtBuildTime() {
+        BigtableSourceConfig<String> config =
+                ((io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource<
+                                        String>)
+                                BigtableSource.<String>builder()
+                                        .table(TestSources.TABLE)
+                                        .deserializer(new TestSources.RowKeyDeserializer())
+                                        .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
+                                        .build())
+                        .getConfig();
+
+        assertThat(config.getServiceAccountKeyFile()).isEqualTo("/var/run/secrets/bigtable.json");
+    }
+
+    @Test
+    void rejectsNullOrBlankServiceAccountKeyFile() {
+        assertThatThrownBy(() -> BigtableSource.<String>builder().serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> BigtableSource.<String>builder().serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
+    }
+
+    @Test
+    void rejectsAServiceAccountKeyFileAlongsideAnEmulatorInEitherOrder() {
+        assertThatThrownBy(() -> minimal().serviceAccountKeyFile("key.json").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)");
+        assertThatThrownBy(
+                        () ->
+                                BigtableSource.<String>builder()
+                                        .table(TestSources.TABLE)
+                                        .deserializer(new TestSources.RowKeyDeserializer())
+                                        .serviceAccountKeyFile("key.json")
+                                        .emulatorEndpoint("localhost:1")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("emulatorEndpoint(...)");
     }
 
     @Test

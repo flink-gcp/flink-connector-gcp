@@ -19,11 +19,13 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
@@ -59,6 +61,7 @@ public final class DataClientRowKeySampler implements RowKeySampler {
 
     @Nullable private final String appProfileId;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     /**
      * The client, built on first use.
@@ -69,6 +72,8 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      * coordinator thread.
      */
     @Nullable private transient volatile BigtableDataClient client;
+
+    @Nullable private transient CredentialsProvider credentialsOverride;
 
     private transient volatile boolean closed;
 
@@ -82,8 +87,16 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      */
     public DataClientRowKeySampler(
             @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(appProfileId, emulatorEndpoint, null);
+    }
+
+    public DataClientRowKeySampler(
+            @Nullable String appProfileId,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
         this.appProfileId = appProfileId;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -142,7 +155,27 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      * client looks exactly like one that does.
      */
     @VisibleForTesting
-    BigtableDataSettings settings(TableDestination table) {
-        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint).build();
+    BigtableDataSettings settings(TableDestination table) throws IOException {
+        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials())
+                .build();
+    }
+
+    /** Loads credentials when the JobManager creates or restores the enumerator. */
+    public void loadCredentials() throws IOException {
+        credentials();
+    }
+
+    /** Supplies a runtime provider directly for settings-level tests. */
+    @VisibleForTesting
+    void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
+        this.credentialsOverride = credentialsOverride;
+    }
+
+    @Nullable
+    private CredentialsProvider credentials() throws IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
     }
 }

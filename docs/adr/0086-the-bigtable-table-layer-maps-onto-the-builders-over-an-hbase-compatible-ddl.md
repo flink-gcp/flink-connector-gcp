@@ -17,10 +17,12 @@ limitations under the License.
 # ADR-0086: The Bigtable table layer maps onto the builders over an HBase-compatible DDL
 
 - Status: Accepted
-- Date: 2026-08-10; revised by [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473) (2026-08-11)
+- Date: 2026-08-10; revised by [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473) (2026-08-11),
+  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543) (2026-08-12)
 - Issues: [#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458) (under
   [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217); ADR-0014 holds the
-  shared mapping rules), [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473)
+  shared mapping rules), [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473),
+  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -37,6 +39,19 @@ The `table` layer is a *mapping* onto the DataStream builders, never a second im
 Pub/Sub rules (ADR-0014) apply unchanged. What follows is this module's own.
 
 ## Decision
+
+**Explicit credentials remain a builder mapping, not a Table-only provider abstraction**
+([#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543)).
+ADC remains the default, including `GOOGLE_APPLICATION_CREDENTIALS`.
+The three DataStream builders accept one service-account JSON key-file path, and the Table layer
+maps the shared `service-account-key-file` option onto the same setter for the sink, bounded scan,
+sync and async point lookup, and partial and full lookup caches.
+Only the path crosses Flink serialization.
+Each writer, reader or enumerator loads and scopes it when that runtime component starts and shares
+the provider among the data, table-admin and instance-admin clients that component owns.
+The emulator mode rejects the path because its plaintext channel deliberately uses no credentials.
+Raw or Base64-encoded JSON, tokens and custom provider objects stay out because they introduce
+secret exposure or lifecycle contracts that the path-only use case does not require.
 
 **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
 normative.** Exactly one column is not a `ROW` and is the row key; every `ROW` column is a column

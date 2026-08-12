@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.bigtable.admin.v2.ChangeStreamConfig;
 import com.google.cloud.bigtable.admin.v2.models.AppProfile;
 import com.google.cloud.bigtable.admin.v2.models.Table;
@@ -107,6 +108,18 @@ class DefaultChangeStreamCoordinatorClientTest {
         client(operations).close();
 
         assertThat(operations.closed).isTrue();
+    }
+
+    @Test
+    void injectsOneRuntimeProviderIntoEveryCoordinatorClientFamily() throws Exception {
+        NoCredentialsProvider provider = NoCredentialsProvider.create();
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile", null, provider);
+
+        assertThat(client.dataSettings().getStubSettings().getCredentialsProvider())
+                .isSameAs(provider);
+        assertThat(client.tableAdminSettings().getCredentialsProvider()).isSameAs(provider);
+        assertThat(client.instanceAdminSettings().getCredentialsProvider()).isSameAs(provider);
     }
 
     private static DefaultChangeStreamCoordinatorClient client(FakeOperations operations) {

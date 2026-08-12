@@ -97,11 +97,44 @@ and an Avro convenience is additive whenever there is a use case asking for it.
 `context` is Flink's write context, so `context.timestamp()` is the record's event time — usually
 the right cell timestamp when the record carries none of its own.
 
+`serviceAccountKeyFile(path)` authenticates every data client and the table auto-creation admin
+with the service-account JSON key at `path`.
+The file is read when each writer starts, so the same path must be readable on every eligible
+TaskManager.
+When the setter is absent, application-default credentials remain in effect, including
+`GOOGLE_APPLICATION_CREDENTIALS`.
+A read or parse failure reports neither the path nor credential material.
+The option is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
+See [Credential file deployment](#credential-file-deployment) before deploying a key file.
+
 `emulatorEndpoint("host:port")` points the sink at a Bigtable emulator over a plaintext channel with
 no credentials, so it must only ever be used against an emulator — never against production
 Bigtable. The setter parses it into the host and port the client's emulator settings take, so a
 malformed value is rejected at `build()` on the client rather than when the writer builds its client
 on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
+
+## Credential file deployment
+
+> **Authentication recommendation.**
+> Google recommends [avoiding service-account keys whenever possible](https://cloud.google.com/iam/docs/best-practices-service-accounts#choose-when-to-use).
+> Prefer keyless application-default credentials from an attached service account or Workload Identity.
+> Use `serviceAccountKeyFile(path)` only when the job must select an explicit service account that the process environment cannot provide.
+>
+> On Kubernetes, store the JSON key in a `Secret` and mount it as a read-only volume at the same absolute container path in every pod that may load it.
+> A sink needs the path on every eligible TaskManager; either source also needs it on the JobManager.
+> This path is inside the container, not a path that merely exists on the Kubernetes node.
+> Do not store credential material in a `ConfigMap`, SQL DDL, a savepoint or connector state.
+> Mount the Secret directory rather than one file through `subPath` when in-place rotation is expected, because Kubernetes does not update a Secret mounted with `subPath`.
+>
+> On a session cluster, the same path must remain readable by every eligible JobManager and TaskManager process, including replacements and newly allocated TaskManagers.
+> Each writer, reader or enumerator reads the file once when that runtime component starts.
+> Replacing the mounted file does not hot-reload credentials in an already running component.
+> Wait until a normally projected Secret has updated in every eligible pod before restarting the affected job; with a `subPath` mount, recreate the affected pods or cluster first.
+> Replace the key in every workload that uses it and validate those workloads before disabling the replaced key.
+> Monitor them after disabling it, then delete it after confirming that they still work, following Google's [service-account key rotation guidance](https://cloud.google.com/iam/docs/key-rotation#process).
+>
+> Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
+> Prefer an application or per-job cluster with Workload Identity when jobs require separate identities.
 
 ## Per-record destinations
 
@@ -517,6 +550,10 @@ API notes:
 - `table(...)` takes the same `TableDestination` the sink does, and `appProfileId(...)` is a source
   option for the same reason it is a sink one: it chooses a path to the data, not the data's
   address.
+- `serviceAccountKeyFile(path)` is read by the JobManager when the enumerator plans or restores
+  splits and by each TaskManager when its reader starts.
+  The key authenticates both `SampleRowKeys` and `ReadRows` clients.
+  It is rejected beside `emulatorEndpoint(...)`; when absent, ADC remains in effect.
 - Every option is listed, with its default, in the
   [configuration reference]({{< relref "docs/reference/bigtable" >}}#bigtablesourcebuilder).
 
@@ -657,6 +694,12 @@ DataStream<ChangeStreamMutation> transformed =
 
 The application profile is required and must use single-cluster routing. The Bigtable emulator
 does not implement Change Streams, so this builder deliberately has no emulator option.
+
+`serviceAccountKeyFile(path)` is read by the JobManager coordinator and by each TaskManager reader.
+The coordinator shares one provider among its data, table-admin and instance-admin clients; the
+reader shares one provider between streaming and restore-time table metadata calls.
+When the setter is absent, ADC remains in effect.
+The same path must therefore be mounted on every eligible JobManager and TaskManager process.
 
 Fresh jobs default to `StartPosition.latest()`. Restores use the exact checkpointed continuation
 token and estimated low watermark instead. If that position has fallen outside the table's
@@ -852,12 +895,14 @@ excludes from every test run by default, so an ordinary `mvn verify` does not se
 whatever the environment holds. `just e2e` clears that exclusion (`-Dtest.excluded.groups=`, which
 is also how to run a single gated class by hand). The exclusion is Maven's, so a run started
 straight from an IDE bypasses it — there the environment variable is again the only thing standing
-between you and a new instance. Two things only this suite can show:
+between you and a new instance. The gated suite shows:
 
-- **The client-construction path every real job takes.** Every emulator test passes
+- **The production-endpoint ADC client-construction path.** Every emulator test passes
   `emulatorEndpoint(...)`, so the branch that builds a client over application-default credentials
   against the production endpoint runs nowhere else. A MiniCluster streaming job with checkpoints
-  covers it.
+  covers it. The explicit-key branch cannot accompany the emulator and needs no service call to
+  prove that it supplies a credentials provider: unit and runtime-boundary tests parse a key file
+  and inspect every affected client settings family.
 - **Which status Bigtable rejects a mutation with**, and therefore which side of the
   [row-level/fatal boundary](#error-handling) each rejection lands on. This is where the two
   `INVALID_ARGUMENT` examples in that table come from, where the `NOT_FOUND` of a missing table

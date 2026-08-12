@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
@@ -59,6 +60,7 @@ class BigtableSinkBuilderTest {
                         resolver -> assertThat(resolver.getDestination()).isEqualTo(TABLE));
         assertThat(config.getSerializer()).isSameAs(SERIALIZER);
         assertThat(config.getAppProfileId()).isEqualTo("batch-profile");
+        assertThat(config.getServiceAccountKeyFile()).isNull();
         assertThat(config.getWriterOptions()).isSameAs(writerOptions);
         assertThat(config.getFailedMutationHandler()).isSameAs(handler);
         assertThat(config.getEmulatorEndpoint())
@@ -71,6 +73,7 @@ class BigtableSinkBuilderTest {
                 config(BigtableSink.<String>builder().table(TABLE).serializer(SERIALIZER).build());
 
         assertThat(config.getAppProfileId()).isNull();
+        assertThat(config.getServiceAccountKeyFile()).isNull();
         assertThat(config.getEmulatorEndpoint()).isNull();
         assertThat(config.getWriterOptions()).isEqualTo(BigtableWriterOptions.defaults());
         // Fail the job, so a mutation is never dropped by a sink nobody configured.
@@ -79,6 +82,57 @@ class BigtableSinkBuilderTest {
         // garbage-collection policy somebody then has to fix.
         assertThat(config.getCreateDisposition()).isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(config.getTableCreateOptions()).isNull();
+    }
+
+    @Test
+    void serviceAccountKeyFilePropagatesAndSurvivesJobSubmissionSerialization() throws Exception {
+        Sink<String> sink =
+                BigtableSink.<String>builder()
+                        .table(TABLE)
+                        .serializer(SERIALIZER)
+                        .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
+                        .build();
+
+        Sink<String> restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(sink), getClass().getClassLoader());
+
+        assertThat(config(restored).getServiceAccountKeyFile())
+                .isEqualTo("/var/run/secrets/bigtable.json");
+    }
+
+    @Test
+    void rejectsNullOrBlankServiceAccountKeyFile() {
+        assertThatThrownBy(() -> BigtableSink.<String>builder().serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> BigtableSink.<String>builder().serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
+    }
+
+    @Test
+    void rejectsAServiceAccountKeyFileAlongsideAnEmulatorInEitherOrder() {
+        assertThatThrownBy(
+                        () ->
+                                BigtableSink.<String>builder()
+                                        .table(TABLE)
+                                        .serializer(SERIALIZER)
+                                        .serviceAccountKeyFile("key.json")
+                                        .emulatorEndpoint("localhost:8086")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)");
+        assertThatThrownBy(
+                        () ->
+                                BigtableSink.<String>builder()
+                                        .table(TABLE)
+                                        .serializer(SERIALIZER)
+                                        .emulatorEndpoint("localhost:8086")
+                                        .serviceAccountKeyFile("key.json")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("emulatorEndpoint(...)");
     }
 
     @Test

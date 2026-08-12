@@ -39,6 +39,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     final TableDestination table;
     final BigtableChangeStreamDeserializationSchema<T> deserializer;
     final String appProfileId;
+    @Nullable final String serviceAccountKeyFile;
     final StartPosition startPosition;
     @Nullable final StartPosition resumeFallback;
     @Nullable final Instant endTime;
@@ -49,6 +50,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             TableDestination table,
             BigtableChangeStreamDeserializationSchema<T> deserializer,
             String appProfileId,
+            @Nullable String serviceAccountKeyFile,
             StartPosition startPosition,
             Optional<StartPosition> resumeFallback,
             @Nullable Instant endTime,
@@ -57,6 +59,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.table = table;
         this.deserializer = deserializer;
         this.appProfileId = appProfileId;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.startPosition = startPosition;
         this.resumeFallback = resumeFallback.orElse(null);
         this.endTime = endTime;
@@ -70,6 +73,12 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
 
     public BigtableChangeStreamDeserializationSchema<T> getDeserializer() {
         return deserializer;
+    }
+
+    /** Returns the service-account key-file path, or {@code null} to use ADC. */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     @Nullable

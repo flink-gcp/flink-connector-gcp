@@ -21,18 +21,21 @@ import org.apache.flink.annotation.Internal;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.List;
 
 /** Point reads through a {@link BigtableDataClient}, owned by one lookup function instance. */
@@ -45,6 +48,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
     private final Filters.Filter filter;
     private final List<ByteStringRange> ranges;
     @Nullable private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
 
     @Nullable private transient BigtableDataClient client;
@@ -54,21 +58,30 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
+            @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint) {
         this.destination = destination;
         this.filter = filter;
         this.ranges = ranges;
         this.appProfileId = appProfileId;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
     public void open() throws Exception {
+        client = BigtableDataClient.create(settings());
+    }
+
+    private BigtableDataSettings settings() throws IOException {
         EmulatorEndpoint endpoint =
                 emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
-        client =
-                BigtableDataClient.create(
-                        BigtableDataClients.settings(destination, appProfileId, endpoint).build());
+        return BigtableDataClients.settings(
+                        destination,
+                        appProfileId,
+                        endpoint,
+                        BigtableCredentials.loadData(serviceAccountKeyFile))
+                .build();
     }
 
     @Override

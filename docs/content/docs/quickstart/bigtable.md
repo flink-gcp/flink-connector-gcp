@@ -26,6 +26,14 @@ Assumes the artifacts and credentials from the
 [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the
 [Java API reference]({{< param ApiDocsURL >}}).
 
+The examples use application-default credentials.
+If a deployment cannot supply the intended identity through ADC, add
+`serviceAccountKeyFile("/mounted/path/key.json")` to either builder.
+The path is read when the job's runtime components start and must be mounted at the same absolute
+path on every eligible TaskManager and, for either source, the JobManager.
+Prefer an attached service account or Workload Identity over a long-lived key; the operational
+requirements are in [Credential file deployment]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment).
+
 ## Write a stream of row mutations
 
 **Create the table and its column family first.** By default the sink creates neither: a table's

@@ -62,6 +62,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
     private final List<ByteStringRange> ranges;
     @Nullable private final Filters.Filter filter;
     @Nullable private final String appProfileId;
+    @Nullable private final String serviceAccountKeyFile;
     private final RowKeySampler sampler;
     private final RowStreamOpener opener;
     private final int maxRowsPerFetch;
@@ -72,6 +73,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
             List<ByteStringRange> ranges,
             @Nullable Filters.Filter filter,
             @Nullable String appProfileId,
+            @Nullable String serviceAccountKeyFile,
             RowKeySampler sampler,
             RowStreamOpener opener,
             int maxRowsPerFetch) {
@@ -86,6 +88,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
         this.ranges = Collections.unmodifiableList(RowRanges.copyAll(ranges));
         this.filter = filter;
         this.appProfileId = appProfileId;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.sampler = Preconditions.checkNotNull(sampler, "sampler must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         Preconditions.checkArgument(
@@ -123,6 +126,12 @@ public final class BigtableSourceConfig<T> implements Serializable {
     @Nullable
     public String getAppProfileId() {
         return appProfileId;
+    }
+
+    /** Returns the service-account key-file path, or {@code null} to use ADC. */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /** Returns the sampler the enumerator plans with; the enumerator owns and closes it. */
