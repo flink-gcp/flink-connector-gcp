@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.spanner.table;
 
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Struct;
@@ -40,7 +42,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
         TableEnvironment table =
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
-        table.executeSql(tableDdl(database));
+        table.executeSql(tableDdl(database, dialect));
 
         table.executeSql("INSERT INTO target VALUES (1, 'first'), (2, 'keep')").await();
         // Separate jobs give writes for the same key a defined order even though BatchWrite may
@@ -55,6 +57,33 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
         assertThat(rows.get(1).getString("name")).isEqualTo("keep");
     }
 
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void roundTripsNumericThroughTheProductionSinkAndBoundedSource(Dialect dialect)
+            throws Exception {
+        SpannerDatabase database = numericDatabase(dialect);
+        TableEnvironment sink =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        sink.executeSql(numericTableDdl("numeric_sink", database, dialect));
+        sink.executeSql(
+                        "INSERT INTO numeric_sink VALUES "
+                                + "(1, CAST(12.340000000 AS DECIMAL(38, 9))), "
+                                + "(2, CAST(NULL AS DECIMAL(38, 9)))")
+                .await();
+
+        TableEnvironment source =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        source.executeSql(numericTableDdl("numeric_source", database, dialect));
+        try (CloseableIterator<Row> rows =
+                source.executeSql("SELECT id, amount FROM numeric_source ORDER BY id").collect()) {
+            assertThat(rows)
+                    .toIterable()
+                    .containsExactly(
+                            Row.of(1L, new java.math.BigDecimal("12.340000000")), Row.of(2L, null));
+        }
+    }
+
     private static SpannerDatabase database(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
@@ -66,7 +95,18 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE records (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)");
     }
 
-    private static String tableDdl(SpannerDatabase database) {
+    private static SpannerDatabase numericDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE TABLE numeric_records (id bigint NOT NULL PRIMARY KEY, amount numeric)");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE TABLE numeric_records (id INT64 NOT NULL, amount NUMERIC) PRIMARY KEY (id)");
+    }
+
+    private static String tableDdl(SpannerDatabase database, Dialect dialect) {
         return "CREATE TABLE target (\n"
                 + "  id BIGINT,\n"
                 + "  name STRING,\n"
@@ -83,6 +123,38 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 + database.getDatabase()
                 + "',\n"
                 + "  'table' = 'records',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String numericTableDdl(
+            String tableName, SpannerDatabase database, Dialect dialect) {
+        return "CREATE TABLE "
+                + tableName
+                + " (\n"
+                + "  id BIGINT,\n"
+                + "  amount DECIMAL(38, 9),\n"
+                + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + "  'table' = 'numeric_records',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'\n"

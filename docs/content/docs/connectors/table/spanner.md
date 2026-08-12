@@ -73,22 +73,26 @@ Upserts and deletes are idempotent under replay, while insert-only writes can fa
 
 ## Type mapping
 
+Spanner's [GoogleSQL data types](https://cloud.google.com/spanner/docs/reference/standard-sql/data-types) and [PostgreSQL data types](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) define the native column and key constraints that this mapping enforces.
+
 | Flink SQL type | Spanner type |
 |---|---|
 | `BOOLEAN` | `BOOL` |
 | `BIGINT` | `INT64` |
 | `FLOAT` / `DOUBLE` | `FLOAT32` / `FLOAT64` |
-| `DECIMAL(38, 9)` | `NUMERIC` |
+| `DECIMAL(38, 9)` | GoogleSQL `NUMERIC` / PostgreSQL `numeric` |
 | `CHAR` / `VARCHAR` / `STRING` | `STRING` |
 | `BINARY` / `VARBINARY` / `BYTES` | `BYTES` |
 | `DATE` | `DATE` |
 | `TIMESTAMP_LTZ(0..9)` | `TIMESTAMP` |
 | `ARRAY<T>` | `ARRAY<T>` |
 
-The mapping is recursive for arrays, and nullable Flink values become null Spanner values.
+The mapping applies to one-dimensional array elements, and nullable Flink values become null Spanner values.
+Nested arrays are rejected because neither Spanner dialect permits an array whose element is another array.
 `ROW` is rejected because Spanner `STRUCT` cannot be stored in a table column.
 Plain `TIMESTAMP` is rejected because it has no time-zone semantics; use `TIMESTAMP_LTZ` for an instant.
-Other decimal precisions and scales are rejected because mapping them to `NUMERIC` would not be lossless.
+The connector currently accepts only `DECIMAL(38, 9)` for both dialects; this exactly matches GoogleSQL `NUMERIC`, while PostgreSQL `numeric` itself permits other precisions and scales.
+`FLOAT` cannot be a primary-key column in either dialect, and PostgreSQL `DECIMAL(38, 9)` cannot be a primary-key column because PostgreSQL `numeric` is not a key type.
 
 ## Scan behavior
 

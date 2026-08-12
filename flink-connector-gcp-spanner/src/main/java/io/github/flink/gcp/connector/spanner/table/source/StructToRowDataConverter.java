@@ -85,6 +85,7 @@ final class StructToRowDataConverter implements Serializable {
             case FLOAT64:
                 return value.getFloat64();
             case NUMERIC:
+            case PG_NUMERIC:
                 DecimalType decimal = (DecimalType) logicalType;
                 return DecimalData.fromBigDecimal(
                         value.getNumeric(), decimal.getPrecision(), decimal.getScale());
@@ -133,6 +134,7 @@ final class StructToRowDataConverter implements Serializable {
                 values = value.getFloat64Array();
                 break;
             case NUMERIC:
+            case PG_NUMERIC:
                 values = value.getNumericArray();
                 break;
             case STRING:
@@ -172,6 +174,7 @@ final class StructToRowDataConverter implements Serializable {
     private static Object convertArrayItem(Object item, LogicalType logicalType, Type type) {
         switch (type.getCode()) {
             case NUMERIC:
+            case PG_NUMERIC:
                 DecimalType decimal = (DecimalType) logicalType;
                 return DecimalData.fromBigDecimal(
                         (java.math.BigDecimal) item, decimal.getPrecision(), decimal.getScale());
