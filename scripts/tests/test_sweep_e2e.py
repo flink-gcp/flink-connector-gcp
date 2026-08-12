@@ -49,6 +49,19 @@ abstract class {klass} {{
 GCLOUD_STUB = """\
 #!/usr/bin/env bash
 set -eu
+if [ "$1" = bigtable ] && [ "$3" = tables ]; then
+    case "$4" in
+        list) cat "$GCLOUD_STUB_DIR/bigtable-tables.txt" ;;
+        update)
+            echo "$*" >> "$GCLOUD_STUB_EVENT_LOG"
+            echo "$5" >> "$GCLOUD_STUB_PREP_LOG"
+            case " ${GCLOUD_STUB_PREP_FAIL:-} " in
+                *" $5 "*) exit 1 ;;
+            esac
+            ;;
+    esac
+    exit 0
+fi
 if [ -n "${GCLOUD_STUB_LIST_FAILS:-}" ] && [ "$3" = list ]; then
     echo "ERROR: (gcloud) not authenticated" >&2
     exit 1
@@ -56,6 +69,7 @@ fi
 case "$3" in
     list) cat "$GCLOUD_STUB_DIR/$1-instances.txt" ;;
     delete)
+        echo "$*" >> "$GCLOUD_STUB_EVENT_LOG"
         echo "$1 $4" >> "$GCLOUD_STUB_LOG"
         case " ${GCLOUD_STUB_FAIL:-} " in
             *" $4 "*) exit 1 ;;
@@ -93,12 +107,18 @@ def sweep(tmp_path):
     gcloud.chmod(0o755)
     log = tmp_path / "deleted.txt"
     log.write_text("")
+    prep_log = tmp_path / "prepared.txt"
+    prep_log.write_text("")
+    event_log = tmp_path / "events.txt"
+    event_log.write_text("")
 
     def run(
         *args,
         instances=(),
         spanner_instances=(),
+        bigtable_tables=(),
         fail=(),
+        table_update_fails=(),
         list_fails=False,
         project="flink-gcp",
         spanner_project="flink-gcp",
@@ -108,11 +128,19 @@ def sweep(tmp_path):
             (tmp_path / f"{group}-instances.txt").write_text(
                 "".join(f"projects/p/instances/{i}\n" for i in ids)
             )
+        (tmp_path / "bigtable-tables.txt").write_text(
+            "".join(
+                f"projects/p/instances/i/tables/{table}\n" for table in bigtable_tables
+            )
+        )
         env = {
             "PATH": f"{stub_dir}:/usr/bin:/bin",
             "GCLOUD_STUB_DIR": str(tmp_path),
             "GCLOUD_STUB_LOG": str(log),
             "GCLOUD_STUB_FAIL": " ".join(fail),
+            "GCLOUD_STUB_PREP_LOG": str(prep_log),
+            "GCLOUD_STUB_PREP_FAIL": " ".join(table_update_fails),
+            "GCLOUD_STUB_EVENT_LOG": str(event_log),
         }
         if project is not None:
             env["BIGTABLE_IT_PROJECT"] = project
@@ -124,6 +152,8 @@ def sweep(tmp_path):
             [str(script), *args], env=env, capture_output=True, text=True, check=False
         )
         result.deleted = log.read_text().splitlines()
+        result.prepared = prep_log.read_text().splitlines()
+        result.events = event_log.read_text().splitlines()
         return result
 
     run.sources = sources
@@ -146,6 +176,42 @@ def test_an_abandoned_instance_is_deleted(sweep):
     result = sweep(instances=[stale])
     assert result.returncode == 0, result.stderr
     assert result.deleted == [f"bigtable {stale}"]
+
+
+def test_change_streams_are_disabled_before_a_bigtable_instance_is_deleted(sweep):
+    stale = instance(5)
+    result = sweep(instances=[stale], bigtable_tables=["plain", "change-stream"])
+
+    assert result.returncode == 0, result.stderr
+    assert result.prepared == ["plain", "change-stream"]
+    assert result.deleted == [f"bigtable {stale}"]
+    assert result.events == [
+        (
+            "bigtable instances tables update "
+            f"plain --instance={stale} --project=flink-gcp "
+            "--clear-change-stream-retention-period --quiet"
+        ),
+        (
+            "bigtable instances tables update "
+            f"change-stream --instance={stale} --project=flink-gcp "
+            "--clear-change-stream-retention-period --quiet"
+        ),
+        f"bigtable instances delete {stale} --project=flink-gcp --quiet",
+    ]
+
+
+def test_a_change_stream_disable_failure_leaves_the_instance_for_retry(sweep):
+    stale = instance(5)
+    result = sweep(
+        instances=[stale],
+        spanner_instances=[stale],
+        bigtable_tables=["change-stream"],
+        table_update_fails=["change-stream"],
+    )
+
+    assert result.returncode == 1
+    assert result.deleted == [f"spanner {stale}"]
+    assert "failed to disable Change Streams" in result.stderr
 
 
 def test_an_id_without_a_run_suffix_is_still_dated(sweep):
@@ -317,6 +383,7 @@ def test_the_real_java_sources_still_parse(tmp_path):
             "SPANNER_IT_PROJECT": "flink-gcp",
             "GCLOUD_STUB_DIR": str(tmp_path),
             "GCLOUD_STUB_LOG": str(tmp_path / "deleted.txt"),
+            "GCLOUD_STUB_PREP_LOG": str(tmp_path / "prepared.txt"),
         },
         capture_output=True,
         text=True,

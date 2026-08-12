@@ -64,9 +64,7 @@ class BigtableChangeStreamSourceBuilderTest {
         assertThat(continuous.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
         assertThat(bounded.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
         assertThat(bounded.getProducedType())
-                .isEqualTo(
-                        org.apache.flink.api.common.typeinfo.TypeInformation.of(
-                                ChangeStreamMutation.class));
+                .isEqualTo(new ChangeStreamMutationDeserializationSchema().getProducedType());
     }
 
     @Test

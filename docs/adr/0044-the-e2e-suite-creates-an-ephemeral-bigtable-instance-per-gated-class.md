@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-02 ([#218]; the per-*class* deviation from that issue's settled design is
   recorded here)
-- Issues: [#218], [#245], [#246]
+- Issues: [#218], [#245], [#246], [#533]
 - Modules: bigtable (tests, `opentofu/`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Testing; the root
   CLAUDE.md `just e2e`/`sweep-e2e` entries
@@ -43,6 +43,10 @@ tracks per class.
   at 28 characters leaves no room under a cluster id's own 30-character limit. Measured
   2026-08-02: the two classes together, provisioning included, take about 7½ minutes.
   ([#246]'s daily `sweep-e2e` bounds what a run whose teardown never executed can cost.)
+- **Every deletion disables Change Streams on the instance's tables first.** Bigtable rejects an
+  instance deletion with `FAILED_PRECONDITION` while any table retains change-stream data. The
+  per-class teardown, its startup sweep and the daily sweep all apply that prerequisite, so a
+  failed Change Streams test does not turn the cleanup path itself into a permanent leak.
 - **`BIGTABLE_IT_PROJECT` in a shell used to make every `just verify` create instances**,
   because the gate is on the classes and `verify` runs the same `integration-tests` execution
   `just e2e` does. Being the first gate billed per run is what forced [#245], which closed it:
@@ -84,8 +88,14 @@ batcher the production factory created, and the MiniCluster job tests cover the
 since [#237], superseded by test-utils' `TestSinkWriterMetricGroup`, which asserts by
 *registered name*.
 
+**The first live Change Streams acceptance run found the cleanup prerequisite above** ([#533],
+2026-08-12). The test failed before bounded completion, then the teardown's direct instance delete
+also failed because `change-stream-source` still had Change Streams enabled. Disabling the table
+made deletion succeed; that measured recovery sequence is now the order every cleanup path uses.
+
 [#218]: https://github.com/laughingman7743/flink-connector-gcp/issues/218
 [#237]: https://github.com/laughingman7743/flink-connector-gcp/issues/237
 [#243]: https://github.com/laughingman7743/flink-connector-gcp/issues/243
 [#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
 [#246]: https://github.com/laughingman7743/flink-connector-gcp/issues/246
+[#533]: https://github.com/laughingman7743/flink-connector-gcp/issues/533

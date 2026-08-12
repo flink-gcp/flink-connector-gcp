@@ -634,6 +634,19 @@ Source<ChangeStreamMutation, ?, ?> source =
                 .build();
 ```
 
+The built-in schema supplies a serializer for the SDK's immutable mutation model. A transformation
+that still emits `ChangeStreamMutation` can make Flink infer the SDK class as a generic type and
+fall back to Kryo. Preserve the schema's produced type across that boundary:
+
+```java
+ChangeStreamMutationDeserializationSchema mutations =
+        new ChangeStreamMutationDeserializationSchema();
+DataStream<ChangeStreamMutation> transformed =
+        env.fromSource(source, WatermarkStrategy.noWatermarks(), "bigtable-change-stream")
+                .map(mutation -> mutation)
+                .returns(mutations.getProducedType());
+```
+
 The application profile is required and must use single-cluster routing. The Bigtable emulator
 does not implement Change Streams, so this builder deliberately has no emulator option.
 
@@ -858,8 +871,10 @@ between you and a new instance. Two things only this suite can show:
 There is no persistent instance to run it against: a one-node instance is a standing cost of roughly
 $470 a month, so each gated class **creates an instance and deletes it afterwards**, and a run that
 dies before deleting is swept by the next one — instance names carry their creation time, and
-anything older than two hours is reclaimed. That is why nothing in `opentofu/` declares a Bigtable
-instance, only the API enablement and the grant.
+anything older than two hours is reclaimed. Cleanup disables Change Streams on every table before
+deleting its instance, because Bigtable refuses the instance deletion while retained change data
+exists. The per-class teardown, its startup sweep and the daily sweep all use that order. That is
+why nothing in `opentofu/` declares a Bigtable instance, only the API enablement and the grant.
 
 ### Where the emulator differs from the service
 

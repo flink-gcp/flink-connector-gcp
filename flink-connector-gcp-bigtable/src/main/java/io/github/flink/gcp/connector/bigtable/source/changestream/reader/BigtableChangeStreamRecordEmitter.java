@@ -77,7 +77,8 @@ public final class BigtableChangeStreamRecordEmitter<T>
             }
             state.advance(
                     ChangeStreamContinuationToken.create(
-                            state.toSplit().getPartition(), mutation.getToken()),
+                            ChangeStreamPartitions.sdkRange(state.toSplit().getPartition()),
+                            mutation.getToken()),
                     mutation.getEstimatedLowWatermarkTime());
             metrics.mutation(mutation.getEstimatedLowWatermarkTime());
             return;

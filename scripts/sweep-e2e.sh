@@ -70,6 +70,30 @@ if ! command -v gcloud >/dev/null 2>&1; then
     exit 2
 fi
 
+# Bigtable refuses to delete an instance while any table has Change Streams enabled. Every table
+# in an eligible instance belongs to this test suite, so clearing the setting on all of them is
+# both safe and necessary: a crashed Change Streams test is exactly the stale instance this sweep
+# exists to reclaim.
+prepare_bigtable_delete() {
+    local project=$1 instance=$2 tables table_name table_id
+    if ! tables="$(gcloud bigtable instances tables list \
+        --instance="$instance" --project="$project" --format='value(name)')"; then
+        echo "could not list Bigtable tables in ${instance}" >&2
+        return 1
+    fi
+    while IFS= read -r table_name; do
+        [ -n "$table_name" ] || continue
+        table_id="${table_name##*/}"
+        echo "disabling Change Streams on Bigtable table ${instance}/${table_id}"
+        if ! gcloud bigtable instances tables update "$table_id" \
+            --instance="$instance" --project="$project" \
+            --clear-change-stream-retention-period --quiet >/dev/null; then
+            echo "failed to disable Change Streams on ${instance}/${table_id}" >&2
+            return 1
+        fi
+    done <<< "$tables"
+}
+
 # Sweeps one service. Both services are reached through `gcloud <group>
 # instances list|delete`, and both suites name their instances the same way, so
 # the group and the class that owns the naming are the only things that differ.
@@ -149,6 +173,10 @@ sweep_service() {
         swept=$(( swept + 1 ))
         if [ "$dry_run" = true ]; then
             echo "would delete ${group} ${id} (created $(( ( $(date +%s) - stamp ) / 3600 ))h ago)"
+            continue
+        fi
+        if [ "$group" = bigtable ] && ! prepare_bigtable_delete "$project" "$id"; then
+            failed=$(( failed + 1 ))
             continue
         fi
         # A concurrent sweeper (a manually dispatched E2E run) can win the race

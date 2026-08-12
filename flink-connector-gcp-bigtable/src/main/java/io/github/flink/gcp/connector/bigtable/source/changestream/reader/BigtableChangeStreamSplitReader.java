@@ -191,7 +191,8 @@ public final class BigtableChangeStreamSplitReader
                 ChangeStreamMutation mutation = (ChangeStreamMutation) record;
                 token =
                         ChangeStreamContinuationToken.create(
-                                split.getPartition(), mutation.getToken());
+                                ChangeStreamPartitions.sdkRange(split.getPartition()),
+                                mutation.getToken());
                 watermark = mutation.getEstimatedLowWatermarkTime();
             } else if (record instanceof Heartbeat) {
                 Heartbeat heartbeat = (Heartbeat) record;

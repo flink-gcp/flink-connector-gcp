@@ -50,9 +50,14 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     public ChangeStream open(
             TableDestination table, ChangeStreamPartitionSplit split, @Nullable Instant endTime)
             throws IOException {
+        return new ServerChangeStream(client(table).readChangeStream(query(table, split, endTime)));
+    }
+
+    static ReadChangeStreamQuery query(
+            TableDestination table, ChangeStreamPartitionSplit split, @Nullable Instant endTime) {
         ReadChangeStreamQuery query =
                 ReadChangeStreamQuery.create(table.getTable())
-                        .streamPartition(split.getPartition());
+                        .streamPartition(ChangeStreamPartitions.sdkRange(split.getPartition()));
         if (split.getContinuationTokens().isEmpty()) {
             query.startTime(split.getLowWatermark());
         } else {
@@ -61,7 +66,7 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
         if (endTime != null) {
             query.endTime(endTime);
         }
-        return new ServerChangeStream(client(table).readChangeStream(query));
+        return query;
     }
 
     private BigtableDataClient client(TableDestination table) throws IOException {

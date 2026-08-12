@@ -24,6 +24,8 @@ import com.google.cloud.bigtable.admin.v2.models.CreateInstanceRequest;
 import com.google.cloud.bigtable.admin.v2.models.CreateTableRequest;
 import com.google.cloud.bigtable.admin.v2.models.Instance;
 import com.google.cloud.bigtable.admin.v2.models.StorageType;
+import com.google.cloud.bigtable.admin.v2.models.Table;
+import com.google.cloud.bigtable.admin.v2.models.UpdateTableRequest;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.Query;
@@ -45,6 +47,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Shared harness for the gated integration tests that run against real Cloud Bigtable — what the
@@ -134,14 +138,17 @@ public abstract class AbstractBigtableRealGcpITCase {
     @AfterAll
     protected static void deleteInstanceAndCloseClients() throws Exception {
         try {
-            // The instance goes first, before any client is closed: it is the only part of this
-            // fixture that costs money, and a client throwing on close must not be able to skip
-            // its deletion. Deleting it takes its clusters and tables with it, so there is nothing
-            // else to clean up.
             if (instanceAdmin != null && instanceId != null) {
+                // Bigtable refuses to delete an instance while any table has Change Streams
+                // enabled. Disable them first, then delete the only resource that keeps billing.
+                // Client close remains last so it cannot skip either operation.
+                if (tableAdmin != null) {
+                    disableChangeStreams(
+                            tableAdmin.listTables(), tableAdmin::getTable, tableAdmin::updateTable);
+                }
                 instanceAdmin.deleteInstance(instanceId);
             }
-        } catch (RuntimeException e) {
+        } catch (Exception e) {
             LOG.warn(
                     "Failed to delete instance {}; a later run's sweep reclaims it", instanceId, e);
         } finally {
@@ -169,9 +176,32 @@ public abstract class AbstractBigtableRealGcpITCase {
             }
             LOG.warn("Sweeping stale instance {}, created {}", instance.getId(), created);
             try {
+                disableChangeStreams(instance.getId());
                 instanceAdmin.deleteInstance(instance.getId());
-            } catch (RuntimeException e) {
+            } catch (Exception e) {
                 LOG.warn("Failed to sweep {}", instance.getId(), e);
+            }
+        }
+    }
+
+    private static void disableChangeStreams(String staleInstanceId) throws IOException {
+        try (BigtableTableAdminClient staleTableAdmin =
+                BigtableTableAdminClient.create(PROJECT, staleInstanceId)) {
+            disableChangeStreams(
+                    staleTableAdmin.listTables(),
+                    staleTableAdmin::getTable,
+                    staleTableAdmin::updateTable);
+        }
+    }
+
+    static void disableChangeStreams(
+            List<String> tableIds,
+            Function<String, Table> getTable,
+            Consumer<UpdateTableRequest> updateTable) {
+        for (String tableId : tableIds) {
+            Table table = getTable.apply(tableId);
+            if (table.getChangeStreamRetention() != null) {
+                updateTable.accept(UpdateTableRequest.of(tableId).disableChangeStreamRetention());
             }
         }
     }
