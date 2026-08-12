@@ -69,6 +69,14 @@ public final class SpannerMetricNames {
     /** Partition splits a failed reader gave back, to be handed out again. */
     public static final String SPLITS_RETURNED = "splitsReturned";
 
+    /** Child partition tokens first accepted into the Change Streams coordinator ledger. */
+    public static final String CHANGE_STREAM_PARTITIONS_DISCOVERED =
+            "changeStreamPartitionsDiscovered";
+
+    /** Lag of the oldest scheduled Change Streams partition no reader owns yet. */
+    public static final String UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
+            "unassignedChangeStreamPartitionLagMillis";
+
     /**
      * Reads planned into partitions. One per job at most: a restored enumerator plans nothing, so
      * this reads {@code 1} on a fresh run and {@code 0} on a restored one.
@@ -85,6 +93,28 @@ public final class SpannerMetricNames {
      * the rows they had already handed on a second time.
      */
     public static final String PARTITIONS_REREAD = "partitionsReread";
+
+    // Registered by the Change Streams source readers (SpannerChangeStreamReaderMetrics).
+
+    /** Change Streams TVF partition queries opened, including restored reopens. */
+    public static final String CHANGE_STREAM_QUERIES_STARTED = "changeStreamQueriesStarted";
+
+    /** Change Streams TVF partition queries currently open in one reader subtask. */
+    public static final String ACTIVE_CHANGE_STREAM_QUERIES = "activeChangeStreamQueries";
+
+    /** Assigned Change Streams partitions waiting for a query slot in one reader subtask. */
+    public static final String QUEUED_CHANGE_STREAM_PARTITIONS = "queuedChangeStreamPartitions";
+
+    /** Lag of the oldest assigned Change Streams partition waiting for a query slot. */
+    public static final String QUEUED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
+            "queuedChangeStreamPartitionLagMillis";
+
+    /** Maximum whole heartbeat intervals missed by any active non-initial partition query. */
+    public static final String MISSED_HEARTBEAT_INTERVALS = "missedHeartbeatIntervals";
+
+    /** Wait for the most recently returned non-heartbeat Change Streams result. */
+    public static final String LAST_CHANGE_STREAM_RECORD_WAIT_MILLIS =
+            "lastChangeStreamRecordWaitMillis";
 
     private SpannerMetricNames() {}
 }

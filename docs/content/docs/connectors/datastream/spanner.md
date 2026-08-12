@@ -564,13 +564,38 @@ Registered on the split enumerator's coordinator group and on each source reader
 | `splitsAssigned` | counter | Change Stream partition queries handed to readers |
 | `splitsReturned` | counter | Partitions returned by failed readers for reassignment |
 | `unassignedSplits` | gauge (Flink standard) | Scheduled partitions no reader holds yet |
+| `changeStreamPartitionsDiscovered` | counter | Child partition tokens first accepted into the coordinator ledger |
+| `unassignedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest scheduled partition no reader owns, or zero when none are scheduled |
 | `numRecordsIn` | counter (Flink standard) | Deserialized data-change records handed downstream |
 | `recordsSkipped` | counter | Data-change records whose deserializer returned `null` |
-| `currentWatermark` | gauge (Flink standard) | Minimum watermark across active Change Stream partition outputs |
+| `changeStreamQueriesStarted` | counter | TVF partition queries opened in this reader subtask, including restored reopens |
+| `activeChangeStreamQueries` | gauge | TVF partition queries currently open in this reader subtask |
+| `queuedChangeStreamPartitions` | gauge | Assigned partitions waiting for a query slot in this reader subtask |
+| `queuedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest assigned but unopened partition, or zero when none are queued |
+| `missedHeartbeatIntervals` | gauge | Maximum whole heartbeat intervals since any active non-initial partition query last returned a record |
+| `lastChangeStreamRecordWaitMillis` | gauge | Wall-clock time spent waiting for the most recently returned non-heartbeat result |
+| `currentEmitEventTimeLag` | gauge (Flink standard) | Time between the latest emitted record's commit timestamp and now, frozen at the idle-start time while the subtask is idle |
+| `watermarkLag` | gauge (Flink standard) | Time between the current source watermark and now, frozen at the idle-start time while the subtask is idle |
+| `currentWatermark` | gauge (Flink standard), Flink 2.2 per split | Latest watermark emitted by this Change Stream partition output |
+| `sourceIdleTime` | gauge (Flink standard) | Time since this source subtask last became idle, or zero while active |
 
-Heartbeats move `currentWatermark` without incrementing `numRecordsIn`.
+On Flink 2.2, heartbeats move that split's `currentWatermark`; on every supported version they move the source watermark without incrementing `numRecordsIn`.
 Child-partitions records and query-completion signals are coordinator events, so neither counter treats them as user records.
-Operational measurements for query capacity and additional query-state metrics remain tracked by [#551]({{< param BookRepo >}}/issues/551).
+The connector does not register its own copies of the standard metrics: the Flink source runtime derives the metrics available in that Flink version from the commit timestamps and split watermarks the reader emits.
+No metric uses a partition token as a label, because split and merge would make those labels unbounded.
+
+Read the query and lag metrics together:
+
+- If aggregate `activeChangeStreamQueries` reaches `source parallelism * maxConcurrentQueriesPerSubtask` while queued or unassigned lag grows, increase source parallelism or the per-subtask bound after checking subtask resources.
+- If active query counts remain uneven after restoring at a new parallelism, check split redistribution and stalled readers before adding capacity.
+- Queued partitions beside a free query slot indicate an unhealthy reader scheduling or backpressure path.
+- Unassigned partitions beside free reader query slots indicate an unhealthy split-request or coordinator assignment path.
+- Alert before either partition-lag gauge approaches the configured Change Streams retention period.
+
+Changing `maxConcurrentQueriesPerSubtask` changes the capacity of each running reader.
+Changing source parallelism requires a restart from a checkpoint or savepoint so Flink can redistribute split ownership.
+TaskManager slots supply resources for that parallelism but do not redistribute queries themselves.
+The connector exposes these capacity signals but does not change operator parallelism automatically.
 
 ## Testing
 

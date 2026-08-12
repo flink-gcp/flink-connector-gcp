@@ -23,6 +23,7 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
@@ -33,6 +34,7 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver.RestoreExpiry;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
+import io.github.flink.gcp.connector.spanner.SpannerMetricValues;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
@@ -58,7 +60,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /** Coordinates the checkpointed parent-child lifecycle of Spanner Change Streams partitions. */
 @Internal
@@ -76,16 +80,20 @@ public final class SpannerChangeStreamSplitEnumerator
     @Nullable private final Instant endTimestamp;
     private final long heartbeatMillis;
     @Nullable private final SpannerChangeStreamEnumeratorState restoredState;
+    private final LongSupplier currentTimeMillis;
 
     private final Map<String, SpannerChangeStreamPartitionSplit> ledger = new LinkedHashMap<>();
     private final Map<String, Set<String>> childrenByParent = new HashMap<>();
     private final Deque<String> scheduledPartitions = new ArrayDeque<>();
+    private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
     private final Set<Integer> waitingReaders = new LinkedHashSet<>();
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicLong scheduledCount = new AtomicLong();
+    private final AtomicLong oldestScheduledPositionMillis = new AtomicLong(Long.MAX_VALUE);
 
     private Counter splitsAssigned = new ThreadSafeSimpleCounter();
     private Counter splitsReturned = new ThreadSafeSimpleCounter();
+    private Counter partitionsDiscovered = new ThreadSafeSimpleCounter();
     @Nullable private SpannerChangeStreamCoordinatorClient client;
     private boolean initialized;
     private boolean boundedLedger;
@@ -100,6 +108,27 @@ public final class SpannerChangeStreamSplitEnumerator
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
             @Nullable SpannerChangeStreamEnumeratorState restoredState) {
+        this(
+                context,
+                clientFactory,
+                startPosition,
+                resumeFallback,
+                endTimestamp,
+                heartbeatMillis,
+                restoredState,
+                System::currentTimeMillis);
+    }
+
+    @VisibleForTesting
+    SpannerChangeStreamSplitEnumerator(
+            SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context,
+            SpannerChangeStreamCoordinatorClientFactory clientFactory,
+            StartPosition startPosition,
+            Optional<StartPosition> resumeFallback,
+            @Nullable Instant endTimestamp,
+            long heartbeatMillis,
+            @Nullable SpannerChangeStreamEnumeratorState restoredState,
+            LongSupplier currentTimeMillis) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.clientFactory =
                 Preconditions.checkNotNull(clientFactory, "clientFactory must not be null");
@@ -114,6 +143,8 @@ public final class SpannerChangeStreamSplitEnumerator
                 heartbeatMillis);
         this.heartbeatMillis = heartbeatMillis;
         this.restoredState = restoredState;
+        this.currentTimeMillis =
+                Preconditions.checkNotNull(currentTimeMillis, "currentTimeMillis must not be null");
     }
 
     @Override
@@ -260,6 +291,7 @@ public final class SpannerChangeStreamSplitEnumerator
         ledger.put(running.splitId(), running);
         scheduledPartitions.removeFirst();
         scheduledCount.decrementAndGet();
+        untrackScheduledPosition(scheduled.getCurrentPosition().toEpochMilli());
         waitingReaders.remove(subtaskId);
         splitsAssigned.inc();
         context.assignSplits(
@@ -407,6 +439,7 @@ public final class SpannerChangeStreamSplitEnumerator
             if (existing == null) {
                 ledger.put(childId, discovered);
                 unfinishedPartitions++;
+                partitionsDiscovered.inc();
                 indexCreatedPartition(discovered);
                 promoteIfReady(discovered);
             } else {
@@ -460,6 +493,7 @@ public final class SpannerChangeStreamSplitEnumerator
     private void rebuildRuntimeIndexes() {
         childrenByParent.clear();
         scheduledPartitions.clear();
+        scheduledPositionCounts.clear();
         scheduledCount.set(0);
         unfinishedPartitions = 0;
         boundedLedger = false;
@@ -471,6 +505,7 @@ public final class SpannerChangeStreamSplitEnumerator
             if (partition.getLifecycleState() == PartitionLifecycleState.SCHEDULED) {
                 scheduledPartitions.addLast(partition.splitId());
                 scheduledCount.incrementAndGet();
+                trackScheduledPosition(partition.getCurrentPosition().toEpochMilli());
             } else if (partition.getLifecycleState() == PartitionLifecycleState.CREATED) {
                 indexCreatedPartition(partition);
             }
@@ -478,6 +513,7 @@ public final class SpannerChangeStreamSplitEnumerator
         for (SpannerChangeStreamPartitionSplit partition : new ArrayList<>(ledger.values())) {
             promoteIfReady(partition);
         }
+        refreshOldestScheduledPosition();
     }
 
     private void indexCreatedPartition(SpannerChangeStreamPartitionSplit partition) {
@@ -510,6 +546,8 @@ public final class SpannerChangeStreamSplitEnumerator
         ledger.put(scheduled.splitId(), scheduled);
         scheduledPartitions.addLast(scheduled.splitId());
         scheduledCount.incrementAndGet();
+        trackScheduledPosition(scheduled.getCurrentPosition().toEpochMilli());
+        refreshOldestScheduledPosition();
     }
 
     private boolean allParentsFinished(SpannerChangeStreamPartitionSplit partition) {
@@ -568,7 +606,43 @@ public final class SpannerChangeStreamSplitEnumerator
         splitsReturned =
                 metricGroup.counter(
                         SpannerMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter());
+        partitionsDiscovered =
+                metricGroup.counter(
+                        SpannerMetricNames.CHANGE_STREAM_PARTITIONS_DISCOVERED,
+                        new ThreadSafeSimpleCounter());
         metricGroup.setUnassignedSplitsGauge(scheduledCount::get);
+        metricGroup.gauge(
+                SpannerMetricNames.UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS,
+                (Gauge<Long>) this::unassignedPartitionLagMillis);
+    }
+
+    private void refreshOldestScheduledPosition() {
+        oldestScheduledPositionMillis.set(
+                scheduledPositionCounts.isEmpty()
+                        ? Long.MAX_VALUE
+                        : scheduledPositionCounts.firstKey());
+    }
+
+    private void trackScheduledPosition(long positionMillis) {
+        scheduledPositionCounts.merge(positionMillis, 1, Integer::sum);
+    }
+
+    private void untrackScheduledPosition(long positionMillis) {
+        Integer count = scheduledPositionCounts.get(positionMillis);
+        Preconditions.checkState(count != null, "Scheduled position index is inconsistent.");
+        if (count == 1) {
+            scheduledPositionCounts.remove(positionMillis);
+        } else {
+            scheduledPositionCounts.put(positionMillis, count - 1);
+        }
+        refreshOldestScheduledPosition();
+    }
+
+    private long unassignedPartitionLagMillis() {
+        long oldest = oldestScheduledPositionMillis.get();
+        return oldest == Long.MAX_VALUE
+                ? 0
+                : SpannerMetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
     }
 
     @Override

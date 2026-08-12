@@ -186,6 +186,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Data records carry their commit timestamp as the Flink event timestamp. Heartbeats advance the
   per-split watermark, while child-partitions records are coordinator events rather than user
   records.
+- The enumerator owns `changeStreamPartitionsDiscovered` and the scheduled-partition lag; each
+  reader owns query-open, active-query, queued-partition, queued-lag, missed-heartbeat and last
+  non-heartbeat-wait metrics. These are aggregate coordinator or reader-subtask metrics: never put
+  partition tokens in metric labels.
+- `missedHeartbeatIntervals` excludes the initial null-token query and reports the maximum whole
+  intervals across active token queries. Lag gauges use the oldest current position, clamp a future
+  position to zero, saturate overflow, and read zero for an empty set.
+- Do not duplicate `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, or `sourceIdleTime`,
+  nor Flink 2.2's per-split `currentWatermark`. The Flink source runtime derives the metrics
+  available in that Flink version from the commit timestamps and split watermarks this reader
+  emits.
 
 ## Testing
 
