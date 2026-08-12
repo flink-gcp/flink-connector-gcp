@@ -40,9 +40,10 @@ import java.util.List;
  *       getOptional(...).ifPresent(...)}, so "absent from the DDL" and "left at the connector's
  *       default" are the same state. The exception is an option the <em>table layer itself</em>
  *       owns, which has no connector default to be a second copy of: {@link #NULL_STRING_LITERAL},
- *       {@link #SCAN_ROW_KEY_ENCODING}, {@link #LOOKUP_ASYNC} and {@link
- *       #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS} are the four here, and the parity test asserts
- *       that partition exactly rather than tolerating a default anywhere.
+ *       {@link #SCAN_ROW_KEY_ENCODING}, {@link #LOOKUP_ASYNC}, {@link
+ *       #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS} and {@link #SINK_INSERT_ONLY_INPUT_MODE} are the
+ *       five here, and the parity test asserts that partition exactly rather than tolerating a
+ *       default anywhere.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Bigtable row is a schema this DDL describes —
@@ -225,6 +226,17 @@ public final class BigtableConnectorOptions {
                             "Whether a missing table is created with the column families the DDL"
                                     + " declares, or the write fails. Creating requires at least"
                                     + " one 'sink.table-create.gc-rule.*' key.");
+
+    public static final ConfigOption<InsertOnlyInputMode> SINK_INSERT_ONLY_INPUT_MODE =
+            ConfigOptions.key("sink.insert-only-input-mode")
+                    .enumType(InsertOnlyInputMode.class)
+                    .defaultValue(InsertOnlyInputMode.UPSERT)
+                    .withDescription(
+                            "What changelog mode the sink advertises when the requested input"
+                                    + " contains inserts alone. UPSERT exposes Flink conflict"
+                                    + " strategies and is the default. INSERT_ONLY keeps a plain"
+                                    + " INSERT portable when an ON CONFLICT clause is unavailable,"
+                                    + " but disables that clause for the statement.");
 
     public static final ConfigOption<Boolean> SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS =
             ConfigOptions.key("sink.cell-timestamp.truncate-to-millis")

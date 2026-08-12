@@ -245,9 +245,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
-  setter, `getOptional(...).ifPresent(...)`, no default restated. The **four** table-owned options
+  setter, `getOptional(...).ifPresent(...)`, no default restated. The **five** table-owned options
   are `null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
-  `sink.cell-timestamp.truncate-to-millis`, which have no builder default behind them, and
+  `sink.cell-timestamp.truncate-to-millis`, plus `sink.insert-only-input-mode`, which have no
+  builder default behind them, and
   `BigtableConnectorOptionsTest` asserts that partition **exactly** rather than exempting it — a
   mapped option gaining a default and a table-owned one losing its own both fail.
 - **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
@@ -266,17 +267,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   record rather than skipping it; the HBase connector drops two of them, which leaves an incomplete
   table under a green job, and the last would otherwise reach the service as a mutation-less entry
   and return an `INVALID_ARGUMENT` naming nothing.
-- **An insert-only query is answered with insert-only, and the answer is load-bearing on Flink
-  2.3** (#488): FLIP-558's planner demands `ON CONFLICT` of an upsert sink with a `PRIMARY KEY`
-  even for append input whenever it cannot infer the query's upsert key, and the append answer is
-  what takes its sink-is-append early return instead — do not "simplify" `getChangelogMode` back
-  to one unconditional mode — it is also what Flink's own HBase connector answers, by echoing the
-  requested kinds. The measured trade (ADR-0086): an insert-only statement cannot carry an `ON
-  CONFLICT` clause into this sink on 2.3, which costs `DO NOTHING` and `DO ERROR` and costs
-  nothing for `DO DEDUPLICATE`. An updating query with an uninferrable upsert
-  key meets the demand as Flink designed — but a keyed source satisfies it, upsert-key inference
-  being unique-key metadata even on a retract stream, which is why the ITCase suite needs no
-  escape option. The docs page's ON CONFLICT section is owed an edit with any change here.
+- **An insert-only query is upsert by default, with a table-local insert-only compatibility mode**
+  (#496, ADR-0102). FLIP-558's 2.3 planner may demand `ON CONFLICT` of that default when it cannot
+  infer the query's upsert key, including a plain `INSERT .. VALUES`; that is the cost of exposing
+  Flink's conflict strategies and Bigtable's physical upsert capability. The
+  `sink.insert-only-input-mode = insert-only` escape restores #488's append answer for an
+  INSERT-only requested changelog, so a clause-less statement is portable across 1.20, 2.2 and
+  2.3; it must never narrow an updating requested changelog. The existing
+  `CrossVersionChangelogMode` remains the only per-major API seam. The planner-wide alternative is
+  `table.exec.sink.require-on-conflict = false`, which older versions ignore. The docs page's ON
+  CONFLICT section is owed an edit with any change here.
 - **Whether a delete may carry the upsert key alone is answered by the DDL's primary key** (#470).
   Declaring one makes that key the row key; declaring none lets the planner key its upserts on
   whatever the query is unique by, so the sink asks for whole rows and the planner completes each

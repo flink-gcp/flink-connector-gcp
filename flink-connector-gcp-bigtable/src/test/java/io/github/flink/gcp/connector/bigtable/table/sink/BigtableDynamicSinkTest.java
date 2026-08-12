@@ -26,6 +26,7 @@ import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.types.RowKind;
 
+import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -72,6 +73,13 @@ class BigtableDynamicSinkTest {
         return FactoryMocks.createTableSink(schema, options());
     }
 
+    private static DynamicTableSink sink(
+            ResolvedSchema schema, InsertOnlyInputMode insertOnlyInputMode) {
+        Map<String, String> configured = options();
+        configured.put("sink.insert-only-input-mode", insertOnlyInputMode.toString());
+        return FactoryMocks.createTableSink(schema, configured);
+    }
+
     @Test
     void deletesCarryTheKeyAloneOnlyWhenAPrimaryKeyIsDeclared() {
         ChangelogMode withoutKey = sink(SCHEMA).getChangelogMode(ChangelogMode.all());
@@ -96,18 +104,39 @@ class BigtableDynamicSinkTest {
     }
 
     @Test
-    void anInsertOnlyQueryIsConsumedAsInsertsAlone() {
-        // #488. The per-PR build runs the pinned floor version, where an upsert answer and this
-        // one plan identically, so this assertion is what fails on the floor if the append answer
-        // regresses — the 2.3+ planner (FLIP-558) refuses to plan even an insert-only query into
-        // an upsert sink with a PRIMARY KEY without an ON CONFLICT clause whenever it cannot
-        // infer an upsert key, and BigtableTableSinkITCase only shows that on a 2.3 run.
+    void anInsertOnlyQueryIsUpsertByDefault() {
         assertThat(sink(SCHEMA).getChangelogMode(ChangelogMode.insertOnly()))
                 .as("without a PRIMARY KEY")
-                .isEqualTo(ChangelogMode.insertOnly());
+                .isEqualTo(CrossVersionChangelogMode.upsert(false));
         assertThat(sink(withRowKeyAsPrimaryKey()).getChangelogMode(ChangelogMode.insertOnly()))
                 .as("with the row key declared as PRIMARY KEY")
+                .isEqualTo(CrossVersionChangelogMode.upsert(true));
+    }
+
+    @Test
+    void insertOnlyCompatibilityModeNarrowsAnInsertOnlyQuery() {
+        assertThat(
+                        sink(SCHEMA, InsertOnlyInputMode.INSERT_ONLY)
+                                .getChangelogMode(ChangelogMode.insertOnly()))
+                .as("without a PRIMARY KEY")
                 .isEqualTo(ChangelogMode.insertOnly());
+        assertThat(
+                        sink(withRowKeyAsPrimaryKey(), InsertOnlyInputMode.INSERT_ONLY)
+                                .getChangelogMode(ChangelogMode.insertOnly()))
+                .as("with the row key declared as PRIMARY KEY")
+                .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void insertOnlyCompatibilityModeDoesNotNarrowAnUpdatingQuery() {
+        assertThat(
+                        sink(SCHEMA, InsertOnlyInputMode.INSERT_ONLY)
+                                .getChangelogMode(ChangelogMode.all()))
+                .isEqualTo(CrossVersionChangelogMode.upsert(false));
+        assertThat(
+                        sink(withRowKeyAsPrimaryKey(), InsertOnlyInputMode.INSERT_ONLY)
+                                .getChangelogMode(ChangelogMode.all()))
+                .isEqualTo(CrossVersionChangelogMode.upsert(true));
     }
 
     @Test
@@ -156,5 +185,18 @@ class BigtableDynamicSinkTest {
                 .isEqualTo(CrossVersionChangelogMode.upsert(true));
         assertThat(withoutKey.copy().getChangelogMode(ChangelogMode.all()))
                 .isEqualTo(CrossVersionChangelogMode.upsert(false));
+    }
+
+    @Test
+    void theCopyKeepsTheInsertOnlyCompatibilityMode() {
+        DynamicTableSink compatibility = sink(SCHEMA, InsertOnlyInputMode.INSERT_ONLY);
+        DynamicTableSink defaultMode = sink(SCHEMA);
+
+        assertThat(compatibility.copy())
+                .isEqualTo(compatibility)
+                .hasSameHashCodeAs(compatibility)
+                .isNotEqualTo(defaultMode);
+        assertThat(compatibility.copy().getChangelogMode(ChangelogMode.insertOnly()))
+                .isEqualTo(ChangelogMode.insertOnly());
     }
 }

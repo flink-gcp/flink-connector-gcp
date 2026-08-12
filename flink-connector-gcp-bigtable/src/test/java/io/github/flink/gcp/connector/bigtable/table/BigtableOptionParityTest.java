@@ -194,6 +194,9 @@ class BigtableOptionParityTest {
                 BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS.key(),
                 "configures the table layer's timestamp metadata serializer");
         map.put(
+                BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.key(),
+                "configures the changelog mode the table sink advertises to the planner");
+        map.put(
                 BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED.key(),
                 "builds the one ByteStringRange that rowRange(...) takes");
         map.put(
