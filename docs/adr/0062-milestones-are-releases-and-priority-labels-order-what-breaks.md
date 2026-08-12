@@ -28,7 +28,7 @@ open issues — which expresses neither an order nor a release.
 
 ## Decision
 
-**An issue carries three things: a milestone, a `priority:` label, and a `module:` or
+**An issue normally carries three things: a milestone, a `priority:` label, and a `module:` or
 `area:` label.**
 
 - **One milestone per release through the public one**: `v0.3.0` correctness on shipped
@@ -41,8 +41,14 @@ open issues — which expresses neither an order nor a release.
   correctness with a narrower blast radius or a blocker for going public, `P2` is a feature,
   performance or guardrail that breaks nothing by waiting, `P3` is a future feature or one
   blocked outside the repository.
-- **Milestone and priority are orthogonal on purpose** — the milestone says which release,
-  the label says the order inside it, which a milestone alone cannot express.
+- **Upstream-blocked work is the one milestone exception**: when an issue cannot be completed
+  until another project changes or publishes a release, it retains its `module:` or `area:`
+  label, carries `priority:P3` and `status:blocked-upstream`, but has no milestone. This status
+  does not cover a temporary external service failure, an unavailable paid resource, or a future
+  scheduling choice. Once the upstream condition clears, remove the status and assign the
+  release milestone before implementation starts.
+- **Milestone and priority are orthogonal where a milestone applies** — the milestone says which
+  release, while the label says the order inside it, which a milestone alone cannot express.
 - **GitHub sub-issues are used where a parent genuinely decomposes** ([#36] → [#220]–[#225]);
   a *cluster* of issues sharing one root cause is not that, and is recorded as a comment on
   the one to work instead, so each keeps its own closure record ([#348], holding

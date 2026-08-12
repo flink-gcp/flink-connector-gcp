@@ -374,12 +374,17 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   action version changes
 - Commit messages, PR titles/descriptions, code comments, javadoc and issues are written in
   English
-- **An issue carries three things: a milestone, a `priority:` label, and a `module:` or `area:`
-  label** (ADR-0062 carries the taxonomy). Milestones are releases, `v0.3.0` through `v1.0.0`
-  (going public); read each milestone's description for its theme rather than guessing from the
-  number. Priority is ordered by *what breaks*, not by urgency — `P0` a shipped path breaking
-  silently, down to `P3` future or externally blocked — and is orthogonal to the milestone on
-  purpose. GitHub sub-issues only where a parent genuinely decomposes; a *cluster* sharing one
+- **An issue normally carries three things: a milestone, a `priority:` label, and a `module:` or
+  `area:` label** (ADR-0062 carries the taxonomy). Milestones are releases, `v0.3.0` through
+  `v1.0.0` (going public); read each milestone's description for its theme rather than guessing
+  from the number. Priority is ordered by *what breaks*, not by urgency — `P0` a shipped path
+  breaking silently, down to `P3` future or externally blocked — and is orthogonal to the
+  milestone where one applies. An issue that cannot be completed until another project changes
+  or publishes a release instead retains its `module:` or `area:` label, carries `priority:P3`
+  and `status:blocked-upstream`, but has no milestone; remove the status and assign a release
+  milestone before implementation starts once upstream clears. The status does not cover a
+  temporary external service failure, an unavailable paid resource, or a future scheduling
+  choice. GitHub sub-issues only where a parent genuinely decomposes; a *cluster* sharing one
   root cause is recorded as a comment on the one to work instead, so each keeps its own closure
   record
 - PRs close their issue with `Closes #N`, written **unformatted** — a closing keyword inside a
