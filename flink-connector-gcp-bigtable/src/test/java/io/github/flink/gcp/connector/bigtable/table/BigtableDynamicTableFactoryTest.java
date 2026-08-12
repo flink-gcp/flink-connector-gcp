@@ -454,12 +454,13 @@ class BigtableDynamicTableFactoryTest {
         options.put("scan.row-prefix", "user;web");
         options.put("scan.row-range.start-closed", "a");
         options.put("scan.row-range.end-open", "m");
+        options.put("scan.row-ranges", "[q,s);[x,z)");
 
         BigtableSourceConfig<?> config = builtSource(SCHEMA, options);
 
         assertThat(config.getAppProfileId()).isEqualTo("reader-profile");
         assertThat(config.getRanges().stream().map(RowRanges::format).collect(Collectors.toList()))
-                .containsExactly("[a, m)", "[user, uses)", "[web, wec)");
+                .containsExactly("[a, m)", "[q, s)", "[user, uses)", "[web, wec)", "[x, z)");
     }
 
     @Test
@@ -469,6 +470,7 @@ class BigtableDynamicTableFactoryTest {
         options.put("scan.row-prefix", "AA==;/g==");
         options.put("scan.row-range.start-closed", "gAA=");
         options.put("scan.row-range.end-open", "gP8=");
+        options.put("scan.row-ranges", "[/wA=,/wE=)");
 
         BigtableSourceConfig<?> config = builtSource(SCHEMA, options);
 
@@ -479,7 +481,10 @@ class BigtableDynamicTableFactoryTest {
                                 .startClosed(ByteString.copyFrom(new byte[] {(byte) 0x80, 0x00}))
                                 .endOpen(
                                         ByteString.copyFrom(new byte[] {(byte) 0x80, (byte) 0xff})),
-                        ByteStringRange.prefix(ByteString.copyFrom(new byte[] {(byte) 0xfe})));
+                        ByteStringRange.prefix(ByteString.copyFrom(new byte[] {(byte) 0xfe})),
+                        ByteStringRange.unbounded()
+                                .startClosed(ByteString.copyFrom(new byte[] {(byte) 0xff, 0x00}))
+                                .endOpen(ByteString.copyFrom(new byte[] {(byte) 0xff, 0x01})));
     }
 
     @Test
@@ -501,6 +506,17 @@ class BigtableDynamicTableFactoryTest {
         assertThatThrownBy(() -> source(options))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+    }
+
+    @Test
+    void malformedMultipleRangeIsRejectedWhenTheFactoryBuildsTheSource() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.row-ranges", "[a,b);[z,a)");
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("'scan.row-ranges' entry 2")
+                .hasStackTraceContaining("decoded start greater than its end");
     }
 
     @Test

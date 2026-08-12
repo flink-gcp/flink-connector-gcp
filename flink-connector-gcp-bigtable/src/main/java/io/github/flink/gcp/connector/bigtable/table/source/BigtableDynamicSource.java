@@ -97,6 +97,7 @@ public final class BigtableDynamicSource
     private final List<ByteString> prefixes;
     @Nullable private final ByteString rangeStartClosed;
     @Nullable private final ByteString rangeEndOpen;
+    private final List<ByteStringRange> rowRanges;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
     private final BigtableLookupConfig lookupOptions;
@@ -117,6 +118,7 @@ public final class BigtableDynamicSource
         this.prefixes = builder.prefixes;
         this.rangeStartClosed = builder.rangeStartClosed;
         this.rangeEndOpen = builder.rangeEndOpen;
+        this.rowRanges = builder.rowRanges;
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.parallelism = builder.parallelism;
         this.lookupOptions =
@@ -273,6 +275,7 @@ public final class BigtableDynamicSource
 
     private List<ByteStringRange> configuredRanges() {
         List<ByteStringRange> ranges = new ArrayList<>();
+        ranges.addAll(rowRanges);
         for (ByteString prefix : prefixes) {
             ranges.add(ByteStringRange.prefix(prefix));
         }
@@ -350,6 +353,7 @@ public final class BigtableDynamicSource
                         .prefixes(prefixes)
                         .rangeStartClosed(rangeStartClosed)
                         .rangeEndOpen(rangeEndOpen)
+                        .rowRanges(rowRanges)
                         .emulatorEndpoint(emulatorEndpoint)
                         .parallelism(parallelism)
                         .lookupOptions(lookupOptions)
@@ -381,6 +385,7 @@ public final class BigtableDynamicSource
                 && prefixes.equals(that.prefixes)
                 && Objects.equals(rangeStartClosed, that.rangeStartClosed)
                 && Objects.equals(rangeEndOpen, that.rangeEndOpen)
+                && rowRanges.equals(that.rowRanges)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && lookupOptions.equals(that.lookupOptions)
@@ -399,6 +404,7 @@ public final class BigtableDynamicSource
                 prefixes,
                 rangeStartClosed,
                 rangeEndOpen,
+                rowRanges,
                 emulatorEndpoint,
                 parallelism,
                 lookupOptions,
@@ -417,6 +423,7 @@ public final class BigtableDynamicSource
         private List<ByteString> prefixes = Collections.emptyList();
         @Nullable private ByteString rangeStartClosed;
         @Nullable private ByteString rangeEndOpen;
+        private List<ByteStringRange> rowRanges = Collections.emptyList();
         @Nullable private String emulatorEndpoint;
         @Nullable private Integer parallelism;
         private BigtableLookupConfig lookupOptions;
@@ -484,6 +491,15 @@ public final class BigtableDynamicSource
          */
         public Builder rangeEndOpen(@Nullable ByteString rangeEndOpen) {
             this.rangeEndOpen = rangeEndOpen;
+            return this;
+        }
+
+        /**
+         * @param rowRanges the additional configured row-key ranges, possibly empty
+         * @return this builder
+         */
+        public Builder rowRanges(List<ByteStringRange> rowRanges) {
+            this.rowRanges = RowRanges.copyAll(rowRanges);
             return this;
         }
 

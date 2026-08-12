@@ -267,6 +267,50 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                         Row.of("b", "keep"), Row.of("c", null), Row.of("d", null));
     }
 
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void everyLookupModeHonorsTheSameMultipleRangeUnion(String mode, String[] lookupOptions)
+            throws Exception {
+        String tableId = "sql-lookup-ranges-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        for (String key : Arrays.asList("a", "b", "c", "d", "e")) {
+            writeCell(destination, key, "cf1", "name", key);
+        }
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData("a", "b", "c", "d", "e"),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                tableId, append(lookupOptions, "scan.row-ranges", "[a,c);[d,e)")));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT f.f0, b.cf1.name FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.f0 = b.rowkey"))
+                .containsExactlyInAnyOrder(
+                        Row.of("a", "a"),
+                        Row.of("b", "b"),
+                        Row.of("c", null),
+                        Row.of("d", "d"),
+                        Row.of("e", null));
+    }
+
     @Test
     void anInsertReadsBackThroughSelect() throws Exception {
         createTable("sql-select", "cf1", "cf2");
@@ -413,6 +457,23 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
         assertThat(collect(tEnv, "SELECT rowkey FROM start_only"))
                 .as("[c, *): a one-sided bound leaves the other end open")
                 .containsExactlyInAnyOrder(Row.of("c"), Row.of("c1"), Row.of("d"), Row.of("d1"));
+    }
+
+    @Test
+    void multipleRowRangesBoundOneSqlScan() throws Exception {
+        TableDestination destination = createTable("sql-ranges");
+        seedRows(destination, "a", "b", "c", "d", "e", "f");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf ROW<q STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions("sql-ranges", "scan.row-ranges", "[a,c);[e,)"));
+
+        assertThat(collect(tEnv, "SELECT rowkey FROM bt"))
+                .containsExactlyInAnyOrder(Row.of("a"), Row.of("b"), Row.of("e"), Row.of("f"));
     }
 
     @Test

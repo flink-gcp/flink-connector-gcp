@@ -105,11 +105,17 @@ everything into `Serializable` state at construction because the schema itself i
 - An undeclared qualifier of a declared family arrives and is dropped; nothing pre-validates it,
   for the same reason nothing pre-validates families.
 
-**The `scan.*` surface is one row range plus repeatable prefixes under one encoding.**
+**The `scan.*` surface is a union of row ranges and repeatable prefixes under one encoding.**
 `scan.row-range.start-closed` / `scan.row-range.end-open` build a single range from
-`ByteStringRange.unbounded()`, so a one-sided bound is expressible; `scan.row-prefix` is a list,
-additive with the range (the builder coalesces overlaps, ADR-0080); `scan.app-profile-id` is
-separate from `sink.app-profile-id` because a Data Boost profile reads and cannot write.
+`ByteStringRange.unbounded()`, so a one-sided bound is expressible.
+`scan.row-ranges` adds semicolon-separated `[start,end)` entries; either endpoint may be omitted,
+and backslash escapes the grammar characters inside an endpoint.
+The factory rejects an empty entry, a range with both endpoints omitted, malformed delimiters or
+escapes, and equal or inverted decoded bounds while naming the one-based entry.
+`scan.row-prefix` is a list additive with both range forms; `RowRanges.coalesce` merges every
+overlapping or adjacent selection before the DataStream source plans splits (ADR-0080).
+`scan.app-profile-id` is separate from `sink.app-profile-id` because a Data Boost profile reads and
+cannot write.
 `scan.row-key-encoding` applies to every prefix and endpoint: `UTF8` is the backward-compatible
 default, while `BASE64` accepts canonical padded RFC 4648 standard Base64 and produces the exact
 `ByteString` the DataStream builder receives.
@@ -120,8 +126,8 @@ when the planner builds the source.
 The factory also rejects any value that decodes to an **empty row key**: an empty key means "before
 every row", so the client would silently normalize an empty prefix or either range endpoint to an
 unbounded side and broaden the configured selection.
-An *inverted* range stays with the builder's own rejection, whose message reads fine from a `WITH`
-clause.
+An inverted legacy single range stays with the builder's own rejection; every `scan.row-ranges`
+entry is rejected by the factory before job submission so its diagnostic can identify the entry.
 The decoded bytes are retained by `BigtableDynamicSource`, so bounded scans, point-lookup range
 membership and FULL-cache loading cannot reinterpret the option text independently.
 

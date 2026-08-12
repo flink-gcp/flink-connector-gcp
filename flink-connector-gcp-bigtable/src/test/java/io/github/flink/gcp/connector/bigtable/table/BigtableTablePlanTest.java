@@ -115,6 +115,44 @@ class BigtableTablePlanTest {
     }
 
     @Test
+    void multipleRangeGrammarPassesThroughASqlWithClause() {
+        TableEnvironment tEnv = tableEnvironment();
+        String options =
+                WITH_CLAUSE.replace(
+                        "\n)", ",\n" + "  'scan.row-ranges' = '[a\\,b,c\\;d);[x,z)'\n" + ")");
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf ROW<q STRING>\n"
+                        + ") "
+                        + options);
+
+        assertThatCode(() -> tEnv.explainSql("SELECT * FROM bt")).doesNotThrowAnyException();
+    }
+
+    @Test
+    void malformedMultipleRangeIsAcceptedByCreateTableAndRefusedWhenASelectIsPlanned() {
+        TableEnvironment tEnv = tableEnvironment();
+        String options =
+                WITH_CLAUSE.replace("\n)", ",\n" + "  'scan.row-ranges' = '[a,b);[z,a)'\n" + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.executeSql(
+                                        "CREATE TABLE bt (\n"
+                                                + "  rowkey STRING,\n"
+                                                + "  cf ROW<q STRING>\n"
+                                                + ") "
+                                                + options))
+                .doesNotThrowAnyException();
+
+        assertThatThrownBy(() -> tEnv.explainSql("SELECT * FROM bt"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("'scan.row-ranges' entry 2")
+                .hasStackTraceContaining("decoded start greater than its end");
+    }
+
+    @Test
     void theDocumentationsOwnExampleParses() {
         // Copied from docs/content/docs/connectors/table/bigtable.md, which is the first code
         // block a reader meets. Pinned because a column family is a *column name* here, so the

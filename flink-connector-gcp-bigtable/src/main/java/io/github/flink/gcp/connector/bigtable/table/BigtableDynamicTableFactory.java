@@ -29,6 +29,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
@@ -92,6 +93,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_ROW_PREFIX,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
+                        BigtableConnectorOptions.SCAN_ROW_RANGES,
                         FactoryUtil.SOURCE_PARALLELISM,
                         BigtableConnectorOptions.LOOKUP_ASYNC,
                         LookupOptions.CACHE_TYPE,
@@ -195,6 +197,10 @@ public class BigtableDynamicTableFactory
                                                 rowKeyEncoding,
                                                 value))
                         .orElse(null);
+        List<ByteStringRange> rowRanges =
+                config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGES)
+                        .map(value -> RowRangeParser.parse(rowKeyEncoding, value))
+                        .orElse(Collections.emptyList());
 
         return BigtableDynamicSource.builder()
                 .schema(schema)
@@ -210,6 +216,7 @@ public class BigtableDynamicTableFactory
                 .prefixes(prefixes)
                 .rangeStartClosed(rangeStartClosed)
                 .rangeEndOpen(rangeEndOpen)
+                .rowRanges(rowRanges)
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
