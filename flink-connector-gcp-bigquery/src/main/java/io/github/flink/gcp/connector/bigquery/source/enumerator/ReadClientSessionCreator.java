@@ -54,6 +54,7 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
 
     private static final long serialVersionUID = 1L;
 
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     private transient BigQueryReadClient client;
@@ -65,6 +66,18 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      */
     public ReadClientSessionCreator(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(null, emulatorEndpoint);
+    }
+
+    /**
+     * Creates the session creator.
+     *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+     * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
+     */
+    public ReadClientSessionCreator(
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -78,7 +91,9 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
                                 + " down.");
             }
             if (client == null) {
-                client = BigQueryReadClients.createForSessions(emulatorEndpoint);
+                client =
+                        BigQueryReadClients.createForSessions(
+                                serviceAccountKeyFile, emulatorEndpoint);
             }
             open = client;
         }

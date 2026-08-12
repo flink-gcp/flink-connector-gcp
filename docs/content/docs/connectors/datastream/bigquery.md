@@ -77,6 +77,25 @@ enter task failures.
 `serviceAccountKeyFile(...)` cannot be combined with either emulator endpoint.
 Emulator connections remain credential-free.
 
+Sources use the same `serviceAccountKeyFile(...)` spelling:
+
+```java
+BigQuerySource.<GenericRecord>builder()
+        .table(TableDestination.of("my-project", "my_dataset", "events"))
+        .deserializer(BigQueryRowDeserializer.genericRecord(schemaJson))
+        .serviceAccountKeyFile("/var/run/secrets/bigquery/key.json")
+        .build();
+```
+
+The configured identity applies to the Storage Read clients that create the read session and open
+its streams, and to the REST client that runs `query(...)` or `materializeViews()`.
+Source planning creates the read session on the JobManager, and query/view materialization runs
+there too; assigned streams open on TaskManagers.
+The same key file must therefore exist at the configured path on the JobManager and every
+TaskManager, including after failover or rescaling.
+It is still loaded lazily when each process first opens its client, never while the source graph is
+assembled.
+
 API notes:
 
 - `BigQueryProtoSerializer` is an abstract class exposing `getDescriptor(TableDestination)` in
@@ -1665,8 +1684,10 @@ identical query re-run inside that window is answered from cache — free, and l
 table (measured 2026-08-10), which is what makes a JobManager failover before the first checkpoint
 cost nothing. Its constraints are BigQuery's, not this connector's:
 
-- access to an anonymous dataset is restricted to the identity that ran the query — the same service
-  account across JobManager and TaskManagers in an ordinary deployment, but not something to assume;
+- access to an anonymous dataset is restricted to the identity that ran the query.
+  With `serviceAccountKeyFile(...)`, the deployment must mount the same key at the configured path
+  on the JobManager and TaskManagers; with ADC, it must ensure that they resolve to the same
+  identity;
 - Google advises against depending on a cached results table as the input of another job;
 - a result above the maximum response size is not kept as a cached result;
 - the result is not shareable and cannot be addressed from outside the job.

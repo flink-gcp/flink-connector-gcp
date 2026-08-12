@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.source;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.rpc.ServerStreamingCallSettings;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
@@ -27,6 +28,7 @@ import com.google.cloud.bigquery.storage.v1.ReadRowsRequest;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 
 import javax.annotation.Nullable;
 
@@ -57,18 +59,22 @@ public final class BigQueryReadClients {
      * once per job, on the coordinator thread, before anything has been read, and a failure there
      * is reported immediately rather than sitting inside a fetch.
      *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @return the client; the caller owns it and must close it
      * @throws IOException if the client cannot be created
      */
-    public static BigQueryReadClient createForSessions(@Nullable EmulatorEndpoint emulatorEndpoint)
+    public static BigQueryReadClient createForSessions(
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint)
             throws IOException {
-        return BigQueryReadClient.create(settingsBuilder(emulatorEndpoint).build());
+        return BigQueryReadClient.create(
+                settingsBuilder(serviceAccountKeyFile, emulatorEndpoint).build());
     }
 
     /**
      * Creates the client a reader opens its assigned streams with.
      *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
      * @param onRetry run once per retried attempt, or {@code null} to observe none
@@ -76,11 +82,13 @@ public final class BigQueryReadClients {
      * @throws IOException if the client cannot be created
      */
     public static BigQueryReadClient createForReads(
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             int retryMaxAttempts,
             @Nullable Runnable onRetry)
             throws IOException {
-        return BigQueryReadClient.create(readSettings(emulatorEndpoint, retryMaxAttempts, onRetry));
+        return BigQueryReadClient.create(
+                readSettings(serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts, onRetry));
     }
 
     /**
@@ -101,8 +109,9 @@ public final class BigQueryReadClients {
      * moment the stream was opened — shortening it would cut off the retry of a stream that has
      * been healthy for hours.
      *
-     * <p>Separate from client creation so a test can read what the settings carry: creating a
-     * client resolves application default credentials, and building settings does not.
+     * <p>Separate from client creation so a test can read what the settings carry. Building the
+     * settings resolves an explicitly configured service-account key, while the ADC case remains
+     * lazy until client creation.
      *
      * <p>The retry listener is the only report a retry makes. Its argument is a {@code Runnable}
      * rather than the SDK's own listener type so that nothing outside this class has to name a
@@ -111,6 +120,7 @@ public final class BigQueryReadClients {
      * failing and resuming makes progress, so it never trips {@code maxAttempts} and never reports
      * anything else.
      *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
      * @param onRetry run once per retried attempt, or {@code null} to observe none
@@ -119,11 +129,13 @@ public final class BigQueryReadClients {
      */
     @VisibleForTesting
     static BigQueryReadSettings readSettings(
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             int retryMaxAttempts,
             @Nullable Runnable onRetry)
             throws IOException {
-        BigQueryReadSettings.Builder settings = settingsBuilder(emulatorEndpoint);
+        BigQueryReadSettings.Builder settings =
+                settingsBuilder(serviceAccountKeyFile, emulatorEndpoint);
         ServerStreamingCallSettings.Builder<ReadRowsRequest, ReadRowsResponse> readRows =
                 settings.readRowsSettings();
         readRows.setRetrySettings(
@@ -135,18 +147,28 @@ public final class BigQueryReadClients {
     }
 
     /**
-     * Builds settings for the given endpoint: the emulator form when one is set, and the SDK's own
+     * Builds settings for the given endpoint: the emulator form when one is set, the configured
+     * service-account form when a key file is set, and the SDK's own
      * application-default-credentials form otherwise.
      *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @return the settings builder
      * @throws IOException if the settings cannot be built
      */
     private static BigQueryReadSettings.Builder settingsBuilder(
-            @Nullable EmulatorEndpoint emulatorEndpoint) throws IOException {
-        return emulatorEndpoint == null
-                ? BigQueryReadSettings.newBuilder()
-                : emulatorSettingsBuilder(emulatorEndpoint);
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint)
+            throws IOException {
+        if (emulatorEndpoint != null) {
+            return emulatorSettingsBuilder(emulatorEndpoint);
+        }
+        BigQueryReadSettings.Builder settings = BigQueryReadSettings.newBuilder();
+        if (serviceAccountKeyFile != null) {
+            settings.setCredentialsProvider(
+                    FixedCredentialsProvider.create(
+                            BigQueryCredentials.load(serviceAccountKeyFile)));
+        }
+        return settings;
     }
 
     /**

@@ -35,6 +35,7 @@ import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import org.slf4j.Logger;
@@ -115,6 +116,7 @@ public final class BigQueryQueryRunner implements QueryRunner {
     private static final RetrySchedule POLL_SCHEDULE =
             new RetrySchedule(500, 10_000, Integer.MAX_VALUE, RetrySchedule.DEFAULT_JITTER_RATIO);
 
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     private transient BigQuery client;
@@ -125,11 +127,24 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * @param emulatorEndpoint the emulator's REST endpoint, or {@code null} for BigQuery itself
      */
     public BigQueryQueryRunner(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(null, emulatorEndpoint);
+    }
+
+    /**
+     * Creates the runner.
+     *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+     * @param emulatorEndpoint the emulator's REST endpoint, or {@code null} for BigQuery itself
+     */
+    public BigQueryQueryRunner(
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @VisibleForTesting
     BigQueryQueryRunner(BigQuery client) {
+        this.serviceAccountKeyFile = null;
         this.emulatorEndpoint = null;
         this.client = client;
     }
@@ -680,7 +695,7 @@ public final class BigQueryQueryRunner implements QueryRunner {
                                             System.currentTimeMillis()
                                                     + RESULT_TABLE_EXPIRATION.toMillis())
                                     .build());
-        } catch (RuntimeException e) {
+        } catch (IOException | RuntimeException e) {
             LOG.warn(
                     "Failed to set an expiration on the BigQuery query's result table {}; it will"
                             + " stay in the dataset until something removes it.",
@@ -711,13 +726,15 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * @param project the project the job is submitted to, which is also what satisfies the
      *     emulator's builder
      */
-    private synchronized BigQuery client(String project) {
+    private synchronized BigQuery client(String project) throws IOException {
         if (client == null) {
-            client =
-                    emulatorEndpoint == null
-                            ? BigQueryOptions.getDefaultInstance().getService()
-                            : BigQueryTableAdmin.emulatorOptions(emulatorEndpoint, project)
-                                    .getService();
+            if (emulatorEndpoint != null) {
+                client = BigQueryTableAdmin.emulatorOptions(emulatorEndpoint, project).getService();
+            } else if (serviceAccountKeyFile == null) {
+                client = BigQueryOptions.getDefaultInstance().getService();
+            } else {
+                client = BigQueryCredentials.bigQueryOptions(serviceAccountKeyFile).getService();
+            }
         }
         return client;
     }

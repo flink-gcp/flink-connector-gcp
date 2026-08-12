@@ -192,6 +192,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Source (`docs/adr/0079`, `0083`, `0084`)
 
+- A configured service-account key remains a path in the job graph.
+  The JobManager loads it for the read-session client and for query or view materialization; each
+  TaskManager loads it for its stream-reading client.
+  Every source mode receives that path; the deployment must mount the same key at it on both
+  process types.
+  Absent uses ADC, and either emulator endpoint is mutually exclusive with it (#542).
+
 - **The assignment protocol is the base module's** (`docs/adr/0083`):
   `BigQueryReadSplitEnumerator` extends `PullAssignmentSplitEnumerator` and supplies the read
   session — `restore`, the planning call and its report, the counters, its own `snapshotState`.

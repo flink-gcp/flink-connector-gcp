@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09 (BigQuery and emulator behaviour measured the same day), revised by [#392]
   (2026-08-10) and [#393] (2026-08-11)
-- Issues: [#390], [#64], [#392], [#393]
+- Issues: [#390], [#64], [#392], [#393], [#542]
 - Modules: bigquery (`source`, `source.enumerator`, `source.reader`, `source.serializer`,
   `source.split`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
@@ -134,6 +134,16 @@ job, which is a REST call, so it takes `emulatorRestEndpoint(...)` as well. What
 holds unchanged for a source reading a table, and adding a metadata call to *that* path was declined
 along with the automatic view materialization that would have needed one (ADR-0087).
 
+**Explicit credentials remain a key-file path until runtime.**
+When `serviceAccountKeyFile(...)` is set, the JobManager loads the same service-account JSON for
+the client that creates the read session and for the REST client that runs a query or materializes
+a view; TaskManagers load it for their stream-reading clients.
+Absent uses ADC.
+Either emulator endpoint is mutually exclusive with the key because both emulator transports are
+credential-free.
+The path rather than a parsed credential travels in the job graph, so the same key file must be
+mounted at that path on both process types after failover or rescaling too ([#542]).
+
 **No recovery test may be written against the emulator.** Resume is covered by a unit test over a
 fake that honours offsets, a MiniCluster job that fails once and is asserted to have resumed rather
 than restarted, and a gated real-GCP case that measures the service. The emulator's deviations are
@@ -168,3 +178,4 @@ the Avro-namespace reason above.
 [#392]: https://github.com/laughingman7743/flink-connector-gcp/issues/392
 [#393]: https://github.com/laughingman7743/flink-connector-gcp/issues/393
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
+[#542]: https://github.com/laughingman7743/flink-connector-gcp/issues/542

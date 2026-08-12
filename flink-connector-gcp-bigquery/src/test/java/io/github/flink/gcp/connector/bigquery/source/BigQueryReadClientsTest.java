@@ -20,14 +20,19 @@ import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.StatusCode;
+import com.google.auth.Credentials;
+import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
 import com.google.cloud.bigquery.storage.v1.stub.readrows.ReadRowsResumptionStrategy;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.ServiceAccountKeyFiles;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -35,6 +40,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link BigQueryReadClients}. */
 class BigQueryReadClientsTest {
+
+    @TempDir Path tempDir;
+
+    @Test
+    void configuredCredentialsReachTheStorageReadSettings() throws Exception {
+        BigQueryReadSettings settings =
+                BigQueryReadClients.readSettings(
+                        ServiceAccountKeyFiles.create(tempDir).toString(), null, 7, null);
+
+        Credentials credentials = settings.getCredentialsProvider().getCredentials();
+        assertThat(credentials instanceof ServiceAccountCredentials).isTrue();
+        assertThat(((ServiceAccountCredentials) credentials).getClientEmail())
+                .isEqualTo(ServiceAccountKeyFiles.CLIENT_EMAIL);
+    }
 
     @Test
     void theEmulatorSettingsKeepTheStorageReadApisInboundMessageSize() throws IOException {
@@ -61,7 +80,7 @@ class BigQueryReadClientsTest {
 
     @Test
     void theReadingSettingsBoundTheClientsOwnRetry() throws IOException {
-        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, null, 7, null);
 
         assertThat(settings.readRowsSettings().getRetrySettings().getMaxAttempts()).isEqualTo(7);
     }
@@ -75,7 +94,7 @@ class BigQueryReadClientsTest {
                 BigQueryReadSettings.newBuilder().build().readRowsSettings().getRetrySettings();
 
         RetrySettings ours =
-                BigQueryReadClients.readSettings(null, 7, null)
+                BigQueryReadClients.readSettings(null, null, 7, null)
                         .readRowsSettings()
                         .getRetrySettings();
 
@@ -100,7 +119,7 @@ class BigQueryReadClientsTest {
         // own: the client resumes a broken ReadRows at originalOffset + rowsProcessed. Were this
         // strategy to disappear, a retried attempt would re-read the stream from the top and every
         // row already handed downstream would be emitted twice.
-        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, null, 7, null);
 
         assertThat(settings.readRowsSettings().getResumptionStrategy())
                 .isInstanceOf(ReadRowsResumptionStrategy.class);
@@ -112,7 +131,7 @@ class BigQueryReadClientsTest {
         // resumes a handful of INTERNAL messages and a RESOURCE_EXHAUSTED carrying RetryInfo,
         // through its own algorithm rather than through this set. A bump that adds a code here is
         // worth reading before it ships.
-        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, null, 7, null);
 
         assertThat(settings.readRowsSettings().getRetryableCodes())
                 .containsExactly(StatusCode.Code.UNAVAILABLE);
@@ -123,7 +142,7 @@ class BigQueryReadClientsTest {
         AtomicInteger retries = new AtomicInteger();
 
         BigQueryReadSettings settings =
-                BigQueryReadClients.readSettings(null, 7, retries::incrementAndGet);
+                BigQueryReadClients.readSettings(null, null, 7, retries::incrementAndGet);
 
         settings.getReadRowsRetryAttemptListener()
                 .onRetryAttempt(Status.UNAVAILABLE, new Metadata());
@@ -133,7 +152,7 @@ class BigQueryReadClientsTest {
     @Test
     void noRetryListenerIsWiredWhenNoneIsGiven() throws IOException {
         assertThat(
-                        BigQueryReadClients.readSettings(null, 7, null)
+                        BigQueryReadClients.readSettings(null, null, 7, null)
                                 .getReadRowsRetryAttemptListener())
                 .isNull();
     }

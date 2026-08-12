@@ -94,6 +94,7 @@ public class BigQuerySourceBuilder<T> {
     private int preferredMinStreamCount;
     private int maxRecordsPerFetch = DEFAULT_MAX_RECORDS_PER_FETCH;
     private int retryMaxAttempts = DEFAULT_RETRY_MAX_ATTEMPTS;
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private EmulatorEndpoint emulatorRestEndpoint;
     @Nullable private ReadSessionCreator sessionCreator;
@@ -462,6 +463,31 @@ public class BigQuerySourceBuilder<T> {
     }
 
     /**
+     * Uses the service account in the given JSON key file for every BigQuery client this source
+     * opens.
+     *
+     * <p>Optional; absent uses application-default credentials. Only the path enters the job graph.
+     * The source loads the file when its runtime clients are first opened: the JobManager creates
+     * read sessions and runs query or view-materialization jobs, and TaskManagers open the assigned
+     * read streams. The same key file must therefore exist at that path on both process types,
+     * including after failover or rescaling.
+     *
+     * <p>Only service-account JSON is accepted. This setting cannot be combined with either
+     * emulator endpoint because emulator connections are credential-free.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public BigQuerySourceBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Sends the source's traffic to a BigQuery emulator at {@code host:port}, over plaintext and
      * without credentials.
      *
@@ -558,6 +584,12 @@ public class BigQuerySourceBuilder<T> {
                         + " table source makes no REST call, so there is nothing to point at an"
                         + " emulator.");
         Preconditions.checkState(
+                serviceAccountKeyFile == null
+                        || (emulatorEndpoint == null && emulatorRestEndpoint == null),
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...) or"
+                        + " emulatorRestEndpoint(...); emulator connections are"
+                        + " credential-free.");
+        Preconditions.checkState(
                 query == null || parentProject != null,
                 "query(...) requires parentProject(...): it is the project the query job is"
                         + " submitted to and billed to, and no table names one.");
@@ -590,7 +622,8 @@ public class BigQuerySourceBuilder<T> {
                         !runsAQuery
                                 ? null
                                 : (queryRunner == null
-                                        ? new BigQueryQueryRunner(emulatorRestEndpoint)
+                                        ? new BigQueryQueryRunner(
+                                                serviceAccountKeyFile, emulatorRestEndpoint)
                                         : queryRunner),
                         parentProject == null ? table.getProject() : parentProject,
                         deserializer,
@@ -601,10 +634,12 @@ public class BigQuerySourceBuilder<T> {
                         preferredMinStreamCount,
                         maxRecordsPerFetch,
                         sessionCreator == null
-                                ? new ReadClientSessionCreator(emulatorEndpoint)
+                                ? new ReadClientSessionCreator(
+                                        serviceAccountKeyFile, emulatorEndpoint)
                                 : sessionCreator,
                         rowStreamOpener == null
-                                ? new ReadClientRowStreamOpener(emulatorEndpoint, retryMaxAttempts)
+                                ? new ReadClientRowStreamOpener(
+                                        serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts)
                                 : rowStreamOpener));
     }
 }
