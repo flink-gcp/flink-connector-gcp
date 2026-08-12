@@ -26,6 +26,7 @@ import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
@@ -33,15 +34,18 @@ import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheT
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.Timestamp;
+import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
+import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
@@ -60,10 +64,15 @@ import java.util.concurrent.TimeUnit;
 /** A bounded table scan and primary-key point-lookup source for Spanner tables. */
 @Internal
 public final class SpannerDynamicSource
-        implements ScanTableSource, LookupTableSource, SupportsProjectionPushDown {
+        implements ScanTableSource,
+                LookupTableSource,
+                SupportsProjectionPushDown,
+                SupportsFilterPushDown {
     private final SpannerTableSchemaConverter schema;
     private final SpannerDatabase database;
     private final String table;
+    private final Dialect dialect;
+    @Nullable private final String scanIndex;
     @Nullable private final Long maxPartitions;
     @Nullable private final Long partitionSizeBytes;
     @Nullable private final Boolean dataBoostEnabled;
@@ -74,6 +83,7 @@ public final class SpannerDynamicSource
     private final SpannerLookupConfig lookupConfig;
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
+    private SpannerFilterPushDown.State filterState = SpannerFilterPushDown.State.empty();
 
     public SpannerDynamicSource(
             SpannerTableSchemaConverter schema,
@@ -86,6 +96,8 @@ public final class SpannerDynamicSource
                 database,
                 table,
                 producedDataType,
+                config.get(SpannerConnectorOptions.DIALECT),
+                scanIndex(config),
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS)
                         .orElse(null),
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_SIZE)
@@ -99,11 +111,22 @@ public final class SpannerDynamicSource
                 SpannerLookupConfig.from(config));
     }
 
+    @Nullable
+    private static String scanIndex(ReadableConfig config) {
+        String index = config.getOptional(SpannerConnectorOptions.SCAN_INDEX).orElse(null);
+        if (index != null && index.trim().isEmpty()) {
+            throw new ValidationException("scan.index must not be blank.");
+        }
+        return index;
+    }
+
     private SpannerDynamicSource(
             SpannerTableSchemaConverter schema,
             SpannerDatabase database,
             String table,
             DataType producedDataType,
+            Dialect dialect,
+            @Nullable String scanIndex,
             @Nullable Long maxPartitions,
             @Nullable Long partitionSizeBytes,
             @Nullable Boolean dataBoostEnabled,
@@ -115,6 +138,8 @@ public final class SpannerDynamicSource
         this.schema = schema;
         this.database = database;
         this.table = table;
+        this.dialect = dialect;
+        this.scanIndex = scanIndex;
         this.producedDataType = producedDataType;
         this.maxPartitions = maxPartitions;
         this.partitionSizeBytes = partitionSizeBytes;
@@ -174,13 +199,18 @@ public final class SpannerDynamicSource
     }
 
     @Override
+    public SupportsFilterPushDown.Result applyFilters(List<ResolvedExpression> filters) {
+        filterState = SpannerFilterPushDown.translate(schema, filters, scanIndex != null);
+        return filterState.result();
+    }
+
+    @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         TypeInformation<RowData> producedType = context.createTypeInformation(producedDataType);
         SpannerSourceBuilder<RowData> builder =
                 SpannerSource.<RowData>builder()
                         .database(database)
-                        .readOperation(
-                                SpannerReadOperation.read(table, KeySet.all(), retainedColumns()))
+                        .readOperation(readOperation())
                         .deserializer(
                                 new RowDataDeserializationSchema(
                                         new StructToRowDataConverter(schema, projectedFields),
@@ -205,7 +235,40 @@ public final class SpannerDynamicSource
         return SourceProvider.of(source, parallelism);
     }
 
-    private List<String> retainedColumns() {
+    private SpannerReadOperation readOperation() {
+        List<String> columns = projectedColumns();
+        boolean zeroColumnProjection = columns.isEmpty();
+        if (scanIndex == null && !filterState.hasPrimaryKeyConstraint()) {
+            return SpannerReadOperation.read(table, KeySet.all(), retainedColumns());
+        }
+        if (scanIndex == null) {
+            KeySet keys = filterState.directionIndependentPrimaryKeySet(declaredPrimaryKey());
+            if (keys != null) {
+                return SpannerReadOperation.read(table, keys, retainedColumns());
+            }
+        }
+        return SpannerReadOperationResolution.deferred(
+                new SpannerTableReadResolver(
+                        schema,
+                        table,
+                        scanIndex,
+                        columns,
+                        zeroColumnProjection,
+                        dialect,
+                        filterState.runtime()));
+    }
+
+    private List<SpannerFilterPushDown.KeyPart> declaredPrimaryKey() {
+        List<SpannerFilterPushDown.KeyPart> key = new ArrayList<>();
+        for (int index : schema.getPrimaryKeyIndexes()) {
+            key.add(
+                    new SpannerFilterPushDown.KeyPart(
+                            schema.getColumns().get(index).getName(), index, false, false));
+        }
+        return key;
+    }
+
+    private List<String> projectedColumns() {
         List<String> names = new ArrayList<>();
         if (projectedFields == null) {
             for (SpannerTableSchemaConverter.Column column : schema.getColumns()) {
@@ -216,6 +279,11 @@ public final class SpannerDynamicSource
                 names.add(schema.getColumns().get(index).getName());
             }
         }
+        return names;
+    }
+
+    private List<String> retainedColumns() {
+        List<String> names = projectedColumns();
         if (names.isEmpty()) {
             names.add(schema.getColumns().get(0).getName());
         }
@@ -235,7 +303,8 @@ public final class SpannerDynamicSource
                             projectedFields,
                             keyPositions,
                             emulatorEndpoint,
-                            lookupConfig.getMaxRetries());
+                            lookupConfig.getMaxRetries(),
+                            filterState.runtime());
             return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
                     ? PartialCachingAsyncLookupProvider.of(
                             function, lookupConfig.createPartialCache())
@@ -250,7 +319,8 @@ public final class SpannerDynamicSource
                         projectedFields,
                         keyPositions,
                         emulatorEndpoint,
-                        lookupConfig.getMaxRetries());
+                        lookupConfig.getMaxRetries(),
+                        filterState.runtime());
         return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
                 ? PartialCachingLookupProvider.of(function, lookupConfig.createPartialCache())
                 : LookupFunctionProvider.of(function);
@@ -306,6 +376,8 @@ public final class SpannerDynamicSource
                         database,
                         table,
                         producedDataType,
+                        dialect,
+                        scanIndex,
                         maxPartitions,
                         partitionSizeBytes,
                         dataBoostEnabled,
@@ -315,6 +387,7 @@ public final class SpannerDynamicSource
                         parallelism,
                         lookupConfig);
         copy.projectedFields = projectedFields == null ? null : projectedFields.clone();
+        copy.filterState = filterState;
         return copy;
     }
 
@@ -336,6 +409,8 @@ public final class SpannerDynamicSource
                 && schema.equals(that.schema)
                 && database.equals(that.database)
                 && table.equals(that.table)
+                && dialect == that.dialect
+                && Objects.equals(scanIndex, that.scanIndex)
                 && producedDataType.equals(that.producedDataType)
                 && Objects.equals(maxPartitions, that.maxPartitions)
                 && Objects.equals(partitionSizeBytes, that.partitionSizeBytes)
@@ -344,7 +419,8 @@ public final class SpannerDynamicSource
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && lookupConfig.equals(that.lookupConfig)
-                && Arrays.equals(projectedFields, that.projectedFields);
+                && Arrays.equals(projectedFields, that.projectedFields)
+                && filterState.equals(that.filterState);
     }
 
     @Override
@@ -353,6 +429,8 @@ public final class SpannerDynamicSource
                 schema,
                 database,
                 table,
+                dialect,
+                scanIndex,
                 producedDataType,
                 maxPartitions,
                 partitionSizeBytes,
@@ -362,6 +440,7 @@ public final class SpannerDynamicSource
                 emulatorEndpoint,
                 parallelism,
                 lookupConfig,
+                filterState,
                 Arrays.hashCode(projectedFields));
     }
 }

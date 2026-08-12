@@ -119,6 +119,7 @@ class SpannerOptionParityTest {
         // the planner supplies the RowData deserializer. Every remaining setter has one option.
         assertThat(declaredKeys())
                 .contains(
+                        "scan.index",
                         "scan.timestamp-bound.read-timestamp",
                         "scan.timestamp-bound.exact-staleness",
                         "scan.partition.max-partitions",
@@ -142,6 +143,7 @@ class SpannerOptionParityTest {
                         "schema.uuid-field-paths",
                         "schema.proto-type-names",
                         "schema.enum-type-names",
+                        "scan.index",
                         "scan.partition.max-partitions",
                         "scan.partition.size",
                         "scan.data-boost-enabled",

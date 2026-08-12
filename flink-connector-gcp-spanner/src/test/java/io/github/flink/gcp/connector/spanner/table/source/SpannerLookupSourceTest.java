@@ -29,6 +29,10 @@ import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -349,6 +353,52 @@ class SpannerLookupSourceTest {
 
         assertThat(pending.isCancelled()).isTrue();
         assertThat(lookup.keys).hasSize(1);
+    }
+
+    @Test
+    void syncAndAsyncLookupsSkipKeysRejectedByAnExactPushedPredicate() {
+        CallExpression regionIsEu =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.EQUALS,
+                        List.of(
+                                new FieldReferenceExpression("region", DataTypes.STRING(), 0, 0),
+                                new ValueLiteralExpression("eu")),
+                        DataTypes.BOOLEAN());
+        SpannerFilterPushDown.RuntimeState filters =
+                SpannerFilterPushDown.translate(
+                                SCHEMA, Collections.singletonList(regionIsEu), false)
+                        .runtime();
+        FakeLookup syncLookup = new FakeLookup(null);
+        FakeLookup asyncLookup = new FakeLookup(null);
+        SpannerRowDataLookupFunction sync =
+                new SpannerRowDataLookupFunction(
+                        SCHEMA, new int[] {2}, new int[] {0, 1}, 0, syncLookup, filters);
+        SpannerRowDataAsyncLookupFunction async =
+                new SpannerRowDataAsyncLookupFunction(
+                        SCHEMA, new int[] {2}, new int[] {0, 1}, 0, asyncLookup, filters);
+        GenericRowData rejected = GenericRowData.of(StringData.fromString("us"), 7L);
+
+        assertThat(sync.lookup(rejected)).isEmpty();
+        assertThat(async.asyncLookup(rejected).join()).isEmpty();
+        assertThat(syncLookup.keys).isEmpty();
+        assertThat(asyncLookup.keys).isEmpty();
+    }
+
+    @Test
+    void scanIndexDoesNotDisablePrimaryKeyLookupGating() {
+        CallExpression regionIsEu =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.EQUALS,
+                        List.of(
+                                new FieldReferenceExpression("region", DataTypes.STRING(), 0, 0),
+                                new ValueLiteralExpression("eu")),
+                        DataTypes.BOOLEAN());
+        SpannerFilterPushDown.RuntimeState filters =
+                SpannerFilterPushDown.translate(SCHEMA, Collections.singletonList(regionIsEu), true)
+                        .runtime();
+
+        assertThat(filters.matchesPrimaryKey(Key.of("eu", 7L))).isTrue();
+        assertThat(filters.matchesPrimaryKey(Key.of("us", 7L))).isFalse();
     }
 
     private static LookupRuntimeProvider provider(Configuration config, int[][] keys) {
