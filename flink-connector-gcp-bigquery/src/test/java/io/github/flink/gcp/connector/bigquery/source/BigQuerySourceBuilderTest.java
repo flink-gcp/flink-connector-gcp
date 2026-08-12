@@ -18,22 +18,35 @@ package io.github.flink.gcp.connector.bigquery.source;
 
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
+import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigQuerySourceBuilderTest {
+
+    @TempDir Path tempDir;
 
     @Test
     void buildsABoundedSource() {
@@ -129,6 +142,121 @@ class BigQuerySourceBuilderTest {
         assertThatThrownBy(() -> builder().retryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retryMaxAttempts must be positive");
+    }
+
+    @Test
+    void rejectsABlankOrNullServiceAccountKeyFile() {
+        assertThatThrownBy(() -> builder().serviceAccountKeyFile(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("serviceAccountKeyFile must not be blank");
+        assertThatThrownBy(() -> builder().serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("serviceAccountKeyFile must not be null");
+    }
+
+    @Test
+    void rejectsServiceAccountCredentialsWithEitherEmulatorEndpoint() {
+        assertThatThrownBy(
+                        () ->
+                                productionTableBuilder()
+                                        .serviceAccountKeyFile("key.json")
+                                        .emulatorEndpoint("localhost:1")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
+        assertThatThrownBy(
+                        () ->
+                                productionQueryBuilder()
+                                        .serviceAccountKeyFile("key.json")
+                                        .emulatorRestEndpoint("localhost:1")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorRestEndpoint(...)");
+    }
+
+    @Test
+    void credentialPathSurvivesTheJobGraphForEverySourceMode() throws Exception {
+        String missingPath = tempDir.resolve("missing-source-secret.json").toString();
+        List<BigQueryStorageReadSource<GenericRecord>> sources =
+                Arrays.asList(
+                        built(productionTableBuilder().serviceAccountKeyFile(missingPath)),
+                        built(productionQueryBuilder().serviceAccountKeyFile(missingPath)),
+                        built(
+                                productionTableBuilder()
+                                        .materializeViews()
+                                        .serviceAccountKeyFile(missingPath)));
+
+        for (BigQueryStorageReadSource<GenericRecord> source : sources) {
+            BigQuerySourceConfig<GenericRecord> config =
+                    InstantiationUtil.clone(source).getConfig();
+
+            assertSanitizedCredentialFailure(
+                    () ->
+                            config.getSessionCreator()
+                                    .create(CreateReadSessionRequest.getDefaultInstance()),
+                    missingPath);
+            assertSanitizedCredentialFailure(
+                    () -> config.getRowStreamOpener().open("read-stream", 0), missingPath);
+            if (config.getQueryRunner() != null) {
+                assertSanitizedCredentialFailure(
+                        () ->
+                                config.getQueryRunner()
+                                        .run(new QuerySpec("SELECT 1", "p", null, null)),
+                        missingPath);
+            }
+        }
+    }
+
+    @Test
+    void anUninitializedRestoreUsesConfiguredCredentialsForEverySourceMode() throws Exception {
+        String missingPath = tempDir.resolve("missing-restore-secret.json").toString();
+        List<BigQueryStorageReadSource<GenericRecord>> sources =
+                Arrays.asList(
+                        built(productionTableBuilder().serviceAccountKeyFile(missingPath)),
+                        built(productionQueryBuilder().serviceAccountKeyFile(missingPath)),
+                        built(
+                                productionTableBuilder()
+                                        .materializeViews()
+                                        .serviceAccountKeyFile(missingPath)));
+        BigQueryReadEnumeratorState beforePlanning =
+                new BigQueryReadEnumeratorState(false, null, null, Collections.emptyList());
+
+        for (BigQueryStorageReadSource<GenericRecord> source : sources) {
+            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                    new FakeSplitEnumeratorContext<>(1);
+            try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> enumerator =
+                    InstantiationUtil.clone(source).restoreEnumerator(context, beforePlanning)) {
+                enumerator.start();
+                assertThatThrownBy(context::runAsyncCalls)
+                        .hasRootCauseInstanceOf(IOException.class)
+                        .hasRootCauseMessage(
+                                "Failed to load the configured BigQuery service-account key file.")
+                        .hasMessageNotContaining(missingPath);
+            }
+        }
+    }
+
+    @Test
+    void anInitializedRestoreDoesNotReopenPlanningClients() throws Exception {
+        String missingPath = tempDir.resolve("missing-restored-secret.json").toString();
+        BigQueryStorageReadSource<GenericRecord> source =
+                InstantiationUtil.clone(
+                        built(productionQueryBuilder().serviceAccountKeyFile(missingPath)));
+        BigQueryReadEnumeratorState initialized =
+                new BigQueryReadEnumeratorState(
+                        true, "projects/p/locations/us/sessions/s", null, Collections.emptyList());
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> enumerator =
+                source.restoreEnumerator(context, initialized)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(enumerator.snapshotState(1L).isInitialized()).isTrue();
+        }
     }
 
     @Test
@@ -409,6 +537,34 @@ class BigQuerySourceBuilderTest {
                 // to, but without it a machine with application-default credentials passes where
                 // CI fails.
                 .emulatorEndpoint("localhost:1");
+    }
+
+    private static BigQuerySourceBuilder<GenericRecord> productionTableBuilder() {
+        return BigQuerySource.<GenericRecord>builder()
+                .table(TableDestination.of("p", "d", "t"))
+                .deserializer(deserializer());
+    }
+
+    private static BigQuerySourceBuilder<GenericRecord> productionQueryBuilder() {
+        return BigQuerySource.<GenericRecord>builder()
+                .query("SELECT 1")
+                .parentProject("p")
+                .deserializer(deserializer());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static BigQueryStorageReadSource<GenericRecord> built(
+            BigQuerySourceBuilder<GenericRecord> builder) {
+        return (BigQueryStorageReadSource<GenericRecord>) builder.build();
+    }
+
+    private static void assertSanitizedCredentialFailure(
+            org.assertj.core.api.ThrowableAssert.ThrowingCallable call, String path) {
+        assertThatThrownBy(call)
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured BigQuery service-account key file.")
+                .hasNoCause()
+                .hasMessageNotContaining(path);
     }
 
     private static BigQueryRowDeserializer<GenericRecord> deserializer() {

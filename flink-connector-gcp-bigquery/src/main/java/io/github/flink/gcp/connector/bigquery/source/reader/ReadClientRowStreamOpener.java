@@ -49,6 +49,7 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
 
     private static final long serialVersionUID = 1L;
 
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final int retryMaxAttempts;
 
@@ -71,6 +72,21 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
      */
     public ReadClientRowStreamOpener(
             @Nullable EmulatorEndpoint emulatorEndpoint, int retryMaxAttempts) {
+        this(null, emulatorEndpoint, retryMaxAttempts);
+    }
+
+    /**
+     * Creates the opener.
+     *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+     * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
+     * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
+     */
+    public ReadClientRowStreamOpener(
+            @Nullable String serviceAccountKeyFile,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            int retryMaxAttempts) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.retryMaxAttempts = retryMaxAttempts;
     }
@@ -106,7 +122,7 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
             if (client == null) {
                 client =
                         BigQueryReadClients.createForReads(
-                                emulatorEndpoint, retryMaxAttempts, onRetry);
+                                serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts, onRetry);
             }
             open = client;
         }
