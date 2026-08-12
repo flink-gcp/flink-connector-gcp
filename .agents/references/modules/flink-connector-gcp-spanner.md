@@ -146,6 +146,24 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   repository declaring a vendor package, taken under `docs/adr/0067`'s bar and recorded in
   `docs/adr/0085`. Do not treat it as a precedent for a third.
 
+## Change Streams coordinator (`docs/adr/0099`, `docs/adr/0094`)
+
+- The enumerator state is the only partition-lifecycle recovery record; do not add Beam's external
+  metadata table. It checkpoints scheduled and running entries and the finished parents that
+  establish child dependencies.
+- Child discovery does not finish a parent. A reader forwards every child-partitions record and
+  sends a separate completion event only after its query ends successfully. A child becomes
+  schedulable only after every named parent is finished.
+- A valid restored ledger wins and never seeds another null-token query. If an unfinished position
+  expired, the default is failure; an explicit fallback discards the entire Spanner ledger and
+  seeds one null-token query because advancing one old token can skip its terminal child record.
+- Missing explicit retention metadata uses the configured fallback, whose connector default is
+  seven days.
+- A bounded ledger signals no more splits only after every partition is finished. Runtime queues
+  and dependency indexes are rebuilt from the checkpointed ledger rather than serialized beside it.
+- `MUTABLE_KEY_RANGE` is rejected before assignment. Its partition start, end, move-in and move-out
+  records are a different protocol, not extra records this immutable-key-range ledger can ignore.
+
 ## Testing
 
 - Emulator ITs pin `gcr.io/cloud-spanner-emulator/emulator`, **not** the `google-cloud-cli` bundle

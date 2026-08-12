@@ -66,9 +66,11 @@ continues to see the warning.
 **Configured start position applies only to a fresh start; restored split and enumerator state
 wins.** A restored partition whose read position or low watermark predates the computed earliest is
 expired. The default is to fail with recovery guidance: restart without state and choose a retained
-`StartPosition`. An explicitly configured fallback restarts only each expired partition, resolves
-the fallback against the same startup instant and retained window, and warns with that partition's
-lost range. Data loss is therefore never an unreported consequence of restore.
+`StartPosition`. An explicitly configured fallback resolves against the same startup instant and
+retained window and warns with the lost range. Bigtable can restart each expired range separately.
+Spanner instead discards the whole partition ledger and starts one null-token query at the fallback:
+advancing an old token can skip its terminal child-partitions record and lose every descendant.
+Data loss is therefore never an unreported consequence of restore.
 
 Retention discovery and residual service-error translation stay in the connectors. Bigtable reads
 the table's change-stream retention; Spanner reads its information-schema option and owns the
@@ -81,6 +83,8 @@ matching undocumented service-error text.
   not for a fresh `latest` start.
 - Every partition in one restore is compared against the same clock instant and earliest boundary;
   a slow loop cannot make later partitions expire against a newer clock sample.
+- The base resolver exposes expiry evidence separately from fallback resolution so a connector can
+  make one recovery decision for a dependent group of partitions.
 - The future connector builders expose `latest()` as their default and an opt-in
   `resumeFallback(StartPosition)`; those APIs land with the connector sources rather than this
   base-only change.

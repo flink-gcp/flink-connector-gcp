@@ -261,6 +261,25 @@ class StartPositionResolverTest {
         }
     }
 
+    @Test
+    void aConnectorCanInspectSeveralExpiriesBeforeResolvingOneFallback() throws Exception {
+        AtomicInteger retentionLookups = new AtomicInteger();
+        StartPositionResolver resolver =
+                resolver(Clock.fixed(NOW, ZoneOffset.UTC), retentionLookups, () -> RETENTION);
+
+        StartPositionResolver.RestoreExpiry first =
+                resolver.inspectRestored("partition-a", EARLIEST.minus(Duration.ofHours(3))).get();
+        StartPositionResolver.RestoreExpiry second =
+                resolver.inspectRestored("partition-b", EARLIEST.minus(Duration.ofHours(1))).get();
+
+        assertThat(first.getPartition()).isEqualTo("partition-a");
+        assertThat(first.getComputedEarliest()).isEqualTo(EARLIEST);
+        assertThat(first.getUnavailableRange()).isEqualTo(Duration.ofHours(3));
+        assertThat(second.getUnavailableRange()).isEqualTo(Duration.ofHours(1));
+        assertThat(resolver.resolveFallback(StartPosition.latest())).isEqualTo(NOW);
+        assertThat(retentionLookups).hasValue(1);
+    }
+
     private static StartPositionResolver resolver(
             StartPositionResolver.RetentionLookup retentionLookup) {
         return StartPositionResolver.create(

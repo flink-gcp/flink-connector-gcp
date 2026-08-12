@@ -128,44 +128,64 @@ public final class StartPositionResolver {
     public Optional<Instant> resolveRestored(
             String partition, Instant restoredPosition, Optional<StartPosition> fallback)
             throws Exception {
+        Preconditions.checkNotNull(fallback, "fallback must not be null");
+        Optional<RestoreExpiry> expiry = inspectRestored(partition, restoredPosition);
+        if (!expiry.isPresent()) {
+            return Optional.empty();
+        }
+
+        RestoreExpiry expired = expiry.get();
+        if (!fallback.isPresent()) {
+            throw expired.asFailure();
+        }
+
+        StartPosition requestedFallback = fallback.get();
+        Instant resolvedFallback = resolveFallback(requestedFallback);
+        log.warn(
+                "Restored change-stream position {} for partition {} is older than the computed"
+                        + " earliest position {}; the unavailable range is {}. Restarting that"
+                        + " partition from fallback {} resolved to {}.",
+                expired.getRestoredPosition(),
+                expired.getPartition(),
+                expired.getComputedEarliest(),
+                expired.getUnavailableRange(),
+                requestedFallback,
+                resolvedFallback);
+        return Optional.of(resolvedFallback);
+    }
+
+    /**
+     * Inspects one restored partition without choosing how the connector recovers from expiry.
+     *
+     * <p>Most connectors can use {@link #resolveRestored} directly. A connector whose partition
+     * topology must be restarted as one unit can inspect every unfinished partition first and then
+     * make one recovery decision for the whole ledger.
+     *
+     * @param partition the connector's stable description of the restored partition
+     * @param restoredPosition the partition's checkpointed read position or low watermark
+     * @return the expiry details, or empty when the position remains retained
+     * @throws Exception if retention discovery fails
+     */
+    public Optional<RestoreExpiry> inspectRestored(String partition, Instant restoredPosition)
+            throws Exception {
         Preconditions.checkNotNull(partition, "partition must not be null");
         Preconditions.checkArgument(!partition.isEmpty(), "partition must not be empty");
         Preconditions.checkNotNull(restoredPosition, "restoredPosition must not be null");
-        Preconditions.checkNotNull(fallback, "fallback must not be null");
 
         Instant computedEarliest = earliest();
         if (!restoredPosition.isBefore(computedEarliest)) {
             return Optional.empty();
         }
 
-        Duration lostRange = Duration.between(restoredPosition, computedEarliest);
-        if (!fallback.isPresent()) {
-            throw new FlinkRuntimeException(
-                    "Restored change-stream position "
-                            + restoredPosition
-                            + " for partition "
-                            + partition
-                            + " is older than the computed earliest position "
-                            + computedEarliest
-                            + "; the unavailable range is "
-                            + lostRange
-                            + ". Restart the job without restored state and choose a StartPosition"
-                            + " known to be retained.");
-        }
+        return Optional.of(new RestoreExpiry(partition, restoredPosition, computedEarliest));
+    }
 
-        StartPosition requestedFallback = fallback.get();
-        Instant resolvedFallback = resolve(requestedFallback, false);
-        log.warn(
-                "Restored change-stream position {} for partition {} is older than the computed"
-                        + " earliest position {}; the unavailable range is {}. Restarting that"
-                        + " partition from fallback {} resolved to {}.",
-                restoredPosition,
-                partition,
-                computedEarliest,
-                lostRange,
-                requestedFallback,
-                resolvedFallback);
-        return Optional.of(resolvedFallback);
+    /**
+     * Resolves an explicitly configured restore fallback without emitting a fresh-start warning.
+     */
+    public Instant resolveFallback(StartPosition fallback) throws Exception {
+        Preconditions.checkNotNull(fallback, "fallback must not be null");
+        return resolve(fallback, false);
     }
 
     private Instant resolve(StartPosition requested, boolean warnOnClamp) throws Exception {
@@ -246,5 +266,53 @@ public final class StartPositionResolver {
                     e);
         }
         return earliest;
+    }
+
+    /** The retained-window evidence for one expired restored partition. */
+    @Internal
+    public static final class RestoreExpiry {
+
+        private final String partition;
+        private final Instant restoredPosition;
+        private final Instant computedEarliest;
+        private final Duration unavailableRange;
+
+        private RestoreExpiry(
+                String partition, Instant restoredPosition, Instant computedEarliest) {
+            this.partition = partition;
+            this.restoredPosition = restoredPosition;
+            this.computedEarliest = computedEarliest;
+            this.unavailableRange = Duration.between(restoredPosition, computedEarliest);
+        }
+
+        public String getPartition() {
+            return partition;
+        }
+
+        public Instant getRestoredPosition() {
+            return restoredPosition;
+        }
+
+        public Instant getComputedEarliest() {
+            return computedEarliest;
+        }
+
+        public Duration getUnavailableRange() {
+            return unavailableRange;
+        }
+
+        public FlinkRuntimeException asFailure() {
+            return new FlinkRuntimeException(
+                    "Restored change-stream position "
+                            + restoredPosition
+                            + " for partition "
+                            + partition
+                            + " is older than the computed earliest position "
+                            + computedEarliest
+                            + "; the unavailable range is "
+                            + unavailableRange
+                            + ". Restart the job without restored state and choose a StartPosition"
+                            + " known to be retained.");
+        }
     }
 }
