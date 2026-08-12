@@ -29,12 +29,14 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.TableCreateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriterOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -86,6 +88,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.EMULATOR_ENDPOINT,
                         BigtableConnectorOptions.NULL_STRING_LITERAL,
                         BigtableConnectorOptions.SCAN_APP_PROFILE_ID,
+                        BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
                         BigtableConnectorOptions.SCAN_ROW_PREFIX,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
@@ -171,10 +174,27 @@ public class BigtableDynamicTableFactory
         checkPrimaryKeyIsTheRowKey(context, schema);
         // checkSinkHasSomewhereToWrite is deliberately not applied: a row-key-only table is a
         // legitimate thing to read, served by a keys-only filter chain.
-        List<String> prefixes =
-                config.getOptional(BigtableConnectorOptions.SCAN_ROW_PREFIX)
-                        .orElse(Collections.emptyList());
-        checkScanBounds(config, prefixes);
+        RowKeyEncoding rowKeyEncoding = config.get(BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING);
+        List<ByteString> prefixes = decodePrefixes(context, config, rowKeyEncoding);
+        ByteString rangeStartClosed =
+                config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED)
+                        .map(
+                                value ->
+                                        RowKeyDecoder.decode(
+                                                BigtableConnectorOptions
+                                                        .SCAN_ROW_RANGE_START_CLOSED,
+                                                rowKeyEncoding,
+                                                value))
+                        .orElse(null);
+        ByteString rangeEndOpen =
+                config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN)
+                        .map(
+                                value ->
+                                        RowKeyDecoder.decode(
+                                                BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
+                                                rowKeyEncoding,
+                                                value))
+                        .orElse(null);
 
         return BigtableDynamicSource.builder()
                 .schema(schema)
@@ -188,12 +208,8 @@ public class BigtableDynamicTableFactory
                         config.getOptional(BigtableConnectorOptions.SCAN_APP_PROFILE_ID)
                                 .orElse(null))
                 .prefixes(prefixes)
-                .rangeStartClosed(
-                        config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED)
-                                .orElse(null))
-                .rangeEndOpen(
-                        config.getOptional(BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN)
-                                .orElse(null))
+                .rangeStartClosed(rangeStartClosed)
+                .rangeEndOpen(rangeEndOpen)
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
@@ -202,36 +218,33 @@ public class BigtableDynamicTableFactory
                 .build();
     }
 
-    /**
-     * Rejects an empty-string scan bound or prefix, which the client would silently widen: an empty
-     * key is "before every row", so an empty {@code startClosed} or prefix selects the whole table
-     * and an empty {@code endOpen} selects nothing. The right spelling for "unbounded" is to leave
-     * the option unset, and an empty string in a DDL is far more likely a templating slip than that
-     * intent. An <em>inverted</em> range is left to the source builder, whose message reads fine
-     * from a WITH clause.
-     */
-    private static void checkScanBounds(ReadableConfig config, List<String> prefixes) {
-        checkNotEmpty(config, BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED);
-        checkNotEmpty(config, BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN);
-        if (prefixes.stream().anyMatch(String::isEmpty)) {
-            throw new ValidationException(
-                    String.format(
-                            "'%s' contains an empty prefix, which would select the whole table."
-                                    + " Every row is the default; leave the option unset to scan"
-                                    + " everything.",
-                            BigtableConnectorOptions.SCAN_ROW_PREFIX.key()));
+    private static List<ByteString> decodePrefixes(
+            Context context, ReadableConfig config, RowKeyEncoding rowKeyEncoding) {
+        String raw =
+                context.getCatalogTable()
+                        .getOptions()
+                        .get(BigtableConnectorOptions.SCAN_ROW_PREFIX.key());
+        if (raw != null) {
+            String trimmed = raw.trim();
+            // Flink's list parser retains an empty middle element but discards an empty element at
+            // either edge. Reject those edges before parsing so ';', ';a', and 'a;' cannot silently
+            // become an absent or narrower bound.
+            if (trimmed.isEmpty()
+                    || trimmed.charAt(0) == ';'
+                    || trimmed.charAt(trimmed.length() - 1) == ';') {
+                throw RowKeyDecoder.emptyRowKey(BigtableConnectorOptions.SCAN_ROW_PREFIX);
+            }
         }
-    }
-
-    private static void checkNotEmpty(ReadableConfig config, ConfigOption<String> option) {
-        if (config.getOptional(option).filter(String::isEmpty).isPresent()) {
-            throw new ValidationException(
-                    String.format(
-                            "'%s' is the empty string, which is not a row key: an empty bound"
-                                    + " means the range is unbounded on that side. Leave the"
-                                    + " option unset instead.",
-                            option.key()));
+        List<String> configured =
+                config.getOptional(BigtableConnectorOptions.SCAN_ROW_PREFIX)
+                        .orElse(Collections.emptyList());
+        List<ByteString> decoded = new ArrayList<>(configured.size());
+        for (String value : configured) {
+            decoded.add(
+                    RowKeyDecoder.decode(
+                            BigtableConnectorOptions.SCAN_ROW_PREFIX, rowKeyEncoding, value));
         }
+        return decoded;
     }
 
     /**

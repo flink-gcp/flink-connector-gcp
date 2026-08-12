@@ -26,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowMutation;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.testutils.bigtable.BigtableEmulatorContainers;
 import io.github.flink.gcp.connector.testutils.bigtable.BigtableTestClients;
 import org.junit.jupiter.api.AfterAll;
@@ -149,6 +150,18 @@ public abstract class AbstractBigtableEmulatorITCase {
     protected static void writeCell(
             TableDestination destination,
             String rowKey,
+            String family,
+            String qualifier,
+            String value) {
+        dataClient.mutateRow(
+                RowMutation.create(TableId.of(destination.getTable()), rowKey)
+                        .setCell(family, qualifier, value));
+    }
+
+    /** Writes one cell under an arbitrary binary row key. */
+    protected static void writeCell(
+            TableDestination destination,
+            ByteString rowKey,
             String family,
             String qualifier,
             String value) {

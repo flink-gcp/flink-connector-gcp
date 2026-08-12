@@ -245,11 +245,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
-  setter, `getOptional(...).ifPresent(...)`, no default restated. The **three** table-owned options
-  are `null-string-literal`, `lookup.async` and `sink.cell-timestamp.truncate-to-millis`, which have
-  no builder default behind them, and `BigtableConnectorOptionsTest` asserts that partition
-  **exactly** rather than exempting it — a mapped option gaining a default and a table-owned one
-  losing its own both fail.
+  setter, `getOptional(...).ifPresent(...)`, no default restated. The **four** table-owned options
+  are `null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
+  `sink.cell-timestamp.truncate-to-millis`, which have no builder default behind them, and
+  `BigtableConnectorOptionsTest` asserts that partition **exactly** rather than exempting it — a
+  mapped option gaining a default and a table-owned one losing its own both fail.
 - **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
   normative** — one atomic column is the row key, every `ROW<...>` column is a family, cell bytes
   are `Bytes` as `HBaseSerde` applies them. `HBaseSerde` is the interop target, **not**
@@ -323,8 +323,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   legitimately produces. A family none of whose declared qualifiers has a cell reads as a `null`
   field (the sink's mirror; `HBaseSerde`'s row-of-nulls declined), and the latest cell version is
   chosen by the converter — `cellsPerColumn(1)` pushdown is a deferred follow-up, not a gap.
-  Range keys are UTF-8; the factory rejects an **empty-string** bound or prefix element because
-  the client silently widens one to the whole table. **The family filter decides row membership,
+  Range keys default to UTF-8; `scan.row-key-encoding=BASE64` accepts only canonical padded RFC
+  4648 standard Base64 and retains the decoded `ByteString` across scans and every lookup cache
+  mode. The factory rejects a bound or prefix element that decodes empty because the client
+  silently widens one to the whole table. **The family filter decides row membership,
   not only row width**: a row appears iff a retained family has a cell, and a keys-only query
   sees every physical row — the wide-column model's row existence, pinned by the emulator ITCase.
   HBase makes membership projection-dependent too but adds declared qualifiers individually; a

@@ -42,6 +42,7 @@ import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContex
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
@@ -66,6 +67,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * BigtableReadRowsSource.getConfig()}.
  */
 class BigtableDynamicSourceTest {
+
+    private static ByteString key(String value) {
+        return ByteString.copyFromUtf8(value);
+    }
 
     /** A row key {@code rowkey}, a family {@code cf1} of one string, a family {@code cf2}. */
     private static final DataType PHYSICAL =
@@ -213,7 +218,8 @@ class BigtableDynamicSourceTest {
 
     @Test
     void exactRowKeyPredicatesIntersectEachOtherAndConfiguredBounds() {
-        BigtableDynamicSource source = minimal().rangeStartClosed("a").rangeEndOpen("z").build();
+        BigtableDynamicSource source =
+                minimal().rangeStartClosed(key("a")).rangeEndOpen(key("z")).build();
         ResolvedExpression lower =
                 call(BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL, rowKey(), literal("b"));
         ResolvedExpression upper =
@@ -379,9 +385,9 @@ class BigtableDynamicSourceTest {
         BigtableSourceConfig<?> config =
                 configOf(
                         minimal()
-                                .prefixes(Arrays.asList("user", "web"))
-                                .rangeStartClosed("a")
-                                .rangeEndOpen("m")
+                                .prefixes(Arrays.asList(key("user"), key("web")))
+                                .rangeStartClosed(key("a"))
+                                .rangeEndOpen(key("m"))
                                 .build());
 
         assertThat(rangesOf(config)).containsExactly("[a, m)", "[user, uses)", "[web, wec)");
@@ -389,9 +395,9 @@ class BigtableDynamicSourceTest {
 
     @Test
     void aOneSidedRangeLeavesTheOtherEndOpen() {
-        assertThat(rangesOf(configOf(minimal().rangeStartClosed("b").build())))
+        assertThat(rangesOf(configOf(minimal().rangeStartClosed(key("b")).build())))
                 .containsExactly("[b, *)");
-        assertThat(rangesOf(configOf(minimal().rangeEndOpen("b").build())))
+        assertThat(rangesOf(configOf(minimal().rangeEndOpen(key("b")).build())))
                 .containsExactly("(*, b)");
     }
 
@@ -447,6 +453,27 @@ class BigtableDynamicSourceTest {
         assertThat(copy).isEqualTo(projected);
         assertThat(((BigtableDynamicSource) copy).copy()).isEqualTo(projected);
         assertThat(rangesOf(configOf((BigtableDynamicSource) copy))).containsExactly("[b, *)");
+    }
+
+    @Test
+    void copyCarriesConfiguredBinaryRanges() {
+        ByteString prefix = ByteString.copyFrom(new byte[] {0x00});
+        ByteString start = ByteString.copyFrom(new byte[] {(byte) 0x80, 0x00});
+        ByteString end = ByteString.copyFrom(new byte[] {(byte) 0x80, (byte) 0xff});
+        BigtableDynamicSource source =
+                minimal()
+                        .prefixes(java.util.Collections.singletonList(prefix))
+                        .rangeStartClosed(start)
+                        .rangeEndOpen(end)
+                        .build();
+
+        BigtableDynamicSource copy = (BigtableDynamicSource) source.copy();
+
+        assertThat(copy).isEqualTo(source);
+        assertThat(configOf(copy).getRanges())
+                .containsExactly(
+                        ByteStringRange.prefix(prefix),
+                        ByteStringRange.unbounded().startClosed(start).endOpen(end));
     }
 
     @Test
@@ -587,8 +614,8 @@ class BigtableDynamicSourceTest {
     void aFullCacheLoaderUsesTheFilteredScanPlan() {
         BigtableDynamicSource source =
                 minimal()
-                        .rangeStartClosed("a")
-                        .rangeEndOpen("z")
+                        .rangeStartClosed(key("a"))
+                        .rangeEndOpen(key("z"))
                         .lookupOptions(
                                 lookupOptions(
                                         "lookup.cache",

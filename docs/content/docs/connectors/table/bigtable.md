@@ -291,10 +291,15 @@ Two more read-side facts worth knowing:
 ### Bounding the scan
 
 `scan.row-prefix` and the `scan.row-range.*` pair bound the scan by row key, server-side, and are
-additive — overlapping selections are merged, so no row is read twice. Keys are UTF-8 text; a
-binary-key form and several ranges in one DDL are follow-ups noted in the option descriptions.
-An empty-string bound or prefix is rejected: the client would silently widen it to the whole
-table, and "scan everything" is spelled by leaving the option unset.
+additive — overlapping selections are merged, so no row is read twice.
+`scan.row-key-encoding = UTF8`, the default, preserves the original text behavior.
+Set it to `BASE64` to express exact binary keys using canonical padded RFC 4648 standard Base64.
+The Base64 mode rejects the URL-safe alphabet, whitespace, missing or non-canonical padding, and
+malformed input.
+The standard alphabet does not contain `;`, so the existing separator for multiple prefixes stays
+unambiguous: the connector splits the list before decoding each prefix.
+Every mode rejects a value that decodes to an empty key because the client would silently widen it,
+and "scan everything" is spelled by leaving the option unset.
 Supported SQL row-key predicates further intersect this configured union.
 An empty intersection returns no rows rather than widening back to the configured range or the
 whole table.
@@ -344,8 +349,9 @@ source of truth. Lookup options are table-layer or Flink-owned instead. An optio
 DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
 the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 
-`null-string-literal`, `lookup.async` and `sink.cell-timestamp.truncate-to-millis` belong to the
-table layer because they configure its codec or runtime shape rather than a DataStream builder.
+`null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
+`sink.cell-timestamp.truncate-to-millis` belong to the table layer because they configure its codec
+or runtime shape rather than a DataStream builder.
 
 ### Destination
 
@@ -362,9 +368,10 @@ table layer because they configure its codec or runtime shape rather than a Data
 | Option | Type | Maps to |
 |---|---|---|
 | `scan.app-profile-id` | String | `BigtableSource.builder()`'s `appProfileId(...)`. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
-| `scan.row-prefix` | List of String | `prefix(...)`, once per element. UTF-8 prefixes, `;`-separated, additive with the range |
-| `scan.row-range.start-closed` | String | The inclusive UTF-8 start key of the one `rowRange(...)` the scan carries. Either bound may be given alone |
-| `scan.row-range.end-open` | String | The exclusive UTF-8 end key of that range |
+| `scan.row-key-encoding` | Enum | How the three row-key bound options are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
+| `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with the range |
+| `scan.row-range.start-closed` | String | The inclusive decoded start key of the one `rowRange(...)` the scan carries. Either bound may be given alone |
+| `scan.row-range.end-open` | String | The exclusive decoded end key of that range |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Lookup
