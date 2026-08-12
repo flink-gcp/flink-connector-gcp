@@ -37,18 +37,18 @@ import java.util.List;
  * <p>Four rules this class follows, and the reasons they are rules rather than habits:
  *
  * <ol>
- *   <li><b>One option per builder setter.</b> The DataStream API is the source of truth; this layer
- *       only maps onto it, and a reflective test asserts the two sets match. Nothing is configured
- *       here that {@code BigQuerySink.builder()} cannot configure.
- *   <li><b>Every option is declared without a default</b>, and the factory applies it with {@code
- *       getOptional(...).ifPresent(...)}. "Absent from the DDL" and "left at the connector's
- *       default" are then the same state, with no third one to invent — and no default value is
- *       restated here or in a description, where nothing would keep the copy in step.
+ *   <li><b>The DataStream APIs are the source of truth.</b> Runtime options map onto those
+ *       builders; destination parts are assembled together, and {@code source.parent-project}
+ *       overrides the {@code project} fallback passed to {@code
+ *       BigQuerySourceBuilder.parentProject(...)}.
+ *   <li><b>Every option is declared without a Flink default.</b> Direction-specific requirements
+ *       and the parent-project fallback remain explicit in the factory rather than being hidden in
+ *       the configuration object.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Pub/Sub message has an opaque payload, so a
  *       format decides its bytes; a BigQuery row is structured and the DDL schema <em>is</em> the
- *       schema, so the connector supplies its own {@code RowData} serializer.
+ *       schema, so the connector supplies its own {@code RowData} converter and serializer.
  * </ol>
  *
  * <p>The enum-valued options accept the spellings their enums' {@code toString()} return, which are
@@ -68,32 +68,35 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The Google Cloud project owning the destination table. Given as a"
-                                    + " bare project id, not a resource path.");
+                                    + " bare project id, not a resource path. For a source query,"
+                                    + " this is the project that runs and pays for the query job"
+                                    + " unless source.parent-project is set instead.");
 
     public static final ConfigOption<String> DATASET =
             ConfigOptions.key("dataset")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The BigQuery dataset holding the destination table, as a bare dataset"
-                                    + " id.");
+                            "The BigQuery dataset holding the direct source or destination table,"
+                                    + " as a bare dataset id. Not required for a source query.");
 
     public static final ConfigOption<String> TABLE =
             ConfigOptions.key("table")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The destination table, as a bare table id. One table per SQL table:"
-                                    + " per-record routing has no SQL surface and stays on the"
-                                    + " DataStream API.");
+                            "The direct source or destination table, as a bare table id. Not"
+                                    + " required for a source query. One destination per SQL"
+                                    + " table: per-record routing has no SQL surface and stays on"
+                                    + " the DataStream API.");
 
     public static final ConfigOption<String> EMULATOR_ENDPOINT =
             ConfigOptions.key("emulator-endpoint")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "A BigQuery emulator's gRPC endpoint as 'host:port', for the Storage"
-                                    + " Write API traffic. Connects over plaintext without"
+                            "A BigQuery emulator's gRPC endpoint as 'host:port', for Storage Read"
+                                    + " or Write API traffic. Connects over plaintext without"
                                     + " credentials, so it is for testing only.");
 
     public static final ConfigOption<String> EMULATOR_REST_ENDPOINT =
@@ -101,9 +104,9 @@ public final class BigQueryConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "A BigQuery emulator's REST endpoint as 'host:port', for table"
-                                    + " creation and schema updates. Separate from"
-                                    + " 'emulator-endpoint' because BigQuery serves the two"
+                            "A BigQuery emulator's REST endpoint as 'host:port', for source query"
+                                    + " or view materialization and sink table metadata. Separate"
+                                    + " from 'emulator-endpoint' because BigQuery serves the two"
                                     + " transports on different ports.");
 
     public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
@@ -111,9 +114,105 @@ public final class BigQueryConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "A service-account JSON key-file path available to every Task Manager"
-                                    + " that opens a BigQuery or Cloud Storage client. When absent,"
-                                    + " clients use application-default credentials.");
+                            "A path at which the same service-account JSON key is available to"
+                                    + " every Job Manager and Task Manager that opens a BigQuery"
+                                    + " or Cloud Storage client. When absent, clients use"
+                                    + " application-default credentials.");
+
+    // ------------------------------------------------------------------------
+    //  Source
+    // ------------------------------------------------------------------------
+
+    public static final ConfigOption<String> SOURCE_PARENT_PROJECT =
+            ConfigOptions.key("source.parent-project")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The project that owns and is billed for the Storage Read session."
+                                    + " Defaults to project; set it independently when reading a"
+                                    + " table owned by another project.");
+
+    public static final ConfigOption<String> SOURCE_QUERY =
+            ConfigOptions.key("source.query")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A GoogleSQL query whose result is read instead of the configured"
+                                    + " table. Dataset and table are not required; project is the"
+                                    + " billing project unless source.parent-project overrides"
+                                    + " it.");
+
+    public static final ConfigOption<Boolean> SOURCE_MATERIALIZE_VIEWS =
+            ConfigOptions.key("source.materialize-views")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a configured table that is a logical or materialized view is"
+                                    + " materialized through a query before it is read.");
+
+    public static final ConfigOption<String> SOURCE_QUERY_LOCATION =
+            ConfigOptions.key("source.query-location")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The location in which a source query job runs.");
+
+    public static final ConfigOption<String> SOURCE_QUERY_RESULT_DATASET =
+            ConfigOptions.key("source.query-result-dataset")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The dataset receiving a source query's temporary result table."
+                                    + " Absent uses BigQuery's anonymous dataset.");
+
+    public static final ConfigOption<Duration> SOURCE_REUSE_QUERY_RESULT_WITHIN =
+            ConfigOptions.key("source.reuse-query-result-within")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a re-planned source may reattach to the same query job."
+                                    + " Requires source.query-location.");
+
+    public static final ConfigOption<String> SOURCE_ROW_RESTRICTION =
+            ConfigOptions.key("source.row-restriction")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A BigQuery Storage Read row restriction, written as a WHERE clause"
+                                    + " without the WHERE keyword.");
+
+    public static final ConfigOption<String> SOURCE_SNAPSHOT_TIME =
+            ConfigOptions.key("source.snapshot-time")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "An ISO-8601 instant at which the configured table is read through"
+                                    + " BigQuery time travel.");
+
+    public static final ConfigOption<Integer> SOURCE_MAX_STREAM_COUNT =
+            ConfigOptions.key("source.max-stream-count")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("An upper bound on Storage Read streams.");
+
+    public static final ConfigOption<Integer> SOURCE_PREFERRED_MIN_STREAM_COUNT =
+            ConfigOptions.key("source.preferred-min-stream-count")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription("The preferred minimum number of Storage Read streams.");
+
+    public static final ConfigOption<Integer> SOURCE_MAX_RECORDS_PER_FETCH =
+            ConfigOptions.key("source.max-records-per-fetch")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The most decoded rows one source fetch hands to the task thread.");
+
+    public static final ConfigOption<Integer> SOURCE_RETRY_MAX_ATTEMPTS =
+            ConfigOptions.key("source.retry-max-attempts")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum consecutive Storage Read attempts without progress.");
 
     // ------------------------------------------------------------------------
     //  Sink — shared

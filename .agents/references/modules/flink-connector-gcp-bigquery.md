@@ -163,6 +163,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Table API / SQL (`docs/adr/0031`–`0033`, `0035`; shared rules `docs/adr/0014`)
 
+- The factory serves both directions.
+  A sink and direct table source require `project`, `dataset`, and `table`; `source.query` requires
+  either `project` or `source.parent-project` and is mutually exclusive with
+  `source.materialize-views`.
+  `source.parent-project` separates the Storage Read/query billing project from the table-owning
+  `project`; absent, it defaults to `project`.
+  The bounded source maps every DDL option onto `BigQuerySource.builder()` and converts Storage
+  Read Avro values to `RowData` by physical field name (`docs/adr/0100`).
+- The table source pushes down top-level projection through `selectedFields(...)`, including the
+  first physical column as a carrier for a zero-column planner projection.
+  It does not advertise nested projection or filter pushdown; `source.row-restriction` is the raw
+  BigQuery expression surface, not an attempted translation of Flink predicates.
 - No `format` option — the DDL schema is the schema (`docs/adr/0031`). `TIME(p)` caps at 3;
   `TIMESTAMP` → `DATETIME`, `TIMESTAMP_LTZ` → `TIMESTAMP` — both measured. `PARTITIONED BY` is
   rejected, not ignored.

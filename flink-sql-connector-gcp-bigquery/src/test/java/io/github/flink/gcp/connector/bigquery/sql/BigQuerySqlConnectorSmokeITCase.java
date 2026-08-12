@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sql;
 
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.FieldValueList;
@@ -47,8 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The only test here that exercises relocation at <em>runtime</em>. {@link
  * BigQuerySqlConnectorPackagingITCase} proves the jar has the right shape; this proves the shape
- * works — opening a Storage Write API stream is what puts relocated gRPC and its relocated netty
- * transport together, and a mistake there is invisible to any jar-content assertion.
+ * works — opening Storage Read and Write API streams is what puts relocated gRPC, relocated Avro,
+ * and relocated netty together, and a mistake there is invisible to any jar-content assertion.
  *
  * <p>Both halves of the sink are exercised on purpose. The table is auto-created, so the run goes
  * through the relocated REST client as well as the relocated gRPC one — and those are two
@@ -69,7 +71,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Timeout(180)
 class BigQuerySqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
 
-    private static final String PROJECT = "it-project";
+    // The emulator uses the project as an Avro namespace on reads; a hyphen is not legal there.
+    private static final String PROJECT = "itproject";
 
     private static final String DATASET = "it_dataset";
 
@@ -122,6 +125,12 @@ class BigQuerySqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
                 .containsExactly("alice", "bob");
         assertThat(query("SELECT amount FROM `" + qualified(table) + "` ORDER BY amount"))
                 .containsExactly("1", "2");
+
+        List<String> sourceRows = new ArrayList<>();
+        try (CloseableIterator<Row> rows = tEnv.executeSql("SELECT name FROM events").collect()) {
+            rows.forEachRemaining(row -> sourceRows.add(row.getFieldAs(0).toString()));
+        }
+        assertThat(sourceRows).containsExactlyInAnyOrder("alice", "bob");
     }
 
     private static String qualified(String table) {

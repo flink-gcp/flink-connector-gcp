@@ -23,8 +23,13 @@ import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
+import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
+import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
@@ -35,12 +40,21 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
+import io.github.flink.gcp.connector.bigquery.source.BigQueryStorageReadSource;
+import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
+import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink;
+import io.github.flink.gcp.connector.bigquery.table.source.BigQueryDynamicSource;
 import org.assertj.core.util.Throwables;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +63,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Tests for {@link BigQueryDynamicTableFactory}. */
 class BigQueryDynamicTableFactoryTest {
+
+    @TempDir Path tempDir;
 
     private static final ResolvedSchema SCHEMA =
             ResolvedSchema.of(
@@ -77,6 +93,27 @@ class BigQueryDynamicTableFactoryTest {
 
     private static DynamicTableSink sink(Map<String, String> options) {
         return FactoryMocks.createTableSink(SCHEMA, options);
+    }
+
+    private static DynamicTableSource source(Map<String, String> options) {
+        return FactoryMocks.createTableSource(SCHEMA, options);
+    }
+
+    private static BigQuerySourceConfig<?> sourceConfig(Map<String, String> options) {
+        return sourceConfig(source(options));
+    }
+
+    private static BigQuerySourceConfig<?> sourceConfig(DynamicTableSource source) {
+        return io.github.flink.gcp.connector.bigquery.source.TestSources.configOf(
+                builtSource(source));
+    }
+
+    private static BigQueryStorageReadSource<?> builtSource(DynamicTableSource source) {
+        SourceProvider provider =
+                (SourceProvider)
+                        ((org.apache.flink.table.connector.source.ScanTableSource) source)
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        return (BigQueryStorageReadSource<?>) provider.createSource();
     }
 
     /**
@@ -125,6 +162,289 @@ class BigQueryDynamicTableFactoryTest {
                 .isInstanceOf(BigQueryDynamicSink.class)
                 .extracting(DynamicTableSink::asSummaryString)
                 .isEqualTo("BigQuery table sink");
+    }
+
+    @Test
+    void buildsATableSourceFromTheMinimalOptions() {
+        DynamicTableSource source = source(minimalOptions());
+
+        assertThat(source)
+                .isInstanceOf(BigQueryDynamicSource.class)
+                .extracting(DynamicTableSource::asSummaryString)
+                .isEqualTo("BigQuery table source");
+        BigQuerySourceConfig<?> config = sourceConfig(source);
+        assertThat(config.getTable()).isEqualTo(DESTINATION);
+        assertThat(config.getQuery()).isNull();
+        assertThat(config.getParentProject()).isEqualTo("my-project");
+        assertThat(config.getSelectedFields()).containsExactly("id", "amount");
+    }
+
+    @Test
+    void usesAnIndependentParentProjectForStorageReadBilling() {
+        Map<String, String> options = minimalOptions();
+        options.put("project", "table-owner");
+        options.put("source.parent-project", "billing-project");
+
+        BigQuerySourceConfig<?> config = sourceConfig(options);
+
+        assertThat(config.getTable())
+                .isEqualTo(TableDestination.of("table-owner", "my_dataset", "my_table"));
+        assertThat(config.getParentProject()).isEqualTo("billing-project");
+    }
+
+    @Test
+    void aQueryMayNameOnlyItsParentProject() {
+        Map<String, String> options = minimalOptions();
+        options.remove("project");
+        options.remove("dataset");
+        options.remove("table");
+        options.put("source.query", "SELECT 1");
+        options.put("source.parent-project", "billing-project");
+
+        BigQuerySourceConfig<?> config = sourceConfig(options);
+
+        assertThat(config.getTable()).isNull();
+        assertThat(config.getParentProject()).isEqualTo("billing-project");
+    }
+
+    @Test
+    void buildsAQuerySourceWithoutDatasetOrTable() {
+        Map<String, String> options = minimalOptions();
+        options.remove("dataset");
+        options.remove("table");
+        options.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        options.put("source.query-location", "US");
+        options.put("source.query-result-dataset", "scratch");
+        options.put("source.reuse-query-result-within", "10 min");
+        options.put("source.row-restriction", "amount > 0");
+        options.put("source.max-stream-count", "7");
+        options.put("source.preferred-min-stream-count", "3");
+        options.put("source.max-records-per-fetch", "200");
+        options.put("source.retry-max-attempts", "9");
+
+        BigQuerySourceConfig<?> config = sourceConfig(options);
+
+        assertThat(config.getTable()).isNull();
+        assertThat(config.getQuery()).isEqualTo("SELECT id, amount FROM `p.d.t`");
+        assertThat(config.getParentProject()).isEqualTo("my-project");
+        assertThat(config.getQueryLocation()).isEqualTo("US");
+        assertThat(config.getQueryResultDataset()).isEqualTo("scratch");
+        assertThat(config.getReuseQueryResultWithin()).hasToString("PT10M");
+        assertThat(config.getRowRestriction()).isEqualTo("amount > 0");
+        assertThat(config.getMaxStreamCount()).isEqualTo(7);
+        assertThat(config.getPreferredMinStreamCount()).isEqualTo(3);
+        assertThat(config.getMaxRecordsPerFetch()).isEqualTo(200);
+        assertThat(((ReadClientRowStreamOpener) config.getRowStreamOpener()).retryMaxAttempts())
+                .isEqualTo(9);
+    }
+
+    @Test
+    void mapsViewAndSnapshotSourceOptions() {
+        Map<String, String> options = minimalOptions();
+        options.put("source.materialize-views", "true");
+        options.put("source.query-location", "asia-northeast1");
+        options.put("source.snapshot-time", "2026-08-01T00:00:00Z");
+
+        // snapshotTime and materializeViews are deliberately incompatible in the DataStream
+        // builder, so pin each mapping independently.
+        Map<String, String> view = new HashMap<>(options);
+        view.remove("source.snapshot-time");
+        BigQuerySourceConfig<?> viewConfig = sourceConfig(view);
+        assertThat(viewConfig.isMaterializeViewsEnabled()).isTrue();
+        assertThat(viewConfig.getQueryLocation()).isEqualTo("asia-northeast1");
+
+        options.remove("source.materialize-views");
+        options.remove("source.query-location");
+        assertThat(sourceConfig(options).getSnapshotTime()).hasToString("2026-08-01T00:00:00Z");
+    }
+
+    @Test
+    void directTableSourceLeavesTheSinkRestEndpointUnused() {
+        Map<String, String> options = minimalOptions();
+        options.put("emulator-rest-endpoint", "localhost:9050");
+
+        assertThat(sourceConfig(options).getQueryRunner()).isNull();
+    }
+
+    @Test
+    void queryAndViewSourcesCarryTheRestEmulatorEndpoint() {
+        Map<String, String> query = minimalOptions();
+        query.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        Map<String, String> view = minimalOptions();
+        view.put("source.materialize-views", "true");
+
+        for (Map<String, String> options : Arrays.asList(query, view)) {
+            options.put("emulator-endpoint", "localhost:9060");
+            options.put("emulator-rest-endpoint", "localhost:9050");
+            assertThat(
+                            io.github.flink.gcp.connector.bigquery.source.query.TestQueryRunners
+                                    .emulatorEndpoint(sourceConfig(options).getQueryRunner()))
+                    .isEqualTo("localhost:9050");
+        }
+    }
+
+    @Test
+    void projectionBecomesStorageReadSelectedFields() {
+        DynamicTableSource source = source(minimalOptions());
+        ((SupportsProjectionPushDown) source)
+                .applyProjection(
+                        new int[][] {{1}},
+                        DataTypes.ROW(DataTypes.FIELD("amount", DataTypes.INT())));
+
+        assertThat(sourceConfig(source).getSelectedFields()).containsExactly("amount");
+    }
+
+    @Test
+    void emptyProjectionReadsOneCarrierColumn() {
+        DynamicTableSource source = source(minimalOptions());
+        ((SupportsProjectionPushDown) source).applyProjection(new int[0][], DataTypes.ROW());
+
+        assertThat(sourceConfig(source).getSelectedFields()).containsExactly("id");
+    }
+
+    @Test
+    void sourceCredentialPathSurvivesCopyAndReachesEveryClientForEveryMode() throws Exception {
+        String missing = tempDir.resolve("missing-table-source-key.json").toString();
+        Map<String, String> table = minimalOptions();
+        Map<String, String> query = minimalOptions();
+        query.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        Map<String, String> view = minimalOptions();
+        view.put("source.materialize-views", "true");
+
+        for (Map<String, String> options : Arrays.asList(table, query, view)) {
+            options.put("service-account-key-file", missing);
+            BigQueryDynamicSource dynamicSource = (BigQueryDynamicSource) source(options);
+            assertThat(dynamicSource.copy()).isEqualTo(dynamicSource);
+            BigQuerySourceConfig<?> config =
+                    io.github.flink.gcp.connector.bigquery.source.TestSources.configOf(
+                            InstantiationUtil.clone(builtSource(dynamicSource)));
+
+            assertThatThrownBy(
+                            () ->
+                                    config.getSessionCreator()
+                                            .create(
+                                                    com.google.cloud.bigquery.storage.v1
+                                                            .CreateReadSessionRequest
+                                                            .getDefaultInstance()))
+                    .isInstanceOf(java.io.IOException.class)
+                    .hasMessage("Failed to load the configured BigQuery service-account key file.")
+                    .hasMessageNotContaining(missing);
+            assertThatThrownBy(() -> config.getRowStreamOpener().open("stream", 0))
+                    .isInstanceOf(java.io.IOException.class)
+                    .hasMessage("Failed to load the configured BigQuery service-account key file.")
+                    .hasMessageNotContaining(missing);
+            if (config.getQueryRunner() != null) {
+                assertThatThrownBy(
+                                () ->
+                                        config.getQueryRunner()
+                                                .run(
+                                                        new QuerySpec(
+                                                                "SELECT 1",
+                                                                "my-project",
+                                                                null,
+                                                                null)))
+                        .isInstanceOf(java.io.IOException.class)
+                        .hasMessage(
+                                "Failed to load the configured BigQuery service-account key file.")
+                        .hasMessageNotContaining(missing);
+            }
+        }
+    }
+
+    @Test
+    void sourceCopyPreservesProjectionAndEveryOptionalFamily() {
+        Map<String, String> table = minimalOptions();
+        table.put("source.row-restriction", "amount > 0");
+        table.put("source.parent-project", "billing-project");
+        table.put("source.snapshot-time", "2026-08-01T00:00:00Z");
+        table.put("source.max-stream-count", "7");
+        table.put("source.preferred-min-stream-count", "3");
+        table.put("source.max-records-per-fetch", "200");
+        table.put("source.retry-max-attempts", "9");
+        table.put("emulator-endpoint", "localhost:9060");
+        table.put("scan.parallelism", "4");
+        BigQueryDynamicSource tableSource = (BigQueryDynamicSource) source(table);
+        tableSource.applyProjection(
+                new int[][] {{1}}, DataTypes.ROW(DataTypes.FIELD("amount", DataTypes.INT())));
+        assertThat(tableSource.copy()).isNotSameAs(tableSource).isEqualTo(tableSource);
+
+        Map<String, String> query = minimalOptions();
+        query.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        query.put("source.query-location", "US");
+        query.put("source.query-result-dataset", "scratch");
+        query.put("source.reuse-query-result-within", "10 min");
+        query.put("emulator-endpoint", "localhost:9060");
+        query.put("emulator-rest-endpoint", "localhost:9050");
+        BigQueryDynamicSource querySource = (BigQueryDynamicSource) source(query);
+        assertThat(querySource.copy()).isNotSameAs(querySource).isEqualTo(querySource);
+
+        Map<String, String> view = minimalOptions();
+        view.put("source.materialize-views", "true");
+        view.put("emulator-endpoint", "localhost:9060");
+        view.put("emulator-rest-endpoint", "localhost:9050");
+        BigQueryDynamicSource viewSource = (BigQueryDynamicSource) source(view);
+        assertThat(viewSource.copy()).isNotSameAs(viewSource).isEqualTo(viewSource);
+    }
+
+    @Test
+    void validatesSourceSpecificDestinationAndQueryOptions() {
+        ResolvedSchema noPhysicalColumns =
+                ResolvedSchema.of(Column.metadata("metadata", DataTypes.STRING(), null, true));
+        assertThatThrownBy(
+                        () -> FactoryMocks.createTableSource(noPhysicalColumns, minimalOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must declare at least one physical column");
+
+        for (String missing : List.of("dataset", "table")) {
+            Map<String, String> options = minimalOptions();
+            options.remove(missing);
+            assertThatThrownBy(() -> source(options))
+                    .as("table source without '%s'", missing)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(missing);
+        }
+
+        Map<String, String> missingProject = minimalOptions();
+        missingProject.remove("project");
+        missingProject.remove("dataset");
+        missingProject.remove("table");
+        missingProject.put("source.query", "SELECT 1");
+        assertThatThrownBy(() -> source(missingProject))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("option 'project' or 'source.parent-project'");
+
+        Map<String, String> blankQuery = minimalOptions();
+        blankQuery.put("source.query", "  ");
+        assertThatThrownBy(() -> source(blankQuery))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("source.query")
+                .hasStackTraceContaining("must not be blank");
+
+        Map<String, String> queryAndView = minimalOptions();
+        queryAndView.put("source.query", "SELECT 1");
+        queryAndView.put("source.materialize-views", "true");
+        assertThatThrownBy(() -> source(queryAndView))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot be combined");
+
+        Map<String, String> malformedSnapshot = minimalOptions();
+        malformedSnapshot.put("source.snapshot-time", "yesterday");
+        assertThatThrownBy(() -> source(malformedSnapshot))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("source.snapshot-time")
+                .hasStackTraceContaining("ISO-8601 instant");
+    }
+
+    @Test
+    void carriesSourceParallelism() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.parallelism", "4");
+        org.apache.flink.table.connector.source.ScanTableSource source =
+                (org.apache.flink.table.connector.source.ScanTableSource) source(options);
+
+        SourceProvider provider =
+                (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        assertThat(provider.getParallelism()).hasValue(4);
     }
 
     @Test

@@ -41,7 +41,7 @@ class BigQueryConnectorOptionsTest {
 
     /** The Flink-owned keys the factory borrows rather than declaring itself. */
     private static final Set<String> FLINK_OWNED =
-            new HashSet<>(java.util.Arrays.asList("sink.parallelism"));
+            new HashSet<>(java.util.Arrays.asList("scan.parallelism", "sink.parallelism"));
 
     private static List<ConfigOption<?>> declaredOptions() {
         List<ConfigOption<?>> options = new ArrayList<>();
@@ -108,7 +108,7 @@ class BigQueryConnectorOptionsTest {
     @Test
     void thereIsNoFormatOption() {
         // A BigQuery row is structured and the DDL schema is the schema, so unlike the Pub/Sub
-        // connector this one supplies its own serializer and takes no format.
+        // connector this one supplies its own converter and serializer and takes no format.
         assertThat(factoryKeys()).doesNotContain("format");
     }
 }

@@ -149,6 +149,12 @@ public final class BigQueryQueryRunner implements QueryRunner {
         this.client = client;
     }
 
+    @VisibleForTesting
+    @Nullable
+    EmulatorEndpoint emulatorEndpoint() {
+        return emulatorEndpoint;
+    }
+
     @Override
     public QueryResult run(QuerySpec spec) throws IOException {
         QueryJobIdentity identity = spec.getJobIdentity();

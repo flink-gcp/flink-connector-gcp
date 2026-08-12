@@ -22,15 +22,15 @@ limitations under the License.
 
 # BigQuery SQL Connector
 
-The `bigquery` connector writes a table to BigQuery through the module
-`flink-connector-gcp-bigquery`. It is a mapping onto the DataStream sink documented in
+The `bigquery` connector reads a bounded BigQuery table or query result and writes a table through
+the module `flink-connector-gcp-bigquery`. It maps onto the DataStream source and sink documented in
 [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) — that page carries the design,
 the delivery guarantees and the error handling; this one carries the DDL surface. Per-feature
 status is in the module README.
 
-`sink.parallelism` comes from Flink's own `FactoryUtil` rather than from this connector. There is
-no `format` option: a BigQuery row is structured and the DDL schema *is* the schema, so the
-connector supplies its own `RowData` serializer.
+`scan.parallelism` and `sink.parallelism` come from Flink's own `FactoryUtil` rather than from this
+connector. There is no `format` option: a BigQuery row is structured and the DDL schema *is* the
+schema, so the connector supplies its own `RowData` converter and serializer.
 
 ```sql
 CREATE TABLE events (
@@ -47,6 +47,22 @@ CREATE TABLE events (
 
 INSERT INTO events
 SELECT id, amount, event_ts, ROW(source, version) FROM staged_events;
+
+SELECT id, amount FROM events WHERE amount > 0;
+```
+
+A query source needs a billing project but no `dataset` or `table`:
+
+```sql
+CREATE TABLE recent_events (
+  id STRING,
+  amount BIGINT
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'source.query' = 'SELECT id, amount FROM `analytics.events` WHERE event_date = CURRENT_DATE()',
+  'source.query-location' = 'US'
+);
 ```
 
 ## Getting the connector onto the classpath
@@ -105,21 +121,24 @@ would be shadowed, silently. Put them in `lib/`, or add each with its own `ADD J
 property names** move with it, so a `-D` spelled `io.grpc.netty.shaded.io.netty.maxDirectMemory`
 has no effect here — it has to carry the shaded prefix above.
 
-The jar is about 64 MB (measured 2026-08-06). Some of that is a code path this connector never
-runs — the Storage *Read* API in `google-cloud-bigquerystorage` brings Apache Arrow, netty and
-flatbuffers — though less than it looks: those three are 3.2 MB of it, about 5%. They are bundled
-anyway, because the bundle is defined as "the runtime classpath" rather than as a list, and a list
-is how a dependency gets silently dropped from a jar instead of failing a build.
+The jar is about 64 MB (measured 2026-08-06). The source uses the Storage Read API's Avro wire
+format, but `google-cloud-bigquerystorage` also brings Apache Arrow and flatbuffers for the declined
+Arrow path; together with netty those three are 3.2 MB, about 5% of the jar. They remain bundled
+because the bundle is defined as "the runtime classpath" rather than as a hand-maintained list, and
+a list is how a dependency gets silently dropped from a jar instead of failing a build.
 
 ### Credentials
 
 The connector uses **application default credentials** when `service-account-key-file` is absent.
-Set that option to a service-account JSON key-file path to use the same explicit identity for every
+Set that option to a service-account JSON key-file path to use an explicit identity for every
 BigQuery client and, under `file-loads`, for GCS staging too.
 
 Only the path enters the job graph.
-The file is read when runtime clients open, so it must exist at the same path on every TaskManager
-that can run a sink writer or committer, including after failover or rescaling.
+The file is read when runtime clients open, so it must exist at the same path on every JobManager
+and TaskManager that can plan a read or run a source reader, sink writer or committer, including
+after failover or rescaling.
+Every copy at that path must contain the same service-account key; a query result created by one
+identity might not be readable by another.
 Only service-account JSON is accepted, and failures do not include the path or parser cause.
 The option is rejected with either emulator endpoint because emulator connections are
 credential-free.
@@ -143,21 +162,54 @@ bare templates, and the copyright holder is part of a BSD or MIT text.
 
 ## Options
 
-Every option maps onto one builder setter of the DataStream API, which stays the source of truth.
-An option left out of the DDL leaves that setter uncalled, so its default is whatever the connector
-or the SDK already uses — the default is never restated here. The full list of defaults is in the
+Every connector-owned runtime option maps onto the DataStream API, which stays the source of
+truth; destination components are assembled together, and `source.parent-project` overrides the
+`project` fallback passed to `parentProject(...)`.
+Flink's `scan.parallelism` and `sink.parallelism` configure the corresponding runtime provider
+instead.
+Except for the documented `project` fallback into `source.parent-project`, leaving an optional
+runtime option out of the DDL leaves its setter uncalled, so its default is whatever the connector
+or SDK already uses. The full list of defaults is in the
 [configuration reference]({{< relref "docs/reference/bigquery" >}}).
 
 ### Destination
 
 | Option | Type | Maps to |
 |---|---|---|
-| `project` | String | The project part of `destination(...)`; a bare project id |
-| `dataset` | String | The dataset part of `destination(...)` |
-| `table` | String | The table part of `destination(...)`. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Write API's gRPC endpoint as `host:port` — parsed when the planner builds the sink, so a malformed value fails there. Rejected under `file-loads` |
-| `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, the table-metadata REST endpoint. Separate because BigQuery serves the two transports on different ports. Rejected under `file-loads`, as above |
-| `service-account-key-file` | String | `serviceAccountKeyFile(...)`; a service-account JSON key-file path loaded on TaskManagers at runtime. Absent uses ADC; rejected with either emulator endpoint |
+| `project` | String | The project part of `destination(...)`; also the source billing project unless `source.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `source.parent-project` |
+| `dataset` | String | The dataset part of `destination(...)`; required for a sink or direct table source, unused by a query source |
+| `table` | String | The table part of `destination(...)`; required for a sink or direct table source. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Read or Write API's gRPC endpoint as `host:port` — parsed when the planner builds the source or sink. Rejected under `file-loads` |
+| `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, used for source query/view materialization and sink table metadata. Separate because BigQuery serves the two transports on different ports. Rejected under `file-loads` |
+| `service-account-key-file` | String | `serviceAccountKeyFile(...)`; a service-account JSON key-file path loaded on JobManagers and TaskManagers at runtime. Absent uses ADC; rejected with either emulator endpoint |
+
+### Source
+
+The source is bounded and insert-only. A direct source names `project`, `dataset`, and `table`.
+`source.query` switches to the query-result path, where either `project` or
+`source.parent-project` is required. Projection
+pushdown sends the planner's retained top-level column names to the Storage Read session. It prunes
+the direct table read and the generated SQL used to materialize a named view. A user-supplied query
+is left unchanged, so projection prunes only its result-table read and does not reduce what the
+query itself scans. A plan needing no output column retains the first physical column as a carrier;
+the planner discards it above the source. Nested projection and SQL filter pushdown are not
+advertised; use `source.row-restriction` when a BigQuery-native server-side predicate is needed.
+
+| Option | Type | Maps to |
+|---|---|---|
+| `source.parent-project` | String | `parentProject(...)`; the project that owns and is billed for the Storage Read session. *Unset ⇒ `project`*. Set it independently when the table belongs to another project, such as a public dataset |
+| `source.query` | String | `query(...)`; reads the query's result instead of the configured table |
+| `source.materialize-views` | Boolean | `materializeViews()`; checks a configured table name and materializes it when it is a logical or materialized view. Cannot be combined with `source.query` |
+| `source.query-location` | String | `queryLocation(...)`; query or view materialization only |
+| `source.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
+| `source.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `source.query-location` |
+| `source.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword |
+| `source.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
+| `source.max-stream-count` | Integer | `maxStreamCount(...)` |
+| `source.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |
+| `source.max-records-per-fetch` | Integer | `maxRecordsPerFetch(...)` |
+| `source.retry-max-attempts` | Integer | `retryMaxAttempts(...)` |
+| `scan.parallelism` | Integer | The bounded source's parallelism (Flink's own option) |
 
 ### Sink
 
@@ -278,8 +330,11 @@ default, and required by the write method rather than by the connector — and l
 
 ## Type mapping
 
-A column's BigQuery type is derived from its SQL type, and the derived schema is what the connector
-creates a missing table with.
+A sink column's BigQuery type is derived from its SQL type, and the derived schema is what the
+connector creates a missing table with. A source reads the corresponding Storage Read API Avro
+shape by physical column name and converts it to the declared SQL type. The DDL must therefore
+agree with the source table or query result; the connector does not fetch a live schema while the
+statement is planned.
 
 | Flink type | BigQuery type |
 |---|---|
@@ -294,11 +349,13 @@ creates a missing table with.
 | `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected |
 | `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected |
 | `ROW` | `STRUCT`, recursively — or `JSON` when marked |
-| `ARRAY<T>` | `REPEATED T`; nullable elements and nested arrays are rejected |
+| `ARRAY<T>` | `REPEATED T`; nested arrays are rejected. Sink schema derivation also rejects nullable element declarations; a source declaration may be nullable although BigQuery repeated values contain no null elements |
 | `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` |
 | `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected when the job graph is built |
 
-Every rejection above happens on the client, when the job graph is built — not per record.
+Unsupported type shapes are rejected on the client when the job graph is built, not per record.
+A source decimal that does not fit the declared precision fails the read rather than becoming
+`NULL`.
 
 ### `TIMESTAMP` is civil and `TIMESTAMP_LTZ` is an instant
 
@@ -411,7 +468,8 @@ knob of `BufferedStreamOptions` has a default, and `FileLoadsOptions` needs only
 `sink.default-stream.*` is the one family whose absence means absence, because its write method is
 chosen by not choosing.
 
-**No metadata columns.** A BigQuery row has no envelope around it, so there is nothing to expose.
+**No metadata columns.** A BigQuery row has no envelope around it, so there is nothing to expose on
+either direction.
 
 **One table per SQL table.** Per-record routing and per-destination creation options stay on the
 DataStream API; a SQL `INSERT INTO` names one table, and a table-name pattern is deferred until a
@@ -423,11 +481,14 @@ matching `toString()` case-insensitively and normalizing nothing else.
 
 ## Testing
 
-The unit tests drive the factory without a planner and pin every row of the type mapping. The
-integration tests run `CREATE TABLE` and `INSERT INTO` through the planner against the
-goccy/bigquery-emulator container, with the two emulator endpoints interpolated into the `WITH`
-clause — so they exercise the production factory rather than a test seam. Column types the emulator
-does not implement are covered by the unit tests and by the gated real-GCP suite.
+The unit tests drive the factory without a planner and cover the Storage Read Avro-to-`RowData`
+mapping with synthetic writer schemas and records. The integration tests run `CREATE TABLE`,
+bounded `SELECT`, and `INSERT INTO` through the planner against the goccy/bigquery-emulator
+container, with the two emulator endpoints interpolated into the `WITH` clause — so they exercise
+the production factory rather than a test seam. That Table source round trip covers `INT64` and
+`STRING`; the underlying DataStream source has gated real-GCP coverage, but it returns
+`GenericRecord` and therefore does not independently prove the Table source's conversion of
+emulator-unsupported types.
 
 `sink.table-create.*` needs both levels, and for a reason the emulator states by omission: it
 stores a create request's partitioning and clustering verbatim and **validates nothing**, so
@@ -454,8 +515,8 @@ The uber-jar is covered separately, in `flink-sql-connector-gcp-bigquery`.
   relocated implementation to an interface this jar does not own — bar one documented exemption,
   netty's BlockHound integration, which is inert unless that test-time agent is present — that
   every licence text checked in reached the jar, and that the `NOTICE` claims no Apache provenance.
-- `BigQuerySqlConnectorSmokeITCase` runs a SQL `INSERT` against the emulator **through the shaded
-  classes** — the module's surefire configuration drops the connector artifact from the test
+- `BigQuerySqlConnectorSmokeITCase` runs a SQL `INSERT` and bounded `SELECT` against the emulator
+  **through the shaded classes** — the module's surefire configuration drops the connector artifact from the test
   classpath and adds the uber-jar, and the test asserts the factory really did load from there,
   because a regression in that setup would leave every other assertion about the wrong code. This
   is the only test that exercises relocation at runtime, and it lets the sink create its own table,
