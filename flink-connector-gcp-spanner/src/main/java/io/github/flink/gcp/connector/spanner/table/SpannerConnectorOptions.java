@@ -51,7 +51,13 @@ public final class SpannerConnectorOptions {
             ConfigOptions.key("table")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription("The Spanner table receiving the rows.");
+                    .withDescription("The Spanner table receiving or supplying rows.");
+    public static final ConfigOption<String> SCHEMA =
+            ConfigOptions.key("schema")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The named schema containing the table; unset uses the dialect's default schema.");
     public static final ConfigOption<Dialect> DIALECT =
             ConfigOptions.key("dialect")
                     .enumType(Dialect.class)

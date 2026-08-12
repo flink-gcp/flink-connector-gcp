@@ -121,6 +121,11 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
         this.filters = filters;
     }
 
+    @VisibleForTesting
+    SpannerRowLookup rowLookup() {
+        return lookup;
+    }
+
     @Override
     public void open(FunctionContext context) throws Exception {
         lookup.open();

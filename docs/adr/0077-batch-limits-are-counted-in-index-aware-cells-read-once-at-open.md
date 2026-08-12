@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.119.0; schema read verified
   2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`, both dialects), revised by
-  [#435] (2026-08-09)
-- Issues: [#220], [#435]
+  [#435] (2026-08-09), [#573] (2026-08-12)
+- Issues: [#220], [#435], [#573]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Batching, and
   `docs/content/docs/reference/spanner.md`
@@ -203,20 +203,18 @@ Two qualifications the guard's own framing has to carry, or it claims more than 
   request legal — the defaults sit two to three orders of magnitude below both.
 
 **The index coverage is read once, when the writer opens**, with a dialect-branched query over
-`INFORMATION_SCHEMA.INDEX_COLUMNS` — GoogleSQL scopes the default schema at the empty catalog and
-empty schema, PostgreSQL at schema `public`. The primary-key index is excluded by name
-(`PRIMARY_KEY` in both dialects, the filter Beam has shipped against both the service and the
-emulator), since its cells are already counted by the columns themselves.
+`INFORMATION_SCHEMA.INDEX_COLUMNS` for every visible user schema.
+The schema and table names form the table identity, so equal short table names in different schemas keep independent weights.
+The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the filter Beam has shipped against both the service and the emulator), since its cells are already counted by the columns themselves.
 
 - Reading at writer creation rather than lazily makes a database whose schema the sink cannot read
   a job that never starts, instead of one that dies at its first record.
-- Names are matched case-insensitively. Spanner will not let two tables, or two columns of one
-  table, differ only in case, so folding costs nothing — and it stops a serializer that spells a
-  table `orders` where the schema says `Orders` from silently losing its index weights.
-- **A table the weights do not know is counted without its index entries**: one created after the
-  writer opened, or living in a named schema rather than the default one. That undercounts, and
-  the headroom above is the answer. It is not an error, because the alternative — failing a job
-  over a table that exists and works — is worse.
+- Names follow the database dialect.
+  GoogleSQL native API names match case-insensitively, while PostgreSQL native API names match the catalog spelling exactly.
+  A named-schema mutation supplies the decoded `schema.table` data-API name without SQL delimiters; `INFORMATION_SCHEMA` supplies the same catalog spellings.
+- **A table the weights do not know is counted without its index entries**: one created after the writer opened, or one hidden from the writer's database role.
+  That undercounts, and the headroom above is the answer.
+  It is not an error because failing a job over a table that exists and accepts its mutations would reject otherwise valid writes.
 - A dialect the client library adds later throws rather than reading nothing, since reading
   nothing would silently undercount every mutation of every table.
 
@@ -273,3 +271,4 @@ emulator), since its cells are already counted by the columns themselves.
 [#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
 [#435]: https://github.com/laughingman7743/flink-connector-gcp/issues/435
 [#441]: https://github.com/laughingman7743/flink-connector-gcp/issues/441
+[#573]: https://github.com/laughingman7743/flink-connector-gcp/issues/573

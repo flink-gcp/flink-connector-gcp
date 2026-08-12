@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0098: The Spanner lookup source is primary-key-only and Flink owns its cache
 
 - Status: Accepted
-- Date: 2026-08-11
+- Date: 2026-08-11, revised 2026-08-12
 - Issues: [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504), [#529](https://github.com/laughingman7743/flink-connector-gcp/issues/529) (under
-  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223))
+  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -34,6 +34,7 @@ Flink also defines standard lookup cache options and owns the cache lifecycle ar
 The Spanner dynamic source accepts a lookup only when the planner supplies equality predicates for every declared primary-key column.
 It restores the declared composite-key order before calling Spanner.
 Synchronous mode uses `readRow`; asynchronous mode uses `readRowAsync`.
+Both modes qualify the table with the optional dialect-specific `schema` value used by the sink and bounded source.
 
 The connector exposes Flink's `NONE` and `PARTIAL` cache modes and delegates partial-cache storage, expiry, and missing-key behavior to Flink.
 It rejects `FULL` because a full cache would require a scan and a separately defined snapshot and reload contract.

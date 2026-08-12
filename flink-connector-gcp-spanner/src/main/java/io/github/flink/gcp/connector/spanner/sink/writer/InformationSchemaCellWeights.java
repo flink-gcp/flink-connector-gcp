@@ -26,16 +26,12 @@ import com.google.cloud.spanner.ResultSet;
  *
  * <p>Both dialects expose the same {@code INDEX_COLUMNS} view — a row per (index, column) pair, key
  * columns and {@code STORING} columns alike, which is exactly the set of columns whose write
- * rewrites an index entry — but they scope it differently: GoogleSQL puts the default schema at the
- * empty catalog and empty schema, PostgreSQL at schema {@code public}.
+ * rewrites an index entry. The query includes every visible user schema and retains the schema name
+ * so equally named tables remain distinct.
  *
  * <p>The primary-key index is excluded by name rather than by {@code INDEX_TYPE}: both dialects
  * name it {@code PRIMARY_KEY}, that is the filter Apache Beam has shipped against both the service
  * and the emulator for years, and its cells are already counted by the columns themselves.
- *
- * <p>What this deliberately does not cover: tables in a named schema. Their rows are filtered out
- * with everything else outside the default schema, so their mutations are weighed without index
- * entries — the undercount the {@code maxBatchCells} headroom absorbs.
  */
 @Internal
 final class InformationSchemaCellWeights {
@@ -43,8 +39,7 @@ final class InformationSchemaCellWeights {
     private InformationSchemaCellWeights() {}
 
     /**
-     * Returns the query listing (table, column, index) for every secondary index of the default
-     * schema.
+     * Returns the query listing (schema, table, column, index) for every visible secondary index.
      *
      * @param dialect the database's dialect
      * @return the SQL to run
@@ -52,13 +47,16 @@ final class InformationSchemaCellWeights {
     static String queryFor(Dialect dialect) {
         switch (dialect) {
             case POSTGRESQL:
-                return "SELECT table_name, column_name, index_name"
+                return "SELECT table_schema, table_name, column_name, index_name"
                         + " FROM information_schema.index_columns"
-                        + " WHERE table_schema = 'public' AND index_name != 'PRIMARY_KEY'";
+                        + " WHERE table_schema NOT IN"
+                        + " ('pg_catalog', 'information_schema', 'SPANNER_SYS')"
+                        + " AND index_name != 'PRIMARY_KEY'";
             case GOOGLE_STANDARD_SQL:
-                return "SELECT TABLE_NAME, COLUMN_NAME, INDEX_NAME"
+                return "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, INDEX_NAME"
                         + " FROM INFORMATION_SCHEMA.INDEX_COLUMNS"
-                        + " WHERE TABLE_CATALOG = '' AND TABLE_SCHEMA = ''"
+                        + " WHERE TABLE_CATALOG = ''"
+                        + " AND TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')"
                         + " AND INDEX_NAME != 'PRIMARY_KEY'";
             default:
                 // Unreachable today; a dialect added to the client library lands here rather than
@@ -75,18 +73,25 @@ final class InformationSchemaCellWeights {
      * Reads the weights from the result of {@link #queryFor}. Does not close the result set.
      *
      * @param resultSet the query result, positioned before the first row
+     * @param dialect the database's dialect
      * @return the weights
      */
-    static CellWeights read(ResultSet resultSet) {
-        CellWeights.Builder weights = CellWeights.builder();
+    static CellWeights read(ResultSet resultSet, Dialect dialect) {
+        CellWeights.Builder weights = CellWeights.builder(dialect);
         while (resultSet.next()) {
-            // Read positionally: the two dialects' queries select the same three values under
+            // Read positionally: the two dialects' queries select the same four values under
             // different spellings.
-            if (resultSet.isNull(0) || resultSet.isNull(1) || resultSet.isNull(2)) {
+            if (resultSet.isNull(0)
+                    || resultSet.isNull(1)
+                    || resultSet.isNull(2)
+                    || resultSet.isNull(3)) {
                 continue;
             }
             weights.indexColumn(
-                    resultSet.getString(0), resultSet.getString(1), resultSet.getString(2));
+                    resultSet.getString(0),
+                    resultSet.getString(1),
+                    resultSet.getString(2),
+                    resultSet.getString(3));
         }
         return weights.build();
     }

@@ -137,6 +137,7 @@ class SpannerOptionParityTest {
                         "instance",
                         "database",
                         "table",
+                        "schema",
                         "dialect",
                         "emulator-endpoint",
                         "schema.json-field-paths",

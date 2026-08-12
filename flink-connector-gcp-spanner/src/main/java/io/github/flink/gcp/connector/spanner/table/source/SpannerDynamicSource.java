@@ -44,6 +44,7 @@ import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
@@ -70,9 +71,9 @@ public final class SpannerDynamicSource
                 SupportsFilterPushDown {
     private final SpannerTableSchemaConverter schema;
     private final SpannerDatabase database;
-    private final String table;
+    private final SpannerTableName table;
     private final Dialect dialect;
-    @Nullable private final String scanIndex;
+    @Nullable private final SpannerTableName.AccessPathName scanIndex;
     @Nullable private final Long maxPartitions;
     @Nullable private final Long partitionSizeBytes;
     @Nullable private final Boolean dataBoostEnabled;
@@ -94,10 +95,10 @@ public final class SpannerDynamicSource
         this(
                 schema,
                 database,
-                table,
+                tableName(table, config),
                 producedDataType,
                 config.get(SpannerConnectorOptions.DIALECT),
-                scanIndex(config),
+                scanIndex(table, config),
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS)
                         .orElse(null),
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_SIZE)
@@ -111,22 +112,26 @@ public final class SpannerDynamicSource
                 SpannerLookupConfig.from(config));
     }
 
+    private static SpannerTableName tableName(String table, ReadableConfig config) {
+        return SpannerTableName.of(
+                config.getOptional(SpannerConnectorOptions.SCHEMA).orElse(null),
+                table,
+                config.get(SpannerConnectorOptions.DIALECT));
+    }
+
     @Nullable
-    private static String scanIndex(ReadableConfig config) {
+    private static SpannerTableName.AccessPathName scanIndex(String table, ReadableConfig config) {
         String index = config.getOptional(SpannerConnectorOptions.SCAN_INDEX).orElse(null);
-        if (index != null && index.trim().isEmpty()) {
-            throw new ValidationException("scan.index must not be blank.");
-        }
-        return index;
+        return index == null ? null : tableName(table, config).accessPath(index, "scan.index");
     }
 
     private SpannerDynamicSource(
             SpannerTableSchemaConverter schema,
             SpannerDatabase database,
-            String table,
+            SpannerTableName table,
             DataType producedDataType,
             Dialect dialect,
-            @Nullable String scanIndex,
+            @Nullable SpannerTableName.AccessPathName scanIndex,
             @Nullable Long maxPartitions,
             @Nullable Long partitionSizeBytes,
             @Nullable Boolean dataBoostEnabled,
@@ -239,12 +244,12 @@ public final class SpannerDynamicSource
         List<String> columns = projectedColumns();
         boolean zeroColumnProjection = columns.isEmpty();
         if (scanIndex == null && !filterState.hasPrimaryKeyConstraint()) {
-            return SpannerReadOperation.read(table, KeySet.all(), retainedColumns());
+            return SpannerReadOperation.read(table.apiName(), KeySet.all(), retainedColumns());
         }
         if (scanIndex == null) {
             KeySet keys = filterState.directionIndependentPrimaryKeySet(declaredPrimaryKey());
             if (keys != null) {
-                return SpannerReadOperation.read(table, keys, retainedColumns());
+                return SpannerReadOperation.read(table.apiName(), keys, retainedColumns());
             }
         }
         return SpannerReadOperationResolution.deferred(
@@ -297,7 +302,7 @@ public final class SpannerDynamicSource
             SpannerRowDataAsyncLookupFunction function =
                     new SpannerRowDataAsyncLookupFunction(
                             database,
-                            table,
+                            table.apiName(),
                             retainedColumns(),
                             schema,
                             projectedFields,
@@ -313,7 +318,7 @@ public final class SpannerDynamicSource
         SpannerRowDataLookupFunction function =
                 new SpannerRowDataLookupFunction(
                         database,
-                        table,
+                        table.apiName(),
                         retainedColumns(),
                         schema,
                         projectedFields,

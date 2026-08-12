@@ -87,8 +87,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the one way this sink can reach the per-group 80,000 at all; with no secondary index it costs one
   however many rows it hits, and the sink's single-row estimate is then exact.
 - `maxBatchCells` counts index entries, read once from `INFORMATION_SCHEMA` when the writer opens
-  — dialect-branched, primary-key index excluded by name, names folded to lower case. Reading it
-  at creation is what makes an unreadable schema a job that never starts.
+  — dialect-branched across every visible user schema, primary-key index excluded by name, and
+  keyed by schema plus table. GoogleSQL names match case-insensitively; PostgreSQL catalog names
+  preserve the distinction created by quoted identifiers. Reading it at creation is what makes an
+  unreadable schema a job that never starts.
+- Table API schema-object options accept one unquoted or canonically quoted component.
+  The connector checks component and quote structure but does not copy Spanner's character,
+  length, or keyword rules; it decodes SQL quoting before assembling the native data-API name,
+  and `INFORMATION_SCHEMA` and the native data APIs remain authoritative.
 - **A table the weights do not know is counted without index entries, never rejected.** The
   default's 16-fold headroom under the 80,000 ceiling is what absorbs that, so raising
   `maxBatchCells` toward it is a real trade and the docs say so.
@@ -209,8 +215,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Emulator ITs pin `gcr.io/cloud-spanner-emulator/emulator`, **not** the `google-cloud-cli` bundle
   the other connectors use: its Spanner emulator predates `BatchWrite` (added in v1.5.31), so the
   whole write path would answer `UNIMPLEMENTED`.
-- Identifiers in the ITs are lower case and unquoted, which is what lets one set of mutations and
-  one query serve both dialects.
+- Shared legacy fixtures keep identifiers lower case and unquoted so one set of mutations and one
+  query can serve both dialects. Named-schema coverage also uses each dialect's quoted spelling and
+  verifies that the connector decodes it to the native catalog name.
 - The production `createWriter(WriterInitContext)` is covered by the emulator ITs rather than by a
   closed-port unit test: this sink reads the schema while creating the writer, so a closed port
   costs the client's whole retry budget (27 s, measured 2026-08-09) to prove less.

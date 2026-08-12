@@ -58,6 +58,42 @@ by the cluster. Its bundled packages are relocated so it can coexist with other 
 with application dependencies. DataStream applications should depend on
 `flink-connector-gcp-spanner` instead of the SQL uber-jar.
 
+## Named schemas
+
+Set `schema` when the destination or source table belongs to a named Spanner schema.
+The connector qualifies that schema with `table` for mutations, bounded scans, and synchronous and asynchronous lookups.
+When `scan.index` is set, the same schema also qualifies the index because Spanner requires a table and its index to share a schema.
+Leaving `schema` unset retains the empty GoogleSQL schema or PostgreSQL `public`.
+
+The `schema`, `table`, and `scan.index` values each name one identifier component when `schema` is set.
+Do not put a dot-qualified name in any of these options.
+GoogleSQL accepts an unquoted identifier or a backtick-quoted identifier, and PostgreSQL accepts an unquoted identifier or a double-quoted identifier.
+PostgreSQL folds unquoted values to lower case and preserves quoted values, including their case.
+GoogleSQL compares schema-object names case-insensitively.
+Quoted values use one canonical spelling: PostgreSQL doubles an embedded double quote, while GoogleSQL escapes an embedded backtick or backslash with a backslash.
+Numeric, octal, and Unicode escape spellings are not accepted in these options.
+The connector rejects blank values, multipart values, mismatched quotes, and non-canonical quote escapes before opening a client.
+It does not duplicate Spanner's identifier character, length, or keyword rules.
+The connector removes SQL quoting after decoding each component because Spanner's native data APIs accept catalog names, not SQL identifier tokens.
+The bounded scan resolves those decoded names through `INFORMATION_SCHEMA`, while sink mutations and lookup reads leave final name validation to the Spanner API.
+Quote a reserved word when it is used as the schema, the first component of the qualified name.
+
+```sql
+CREATE TABLE sales_orders (
+  order_id BIGINT,
+  total DECIMAL(38, 9),
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'schema' = 'sales',
+  'table' = 'orders',
+  'scan.index' = 'orders_by_total'
+);
+```
+
 ## Mutation behavior
 
 A declared `PRIMARY KEY` makes the sink an upsert sink.
@@ -115,11 +151,12 @@ Predicates on later key columns, `OR`, `IN`, `<>`, computed expressions, null li
 Set `scan.index` to read a bounded scan through a named [secondary index](https://cloud.google.com/spanner/docs/secondary-indexes).
 The connector resolves the live index key order, sort direction, state, null filtering, and readable columns from the [GoogleSQL](https://cloud.google.com/spanner/docs/information-schema) or [PostgreSQL](https://cloud.google.com/spanner/docs/information-schema-pg) `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.
 It then uses matching predicates as a best-effort index-key prefilter and leaves every such predicate with Flink to preserve SQL semantics.
-The selected index must be `READ_WRITE`, belong to the configured table in the default schema, cover every column the scan reads, and be safe for nullable key rows.
+The selected index must be `READ_WRITE`, belong to the configured table and schema, cover every column the scan reads, and be safe for nullable key rows.
 GoogleSQL `STORING` and PostgreSQL `INCLUDE` columns are readable through the index together with its key and the base-table primary key.
 A null-filtered index is accepted only when the pushed filters prove every nullable index key is not null.
 An unusable configured index fails the job during partition planning instead of falling back to the base table.
-Index metadata resolution currently supports only the empty GoogleSQL schema and PostgreSQL `public`; named schemas are outside this option's contract.
+The connector resolves schema, table, and index metadata together at the scan snapshot.
+A missing or invisible schema is reported separately from a missing or invisible table access path.
 
 Partition count and size are service hints, not exact split controls.
 The default timestamp bound is strong; set either a read timestamp or exact staleness, never both.
@@ -169,14 +206,15 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `project` | **required** | The Google Cloud project containing the instance |
 | `instance` | **required** | The Spanner instance containing the database |
 | `database` | **required** | The database containing the table |
-| `table` | **required** | The table receiving rows |
+| `schema` | *unset ⇒ empty GoogleSQL schema or PostgreSQL `public`* | Named schema containing the table; one canonical quoted or unquoted identifier component |
+| `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `schema` is set |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery |
 | `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
 | `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
-| `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; validated from live metadata when the job plans partitions |
+| `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; one canonical quoted or unquoted component in the configured schema, validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
 | `scan.partition.size` | *unset* | Desired partition size passed to Spanner as a hint |
 | `scan.data-boost-enabled` | `false` | Whether scans use Data Boost compute |

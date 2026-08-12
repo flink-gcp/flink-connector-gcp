@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.sink.writer;
 
+import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeyRange;
 import com.google.cloud.spanner.KeySet;
@@ -95,6 +96,54 @@ class CellWeightsTest {
         assertThat(weights.weigh(Mutation.newInsertBuilder("ORDERS").set("total").to(1L).build()))
                 .isEqualTo(2);
         assertThat(weights.knows("orders")).isTrue();
+    }
+
+    @Test
+    void keepsNamedSchemaTablesDistinct() {
+        CellWeights weights =
+                CellWeights.builder(Dialect.GOOGLE_STANDARD_SQL)
+                        .indexColumn("sales", "Orders", "Total", "OrdersByTotal")
+                        .indexColumn("archive", "Orders", "Note", "OrdersByNote")
+                        .build();
+
+        assertThat(
+                        weights.weigh(
+                                Mutation.newInsertBuilder("sales.Orders")
+                                        .set("Total")
+                                        .to(1L)
+                                        .build()))
+                .isEqualTo(2);
+        assertThat(
+                        weights.weigh(
+                                Mutation.newInsertBuilder("archive.Orders")
+                                        .set("Total")
+                                        .to(1L)
+                                        .build()))
+                .isEqualTo(1);
+    }
+
+    @Test
+    void distinguishesQuotedPostgresqlNames() {
+        CellWeights weights =
+                CellWeights.builder(Dialect.POSTGRESQL)
+                        .indexColumn("Sales", "Orders", "Total", "ByTotal")
+                        .indexColumn("sales", "orders", "note", "by_note")
+                        .build();
+
+        assertThat(
+                        weights.weigh(
+                                Mutation.newInsertBuilder("Sales.Orders")
+                                        .set("Total")
+                                        .to(1L)
+                                        .build()))
+                .isEqualTo(2);
+        assertThat(
+                        weights.weigh(
+                                Mutation.newInsertBuilder("sales.orders")
+                                        .set("Total")
+                                        .to(1L)
+                                        .build()))
+                .isEqualTo(1);
     }
 
     @Test
