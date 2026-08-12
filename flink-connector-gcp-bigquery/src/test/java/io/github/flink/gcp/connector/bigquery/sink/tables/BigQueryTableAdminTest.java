@@ -30,8 +30,10 @@ import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 
@@ -40,6 +42,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link BigQueryTableAdmin}. */
 class BigQueryTableAdminTest {
+
+    @TempDir Path tempDir;
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
 
@@ -52,6 +56,18 @@ class BigQueryTableAdminTest {
                                     .setMode(TableFieldSchema.Mode.NULLABLE)
                                     .build())
                     .build();
+
+    @Test
+    void configuredCredentialsAreLoadedWhenTheRestClientIsFirstUsed() {
+        String missingPath = tempDir.resolve("missing-table-admin-secret.json").toString();
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(missingPath, null);
+
+        assertThatThrownBy(() -> admin.getSchema(DESTINATION))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured BigQuery service-account key file.")
+                .hasNoCause()
+                .hasMessageNotContaining(missingPath);
+    }
 
     @Test
     void buildsPlainTableByDefault() {

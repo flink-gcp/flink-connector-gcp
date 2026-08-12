@@ -39,10 +39,11 @@ public final class WriteClientBufferedStreamServiceFactory implements BufferedSt
     private static final long serialVersionUID = 1L;
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     /** Creates a factory writing to the production service. */
     public WriteClientBufferedStreamServiceFactory() {
-        this(null);
+        this(null, null);
     }
 
     /**
@@ -51,6 +52,13 @@ public final class WriteClientBufferedStreamServiceFactory implements BufferedSt
      * @param emulatorEndpoint the emulator to write to, or {@code null} for the production service
      */
     public WriteClientBufferedStreamServiceFactory(@Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(null, emulatorEndpoint);
+    }
+
+    /** Creates a factory with optional runtime-loaded production credentials. */
+    public WriteClientBufferedStreamServiceFactory(
+            @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -63,6 +71,7 @@ public final class WriteClientBufferedStreamServiceFactory implements BufferedSt
     @Override
     public BufferedStreamService create(String location, BufferedStreamOptions options)
             throws IOException {
-        return new WriteClientBufferedStreamService(location, options, emulatorEndpoint);
+        return new WriteClientBufferedStreamService(
+                location, options, serviceAccountKeyFile, emulatorEndpoint);
     }
 }

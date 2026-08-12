@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.GcsStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
@@ -49,6 +50,31 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * parallelism-1 gather stage feeding a parallelism-1 committer.
  */
 class BigQueryFileLoadsSinkTopologyTest {
+
+    @Test
+    void theSinkPassesItsCredentialPathToGcsStaging() {
+        String keyFile = "/var/run/secrets/bigquery-key.json";
+        BigQueryFileLoadsSink<String> sink =
+                (BigQueryFileLoadsSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .destination(TableDestination.of("p", "d", "t"))
+                                .serializer(new TestSerializer())
+                                .serviceAccountKeyFile(keyFile)
+                                .fileLoadsOptions(
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://bucket")
+                                                .build())
+                                .build();
+
+        assertThat(sink.stagingStorage())
+                .isInstanceOf(GcsStagingStorage.class)
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                GcsStagingStorage.class))
+                .extracting(GcsStagingStorage::getServiceAccountKeyFile)
+                .isEqualTo(keyFile);
+    }
 
     /** A trivial serializable test serializer. */
     private static class TestSerializer extends BigQueryProtoSerializer<Object> {

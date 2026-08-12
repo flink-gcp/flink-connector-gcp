@@ -61,7 +61,7 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
      */
     public WriteClientBufferedStreamService(
             @Nullable String location, BufferedStreamOptions options) throws IOException {
-        this(location, options, null);
+        this(location, options, null, null);
     }
 
     /**
@@ -77,9 +77,19 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
             BufferedStreamOptions options,
             @Nullable EmulatorEndpoint emulatorEndpoint)
             throws IOException {
+        this(location, options, null, emulatorEndpoint);
+    }
+
+    /** Creates a service with optional runtime-loaded production credentials. */
+    public WriteClientBufferedStreamService(
+            @Nullable String location,
+            BufferedStreamOptions options,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable EmulatorEndpoint emulatorEndpoint)
+            throws IOException {
         this(
                 emulatorEndpoint == null
-                        ? BigQueryWriteClient.create()
+                        ? BigQueryWriteClients.forProduction(serviceAccountKeyFile)
                         : BigQueryWriteClients.forEmulator(emulatorEndpoint),
                 location,
                 options);

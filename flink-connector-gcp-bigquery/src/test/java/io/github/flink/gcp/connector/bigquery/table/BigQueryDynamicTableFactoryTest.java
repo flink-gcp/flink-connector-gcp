@@ -26,6 +26,7 @@ import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -93,6 +94,19 @@ class BigQueryDynamicTableFactoryTest {
                         FactoryMocks.createTableSink(schema, options)
                                 .getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
                 .createSink();
+    }
+
+    private static BigQuerySinkConfig<?> configOf(Sink<?> sink) {
+        if (sink instanceof BigQueryDefaultStreamSink) {
+            return ((BigQueryDefaultStreamSink<?>) sink).getConfig();
+        }
+        if (sink instanceof BigQueryBufferedStreamSink) {
+            return ((BigQueryBufferedStreamSink<?>) sink).getConfig();
+        }
+        if (sink instanceof BigQueryFileLoadsSink) {
+            return ((BigQueryFileLoadsSink<?>) sink).getConfig();
+        }
+        throw new AssertionError("Unexpected BigQuery sink: " + sink.getClass().getName());
     }
 
     /** {@link #minimalOptions()} plus the write method and whatever that method requires. */
@@ -383,6 +397,43 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(built.getConfig().getEmulatorEndpoint().getTarget()).isEqualTo("localhost:9060");
         assertThat(built.getConfig().getEmulatorRestEndpoint().getTarget())
                 .isEqualTo("localhost:9050");
+    }
+
+    @Test
+    void serviceAccountKeyFileReachesTheBuiltSink() {
+        for (WriteMethod writeMethod : WriteMethod.values()) {
+            Map<String, String> options = optionsFor(writeMethod);
+            options.put("service-account-key-file", "/var/run/secrets/bigquery-key.json");
+
+            assertThat(configOf(built(options)).getServiceAccountKeyFile())
+                    .as("credential path under %s", writeMethod)
+                    .isEqualTo("/var/run/secrets/bigquery-key.json");
+        }
+    }
+
+    @Test
+    void blankServiceAccountKeyFileIsRejectedByKeyName() {
+        Map<String, String> options = minimalOptions();
+        options.put("service-account-key-file", "  ");
+
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option 'service-account-key-file' must not be blank.");
+    }
+
+    @Test
+    void serviceAccountKeyFileCannotBeCombinedWithEitherEmulatorEndpoint() {
+        for (String key : new String[] {"emulator-endpoint", "emulator-rest-endpoint"}) {
+            Map<String, String> options = minimalOptions();
+            options.put("service-account-key-file", "/var/run/secrets/bigquery-key.json");
+            options.put(key, "localhost:9060");
+
+            assertThatThrownBy(() -> sink(options))
+                    .as("with '%s'", key)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("service-account-key-file")
+                    .hasStackTraceContaining("emulator connections are credential-free");
+        }
     }
 
     @Test

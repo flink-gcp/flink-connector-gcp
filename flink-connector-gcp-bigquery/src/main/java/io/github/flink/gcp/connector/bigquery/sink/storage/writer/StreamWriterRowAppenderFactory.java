@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiFuture;
+import com.google.api.gax.core.CredentialsProvider;
+import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.ApiException;
@@ -34,6 +36,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoSchemaConverter;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
@@ -47,6 +50,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Default {@link RowAppenderFactory} backed by Storage Write API {@link StreamWriter}s on the
@@ -61,9 +65,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * see that class for the JVM-global first-writer-wins caveats.
  *
  * <p>An {@link EmulatorEndpoint} switches all of that off and opens a per-destination client
- * instead, because the pool speaks to the production service with application-default credentials
- * and cannot be pointed elsewhere. That branch also carries three deviations the goccy emulator
- * requires; each is tracked upstream separately, and the removal schedule is {@code docs/adr/0029}:
+ * instead, because the pool speaks to the production service with production credentials and cannot
+ * be pointed elsewhere. That branch also carries three deviations the goccy emulator requires; each
+ * is tracked upstream separately, and the removal schedule is {@code docs/adr/0029}:
  *
  * <ul>
  *   <li>the emulator registers a table's default stream only when {@code GetWriteStream} is called
@@ -109,7 +113,9 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
     private static final AtomicReference<PoolBounds> APPLIED_POOL_BOUNDS = new AtomicReference<>();
 
     private final DefaultStreamOptions options;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private transient CredentialsProvider credentialsProvider;
 
     /**
      * Creates the factory against the production service.
@@ -118,7 +124,7 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      *     the options travel with it
      */
     public StreamWriterRowAppenderFactory(DefaultStreamOptions options) {
-        this(options, null);
+        this(options, null, null);
     }
 
     /**
@@ -130,7 +136,16 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
      */
     public StreamWriterRowAppenderFactory(
             DefaultStreamOptions options, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(options, null, emulatorEndpoint);
+    }
+
+    /** Creates the factory with optional runtime-loaded production credentials. */
+    public StreamWriterRowAppenderFactory(
+            DefaultStreamOptions options,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.options = Objects.requireNonNull(options, "options must not be null");
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -151,11 +166,25 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
                         .setMaxInflightRequests(options.getMaxInflightRequests())
                         .setMaxInflightBytes(options.getMaxInflightBytes())
                         .setTraceId(TRACE_ID);
+        configureCredentials(builder::setCredentialsProvider);
         if (location != null) {
             builder.setLocation(location);
         }
         StreamWriter streamWriter = builder.build();
         return new StreamWriterRowAppender(streamWriter, null);
+    }
+
+    @VisibleForTesting
+    void configureCredentials(Consumer<CredentialsProvider> setter) throws IOException {
+        if (serviceAccountKeyFile == null) {
+            return;
+        }
+        if (credentialsProvider == null) {
+            credentialsProvider =
+                    FixedCredentialsProvider.create(
+                            BigQueryCredentials.load(serviceAccountKeyFile));
+        }
+        setter.accept(credentialsProvider);
     }
 
     /**

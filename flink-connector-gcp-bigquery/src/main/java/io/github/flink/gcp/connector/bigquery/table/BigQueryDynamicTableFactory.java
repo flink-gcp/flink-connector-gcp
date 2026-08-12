@@ -102,6 +102,7 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                 Arrays.asList(
                         BigQueryConnectorOptions.EMULATOR_ENDPOINT,
                         BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT,
+                        BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
@@ -177,6 +178,7 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
         checkFamiliesMatchTheWriteMethod(config, writeMethod);
         checkSchemaUpdatesAreSupported(config, writeMethod, schemaUpdateOptions);
         checkEmulatorEndpointsAreSupported(config, writeMethod);
+        checkCredentials(config);
 
         // Built from the write method rather than from key presence, unlike the default-stream
         // family: the builder requires each of these for its write method, so a DDL that selects
@@ -217,6 +219,9 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                 .defaultStreamOptions(DefaultStreamOptionsMapper.map(config))
                 .bufferedStreamOptions(bufferedStreamOptions)
                 .fileLoadsOptions(fileLoadsOptions)
+                .serviceAccountKeyFile(
+                        config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                                .orElse(null))
                 .emulatorEndpoint(
                         config.getOptional(BigQueryConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
                 .emulatorRestEndpoint(
@@ -224,6 +229,30 @@ public class BigQueryDynamicTableFactory implements DynamicTableSinkFactory {
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
                 .build();
+    }
+
+    private static void checkCredentials(ReadableConfig config) {
+        Optional<String> keyFile =
+                config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
+        if (keyFile.isPresent() && keyFile.get().isBlank()) {
+            throw new ValidationException(
+                    "Option '"
+                            + BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key()
+                            + "' must not be blank.");
+        }
+        if (keyFile.isPresent()
+                && (config.getOptional(BigQueryConnectorOptions.EMULATOR_ENDPOINT).isPresent()
+                        || config.getOptional(BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT)
+                                .isPresent())) {
+            throw new ValidationException(
+                    "Option '"
+                            + BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key()
+                            + "' cannot be combined with '"
+                            + BigQueryConnectorOptions.EMULATOR_ENDPOINT.key()
+                            + "' or '"
+                            + BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT.key()
+                            + "': emulator connections are credential-free.");
+        }
     }
 
     /**

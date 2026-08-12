@@ -105,7 +105,8 @@ public class BigQueryBufferedStreamSink<T>
         this(
                 config,
                 options,
-                new WriteClientBufferedStreamServiceFactory(config.getEmulatorEndpoint()));
+                new WriteClientBufferedStreamServiceFactory(
+                        config.getServiceAccountKeyFile(), config.getEmulatorEndpoint()));
     }
 
     @VisibleForTesting
@@ -145,7 +146,8 @@ public class BigQueryBufferedStreamSink<T>
     @VisibleForTesting
     TableAdmin createTableAdmin() {
         return new RetryingTableAdmin(
-                new BigQueryTableAdmin(config.getEmulatorRestEndpoint()),
+                new BigQueryTableAdmin(
+                        config.getServiceAccountKeyFile(), config.getEmulatorRestEndpoint()),
                 options.toRecoverySchedule());
     }
 

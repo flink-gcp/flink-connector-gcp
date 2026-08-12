@@ -32,10 +32,12 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSi
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.BigQueryLoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeLoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -184,6 +186,49 @@ class FileLoadsCommitterTest {
 
         assertThat(admin).isInstanceOf(RetryingTableAdmin.class);
         assertThat(((RetryingTableAdmin) admin).getSchedule().maxAttempts()).isEqualTo(6);
+    }
+
+    @Test
+    void theCommitterPassesTheSameCredentialPathToBigQueryClients() {
+        String keyFile = "/var/run/secrets/bigquery-key.json";
+        FileLoadsOptions options =
+                FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destination(T1)
+                                        .serializer(new SchemaOnlySerializer())
+                                        .serviceAccountKeyFile(keyFile)
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        FileLoadsCommitter committer =
+                new FileLoadsCommitter(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        TestSinkCommitterMetricGroup.create());
+
+        assertThat(committer.runner())
+                .isInstanceOf(BigQueryLoadJobRunner.class)
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                BigQueryLoadJobRunner.class))
+                .extracting(BigQueryLoadJobRunner::getServiceAccountKeyFile)
+                .isEqualTo(keyFile);
+        assertThat(committer.tableAdmin())
+                .isInstanceOf(RetryingTableAdmin.class)
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                RetryingTableAdmin.class))
+                .extracting(RetryingTableAdmin::getDelegate)
+                .isInstanceOf(BigQueryTableAdmin.class)
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                BigQueryTableAdmin.class))
+                .extracting(BigQueryTableAdmin::getServiceAccountKeyFile)
+                .isEqualTo(keyFile);
     }
 
     private static FileLoadsCommittable file(String name) {

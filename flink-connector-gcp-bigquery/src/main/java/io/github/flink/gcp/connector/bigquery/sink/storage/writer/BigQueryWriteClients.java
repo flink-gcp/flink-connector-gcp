@@ -19,25 +19,47 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 
 /**
  * Storage Write API clients, shared by the two write paths that open one.
  *
- * <p>Only the emulator form lives here: the production default-stream path opens no client at all
- * (its {@code StreamWriter}s come from the SDK's JVM-static connection pool) and the production
- * buffered path uses the SDK's own {@code BigQueryWriteClient.create()}.
+ * <p>The production form optionally replaces ADC with runtime-loaded service-account credentials;
+ * the emulator form always uses no credentials.
  */
 @Internal
 final class BigQueryWriteClients {
 
     private BigQueryWriteClients() {}
+
+    static BigQueryWriteClient forProduction(@Nullable String serviceAccountKeyFile)
+            throws IOException {
+        if (serviceAccountKeyFile == null) {
+            return BigQueryWriteClient.create();
+        }
+        return BigQueryWriteClient.create(productionSettings(serviceAccountKeyFile));
+    }
+
+    /** Builds production settings carrying the configured service-account credentials. */
+    @VisibleForTesting
+    static BigQueryWriteSettings productionSettings(String serviceAccountKeyFile)
+            throws IOException {
+        GoogleCredentials credentials = BigQueryCredentials.load(serviceAccountKeyFile);
+        return BigQueryWriteSettings.newBuilder()
+                .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
+                .build();
+    }
 
     /**
      * Creates a client talking plaintext to a BigQuery emulator with no credentials.

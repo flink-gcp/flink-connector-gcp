@@ -57,8 +57,8 @@ import java.util.Objects;
  * sink.file-loads.write-disposition}. {@code SupportsWritingMetadata}: a BigQuery row has no
  * envelope around it to expose.
  *
- * <p>Built through {@link #builder()} rather than a constructor: fourteen values reach it, eleven
- * of them nullable, and a positional list of those would be repeated three times over — the
+ * <p>Built through {@link #builder()} rather than a constructor: fifteen values reach it, twelve of
+ * them nullable, and a positional list of those would be repeated three times over — the
  * constructor, {@link #copy()} and {@link #equals(Object)} — with no compiler check that the
  * repetitions agree.
  */
@@ -76,6 +76,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
     @Nullable private final DefaultStreamOptions defaultStreamOptions;
     @Nullable private final BufferedStreamOptions bufferedStreamOptions;
     @Nullable private final FileLoadsOptions fileLoadsOptions;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String emulatorRestEndpoint;
     @Nullable private final Integer parallelism;
@@ -92,6 +93,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         this.defaultStreamOptions = builder.defaultStreamOptions;
         this.bufferedStreamOptions = builder.bufferedStreamOptions;
         this.fileLoadsOptions = builder.fileLoadsOptions;
+        this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
         this.parallelism = builder.parallelism;
@@ -147,6 +149,9 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         if (fileLoadsOptions != null) {
             builder.fileLoadsOptions(fileLoadsOptions);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -171,6 +176,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 .defaultStreamOptions(defaultStreamOptions)
                 .bufferedStreamOptions(bufferedStreamOptions)
                 .fileLoadsOptions(fileLoadsOptions)
+                .serviceAccountKeyFile(serviceAccountKeyFile)
                 .emulatorEndpoint(emulatorEndpoint)
                 .emulatorRestEndpoint(emulatorRestEndpoint)
                 .parallelism(parallelism)
@@ -202,6 +208,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 && Objects.equals(defaultStreamOptions, that.defaultStreamOptions)
                 && Objects.equals(bufferedStreamOptions, that.bufferedStreamOptions)
                 && Objects.equals(fileLoadsOptions, that.fileLoadsOptions)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
                 && Objects.equals(parallelism, that.parallelism);
@@ -221,6 +228,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 defaultStreamOptions,
                 bufferedStreamOptions,
                 fileLoadsOptions,
+                serviceAccountKeyFile,
                 emulatorEndpoint,
                 emulatorRestEndpoint,
                 parallelism);
@@ -248,6 +256,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         @Nullable private DefaultStreamOptions defaultStreamOptions;
         @Nullable private BufferedStreamOptions bufferedStreamOptions;
         @Nullable private FileLoadsOptions fileLoadsOptions;
+        @Nullable private String serviceAccountKeyFile;
         @Nullable private String emulatorEndpoint;
         @Nullable private String emulatorRestEndpoint;
         @Nullable private Integer parallelism;
@@ -376,6 +385,12 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
          */
         public Builder fileLoadsOptions(@Nullable FileLoadsOptions fileLoadsOptions) {
             this.fileLoadsOptions = fileLoadsOptions;
+            return this;
+        }
+
+        /** Sets the runtime service-account key-file path, or {@code null} for ADC. */
+        public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
             return this;
         }
 

@@ -102,7 +102,7 @@ public class BigQueryFileLoadsSink<T>
      * @param options the FILE_LOADS options
      */
     public BigQueryFileLoadsSink(BigQuerySinkConfig<T> config, FileLoadsOptions options) {
-        this(config, options, new GcsStagingStorage());
+        this(config, options, new GcsStagingStorage(config.getServiceAccountKeyFile()));
     }
 
     @VisibleForTesting
@@ -111,6 +111,12 @@ public class BigQueryFileLoadsSink<T>
         this.config = config;
         this.options = options;
         this.storage = storage;
+    }
+
+    /** Returns the staging storage wired from this sink's configuration. */
+    @VisibleForTesting
+    StagingStorage stagingStorage() {
+        return storage;
     }
 
     @Override

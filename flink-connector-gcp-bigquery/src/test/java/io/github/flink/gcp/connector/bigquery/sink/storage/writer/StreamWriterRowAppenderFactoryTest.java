@@ -16,19 +16,30 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
+import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.protobuf.Empty;
+import io.github.flink.gcp.connector.bigquery.ServiceAccountKeyFiles;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link StreamWriterRowAppenderFactory}'s options mapping and pool-bounds guard. */
 class StreamWriterRowAppenderFactoryTest {
+
+    @TempDir Path tempDir;
 
     @BeforeEach
     @AfterEach
@@ -80,6 +91,43 @@ class StreamWriterRowAppenderFactoryTest {
                 .isEqualTo(
                         StreamWriterRowAppenderFactory.toRetrySettings(
                                 DefaultStreamOptions.builder().build()));
+    }
+
+    @Test
+    void configuredCredentialsAreLoadedWhenTheFirstProductionAppenderOpens() {
+        String missingPath = tempDir.resolve("missing-default-stream-secret.json").toString();
+        StreamWriterRowAppenderFactory factory =
+                new StreamWriterRowAppenderFactory(
+                        DefaultStreamOptions.builder().build(), missingPath, null);
+
+        assertThatThrownBy(
+                        () ->
+                                factory.create(
+                                        TableDestination.of("p", "d", "t"),
+                                        Empty.getDescriptor(),
+                                        null))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessage("Failed to load the configured BigQuery service-account key file.")
+                .hasNoCause()
+                .hasMessageNotContaining(missingPath);
+    }
+
+    @Test
+    void configuredCredentialsArePassedToTheProductionStreamBuilder() throws Exception {
+        StreamWriterRowAppenderFactory factory =
+                new StreamWriterRowAppenderFactory(
+                        DefaultStreamOptions.builder().build(),
+                        ServiceAccountKeyFiles.create(tempDir).toString(),
+                        null);
+        AtomicReference<CredentialsProvider> configured = new AtomicReference<>();
+
+        factory.configureCredentials(configured::set);
+
+        assertThat(configured.get().getCredentials())
+                .isInstanceOf(ServiceAccountCredentials.class)
+                .extracting(
+                        credentials -> ((ServiceAccountCredentials) credentials).getClientEmail())
+                .isEqualTo(ServiceAccountKeyFiles.CLIENT_EMAIL);
     }
 
     @Test

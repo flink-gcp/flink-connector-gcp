@@ -54,10 +54,10 @@ class BigQueryDynamicSinkTest {
             TableDestination.of("my-project", "my_dataset", "my_table");
 
     /**
-     * The sink's three required values, so a test can vary one of the other eleven by name.
+     * The sink's three required values, so a test can vary one of the other twelve by name.
      *
      * <p>The production builder is the holder: the identity test below builds one variation per
-     * field, and a private copy of the same fourteen fields would have to be kept in step with it
+     * field, and a private copy of the same fifteen fields would have to be kept in step with it
      * for no gain.
      */
     private static BigQueryDynamicSink.Builder base() {
@@ -137,6 +137,9 @@ class BigQueryDynamicSinkTest {
                                 FileLoadsOptions.builder()
                                         .stagingPath("gs://bucket/prefix")
                                         .build()));
+        varied.put(
+                "serviceAccountKeyFile",
+                a -> a.serviceAccountKeyFile("/var/run/secrets/bigquery-key.json"));
         varied.put("emulatorEndpoint", a -> a.emulatorEndpoint("localhost:9060"));
         varied.put("emulatorRestEndpoint", a -> a.emulatorRestEndpoint("localhost:9050"));
         varied.put("parallelism", a -> a.parallelism(3));
@@ -152,7 +155,7 @@ class BigQueryDynamicSinkTest {
 
     @Test
     void aCopyOfAFullySpecifiedSinkEqualsIt() {
-        // Fully specified, not the default one: copy() is a chain of fourteen builder calls, and a
+        // Fully specified, not the default one: copy() is a chain of fifteen builder calls, and a
         // dropped call reproduces whatever the default already was — copying a sink whose optional
         // fields are all null cannot tell the two apart. Measured: a copy() that lost writeMethod
         // survived that version of this test.

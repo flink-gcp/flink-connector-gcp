@@ -56,6 +56,7 @@ public class BigQuerySinkBuilder<T> {
     private FileLoadsOptions fileLoadsOptions;
     private BufferedStreamOptions bufferedStreamOptions;
     private DefaultStreamOptions defaultStreamOptions;
+    private String serviceAccountKeyFile;
     private EmulatorEndpoint emulatorEndpoint;
     private EmulatorEndpoint emulatorRestEndpoint;
 
@@ -256,11 +257,32 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Uses the service account in the given JSON key file for every BigQuery client the sink opens
+     * and, under {@link WriteMethod#FILE_LOADS}, for Cloud Storage staging as well. Optional; when
+     * unset, clients use application-default credentials.
+     *
+     * <p>The builder stores only the path in the job graph. Each runtime component reads the file
+     * when it first creates a client, so the file must be available at the same path on every Task
+     * Manager that runs a writer or committer.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the sink's Storage Write API traffic at a BigQuery emulator instead of the production
      * service. The write stream opened for each destination connects to the given {@code host:port}
      * over a plaintext channel with no credentials, so this must only ever be used against an
      * emulator (for example a testcontainers {@code goccy/bigquery-emulator}). Optional; when unset
-     * the sink connects to BigQuery with application-default credentials.
+     * the sink connects to BigQuery with configured credentials or ADC.
      *
      * <p>BigQuery serves its two transports on <em>separate</em> ports — gRPC for the Storage Write
      * API, REST for table metadata — so this endpoint covers the gRPC half only, and a job that
@@ -289,7 +311,7 @@ public class BigQuerySinkBuilder<T> {
      * CreateDisposition#CREATE_IF_NEEDED} and connector-driven schema updates — at a BigQuery
      * emulator instead of the production service. The REST client is built against {@code
      * http://host:port} with no credentials, so this must only ever be used against an emulator.
-     * Optional; when unset the metadata client uses application-default credentials.
+     * Optional; when unset the metadata client uses configured credentials or ADC.
      *
      * <p>This is the REST half of {@link #emulatorEndpoint(String)}; see there for why the two are
      * separate and for the {@link WriteMethod#FILE_LOADS} rejection, which applies to both.
@@ -325,6 +347,7 @@ public class BigQuerySinkBuilder<T> {
                         schemaUpdateOptions,
                         failedRowHandler,
                         location,
+                        serviceAccountKeyFile,
                         emulatorEndpoint,
                         emulatorRestEndpoint);
         // The required/forbidden pairing for write-method-scoped options; future write-method
@@ -379,6 +402,12 @@ public class BigQuerySinkBuilder<T> {
                 "emulatorEndpoint(...) and emulatorRestEndpoint(...) are not supported for"
                         + " WriteMethod.FILE_LOADS: that write method stages files to Cloud"
                         + " Storage, which the BigQuery emulator does not provide.");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null
+                        || (emulatorEndpoint == null && emulatorRestEndpoint == null),
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...) or"
+                        + " emulatorRestEndpoint(...): emulator connections are deliberately"
+                        + " credential-free.");
         switch (writeMethod) {
             case STORAGE_API_AT_LEAST_ONCE:
                 return new BigQueryDefaultStreamSink<>(

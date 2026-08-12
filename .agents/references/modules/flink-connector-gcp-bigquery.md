@@ -11,6 +11,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   pool's, never a self-built writer pool (`docs/adr/0016`). Write-method-only options live in
   nested options objects; `build()` requires the matching one and rejects the others
   (`DefaultStreamOptions` is optional by design — `docs/adr/0028`).
+- A configured service-account key remains a path in the job graph and is loaded only when a
+  runtime component creates its client.
+  Every client in one write method must receive it; `FILE_LOADS` uses the same identity for
+  BigQuery and GCS, while either emulator endpoint is mutually exclusive with it (#542).
+  Credential-loading failures never include the path, key material, or parser cause.
 - **A schema problem must never surface from `serialize()`** — every serializer derives eagerly
   (constructor / `of(...)`), because the lazy path reports misconfiguration through the
   `FailureHandler` catch, where log-and-drop leaves an empty table under a green job
