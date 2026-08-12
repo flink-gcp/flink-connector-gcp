@@ -28,7 +28,6 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
-import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -82,7 +81,8 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private final Deque<ChangeStreamPartitionSplit> unassigned = new ArrayDeque<>();
     private final Map<String, ChangeStreamPartitionSplit> assigned = new LinkedHashMap<>();
-    private final List<PendingMerge> pendingMerges = new ArrayList<>();
+    private final Map<ByteStringRange, PendingMergeAccumulator> pendingMerges =
+            new LinkedHashMap<>();
     private final List<MissingPartition> missingPartitions = new ArrayList<>();
     private final ChangeStreamPartitionReconciler reconciler =
             new ChangeStreamPartitionReconciler();
@@ -245,7 +245,10 @@ public final class BigtableChangeStreamSplitEnumerator
         for (ChangeStreamPartitionSplit split : initialization.assigned) {
             assigned.put(split.splitId(), split);
         }
-        pendingMerges.addAll(initialization.pendingMerges);
+        for (PendingMerge merge : initialization.pendingMerges) {
+            PendingMergeAccumulator restored = PendingMergeAccumulator.restore(merge);
+            pendingMerges.put(restored.partitionKey(), restored);
+        }
         missingPartitions.addAll(initialization.missingPartitions);
         initialized = true;
         LOG.info(
@@ -305,19 +308,21 @@ public final class BigtableChangeStreamSplitEnumerator
                         Preconditions.checkNotNull(scan, "reconciliation scan must not be null")
                                 .partitions,
                         ledger,
-                        pendingMerges,
+                        pendingMergeSnapshot(),
                         missingPartitions,
                         Instant.now(clock),
                         ledgerLowWatermark());
         missingPartitions.clear();
         missingPartitions.addAll(result.missing);
         for (ChangeStreamPartitionReconciler.Recovery recovery : result.recoveries) {
-            pendingMerges.removeIf(
-                    merge ->
-                            recovery.tokens.containsAll(merge.getContinuationTokens())
-                                    || (recovery.tokenless
-                                            && RowRanges.format(merge.getPartition())
-                                                    .equals(RowRanges.format(recovery.partition))));
+            pendingMerges
+                    .values()
+                    .removeIf(
+                            merge ->
+                                    merge.tokensAreContainedBy(recovery.tokens)
+                                            || (recovery.tokenless
+                                                    && merge.partitionKey()
+                                                            .equals(recovery.partition)));
             Instant recoveryLowWatermark =
                     recovery.tokenless
                             ? clampToRetention(
@@ -360,7 +365,7 @@ public final class BigtableChangeStreamSplitEnumerator
                 low = split.getLowWatermark();
             }
         }
-        for (PendingMerge merge : pendingMerges) {
+        for (PendingMergeAccumulator merge : pendingMerges.values()) {
             if (low == null || merge.getLowWatermark().isBefore(low)) {
                 low = merge.getLowWatermark();
             }
@@ -469,89 +474,24 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private void acceptSuccessor(
             ByteStringRange partition, ChangeStreamContinuationToken token, Instant lowWatermark) {
-        PendingMerge merge = findPendingMerge(partition);
+        ByteStringRange partitionKey = RowRanges.copyOf(partition);
+        PendingMergeAccumulator merge = pendingMerges.get(partitionKey);
         if (merge == null) {
-            merge = new PendingMerge(partition, Collections.emptyList(), lowWatermark);
-            pendingMerges.add(merge);
+            merge = new PendingMergeAccumulator(partition, lowWatermark);
+            pendingMerges.put(partitionKey, merge);
         }
-        PendingMerge updated = merge.add(token, lowWatermark);
-        pendingMerges.set(pendingMerges.indexOf(merge), updated);
-        if (!tokensCover(updated)) {
+        merge.add(token, lowWatermark);
+        if (!merge.isComplete()) {
             return;
         }
-        pendingMerges.remove(updated);
+        pendingMerges.remove(partitionKey);
+        PendingMerge completed = merge.toPendingMerge();
         unassigned.add(
                 new ChangeStreamPartitionSplit(
                         splitId(nextSplitId++),
-                        updated.getPartition(),
-                        updated.getContinuationTokens(),
-                        updated.getLowWatermark()));
-    }
-
-    @Nullable
-    private PendingMerge findPendingMerge(ByteStringRange partition) {
-        for (PendingMerge merge : pendingMerges) {
-            if (merge.getPartition().equals(partition)) {
-                return merge;
-            }
-        }
-        return null;
-    }
-
-    private static boolean tokensCover(PendingMerge merge) {
-        List<ByteStringRange> tokenPartitions = new ArrayList<>();
-        for (ChangeStreamContinuationToken token : merge.getContinuationTokens()) {
-            tokenPartitions.add(token.getPartition());
-        }
-        tokenPartitions.sort(
-                (left, right) -> {
-                    if (isUnboundedStart(left)) {
-                        return isUnboundedStart(right) ? 0 : -1;
-                    }
-                    if (isUnboundedStart(right)) {
-                        return 1;
-                    }
-                    return RowRanges.compareKeys(left.getStart(), right.getStart());
-                });
-        if (tokenPartitions.isEmpty()) {
-            return false;
-        }
-        ByteStringRange target = merge.getPartition();
-        if (!sameStart(tokenPartitions.get(0), target)
-                || !sameEnd(tokenPartitions.get(tokenPartitions.size() - 1), target)) {
-            return false;
-        }
-        for (int i = 1; i < tokenPartitions.size(); i++) {
-            ByteStringRange previous = tokenPartitions.get(i - 1);
-            ByteStringRange current = tokenPartitions.get(i);
-            if (isUnboundedEnd(previous)
-                    || isUnboundedStart(current)
-                    || !previous.getEnd().equals(current.getStart())
-                    || previous.getEndBound() == current.getStartBound()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean sameStart(ByteStringRange left, ByteStringRange right) {
-        return (isUnboundedStart(left) && isUnboundedStart(right))
-                || (left.getStartBound() == right.getStartBound()
-                        && left.getStart().equals(right.getStart()));
-    }
-
-    private static boolean sameEnd(ByteStringRange left, ByteStringRange right) {
-        return (isUnboundedEnd(left) && isUnboundedEnd(right))
-                || (left.getEndBound() == right.getEndBound()
-                        && left.getEnd().equals(right.getEnd()));
-    }
-
-    private static boolean isUnboundedStart(ByteStringRange range) {
-        return range.getStartBound() == BoundType.UNBOUNDED || range.getStart().isEmpty();
-    }
-
-    private static boolean isUnboundedEnd(ByteStringRange range) {
-        return range.getEndBound() == BoundType.UNBOUNDED || range.getEnd().isEmpty();
+                        completed.getPartition(),
+                        completed.getContinuationTokens(),
+                        completed.getLowWatermark()));
     }
 
     private void serveWaitingReaders() {
@@ -592,8 +532,24 @@ public final class BigtableChangeStreamSplitEnumerator
                 nextSplitId,
                 new ArrayList<>(unassigned),
                 new ArrayList<>(assigned.values()),
-                pendingMerges,
+                pendingMergeSnapshot(),
                 missingPartitions);
+    }
+
+    private List<PendingMerge> pendingMergeSnapshot() {
+        List<PendingMerge> snapshot = new ArrayList<>(pendingMerges.size());
+        for (PendingMergeAccumulator merge : pendingMerges.values()) {
+            snapshot.add(merge.toPendingMerge());
+        }
+        return snapshot;
+    }
+
+    long pendingMergeMaterializations() {
+        long materializations = 0;
+        for (PendingMergeAccumulator merge : pendingMerges.values()) {
+            materializations += merge.getMaterializations();
+        }
+        return materializations;
     }
 
     private void registerMetrics() {

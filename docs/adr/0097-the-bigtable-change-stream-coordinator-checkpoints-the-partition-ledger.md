@@ -20,6 +20,7 @@ limitations under the License.
 - Date: 2026-08-11
 - Issues: [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
   [#510](https://github.com/laughingman7743/flink-connector-gcp/issues/510),
+  [#532](https://github.com/laughingman7743/flink-connector-gcp/issues/532),
   [#533](https://github.com/laughingman7743/flink-connector-gcp/issues/533)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
@@ -53,6 +54,10 @@ A successor is parked until the ranges named by all tokens received for it tile 
 Only then is one split created with the full token list. Split ids come from a checkpointed monotonic
 counter rather than from ranges: a range can disappear and reappear after another topology change,
 and reusing its old id would confuse a late completion with the new split.
+
+Pending merge tokens accumulate in a coordinator-thread range index.
+Each arrival reevaluates at most three affected adjacency relationships; it does not copy or sort every token already received.
+The index freezes to the immutable `PendingMerge` model in range order at completion, checkpoint, and reconciliation boundaries, preserving the connector-owned checkpoint format and deterministic restore behavior.
 
 Initial partitions are generated only for a fresh start. A restored enumerator validates every
 checkpointed low watermark through ADR-0094 and never calls the initial-partition RPC. The source
@@ -99,8 +104,7 @@ Java-serialization contract.
   one controlled failure, recovered without loss, and completed at the bounded end time in 132.3
   seconds. The instance returned `NOT_FOUND` immediately after teardown.
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
-  prove restore does not generate new initial partitions, and prove expired coordinator-held state
-  fails unless fallback was opted in.
+  prove restore does not generate new initial partitions, prove many parents require only bounded neighboring coverage checks, and prove expired coordinator-held state fails unless fallback was opted in.
 
 ## Alternatives declined
 
