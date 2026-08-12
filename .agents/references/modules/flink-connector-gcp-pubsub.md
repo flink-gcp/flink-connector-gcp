@@ -182,6 +182,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `sink.auto-create.*` settings; source: presence of `scan.auto-create.*` settings is the
   authorization), and **the source never creates a topic**. The `expirationTtl`/`neverExpire`
   pair is rejected only in the table layer — the builder is last-writer-wins by design.
+- `scan.auto-create.topics` maps every configured subscription to its own pre-existing topic.
+  Its key set must equal `subscription`; the remaining `scan.auto-create.*` settings are shared
+  across the per-subscription creation objects, and an absent map requires all subscriptions to
+  exist.
 
 ## SQL uber-jar (`docs/adr/0015` — the record every later `flink-sql-connector-gcp-*` inherits)
 

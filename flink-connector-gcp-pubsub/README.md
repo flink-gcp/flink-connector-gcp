@@ -31,7 +31,7 @@ sink and multi-subscription consumption on the source.
 |---|---|
 | `pubsub` table connector; `DynamicTableSink` with `attributes`/`ordering-key` metadata columns | Implemented ([#135](https://github.com/laughingman7743/flink-connector-gcp/issues/135)) |
 | `DynamicTableSource` (scan) with `message-id`/`publish-time`/`attributes`/`ordering-key`/`subscription` metadata columns | Implemented ([#136](https://github.com/laughingman7743/flink-connector-gcp/issues/136)) |
-| Subscription auto-creation and start position as table options | Implemented ([#137](https://github.com/laughingman7743/flink-connector-gcp/issues/137)) |
+| Subscription auto-creation, including per-subscription topic maps, and start position as table options | Implemented ([#137](https://github.com/laughingman7743/flink-connector-gcp/issues/137), [#152](https://github.com/laughingman7743/flink-connector-gcp/issues/152)) |
 | `flink-sql-connector-gcp-pubsub` shaded uber-jar | Implemented ([#138](https://github.com/laughingman7743/flink-connector-gcp/issues/138)) |
 
 ```java

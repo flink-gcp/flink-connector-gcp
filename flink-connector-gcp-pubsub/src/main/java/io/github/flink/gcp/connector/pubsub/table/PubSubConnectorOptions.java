@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.pubsub.source.StartPosition;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The {@code WITH} options of the {@code pubsub} table connector.
@@ -259,19 +260,24 @@ public final class PubSubConnectorOptions {
     //  Source — subscription auto-creation
     // ------------------------------------------------------------------------
 
-    public static final ConfigOption<String> SCAN_AUTO_CREATE_TOPIC =
-            ConfigOptions.key("scan.auto-create.topic")
-                    .stringType()
+    public static final ConfigOption<Map<String, String>> SCAN_AUTO_CREATE_TOPICS =
+            ConfigOptions.key("scan.auto-create.topics")
+                    .mapType()
                     .noDefaultValue()
                     .withDescription(
-                            "The existing topic to bind a missing subscription to, resolved against"
-                                    + " 'project'. Setting it is what authorizes creating the"
-                                    + " subscription; without it the subscription must already"
-                                    + " exist. Only the subscription is created — a source never"
-                                    + " creates a topic, unlike 'sink.create-disposition'. It"
-                                    + " requires 'subscription' to name exactly one, because"
-                                    + " settings carry the topic binding and every subscription of"
-                                    + " a topic receives a complete copy of its stream.");
+                            "The existing topic to bind each missing subscription to, as a map from"
+                                    + " bare subscription name to bare topic name, both resolved"
+                                    + " against 'project'. The map keys must exactly match"
+                                    + " 'subscription'. Setting it authorizes creating missing"
+                                    + " subscriptions; without it every subscription must already"
+                                    + " exist. Only subscriptions are created — a source never"
+                                    + " creates a topic, unlike 'sink.create-disposition'. Other"
+                                    + " 'scan.auto-create.*' settings apply when each mapped"
+                                    + " subscription is missing and must be created."
+                                    + " Prefer one prefixed option per binding, for example"
+                                    + " 'scan.auto-create.topics.orders-sub' = 'orders'. The packed"
+                                    + " form separates entries with ',' and each key from its value"
+                                    + " with ':'.");
 
     public static final ConfigOption<Duration> SCAN_AUTO_CREATE_ACK_DEADLINE =
             ConfigOptions.key("scan.auto-create.ack-deadline")
