@@ -26,6 +26,8 @@ import org.apache.flink.util.CloseableIterator;
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
@@ -40,6 +42,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -102,7 +105,79 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
                         json -> assertThat(json).contains("Ada Lovelace").contains("36"));
     }
 
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void projectsColumnsBeforeDeserialization(Dialect dialect) throws Exception {
+        SpannerDatabase database =
+                createDatabase(
+                        dialect,
+                        singersWithSecretDdl(dialect),
+                        "CREATE CHANGE STREAM changes FOR singers");
+        Timestamp commit =
+                client(database)
+                        .write(
+                                Collections.singletonList(
+                                        Mutation.newInsertBuilder("singers")
+                                                .set("id")
+                                                .to(1L)
+                                                .set("name")
+                                                .to("Ada")
+                                                .set("secret")
+                                                .to("hidden")
+                                                .build()));
+        Timestamp end =
+                client(database)
+                        .write(
+                                Collections.singletonList(
+                                        Mutation.newUpdateBuilder("singers")
+                                                .set("id")
+                                                .to(1L)
+                                                .set("name")
+                                                .to("Ada Lovelace")
+                                                .set("secret")
+                                                .to("still hidden")
+                                                .build()));
+
+        List<DataChangeRecord> records =
+                run(
+                        database,
+                        instant(commit),
+                        instant(end),
+                        builder ->
+                                builder.columnIncludeList(
+                                        Collections.singletonList("singers\\.name")));
+
+        assertThat(records).hasSize(2);
+        assertThat(records)
+                .allSatisfy(
+                        record -> {
+                            assertThat(record.getColumnTypes())
+                                    .extracting(DataChangeRecord.ColumnType::getName)
+                                    .containsExactly("id", "name");
+                            JsonObject keys =
+                                    JsonParser.parseString(record.getMods().get(0).getKeysJson())
+                                            .getAsJsonObject();
+                            assertThat(keys.keySet()).containsExactly("id");
+                            assertThat(keys.get("id").getAsString()).isEqualTo("1");
+                            assertThat(record.getMods().get(0).getNewValuesJson())
+                                    .hasValueSatisfying(
+                                            json ->
+                                                    assertThat(json)
+                                                            .contains("Ada")
+                                                            .doesNotContain("hidden"));
+                        });
+    }
+
     private static List<DataChangeRecord> run(SpannerDatabase database, Instant start, Instant end)
+            throws Exception {
+        return run(database, start, end, ignored -> {});
+    }
+
+    private static List<DataChangeRecord> run(
+            SpannerDatabase database,
+            Instant start,
+            Instant end,
+            Consumer<SpannerChangeStreamSourceBuilder<DataChangeRecord>> configure)
             throws Exception {
         Configuration configuration = new Configuration();
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
@@ -110,7 +185,7 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
                 StreamExecutionEnvironment.getExecutionEnvironment(configuration);
         env.setParallelism(2);
 
-        SpannerChangeStreamSource<DataChangeRecord> source =
+        SpannerChangeStreamSourceBuilder<DataChangeRecord> builder =
                 SpannerChangeStreamSource.<DataChangeRecord>builder()
                         .database(database)
                         .changeStreamName("changes")
@@ -119,8 +194,9 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
                         .heartbeatInterval(Duration.ofSeconds(1))
                         .maxConcurrentQueriesPerSubtask(2)
                         .emulatorEndpoint(emulatorEndpoint())
-                        .endTimestamp(end)
-                        .build();
+                        .endTimestamp(end);
+        configure.accept(builder);
+        SpannerChangeStreamSource<DataChangeRecord> source = builder.build();
 
         List<DataChangeRecord> records = new ArrayList<>();
         try (CloseableIterator<DataChangeRecord> collected =
@@ -143,6 +219,12 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
         return dialect == Dialect.POSTGRESQL
                 ? "ALTER TABLE singers ADD COLUMN age bigint"
                 : "ALTER TABLE singers ADD COLUMN age INT64";
+    }
+
+    private static String singersWithSecretDdl(Dialect dialect) {
+        return dialect == Dialect.POSTGRESQL
+                ? "CREATE TABLE singers (id bigint NOT NULL PRIMARY KEY, name varchar(64), secret varchar(64))"
+                : "CREATE TABLE singers (id INT64 NOT NULL, name STRING(64), secret STRING(64)) PRIMARY KEY (id)";
     }
 
     private static String valueCaptureDdl(Dialect dialect) {

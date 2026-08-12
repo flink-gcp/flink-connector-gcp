@@ -116,5 +116,17 @@ public final class SpannerMetricNames {
     public static final String LAST_CHANGE_STREAM_RECORD_WAIT_MILLIS =
             "lastChangeStreamRecordWaitMillis";
 
+    /** Data-change records removed by a Change Streams table filter. */
+    public static final String CHANGE_STREAM_RECORDS_FILTERED_BY_TABLE =
+            "changeStreamRecordsFilteredByTable";
+
+    /** Data-change records skipped after column projection left no reported non-key values. */
+    public static final String CHANGE_STREAM_RECORDS_SKIPPED_WITHOUT_CHANGE =
+            "changeStreamRecordsSkippedWithoutChange";
+
+    /** Column metadata and value occurrences removed from records delivered to the deserializer. */
+    public static final String CHANGE_STREAM_COLUMN_OCCURRENCES_FILTERED =
+            "changeStreamColumnOccurrencesFiltered";
+
     private SpannerMetricNames() {}
 }

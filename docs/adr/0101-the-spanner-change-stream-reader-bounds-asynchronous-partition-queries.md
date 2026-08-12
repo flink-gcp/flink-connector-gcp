@@ -20,7 +20,8 @@ limitations under the License.
 - Date: 2026-08-12
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
-  [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551)
+  [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551),
+  [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -57,12 +58,25 @@ Heartbeat records advance a per-split watermark.
 Child-partitions records become coordinator events, and successful query completion becomes a separate partition-finished event.
 A query error fails the task without reporting completion or dropping the split.
 
+Optional table and column filters run on the mailbox thread after dialect-specific decoding and before the user deserializer.
+Each Java regular expression fully matches the Spanner-reported table name or a `table.column` identifier.
+Include and exclude lists are mutually exclusive within each scope.
+Column projection retains primary keys and their type descriptors, and removes every other rejected column consistently from `columnTypes` and each mod's old and new value objects.
+The projection uses only the current record's metadata, preserves absent values separately from explicit JSON `null`, and never consults a historical schema.
+
+A table-filtered record does not call the deserializer.
+A record whose reported non-key values are all removed is delivered with empty projected value objects by default.
+The explicit `skipMessagesWithoutChange` option skips that record instead.
+Both outcomes still advance the split position and report progress to the coordinator.
+Heartbeat and child-partitions records bypass output filtering entirely.
+
 The reader checkpoints the greatest consumed record timestamp and watermark for each active split.
 Restore uses that timestamp as the next query's inclusive start.
 This can repeat the boundary record and gives the source at-least-once delivery; advancing past it could skip another record with the same commit timestamp.
 
 The enumerator counts child partitions when it first accepts them and reports both scheduled-partition count and oldest scheduled-position lag.
 Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and the wait for the latest non-heartbeat result.
+It also counts table-filtered records, records skipped without a projected change, and column metadata or value occurrences removed from records passed to the deserializer.
 The gauges aggregate partition state within their coordinator or reader-subtask scope and never use partition tokens as labels.
 The source emits commit timestamps and split watermarks through Flink's source output so the runtime supplies `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, and `sourceIdleTime` on both supported lines, plus per-split `currentWatermark` on Flink 2.2; the connector does not duplicate those names.
 
@@ -70,9 +84,11 @@ The source emits commit timestamps and split watermarks through Flink's source o
 
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
 Reader tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, watermarks, child-before-finish ordering, nullable deserialization, query failure, and bounded completion.
+Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
 Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
 The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, and proves a later scale-in preserves the positions of four queued splits.
 Emulator MiniCluster tests run the production source for both dialects across a schema and value-capture change.
+They also project a non-key column before deserialization in both dialects.
 A separate failover test restarts each dialect and requires every record plus a repeated inclusive boundary.
 
 ## Alternatives declined
@@ -85,11 +101,17 @@ A separate failover test restarts each dialect and requires every record plus a 
   That would reject or erase `TOKENLIST`, nested descriptor fields, annotations, and service types added before the client library learns them.
 - **Resume after the checkpoint timestamp.**
   Commit timestamps are not unique per record, so an exclusive boundary can skip records from the same transaction or partition.
+- **Treat builder filters as server-side selection.**
+  The Change Streams read function still returns the complete record, so only the Change Stream DDL watch definition can prevent an excluded value from entering the source process.
+- **Drop every empty projected record.**
+  A record can still identify transaction activity after all reported non-key values are removed, so dropping it requires an explicit option.
 
 ## Consequences
 
 - Increasing the concurrency option spends one callback thread, one transaction, and one active query per additional slot in each subtask.
 - A restart can repeat records at the last checkpointed timestamp, so downstream consumers that need uniqueness must deduplicate.
+- Changing output filters on restore does not alter checkpointed source positions; the new filters apply from those positions, including any boundary records repeated by the source's normal inclusive restore.
+- Connector-side filters do not reduce Spanner processing, query concurrency, or traffic into Flink.
 - The emulator proves connector wiring and both dialect adapters, not real-service split, merge, retention, or fallback behavior.
   That acceptance remains in #535.
 - The connector exposes capacity and lag signals but does not change Flink operator parallelism; deployment autoscaling remains outside the Source API.

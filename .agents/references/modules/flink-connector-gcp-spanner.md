@@ -180,6 +180,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   object members sorted recursively. Do not flatten it to the pinned SDK's `Type.Code`:
   `TOKENLIST`, annotations, nested arrays, and future service codes have to survive. `Mod` also
   preserves absent values separately from explicit JSON `null`.
+- Table and column filters run after dialect-specific decoding and before the user deserializer.
+  Patterns fully match the Spanner-reported table name or `table.column`; do not case-fold,
+  substring-match, or look up a historical schema. Primary-key metadata and keys always survive.
+- Column projection removes a rejected non-key name from `columnTypes` and every mod's old and new
+  value objects. Empty projections are delivered by default; `skipMessagesWithoutChange` is the
+  explicit opt-in to skip them. Either filter outcome still advances split progress.
 - A checkpoint stores the active and queued splits with their greatest consumed timestamp and
   watermark. Restore queries that timestamp inclusively, so the boundary can repeat and delivery
   is at least once; advancing it would skip records that share a commit timestamp.
@@ -187,9 +193,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   per-split watermark, while child-partitions records are coordinator events rather than user
   records.
 - The enumerator owns `changeStreamPartitionsDiscovered` and the scheduled-partition lag; each
-  reader owns query-open, active-query, queued-partition, queued-lag, missed-heartbeat and last
-  non-heartbeat-wait metrics. These are aggregate coordinator or reader-subtask metrics: never put
-  partition tokens in metric labels.
+  reader owns query-open, active-query, queued-partition, queued-lag, missed-heartbeat,
+  last-non-heartbeat-wait, and output-filter counters. These are aggregate coordinator or
+  reader-subtask metrics: never put partition tokens in metric labels.
 - `missedHeartbeatIntervals` excludes the initial null-token query and reports the maximum whole
   intervals across active token queries. Lag gauges use the oldest current position, clamp a future
   position to zero, saturate overflow, and read zero for an empty set.

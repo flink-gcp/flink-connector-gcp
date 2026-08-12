@@ -25,7 +25,9 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -58,6 +60,52 @@ class DataChangeRecordTest {
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> record.getMods().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void projectedRecordRoundTripsWithoutRestoringFilteredColumns() throws Exception {
+        DataChangeRecord source =
+                new DataChangeRecord(
+                        Instant.parse("2026-08-12T00:00:00Z"),
+                        "1",
+                        "tx",
+                        true,
+                        "singers",
+                        Arrays.asList(
+                                new DataChangeRecord.ColumnType(
+                                        "id", "{\"code\":\"INT64\"}", true, 1),
+                                new DataChangeRecord.ColumnType(
+                                        "secret", "{\"code\":\"FUTURE_TYPE\"}", false, 2)),
+                        Collections.singletonList(
+                                new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)),
+                        ModType.UPDATE,
+                        ValueCaptureType.NEW_VALUES,
+                        1,
+                        1,
+                        "",
+                        false);
+        SpannerChangeStreamRecordFilter filter =
+                new SpannerChangeStreamRecordFilter(
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.singletonList(Pattern.compile("singers\\.secret")),
+                        false);
+        DataChangeRecord projected = filter.filter(source).getRecord();
+        TypeSerializer<DataChangeRecord> serializer =
+                TypeInformation.of(DataChangeRecord.class)
+                        .createSerializer(new SerializerConfigImpl());
+
+        DataOutputSerializer output = new DataOutputSerializer(256);
+        serializer.serialize(projected, output);
+        DataChangeRecord restored =
+                serializer.deserialize(new DataInputDeserializer(output.getCopyOfBuffer()));
+
+        assertThat(restored.getColumnTypes())
+                .extracting(DataChangeRecord.ColumnType::getName)
+                .containsExactly("id");
+        assertThat(restored.getMods().get(0).getKeysJson()).isEqualTo("{\"id\":1}");
+        assertThat(restored.getMods().get(0).getNewValuesJson()).contains("{}");
     }
 
     private static DataChangeRecord record() {
