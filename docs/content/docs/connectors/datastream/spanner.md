@@ -507,6 +507,11 @@ Use the Change Stream DDL watch definition when the service must exclude tables 
 The coordinator begins with the null partition token and schedules children only after every parent they name has finished.
 Each reader subtask opens several scheduled partition queries concurrently, up to `maxConcurrentQueriesPerSubtask`, and keeps excess restored splits in a checkpointed FIFO until capacity returns.
 
+Before releasing readers, the coordinator reads the database dialect and the stream's `CHANGE_STREAMS`, `CHANGE_STREAM_TABLES`, and `CHANGE_STREAM_OPTIONS` metadata.
+It logs the watch scope, effective retention, partition mode, value-capture type, and every exclusion option.
+It warns when the stream watches an explicit column list because columns added later are not watched automatically; alter the Change Stream when its intended schema changes.
+This startup check also rejects an unsupported partition mode before any query is assigned.
+
 Each query uses `executeQueryAsync` on a strong single-use read-only transaction.
 The callback hands the reader one undrained record and pauses; the Flink mailbox emits or processes it before resuming that query.
 This keeps callback threads out of Flink output and bounds buffered query results to one per active query.
@@ -528,6 +533,12 @@ The start position is resolved once on the coordinator.
 A valid restored partition ledger takes precedence over the configured fresh start.
 If any unfinished restored position has expired, the default is to fail; configuring `resumeFallback` permits discarding the whole stale ledger and starting one new null-token query, which loses the unavailable interval and can repeat records at or after the fallback.
 An absent explicit retention row uses `absentRetentionFallback`, seven days by default.
+Readers do not open restored queries until this retention check finishes.
+That ordering prevents an expired token from reaching Spanner before the coordinator can fail the restore or replace the whole ledger with the explicit fallback.
+
+The source requires database read access for both the generated Change Stream read function and its startup `INFORMATION_SCHEMA` queries.
+In particular, the workload principal needs `spanner.databases.select` plus the session permissions needed by the Spanner client.
+The connector does not create a metadata table and needs no write permission for its partition ledger; Flink checkpoints own that state.
 
 ### Event time
 
@@ -541,7 +552,7 @@ A job that supplies another strategy is choosing that strategy's timestamp and w
 ### Not here yet
 
 - Table API and SQL, which is [#223]({{< param BookRepo >}}/issues/223).
-- Real-service Change Streams split, merge, retention, and fallback acceptance, tracked by [#535]({{< param BookRepo >}}/issues/535).
+- `MUTABLE_KEY_RANGE` partition-event records; the source supports `IMMUTABLE_KEY_RANGE` and rejects another mode at startup.
 
 ## Metrics
 
@@ -648,6 +659,7 @@ The connector exposes these capacity signals but does not change operator parall
 Functional coverage runs against the [Cloud Spanner emulator](https://github.com/GoogleCloudPlatform/cloud-spanner-emulator) in testcontainers over both dialects.
 The sink tests drive the production writer-creation path, so the client, schema read, and batch write are the real ones.
 The Change Streams tests run the production source through a MiniCluster across schema and value-capture changes, and separate failover jobs require complete at-least-once output after recovery in both dialects.
+The gated real-GCP class adds the service-only acceptance: both physical result shapes, metadata and retention discovery, explicit-column warnings, exclusion-option logging, a start before stream creation, checkpoint restart, savepoint restore, heartbeat watermarks, service-created child partitions, expired-state failure, and explicit fallback.
 
 The emulator image is pinned separately from the other connectors' `google-cloud-cli` bundle: the
 Spanner emulator implements the `BatchWrite` RPC only from v1.5.31, and the bundled one predates it,
@@ -663,6 +675,7 @@ disagree, the service decides. Known deviations, and what covers them instead:
 | One read-write transaction at a time | Tests that write concurrently serialize. The `ABORTED` the emulator answers with is classified transient, so the sink retries through it |
 | No IAM | Neither `PERMISSION_DENIED` nor the `spanner.databases.select` requirement of the schema read is exercised. The gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) reads the schema over real credentials, but holds `roles/spanner.editor`, so a refusal is still not exercised anywhere |
 | Rejection statuses are the emulator's | The table above was measured against the emulator, and **every row of it is now confirmed against the service** (2026-08-10) — same status, same per-group reporting. The gated suite asserts each row, so a change on either side has to be declared |
+| Change Stream timing and topology are local approximations | Emulator tests prove both dialect adapters and deterministic failover, but do not establish the service's retention boundary, stream-creation boundary, partition topology, or heartbeat timing. The gated suite verifies those boundaries and restore behavior in both dialects; it observed two service-created child partitions at its 5,000-row scale, which is evidence for that run rather than a guaranteed partition count |
 
 ### The gated real-GCP suite
 
@@ -671,6 +684,9 @@ opt-in suite ([#224]({{< param BookRepo >}}/issues/224)): the rejection statuses
 reporting, the mutation-cell weights read from the service's own `INFORMATION_SCHEMA` in both
 dialects, how many partitions Spanner plans and for which query shapes, and Data Boost end to end.
 The source class also verifies named-schema Table API writes, bounded index scans, and synchronous and asynchronous lookups in both dialects without creating another billed instance.
+It now verifies Change Streams in both dialects on the same ephemeral instance.
+The measured recovery run delivered all 5,000 unique mutation ids after an intentional post-checkpoint failure, with 500 repeated deliveries at the inclusive checkpoint boundary, then restored a savepoint and consumed a mutation written while the job was stopped.
+It also verifies that restored readers wait for retention validation, so expired state fails in the coordinator unless an explicit fallback replaces it.
 It is also the only place the connector's clients are built over application-default credentials
 rather than an emulator endpoint.
 

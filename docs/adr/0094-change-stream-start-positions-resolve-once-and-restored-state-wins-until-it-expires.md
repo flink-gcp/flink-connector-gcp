@@ -20,7 +20,8 @@ limitations under the License.
 - Date: 2026-08-10
 - Issues: [#492](https://github.com/laughingman7743/flink-connector-gcp/issues/492),
   [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
-  [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222)
+  [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
+  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535)
 - Modules: base, bigtable, spanner
 - Current behavior: generated API reference for `base.source.StartPosition`; the connector pages
   join when the change-stream sources land
@@ -76,6 +77,15 @@ Retention discovery and residual service-error translation stay in the connector
 the table's change-stream retention; Spanner reads its information-schema option and owns the
 configurable default for an absent row. Neither connector may classify an out-of-window request by
 matching undocumented service-error text.
+Spanner initializes all stream metadata eagerly, including for a fresh `latest()` start, so it can validate the stream definition and hold restored reader splits until the expiry decision is complete.
+This refines the shared resolver's lazy lookup rule without changing Bigtable's permission boundary.
+
+## Evidence
+
+The gated Spanner acceptance reads one-day explicit retention and the service's absent-row seven-day default through both GoogleSQL and PostgreSQL information schemas.
+It creates reader-owned state two days in the past, restores it against the one-day stream, and verifies that the coordinator rejects it before a partition query reaches Spanner.
+With `resumeFallback(StartPosition.latest())`, the same savepoint discards its stale reader splits, starts one new null-token query, and consumes a later mutation.
+The separate pre-creation test asserts the connector's documented guidance while treating the service exception type, rather than undocumented message text, as the classification boundary.
 
 ## Consequences
 

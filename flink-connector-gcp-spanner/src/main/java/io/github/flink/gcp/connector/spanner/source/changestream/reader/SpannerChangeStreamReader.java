@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.api.connector.source.ReaderOutput;
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
@@ -35,6 +36,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitions
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
@@ -72,6 +74,7 @@ public final class SpannerChangeStreamReader<T>
     private CompletableFuture<Void> availability = new CompletableFuture<>();
 
     private boolean started;
+    private boolean coordinatorInitialized;
     private boolean requestOutstanding;
     private boolean noMoreSplits;
     private volatile boolean closed;
@@ -127,6 +130,32 @@ public final class SpannerChangeStreamReader<T>
     @Override
     public void start() {
         started = true;
+        startAfterCoordinatorInitialization();
+    }
+
+    @Override
+    public void handleSourceEvents(SourceEvent sourceEvent) {
+        Preconditions.checkArgument(
+                sourceEvent instanceof SpannerChangeStreamInitializationEvent,
+                "Unsupported Spanner Change Streams reader event %s.",
+                sourceEvent);
+        SpannerChangeStreamInitializationEvent initialization =
+                (SpannerChangeStreamInitializationEvent) sourceEvent;
+        Preconditions.checkState(
+                !coordinatorInitialized,
+                "Spanner Change Streams reader received initialization more than once.");
+        if (initialization.shouldDiscardRestoredSplits()) {
+            queued.clear();
+            metrics.queued(queued);
+        }
+        coordinatorInitialized = true;
+        startAfterCoordinatorInitialization();
+    }
+
+    private void startAfterCoordinatorInitialization() {
+        if (!started || !coordinatorInitialized) {
+            return;
+        }
         startQueuedQueries();
         requestIfCapacity();
     }
@@ -143,13 +172,7 @@ public final class SpannerChangeStreamReader<T>
         Preconditions.checkNotNull(result, "available query must have a result");
         if (result.error != null) {
             resetAvailability();
-            throw new IOException(
-                    "Failed to read Spanner Change Streams split "
-                            + query.split.splitId()
-                            + " from "
-                            + database
-                            + ".",
-                    result.error);
+            throw new IOException(queryFailureMessage("read", query.split), result.error);
         }
         if (result.finished) {
             finishQuery(query, output);
@@ -266,7 +289,7 @@ public final class SpannerChangeStreamReader<T>
         requestOutstanding = false;
         queued.addAll(splits);
         metrics.queued(queued);
-        if (started) {
+        if (started && coordinatorInitialized) {
             startQueuedQueries();
             requestIfCapacity();
         }
@@ -292,13 +315,7 @@ public final class SpannerChangeStreamReader<T>
                 active.remove(split.splitId());
                 queued.addFirst(split);
                 metrics.queued(queued);
-                throw new FlinkRuntimeException(
-                        "Failed to open Spanner Change Streams split "
-                                + split.splitId()
-                                + " from "
-                                + database
-                                + ".",
-                        e);
+                throw new FlinkRuntimeException(queryFailureMessage("open", split), e);
             }
         }
         metrics.queued(queued);
@@ -307,6 +324,7 @@ public final class SpannerChangeStreamReader<T>
     private void requestIfCapacity() {
         if (!closed
                 && started
+                && coordinatorInitialized
                 && !noMoreSplits
                 && !requestOutstanding
                 && active.size() + queued.size() < maximumQueries) {
@@ -344,6 +362,27 @@ public final class SpannerChangeStreamReader<T>
 
     private static Instant later(Instant left, Instant right) {
         return right.isAfter(left) ? right : left;
+    }
+
+    private String queryFailureMessage(String operation, SpannerChangeStreamPartitionSplit split) {
+        String message =
+                "Failed to "
+                        + operation
+                        + " Spanner Change Streams split "
+                        + split.splitId()
+                        + " from "
+                        + database
+                        + ".";
+        if (split.getPartitionToken() != null) {
+            return message;
+        }
+        return message
+                + " This initial query starts at "
+                + split.getStartTimestamp()
+                + ". Spanner requires the initial start timestamp to be within retention, not in"
+                + " the future, and at or after the change stream was created. If the stream was"
+                + " created recently, use StartPosition.latest() or StartPosition.at(...) with a"
+                + " timestamp after its DDL completed.";
     }
 
     /** Counts and timestamps everything one data-change record produces. */

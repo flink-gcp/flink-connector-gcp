@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,6 +48,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -96,6 +98,7 @@ public final class SpannerChangeStreamSplitEnumerator
     private Counter partitionsDiscovered = new ThreadSafeSimpleCounter();
     @Nullable private SpannerChangeStreamCoordinatorClient client;
     private boolean initialized;
+    private boolean discardRestoredReaderSplits;
     private boolean boundedLedger;
     private int unfinishedPartitions;
     private volatile boolean closed;
@@ -159,13 +162,13 @@ public final class SpannerChangeStreamSplitEnumerator
             throw new IllegalStateException(
                     "Spanner Change Streams enumerator was already closed.");
         }
-        created.validatePartitionMode();
-        StartPositionResolver resolver =
-                StartPositionResolver.create(getClass(), created::retention);
+        Duration retention = created.initialize();
+        StartPositionResolver resolver = StartPositionResolver.create(getClass(), () -> retention);
         if (restoredState == null) {
             return Initialization.fresh(
                     SpannerChangeStreamPartitionSplit.initial(
-                            resolver.resolve(startPosition), endTimestamp, heartbeatMillis));
+                            resolver.resolve(startPosition), endTimestamp, heartbeatMillis),
+                    false);
         }
 
         List<RestoreExpiry> expiries = new ArrayList<>();
@@ -180,7 +183,13 @@ public final class SpannerChangeStreamSplitEnumerator
             return Initialization.restored(restoredState.getPartitions());
         }
         if (!resumeFallback.isPresent()) {
-            throw expiries.get(0).asFailure();
+            FlinkRuntimeException expiry = expiries.get(0).asFailure();
+            throw new FlinkRuntimeException(
+                    expiry.getMessage()
+                            + " No restore fallback was configured; set"
+                            + " SpannerChangeStreamSourceBuilder.resumeFallback(...) to opt into"
+                            + " restarting from a retained position.",
+                    expiry);
         }
 
         StartPosition requestedFallback = resumeFallback.get();
@@ -201,7 +210,8 @@ public final class SpannerChangeStreamSplitEnumerator
                 resolvedFallback);
         return Initialization.fresh(
                 SpannerChangeStreamPartitionSplit.initial(
-                        resolvedFallback, endTimestamp, heartbeatMillis));
+                        resolvedFallback, endTimestamp, heartbeatMillis),
+                true);
     }
 
     private synchronized boolean installClient(SpannerChangeStreamCoordinatorClient created)
@@ -238,7 +248,11 @@ public final class SpannerChangeStreamSplitEnumerator
             ledger.put(partition.splitId(), partition);
         }
         rebuildRuntimeIndexes();
+        discardRestoredReaderSplits = initialization.discardRestoredReaderSplits;
         initialized = true;
+        for (Integer subtaskId : context.registeredReaders().keySet()) {
+            sendInitializationEvent(subtaskId);
+        }
         for (DeferredAction deferred : deferredActions) {
             deferred.replay(this);
         }
@@ -349,7 +363,14 @@ public final class SpannerChangeStreamSplitEnumerator
 
     @Override
     public void addReader(int subtaskId) {
-        // Readers request their first partition when they start.
+        if (initialized) {
+            sendInitializationEvent(subtaskId);
+        }
+    }
+
+    private void sendInitializationEvent(int subtaskId) {
+        context.sendEventToSourceReader(
+                subtaskId, new SpannerChangeStreamInitializationEvent(discardRestoredReaderSplits));
     }
 
     @Override
@@ -663,17 +684,23 @@ public final class SpannerChangeStreamSplitEnumerator
     private static final class Initialization {
 
         private final List<SpannerChangeStreamPartitionSplit> partitions;
+        private final boolean discardRestoredReaderSplits;
 
-        private Initialization(List<SpannerChangeStreamPartitionSplit> partitions) {
+        private Initialization(
+                List<SpannerChangeStreamPartitionSplit> partitions,
+                boolean discardRestoredReaderSplits) {
             this.partitions = partitions;
+            this.discardRestoredReaderSplits = discardRestoredReaderSplits;
         }
 
-        private static Initialization fresh(SpannerChangeStreamPartitionSplit initial) {
-            return new Initialization(Collections.singletonList(initial));
+        private static Initialization fresh(
+                SpannerChangeStreamPartitionSplit initial, boolean discardRestoredReaderSplits) {
+            return new Initialization(
+                    Collections.singletonList(initial), discardRestoredReaderSplits);
         }
 
         private static Initialization restored(List<SpannerChangeStreamPartitionSplit> partitions) {
-            return new Initialization(new ArrayList<>(partitions));
+            return new Initialization(new ArrayList<>(partitions), false);
         }
     }
 

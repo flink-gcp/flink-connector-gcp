@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -47,7 +48,7 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 class SpannerChangeStreamSplitEnumeratorTest {
 
     @Test
-    void freshLatestSeedsOneNullTokenWithoutReadingRetention() throws Exception {
+    void freshLatestSeedsOneNullTokenAfterInspectingStreamMetadata() throws Exception {
         FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
         ScriptedClient client = new ScriptedClient();
         SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
@@ -56,8 +57,12 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.handleSplitRequest(0, "localhost");
         context.runAsyncCalls();
 
-        assertThat(client.modeCalls).isEqualTo(1);
-        assertThat(client.retentionCalls).isZero();
+        assertThat(client.initializeCalls).isEqualTo(1);
+        assertThat(context.sourceEvents(0))
+                .singleElement()
+                .isInstanceOfSatisfying(
+                        SpannerChangeStreamInitializationEvent.class,
+                        event -> assertThat(event.shouldDiscardRestoredSplits()).isFalse());
         assertThat(context.assignedSplits(0))
                 .singleElement()
                 .satisfies(
@@ -99,7 +104,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
 
-        assertThat(client.retentionCalls).isEqualTo(1);
+        assertThat(client.initializeCalls).isEqualTo(1);
         assertThat(context.assignedSplits(0))
                 .singleElement()
                 .satisfies(
@@ -391,6 +396,9 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .isInstanceOf(FlinkRuntimeException.class)
                 .hasMessageContaining("change-stream-token:expired")
                 .hasMessageContaining("older than the computed earliest position");
+        assertThat(failure)
+                .hasStackTraceContaining("No restore fallback was configured")
+                .hasStackTraceContaining("SpannerChangeStreamSourceBuilder.resumeFallback(...)");
     }
 
     @Test
@@ -436,6 +444,11 @@ class SpannerChangeStreamSplitEnumeratorTest {
                                 assertThat(partition.getLifecycleState())
                                         .isEqualTo(PartitionLifecycleState.SCHEDULED);
                             });
+            assertThat(context.sourceEvents(0))
+                    .singleElement()
+                    .isInstanceOfSatisfying(
+                            SpannerChangeStreamInitializationEvent.class,
+                            event -> assertThat(event.shouldDiscardRestoredSplits()).isTrue());
             assertThat(capture.getMessages())
                     .singleElement()
                     .satisfies(
@@ -468,7 +481,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
     void mutablePartitionModeFailsBeforeAnySplitCanBeAssigned() {
         FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
         ScriptedClient client = new ScriptedClient();
-        client.modeFailure = new IllegalArgumentException("MUTABLE_KEY_RANGE is unsupported");
+        client.initializationFailure =
+                new IllegalArgumentException("MUTABLE_KEY_RANGE is unsupported");
         SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
         enumerator.start();
         enumerator.handleSplitRequest(0, "localhost");
@@ -671,22 +685,16 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
     private static final class ScriptedClient implements SpannerChangeStreamCoordinatorClient {
 
-        private int modeCalls;
-        private int retentionCalls;
+        private int initializeCalls;
         private int closeCalls;
-        private RuntimeException modeFailure;
+        private RuntimeException initializationFailure;
 
         @Override
-        public void validatePartitionMode() {
-            modeCalls++;
-            if (modeFailure != null) {
-                throw modeFailure;
+        public Duration initialize() {
+            initializeCalls++;
+            if (initializationFailure != null) {
+                throw initializationFailure;
             }
-        }
-
-        @Override
-        public Duration retention() {
-            retentionCalls++;
             return Duration.ofDays(7);
         }
 

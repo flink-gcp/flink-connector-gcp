@@ -20,6 +20,7 @@ limitations under the License.
 - Date: 2026-08-12
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
+  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
   [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551),
   [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554),
   [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581)
@@ -76,6 +77,8 @@ Heartbeat and child-partitions records bypass output filtering entirely.
 The reader checkpoints the greatest consumed record timestamp and watermark for each active split.
 Restore uses that timestamp as the next query's inclusive start.
 This can repeat the boundary record and gives the source at-least-once delivery; advancing past it could skip another record with the same commit timestamp.
+On restore, the reader queues but does not open those splits until the coordinator has validated their positions against the effective retention.
+An explicit whole-ledger fallback tells the reader to discard that queue and request the replacement null-token split.
 
 The enumerator counts child partitions when it first accepts them and reports both scheduled-partition count and oldest scheduled-position lag.
 Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and the wait for the latest non-heartbeat result.
@@ -93,6 +96,8 @@ The source rescaling test restores six partition queries through parallelism one
 Emulator MiniCluster tests run the production source for both dialects across a schema and value-capture change.
 They also project a non-key column before deserialization in both dialects.
 A separate failover test restarts each dialect and requires every record plus a repeated inclusive boundary.
+The gated service run verifies GoogleSQL STRUCT and PostgreSQL JSON decoding, commit timestamps, heartbeat watermarks, bounded query metrics, intentional checkpoint recovery, and savepoint recovery in both dialects.
+At 5,000 unique mutation ids, the measured GoogleSQL run repeated 500 deliveries across the intentional failure and still recovered every id; duplicate volume is evidence for that run, not a promised fixed boundary size.
 
 ## Alternatives declined
 
@@ -115,6 +120,5 @@ A separate failover test restarts each dialect and requires every record plus a 
 - A restart can repeat records at the last checkpointed timestamp, so downstream consumers that need uniqueness must deduplicate.
 - Changing output filters on restore does not alter checkpointed source positions; the new filters apply from those positions, including any boundary records repeated by the source's normal inclusive restore.
 - Connector-side filters do not reduce Spanner processing, query concurrency, or traffic into Flink.
-- The emulator proves connector wiring and both dialect adapters, not real-service split, merge, retention, or fallback behavior.
-  That acceptance remains in #535.
+- The emulator proves connector wiring and both dialect adapters; service partitioning, retention, and fallback are covered separately by the gated #535 acceptance.
 - The connector exposes capacity and lag signals but does not change Flink operator parallelism; deployment autoscaling remains outside the Source API.

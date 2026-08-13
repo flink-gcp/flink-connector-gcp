@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
@@ -122,6 +123,43 @@ class SpannerChangeStreamReaderTest {
         assertThat(context.splitRequests()).isZero();
         assertThat(gauge("queuedChangeStreamPartitions")).isEqualTo(0);
         assertThat(gauge("activeChangeStreamQueries")).isEqualTo(2);
+    }
+
+    @Test
+    void restoredSplitsWaitForCoordinatorValidation() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        reader.addSplits(java.util.Arrays.asList(split("a"), split("b")));
+        reader.start();
+
+        assertThat(client.openIds()).isEmpty();
+        assertThat(context.splitRequests()).isZero();
+        assertThat(reader.snapshotState(1))
+                .extracting(SpannerChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-token:a", "change-stream-token:b");
+
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+
+        assertThat(client.openIds())
+                .containsExactly("change-stream-token:a", "change-stream-token:b");
+    }
+
+    @Test
+    void fallbackInitializationDiscardsReaderRestoredSplitsAndRequestsReplacement()
+            throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        reader.addSplits(java.util.Arrays.asList(split("a"), split("b")));
+        reader.start();
+
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true));
+
+        assertThat(client.openIds()).isEmpty();
+        assertThat(reader.snapshotState(1)).isEmpty();
+        assertThat(context.splitRequests()).isEqualTo(1);
+        assertThat(gauge("queuedChangeStreamPartitions")).isEqualTo(0);
     }
 
     @Test
@@ -377,6 +415,7 @@ class SpannerChangeStreamReaderTest {
                         filter("other", null, null, null, false),
                         1,
                         firstClient);
+        firstReader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
         firstReader.addSplits(Collections.singletonList(split("a")));
         firstReader.start();
         firstClient.record(
@@ -421,6 +460,7 @@ class SpannerChangeStreamReaderTest {
         assertThatThrownBy(() -> reader.pollNext(new TrackingOutput<>()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("change-stream-token:a")
+                .hasMessageNotContaining("change stream was created")
                 .hasRootCauseMessage("broken stream");
         assertThat(reader.snapshotState(1))
                 .extracting(SpannerChangeStreamPartitionSplit::splitId)
@@ -428,6 +468,27 @@ class SpannerChangeStreamReaderTest {
         assertThat(context.sourceEvents())
                 .noneMatch(event -> event instanceof PartitionFinishedEvent);
         assertThat(gauge("activeChangeStreamQueries")).isEqualTo(0);
+    }
+
+    @Test
+    void initialQueryFailureAddsStartPositionGuidanceWithoutClassifyingTheCause() throws Exception {
+        reader = reader(1, new SequenceDeserializer());
+        SpannerChangeStreamPartitionSplit initial =
+                SpannerChangeStreamPartitionSplit.initial(START, null, 2_000)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        reader.addSplits(Collections.singletonList(initial));
+        reader.start();
+        client.fail(initial.splitId(), new IOException("vendor wording may change"));
+
+        assertThatThrownBy(() -> reader.pollNext(new TrackingOutput<>()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(initial.splitId())
+                .hasMessageContaining(START.toString())
+                .hasMessageContaining("within retention")
+                .hasMessageContaining("at or after the change stream was created")
+                .hasMessageContaining("StartPosition.latest()")
+                .hasRootCauseMessage("vendor wording may change");
+        assertThat(reader.snapshotState(1)).containsExactly(initial);
     }
 
     @Test
@@ -446,15 +507,21 @@ class SpannerChangeStreamReaderTest {
 
     private SpannerChangeStreamReader<String> reader(
             int maximum, SpannerChangeStreamDeserializationSchema<String> deserializer) {
-        return new SpannerChangeStreamReader<>(context, DATABASE, deserializer, maximum, client);
+        SpannerChangeStreamReader<String> created =
+                new SpannerChangeStreamReader<>(context, DATABASE, deserializer, maximum, client);
+        created.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+        return created;
     }
 
     private SpannerChangeStreamReader<String> reader(
             int maximum,
             SpannerChangeStreamDeserializationSchema<String> deserializer,
             SpannerChangeStreamRecordFilter filter) {
-        return new SpannerChangeStreamReader<>(
-                context, DATABASE, deserializer, filter, maximum, client);
+        SpannerChangeStreamReader<String> created =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, deserializer, filter, maximum, client);
+        created.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+        return created;
     }
 
     private void assertEmptyProjection(DataChangeRecord record) {
