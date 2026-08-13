@@ -77,7 +77,8 @@ public final class FileLoadsOptions implements Serializable {
 
     /**
      * Default for {@link Builder#minCheckpointInterval(Duration)}. Two minutes keeps a sustained
-     * streaming job at 720 load jobs per table per day, safely under BigQuery's 1,500 limit.
+     * streaming job at 720 destination-table modifications per day, safely under the 1,500 limit
+     * for standard tables.
      */
     public static final Duration DEFAULT_MIN_CHECKPOINT_INTERVAL = Duration.ofMinutes(2);
 
@@ -416,9 +417,9 @@ public final class FileLoadsOptions implements Serializable {
          * Sets the smallest checkpoint interval accepted for streaming execution; a configured
          * interval below it is rejected when the job graph is built. Defaults to {@link
          * FileLoadsOptions#DEFAULT_MIN_CHECKPOINT_INTERVAL}. Lowering it is an explicit opt-in for
-         * jobs whose daily load-job count stays safe despite fast checkpoints (e.g. short-lived
-         * streaming jobs): BigQuery allows 1,500 load jobs per table per day, and each checkpoint
-         * issues at least one load job per destination table. Ignored in batch execution.
+         * jobs whose daily destination-table modification count stays safe despite fast checkpoints
+         * (e.g. short-lived streaming jobs): each checkpoint issues a direct load or, on overflow,
+         * one copy per destination. Ignored in batch execution.
          *
          * @param minCheckpointInterval the smallest accepted checkpoint interval
          * @return this builder

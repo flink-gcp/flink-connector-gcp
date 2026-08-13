@@ -30,7 +30,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *   <li>{@link WriteMethod#STORAGE_API_EXACTLY_ONCE} — BigQuery Storage Write API buffered streams
  *       with two-phase commit, exactly-once semantics
  *   <li>{@link WriteMethod#FILE_LOADS} — files staged on Cloud Storage followed by BigQuery load
- *       jobs, batch execution only
+ *       jobs, exactly-once in batch and checkpointed streaming execution
  * </ul>
  *
  * <p>Those semantics assume the default {@code FailureHandler.failJob()} policy. Under a dropping

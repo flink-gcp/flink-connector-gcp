@@ -69,7 +69,7 @@ has no error-class dimension at all.
   `DestinationMetrics.Counters.recordsSent(long)` was added to the base helper for the same
   reason — a batching connector counts n records in one call.
 - **The FILE_LOADS committer's `loadJobsSubmitted` counts load jobs only**, not the overflow
-  path's copy job (a different quota, and the name is the contract), threaded into
+  path's copy job (the name is the contract), threaded into
   `LoadJobOrchestrator` as a `Counter` because that type is constructed per commit while the
   metric is registered once per committer. It is the whole job's rate (`prepared.global()` means
   one committer subtask). The framework's own committer metrics are **documented, not built**,

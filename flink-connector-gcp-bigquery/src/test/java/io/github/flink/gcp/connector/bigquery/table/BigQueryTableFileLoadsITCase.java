@@ -110,9 +110,8 @@ class BigQueryTableFileLoadsITCase {
                                 STREAMING_TABLE,
                                 STREAMING_PREFIX,
                                 // Explicit opt-in to fast checkpoints for this short-lived job:
-                                // BigQuery allows 1,500 load jobs per table per day and the
-                                // connector's own floor is two minutes, which would refuse the
-                                // interval above when the job graph is built.
+                                // The connector's quota floor is two minutes, which would refuse
+                                // the short-lived test interval above when the job graph is built.
                                 "sink.file-loads.min-checkpoint-interval",
                                 "1 s"));
 
@@ -129,7 +128,7 @@ class BigQueryTableFileLoadsITCase {
     @Test
     void batchTruncatesWhenTheWriteDispositionSaysSo() throws Exception {
         // The only place sink.file-loads.write-disposition has an effect: streaming execution
-        // refuses anything but write-append, since every checkpoint issues its own load job.
+        // refuses anything but write-append, since every checkpoint commits independently.
         loadInBatch("('alice', 1), ('bob', 2)", "write-append");
         assertThat(
                         RealBigQuery.queryLongs(

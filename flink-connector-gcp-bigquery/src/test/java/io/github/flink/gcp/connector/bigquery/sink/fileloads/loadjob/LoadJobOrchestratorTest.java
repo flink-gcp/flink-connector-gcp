@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -409,6 +410,7 @@ class LoadJobOrchestratorTest {
                             assertThat(spec.getDestination().getDataset()).isEqualTo("d");
                             assertThat(spec.getDestination().getTable())
                                     .startsWith("tmp_" + FLINK_JOB_ID + "_");
+                            assertThat(spec.getDestination().getTable()).doesNotContain("_c");
                             assertThat(spec.getWriteDisposition())
                                     .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
                             assertThat(spec.getCreateDisposition())
@@ -417,8 +419,7 @@ class LoadJobOrchestratorTest {
                         });
 
         assertThat(harness.runner.copies).hasSize(1);
-        // The counter names load jobs: the copy job that follows them is a different quota and is
-        // deliberately not counted.
+        // The counter names load jobs, so the copy job that follows them is not counted.
         assertThat(harness.loadJobsSubmitted.getCount())
                 .isEqualTo(harness.runner.loads.size())
                 .isEqualTo(3);
@@ -436,19 +437,21 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
-    void tempTablesUseConfiguredTempDataset() throws IOException {
+    void streamingTempTablesUseConfiguredTempDataset() throws IOException {
         Harness harness =
                 new Harness(
                         FileLoadsOptions.builder()
                                 .stagingPath("gs://bucket/prefix")
                                 .tempDataset("temp_ds")
                                 .build(),
-                        builder -> {});
+                        builder -> {},
+                        7L);
         long sixTiB = 6L << 40;
 
         harness.orchestrator.run(List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB)));
 
         assertThat(harness.runner.loads.values())
+                .hasSize(2)
                 .allSatisfy(
                         spec ->
                                 assertThat(spec.getDestination().getDataset())
@@ -574,7 +577,8 @@ class LoadJobOrchestratorTest {
             harness.orchestrator.run(
                     List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
 
-            // Three direct loads, one warning (the reconciliation is memoized), naming the field.
+            // Three temp-table loads, one warning (the reconciliation is memoized), naming the
+            // field.
             assertThat(capture.getMessages())
                     .singleElement()
                     .asString()
@@ -652,9 +656,7 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
-    void streamingOverflowSubmitsDirectLoadsWithoutTempTables() throws IOException {
-        // The batch temp-table + copy path would need WRITE_TRUNCATE temp loads; streaming
-        // appends each partition directly, losing only the checkpoint's atomic visibility.
+    void streamingOverflowGoesThroughCheckpointScopedTempTablesAndOneCopyJob() throws IOException {
         Harness harness =
                 new Harness(
                         FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
@@ -673,18 +675,215 @@ class LoadJobOrchestratorTest {
         assertThat(harness.runner.loads.values())
                 .allSatisfy(
                         spec -> {
-                            assertThat(spec.getDestination()).isEqualTo(T1);
+                            assertThat(spec.getDestination().getDataset()).isEqualTo("d");
+                            assertThat(spec.getDestination().getTable())
+                                    .matches("tmp_" + FLINK_JOB_ID + "_[0-9a-f]{12}_c7_p[0-2]");
                             assertThat(spec.getWriteDisposition())
-                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
-                            assertThat(spec.getSchemaUpdateOptions())
-                                    .containsExactly(
-                                            JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION);
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+                            assertThat(spec.getCreateDisposition())
+                                    .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+                            assertThat(spec.getSchemaUpdateOptions()).isEmpty();
                         });
-        assertThat(harness.runner.copies).isEmpty();
-        assertThat(harness.runner.deletedTables).isEmpty();
+        assertThat(harness.loadJobsSubmitted.getCount()).isEqualTo(3);
+        assertThat(harness.runner.copies).hasSize(1);
+        assertThat(harness.runner.copies.keySet())
+                .singleElement()
+                .satisfies(id -> assertThat(id).contains("-c7-"));
+        CopyJobSpec copy = harness.runner.copies.values().iterator().next();
+        assertThat(copy.getDestination()).isEqualTo(T1);
+        assertThat(copy.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
+        assertThat(copy.getSourceTables())
+                .containsExactlyElementsOf(
+                        harness.runner.loads.values().stream()
+                                .map(LoadJobSpec::getDestination)
+                                .toList());
         // The missing table is created once, not once per partition (memoized reconciliation).
         assertThat(harness.tableAdmin.created).containsExactly(T1);
+        assertThat(harness.runner.deletedTables).containsExactlyElementsOf(copy.getSourceTables());
         assertThat(harness.storage.getDeleted()).hasSize(3);
+    }
+
+    @Test
+    void streamingTempTableNamesAreDeterministicWithinAUniqueCheckpoint() throws IOException {
+        long sixTiB = 6L << 40;
+        List<FileLoadsCommittable> files = List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB));
+        Harness first = Harness.streaming(7);
+        Harness retry = Harness.streaming(7);
+        Harness nextCheckpoint = Harness.streaming(8);
+
+        first.orchestrator.run(files);
+        retry.orchestrator.run(files);
+        nextCheckpoint.orchestrator.run(files);
+
+        List<TableDestination> firstNames =
+                first.runner.loads.values().stream().map(LoadJobSpec::getDestination).toList();
+        assertThat(retry.runner.loads.values())
+                .extracting(LoadJobSpec::getDestination)
+                .containsExactlyElementsOf(firstNames);
+        assertThat(nextCheckpoint.runner.loads.values())
+                .extracting(LoadJobSpec::getDestination)
+                .doesNotContainAnyElementsOf(firstNames)
+                .allSatisfy(table -> assertThat(table.getTable()).contains("_c8_"));
+    }
+
+    @Test
+    void streamingOverflowCombinesFormatsInOneCopyJob() throws IOException {
+        Harness harness = Harness.streaming(7);
+        long sixTiB = 6L << 40;
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "avro-a", sixTiB, StagingFormat.AVRO),
+                        file(T1, "avro-b", sixTiB, StagingFormat.AVRO),
+                        file(T1, "parquet-a", sixTiB, StagingFormat.PARQUET),
+                        file(T1, "parquet-b", sixTiB, StagingFormat.PARQUET)));
+
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getDestination)
+                .hasSize(4)
+                .doesNotHaveDuplicates();
+        assertThat(harness.runner.copies).hasSize(1);
+        assertThat(harness.runner.copies.values())
+                .singleElement()
+                .satisfies(
+                        copy -> {
+                            assertThat(copy.getDestination()).isEqualTo(T1);
+                            assertThat(copy.getSourceTables()).hasSize(4);
+                        });
+    }
+
+    @Test
+    void oneOverflowingFormatMovesEveryFormatForTheDestinationToTheCopy() throws IOException {
+        Harness harness = Harness.streaming(7);
+        long sixTiB = 6L << 40;
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "avro", 10, StagingFormat.AVRO),
+                        file(T1, "parquet-a", sixTiB, StagingFormat.PARQUET),
+                        file(T1, "parquet-b", sixTiB, StagingFormat.PARQUET)));
+
+        assertThat(harness.runner.loads.values())
+                .hasSize(3)
+                .extracting(LoadJobSpec::getDestination)
+                .doesNotContain(T1)
+                .doesNotHaveDuplicates();
+        assertThat(harness.runner.copies.values())
+                .singleElement()
+                .satisfies(copy -> assertThat(copy.getSourceTables()).hasSize(3));
+    }
+
+    @Test
+    void batchOverflowCombinesFormatsWithoutChangingSingleFormatNames() throws IOException {
+        Harness harness = Harness.plain();
+        long sixTiB = 6L << 40;
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "avro-a", sixTiB, StagingFormat.AVRO),
+                        file(T1, "avro-b", sixTiB, StagingFormat.AVRO),
+                        file(T1, "parquet-a", sixTiB, StagingFormat.PARQUET),
+                        file(T1, "parquet-b", sixTiB, StagingFormat.PARQUET)));
+
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getDestination)
+                .hasSize(4)
+                .doesNotHaveDuplicates()
+                .allSatisfy(table -> assertThat(table.getTable()).doesNotContain("_c"));
+        assertThat(harness.runner.copies.values())
+                .singleElement()
+                .satisfies(copy -> assertThat(copy.getSourceTables()).hasSize(4));
+    }
+
+    @Test
+    void overflowBeyondTheCopySourceTableLimitFailsBeforeSubmittingJobs() {
+        Harness harness = Harness.streaming(7);
+        List<FileLoadsCommittable> files =
+                IntStream.rangeClosed(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1)
+                        .mapToObj(i -> file(T1, "part-" + i, 6L << 40))
+                        .toList();
+
+        assertThatThrownBy(() -> harness.orchestrator.run(files))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("requires 1201 temporary tables")
+                .hasMessageContaining("at most 1200 source tables");
+
+        assertThat(harness.runner.loads).isEmpty();
+        assertThat(harness.runner.copies).isEmpty();
+    }
+
+    @Test
+    void copySourceTableLimitIsAcceptedAcrossFormats() throws IOException {
+        Harness harness = Harness.streaming(7);
+        List<FileLoadsCommittable> files =
+                new ArrayList<>(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY);
+        files.add(file(T1, "avro", 10, StagingFormat.AVRO));
+        IntStream.range(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY)
+                .mapToObj(i -> file(T1, "parquet-" + i, 6L << 40, StagingFormat.PARQUET))
+                .forEach(files::add);
+
+        harness.orchestrator.run(files);
+
+        assertThat(harness.runner.loads).hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY);
+        assertThat(harness.runner.copies.values())
+                .singleElement()
+                .satisfies(
+                        copy ->
+                                assertThat(copy.getSourceTables())
+                                        .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY));
+    }
+
+    @Test
+    void copySourceTableLimitCountsEveryFormatForTheDestination() {
+        Harness harness = Harness.streaming(7);
+        List<FileLoadsCommittable> files =
+                new ArrayList<>(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1);
+        files.add(file(T1, "avro", 10, StagingFormat.AVRO));
+        IntStream.rangeClosed(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY)
+                .mapToObj(i -> file(T1, "parquet-" + i, 6L << 40, StagingFormat.PARQUET))
+                .forEach(files::add);
+
+        assertThatThrownBy(() -> harness.orchestrator.run(files))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("requires 1201 temporary tables");
+
+        assertThat(harness.runner.loads).isEmpty();
+        assertThat(harness.runner.copies).isEmpty();
+    }
+
+    @Test
+    void streamingOverflowLoadFailureDoesNotSubmitCopyOrCleanUp() {
+        Harness harness = Harness.streaming(7);
+        harness.runner.failAllAwaits = true;
+        long sixTiB = 6L << 40;
+
+        assertThatThrownBy(
+                        () ->
+                                harness.orchestrator.run(
+                                        List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB))))
+                .isInstanceOf(IOException.class);
+
+        assertThat(harness.runner.loads).hasSize(2);
+        assertThat(harness.runner.copies).isEmpty();
+        assertThat(harness.runner.deletedTables).isEmpty();
+        assertThat(harness.storage.getDeleted()).isEmpty();
+    }
+
+    @Test
+    void streamingOverflowCopyFailureLeavesTempTablesAndStagingFiles() throws IOException {
+        long sixTiB = 6L << 40;
+        List<FileLoadsCommittable> files = List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB));
+        Harness firstAttempt = Harness.streaming(7);
+        firstAttempt.orchestrator.run(files);
+        String copyJobId = firstAttempt.runner.copies.keySet().iterator().next();
+        Harness retry = Harness.streaming(7);
+        retry.runner.failOnAwait.add(copyJobId);
+
+        assertThatThrownBy(() -> retry.orchestrator.run(files)).isInstanceOf(IOException.class);
+
+        assertThat(retry.runner.copies).containsOnlyKeys(copyJobId);
+        assertThat(retry.runner.deletedTables).isEmpty();
+        assertThat(retry.storage.getDeleted()).isEmpty();
     }
 
     @Test
@@ -758,7 +957,7 @@ class LoadJobOrchestratorTest {
         harness.orchestrator.run(
                 List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
 
-        // Three direct loads, but the live table was read and patched exactly once.
+        // Three temp-table loads, but the live table was read and patched exactly once.
         assertThat(harness.runner.loads).hasSize(3);
         assertThat(harness.tableAdmin.schemaReads).isEqualTo(1);
         assertThat(harness.tableAdmin.schemaUpdates).containsExactly(T1);

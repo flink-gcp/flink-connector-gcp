@@ -71,7 +71,7 @@ import java.time.Duration;
  * disabled, files would stage forever without ever being loaded. Streaming additionally requires
  * checkpointing (the checkpoint is the load trigger), {@link WriteDisposition#WRITE_APPEND} (other
  * dispositions are meaningless per checkpoint), and a checkpoint interval that stays clear of
- * BigQuery's 1,500 load jobs per table per day — below {@link
+ * BigQuery's daily load-job and destination-table modification limits — below {@link
  * FileLoadsOptions#getMinCheckpointInterval()} is an error, below {@link
  * #QUOTA_WARN_CHECKPOINT_INTERVAL} a warning.
  *
@@ -208,8 +208,8 @@ public class BigQueryFileLoadsSink<T>
 
     /**
      * Rejects streaming setups that cannot work (no checkpointing — no load trigger; a non-append
-     * disposition) or that would exhaust BigQuery's per-table daily load-job quota at a sustained
-     * cadence.
+     * disposition) or that would exhaust BigQuery's daily destination-table modification limit at a
+     * sustained cadence.
      */
     private void validateStreaming(
             CheckpointConfig checkpointConfig, ReadableConfig configuration) {
@@ -267,8 +267,9 @@ public class BigQueryFileLoadsSink<T>
                             + WriteMethod.FILE_LOADS
                             + " minimum ("
                             + minIntervalMs
-                            + " ms). BigQuery allows 1,500 load jobs per table per day and each"
-                            + " checkpoint issues at least one load job per destination table"
+                            + " ms). BigQuery allows 1,500 modifications per standard destination"
+                            + " table per day and each checkpoint issues a direct load or an"
+                            + " overflow copy"
                             + " (1 min = 1,440/day, 2 min = 720/day, 5 min = 288/day). Increase"
                             + " the checkpoint interval, or lower"
                             + " FileLoadsOptions.minCheckpointInterval(...) explicitly for a"
@@ -277,8 +278,9 @@ public class BigQueryFileLoadsSink<T>
         if (intervalMs < QUOTA_WARN_CHECKPOINT_INTERVAL.toMillis()) {
             LOG.warn(
                     "The checkpoint interval ({} ms) is below {} minutes; each checkpoint issues"
-                            + " at least one load job per destination table and BigQuery allows"
-                            + " 1,500 load jobs per table per day (2 min = 720/day, 5 min ="
+                            + " a direct load or an overflow copy per destination table, and"
+                            + " BigQuery allows 1,500 modifications per standard table per day"
+                            + " (2 min = 720/day, 5 min ="
                             + " 288/day). Consider a larger interval for sustained streaming.",
                     intervalMs,
                     QUOTA_WARN_CHECKPOINT_INTERVAL.toMinutes());

@@ -570,7 +570,7 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "How loaded rows land in a table that already holds data. Streaming"
                                     + " execution accepts 'write-append' only, since every"
-                                    + " checkpoint issues its own load job.");
+                                    + " checkpoint commits its own staged files.");
 
     public static final ConfigOption<Duration> SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL =
             ConfigOptions.key("sink.file-loads.min-checkpoint-interval")
@@ -578,10 +578,11 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The smallest checkpoint interval streaming execution accepts, checked"
-                                    + " when the job graph is built. BigQuery allows 1,500 load"
-                                    + " jobs per table per day and each checkpoint issues at least"
-                                    + " one, so lowering this is an explicit opt-in for a job whose"
-                                    + " daily count stays safe.");
+                                    + " when the job graph is built. BigQuery allows 1,500"
+                                    + " modifications per standard destination table per day, and"
+                                    + " each checkpoint issues a direct load or an overflow copy,"
+                                    + " so lowering this is an explicit opt-in for a job whose daily"
+                                    + " count stays safe.");
 
     public static final ConfigOption<MemorySize> SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES =
             ConfigOptions.key("sink.file-loads.max-staging-file-bytes")

@@ -1167,9 +1167,11 @@ buffer *is* GCS. Files roll at `maxStagingFileBytes` (16 MiB, discussed below). 
 topology routes every subtask's
 committables to a single committer subtask (in streaming through a stage that stamps each
 committable with its checkpoint id), and that committer — the actual commit — groups the staged
-files by destination table *and staging format* and runs **one load job per table** (all jobs submitted first, then
-awaited — BigQuery runs them concurrently server-side): once at end of input in batch, once per
-completed checkpoint in streaming. Before its first load of a run, each destination is
+files by destination table *and staging format*. A destination whose format groups each fit one
+job uses direct loads; if any group overflows, every group for that destination uses partition
+loads followed by one combined copy (all loads submitted first, then awaited — BigQuery runs them
+concurrently server-side): once at end of input in batch, once per completed checkpoint in
+streaming. Before its first load of a run, each destination is
 **reconciled against the live table** through the REST API — a missing table is created (schema
 from the serializer, partitioning/clustering from `tableCreateOptions(...)`; `CREATE_NEVER` fails
 with a client-side error instead), and the schema the load jobs then carry explicitly
@@ -1177,7 +1179,15 @@ with a client-side error instead), and the schema the load jobs then carry expli
 schema updates are enabled (under `WRITE_TRUNCATE` it is the serializer's as-is — the load
 replaces the table schema wholesale; see below). One reconciliation per destination per run,
 whatever the partition count; the credentials therefore need `bigquery.tables.get` (plus
-`bigquery.tables.create` / `bigquery.tables.update` for what the configuration enables). Because
+`bigquery.tables.create` / `bigquery.tables.update` for what the final-table configuration
+enables). Overflow also introduces temporary tables as copy sources. In addition to the normal
+FILE_LOADS job and final-destination permissions, their dataset must allow table creation and
+writes (`bigquery.tables.create`, `bigquery.tables.updateData`) and copy reads
+(`bigquery.tables.get`, `bigquery.tables.getData`), even under `CREATE_NEVER`; eager cleanup also
+needs `bigquery.tables.delete` instead of leaving expiration to remove the tables.
+[BigQuery Data Editor](https://docs.cloud.google.com/bigquery/docs/managing-tables#roles_to_copy_tables_and_partitions)
+on both the temporary and destination datasets is Google's documented predefined-role route for copy
+jobs. Because
 the table is created before the load rather than by it, a load failure can leave an empty table
 behind — as a schema union applied before a failed load also persists, columns being permanent
 either way. Loading in the committer (rather than a post-commit
@@ -1191,10 +1201,13 @@ built, because were it to resolve to streaming with checkpointing disabled, no t
 come and files would stage forever. Streaming additionally requires, also checked at graph
 construction: checkpointing enabled (the checkpoint is the load trigger),
 `WriteDisposition.WRITE_APPEND` (truncating/rejecting per checkpoint is meaningless), and a
-checkpoint interval compatible with BigQuery's **1,500 load jobs per table per day** quota — each
-checkpoint issues at least one load job per destination table:
+checkpoint interval compatible with BigQuery's [daily limits](https://docs.cloud.google.com/bigquery/quotas#load_jobs).
+BigQuery permits 1,500 load jobs per table per day, and a standard destination table permits 1,500
+modifications from load, copy and query jobs combined.
+Each checkpoint consumes at least one destination-table modification: one direct load in the
+common case, or one copy after overflow partition loads:
 
-| Checkpoint interval | Load jobs per table per day |
+| Checkpoint interval | Destination-table modifications per day |
 |---|---|
 | 1 min | 1,440 — too close to the ceiling, not viable |
 | 2 min | 720 |
@@ -1202,7 +1215,7 @@ checkpoint issues at least one load job per destination table:
 
 Intervals below `minCheckpointInterval` (default 2 minutes) are rejected; intervals below 5
 minutes log a warning. Lowering `minCheckpointInterval(...)` is the explicit opt-in for
-short-lived jobs whose daily load count stays safe (the integration tests do this). A runtime
+short-lived jobs whose daily modification count stays safe (the integration tests do this). A runtime
 warning also fires when observed checkpoint cadence stays under 2 minutes, catching interval
 configuration the client-side guard cannot see. Streaming pipelines that need second-level
 latency belong on the Storage Write API methods; checkpoint-triggered file loads trade minutes of
@@ -1298,21 +1311,32 @@ committables of a destination are grouped by format as well. Normally they all s
 changes nothing. The case that does not is transitional: the first commit after the staging format
 changes — including the upgrade that introduced the format at all, where committables already in
 committer state were written as Avro — sees both, and that commit issues **two load jobs for the
-one table**, losing the single-job atomicity for it alone. The alternatives are worse: draining the
-old format first would need the writer to know what is still in committer state, which it cannot,
-and refusing the mix would wedge the restart that produced it. Job ids stay deterministic without
-help, since they hash the source URI list and the two formats' files are different objects.
+one table** when both groups fit their jobs, losing the single-job atomicity for it alone. If either
+group overflows, all groups instead use temporary tables and one combined copy. The alternatives
+to separate direct loads are worse: draining the old format first would need the writer to know
+what is still in committer state, which it cannot, and refusing the mix would wedge the restart
+that produced it. Job ids stay deterministic without help, since they hash the source URI list and
+the two formats' files are different objects.
 
-**Per-load-job limits.** In batch, a table whose staged files exceed one load job's limits
-(10,000 source URIs / 11 TiB) is loaded partition-wise into temporary tables (`WRITE_TRUNCATE`,
-so retries are idempotent) and appended to the final table with one atomic copy job. Temporary
-tables go to the destination's dataset by default, or to `tempDataset(...)` — a dedicated dataset
-with a default table expiration is recommended so tables orphaned by hard failures are
+**Per-load-job limits.** In either execution mode, if any format group for a table exceeds one load
+job's limits (10,000 source URIs / 11 TiB), all groups for that table are loaded partition-wise
+into temporary tables (`WRITE_TRUNCATE`, so retries are idempotent) and appended to the final table
+with one atomic copy job. Streaming temporary-table names include the checkpoint id, so consecutive
+checkpoints do not collide and a retry reconstructs the same names.
+Temporary tables go to the destination's dataset by default, or to `tempDataset(...)` — a
+dedicated dataset with a default table expiration is recommended so tables orphaned by hard failures are
 garbage-collected. Copy jobs support no schema update options and require matching schemas, so
 the temporary tables are loaded with the reconciled schema — the same one every load of the run
-carries. In streaming there is no temporary-table path: an
-oversized checkpoint × table submits multiple direct append jobs (deterministic per-partition
-ids keep exactly-once; only that checkpoint's atomic visibility is lost).
+carries. The final table stays unchanged if a partition load fails; after all partition loads
+succeed, the single copy makes the whole run visible atomically. A failed or abandoned run leaves
+only temporary tables and staged objects for their configured expiration and lifecycle policies.
+This overflow path adds one synchronous copy job and brief temporary-table storage, but avoids
+spending one destination-table modification per partition. Copy jobs count toward the same 1,500
+daily modifications for a standard destination table and toward BigQuery's project-wide 100,000
+copy jobs per day; there is no lower same-region per-destination copy-job quota. BigQuery accepts
+at most 1,200 source tables in one copy job, so the connector rejects a destination needing more
+than 1,200 overflow partitions before it submits any load; increase `maxStagingFileBytes` or reduce
+the volume per commit to stay below that boundary.
 
 **Schema evolution.** The `schemaUpdateOptions(...)` flags drive the pre-load reconciliation:
 when they allow it, the live schema is unioned with the serializer's and the table updated via
@@ -2005,9 +2029,9 @@ retry itself; it names the stream, the attempt and the backoff.
 | `loadJobsSubmitted` | counter | BigQuery load jobs submitted by this committer |
 
 It is what turns "this checkpoint took a while" into "this checkpoint issued *N* load jobs", against
-the quota of 1,500 load jobs per table per day that shapes `minCheckpointInterval` (see
-[File loads](#file-loads)). Only load jobs are counted: the overflow path's copy job is a different
-quota and does not appear here. The FILE_LOADS committer runs on **one subtask** (its pre-commit
+the daily load-job and destination-table modification limits that shape `minCheckpointInterval`
+(see [File loads](#file-loads)). Only load jobs are counted: the overflow path's copy job does not
+appear in this metric. The FILE_LOADS committer runs on **one subtask** (its pre-commit
 topology ends in `global()`), so this counter is the whole job's load-job rate rather than one
 subtask's share.
 

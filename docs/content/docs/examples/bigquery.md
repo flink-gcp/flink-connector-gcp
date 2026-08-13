@@ -132,9 +132,9 @@ streaming-insert cost and exactly-once in both execution modes.
 
 ```java
 env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-// The checkpoint is the load trigger, and each one issues at least one load job per destination
-// table against BigQuery's quota of 1,500 per table per day. 5 minutes is 288 of them; below
-// 2 minutes the sink rejects the job outright.
+// The checkpoint is the load trigger, and each one modifies every active destination with a
+// direct load or an overflow copy. 5 minutes is 288 modifications; below 2 minutes the sink
+// rejects the job outright.
 env.enableCheckpointing(300_000);
 
 env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")

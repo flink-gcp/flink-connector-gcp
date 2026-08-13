@@ -209,7 +209,8 @@ class BigQueryFileLoadsSinkTopologyTest {
 
     @Test
     void checkpointIntervalBelowMinimumIsRejected() {
-        // 30 s would mean 2,880 load jobs per table per day — above BigQuery's 1,500 limit.
+        // 30 s would mean 2,880 destination-table modifications per day — above BigQuery's 1,500
+        // standard-table limit.
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         env.enableCheckpointing(30_000);
@@ -281,7 +282,7 @@ class BigQueryFileLoadsSinkTopologyTest {
                     .singleElement()
                     .asString()
                     .contains("30000 ms")
-                    .contains("1,500 load jobs");
+                    .contains("1,500 modifications");
         }
 
         assertTopology(graph, true);

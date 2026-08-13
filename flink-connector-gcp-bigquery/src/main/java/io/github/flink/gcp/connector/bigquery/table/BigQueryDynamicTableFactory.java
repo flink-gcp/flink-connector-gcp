@@ -582,11 +582,12 @@ public class BigQueryDynamicTableFactory
                     String.format(
                             "'%s' (%d ms) is shorter than the smallest checkpoint interval '%s' ="
                                     + " '%s' accepts in streaming execution (%d ms): BigQuery allows"
-                                    + " 1,500 load jobs per table per day and each checkpoint issues"
-                                    + " at least one load job per destination table (1 min ="
+                                    + " 1,500 modifications per standard destination table per day"
+                                    + " and each checkpoint issues a direct load or an overflow copy"
+                                    + " (1 min ="
                                     + " 1,440/day, 2 min = 720/day, 5 min = 288/day). Increase '%s',"
                                     + " or set '%s' lower explicitly for a short-lived job whose"
-                                    + " daily load count stays safe.",
+                                    + " daily modification count stays safe.",
                             intervalKey,
                             intervalMs,
                             BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),

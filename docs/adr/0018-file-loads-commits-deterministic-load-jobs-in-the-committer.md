@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-07-19 ([#14]); load stage revised 2026-07-20 ([#69]); committer schedules
   2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
   (2026-08-08); load-job grouping refined by [#284] (2026-08-08); job locations revised by
-  [#491] (2026-08-10)
-- Issues: [#14], [#69], [#198], [#337], [#380], [#284], [#491]
+  [#491] (2026-08-10); streaming overflow revised by [#72] (2026-08-13)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -61,11 +61,14 @@ limitations under the License.
   checkpoint id onto committables (the `Committer` SPI cannot see it); job ids gain a visible
   `-c<checkpointId>` segment (hash material unchanged) and derive their Flink-job segment from
   the committable's originating job id (stamped by the writer) so re-commits after a new-JobID
-  restore still re-attach; streaming overflow submits direct append jobs sequentially instead of
-  temp-table+copy. Streaming also requires EXACTLY_ONCE checkpointing and
+  restore still re-attach. On overflow, batch and streaming both load idempotent partitions into
+  temporary tables and append them to the final table with one atomic copy job; streaming
+  temporary-table names include the checkpoint id, and their digest also distinguishes staging
+  formats that coexist during a transition. Streaming also requires EXACTLY_ONCE checkpointing and
   checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota guard
   at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5 min
-  warns (1,500 load jobs/table/day), plus a runtime cadence warning in the committer.
+  warns (1,500 load jobs/table/day, with an overflow copy still consuming one destination-table
+  modification), plus a runtime cadence warning in the committer.
 - **Committer schedules are knobs** ([#198]): `loadJobPoll*` and `schemaReconcile*` on
   `FileLoadsOptions`, mapped by `toLoadJobPollSchedule()` / `toSchemaReconcileSchedule()`. Both
   pass the [#54] workload-versus-service test that kept the default-stream schema-wait schedule
@@ -167,6 +170,7 @@ limitations under the License.
 [#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
 [#69]: https://github.com/laughingman7743/flink-connector-gcp/issues/69
+[#72]: https://github.com/laughingman7743/flink-connector-gcp/issues/72
 [#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
 [#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284

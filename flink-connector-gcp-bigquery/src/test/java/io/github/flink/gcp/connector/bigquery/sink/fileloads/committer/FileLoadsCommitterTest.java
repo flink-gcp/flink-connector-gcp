@@ -353,7 +353,7 @@ class FileLoadsCommitterTest {
             assertThat(capture.getMessages())
                     .singleElement()
                     .asString()
-                    .contains("1,500 load jobs")
+                    .contains("1,500 modifications")
                     .contains(
                             String.valueOf(
                                     FileLoadsOptions.DEFAULT_MIN_CHECKPOINT_INTERVAL.toMillis()));

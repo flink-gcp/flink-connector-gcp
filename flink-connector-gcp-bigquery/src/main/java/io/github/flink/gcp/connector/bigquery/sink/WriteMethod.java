@@ -51,8 +51,8 @@ public enum WriteMethod {
      *
      * <p>Always exactly-once. Batch execution loads everything at end of input; streaming execution
      * loads each checkpoint's files (checkpointing required, {@link WriteDisposition#WRITE_APPEND}
-     * only, and mind BigQuery's 1,500 load jobs per table per day — checkpoint intervals of 2-5
-     * minutes or more).
+     * only, and mind BigQuery's daily load-job and destination-table modification limits —
+     * checkpoint intervals of 2-5 minutes or more).
      */
     FILE_LOADS;
 
