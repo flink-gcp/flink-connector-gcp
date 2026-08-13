@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-10
-- Issues: [#224], [#441]
+- Issues: [#224], [#441], [#535]
 - Modules: spanner (tests), `opentofu/`, `scripts/`
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Testing; the root
   CLAUDE.md `just e2e`/`sweep-e2e` entries
@@ -108,6 +108,11 @@ table end to end — the first evidence anywhere in this repository that the fla
 the partition call. Its concurrency quota and its billing stay unmeasured; a suite this size reaches
 neither.
 
+**Change Streams recovery is accepted against both service dialects** ([#535], 2026-08-13).
+The same ephemeral instance hosts GoogleSQL and PostgreSQL Change Stream databases.
+The suite verifies both service result shapes, stream metadata and retention, exclusion options, an explicit-column warning, commit timestamps, heartbeat watermarks, child partitions, an intentional checkpoint failure, savepoint restore, an expired restore failure, and opt-in whole-ledger fallback.
+The GoogleSQL recovery run delivered all 5,000 unique mutation ids and repeated 500 records across its inclusive checkpoint boundary; that count records the run rather than defining the at-least-once contract.
+
 **A regression the ported tests caught, worth recording because it is a shell trap rather than a
 Spanner one.** Moving the per-service sweep into a function called under `|| outcome=$?` suppresses
 `set -e` inside that function, so the assignment from `gcloud … list` stopped being fatal and an
@@ -130,6 +135,7 @@ explicitly, and `test_a_listing_that_fails_is_not_an_empty_sweep` is what caught
 
 [#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
 [#441]: https://github.com/laughingman7743/flink-connector-gcp/issues/441
+[#535]: https://github.com/laughingman7743/flink-connector-gcp/issues/535
 [#469]: https://github.com/laughingman7743/flink-connector-gcp/pull/469
 [#476]: https://github.com/laughingman7743/flink-connector-gcp/pull/476
 [ADR-0044]: 0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md

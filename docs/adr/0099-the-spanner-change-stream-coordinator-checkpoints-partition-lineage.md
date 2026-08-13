@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-12
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
-  [#534](https://github.com/laughingman7743/flink-connector-gcp/issues/534)
+  [#534](https://github.com/laughingman7743/flink-connector-gcp/issues/534),
+  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -60,8 +61,18 @@ Advancing one old partition token can skip the child-partitions record that ende
 The reset discards every stale dependency and starts one new null-token query at the resolved fallback, with a warning that names the unavailable range and duplicate boundary.
 Without the explicit fallback, expiry fails the job.
 
+Readers wait for a coordinator initialization event before opening any restored split.
+The event preserves reader-owned splits after a valid restore and discards them after an explicit whole-ledger fallback.
+This handshake is necessary because Flink restores reader state independently of the enumerator's asynchronous metadata check; without it an expired token can reach Spanner before the coordinator has decided whether to fail or fall back.
+
 Both checkpoint serializers use connector-owned versioned formats.
 They encode optional values and lifecycle states with explicit tags and reject unknown versions, tags, negative counts, and invalid timestamps.
+
+## Evidence
+
+The real-GCP acceptance produced two child partitions in each 5,000-row recovery run and observed work on both reader subtasks.
+It intentionally failed after a completed checkpoint, recovered every unique mutation id with the allowed inclusive-boundary duplicates, stopped with a savepoint, and consumed both a mutation written while stopped and one written after restore.
+Separate stale-state savepoints verify the reader handshake and whole-ledger fallback in both dialects.
 
 ## Alternatives declined
 
@@ -79,4 +90,4 @@ They encode optional values and lifecycle states with explicit tags and reject u
 - The ledger grows with partition lineage because finished parents remain recovery evidence.
   Compaction requires a separate proof that no current or future dependency can name the removed entry.
 - The public source and reader can be added independently in #536 because the coordinator-facing split and event contracts are now fixed.
-- Real-service split, merge, retention, and fallback behavior remains the gated acceptance work in #535.
+- Real-service partition, checkpoint, savepoint, retention, and fallback behavior is covered by the gated acceptance in #535.

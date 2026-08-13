@@ -16,10 +16,13 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch;
 
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
+import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
@@ -40,24 +43,36 @@ import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerRealGcpITCase;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamTestSourceFactory;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
+import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.DefaultSpannerChangeStreamCoordinatorClientFactory;
+import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
@@ -66,11 +81,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 import java.util.stream.LongStream;
 import java.util.stream.Stream;
 
+import static io.github.flink.gcp.connector.testutils.Awaits.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -101,11 +122,20 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
 
     private static final int ROWS = 5_000;
 
+    private static final int CHANGE_STREAM_ROWS = 5_000;
+    private static final String ALL_CHANGES = "all_changes";
+    private static final String EXPLICIT_CHANGES = "explicit_changes";
+    private static final Duration CHANGE_STREAM_WAIT = Duration.ofMinutes(2);
+
     /** Spanner's commit limits are per transaction, so the seed goes in several. */
     private static final int SEED_BATCH = 500;
 
     private static SpannerDatabase database;
     private static Map<Dialect, SpannerDatabase> namedSchemaDatabases;
+    private static Map<Dialect, SpannerDatabase> changeStreamDatabases;
+    private static Map<Dialect, Instant> beforeChangeStreamCreation;
+
+    @TempDir private static Path savepointDirectory;
 
     @BeforeAll
     static void createAndSeedDatabase() throws Exception {
@@ -132,8 +162,12 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             client(database).write(rows);
         }
         namedSchemaDatabases = new EnumMap<>(Dialect.class);
+        changeStreamDatabases = new EnumMap<>(Dialect.class);
+        beforeChangeStreamCreation = new EnumMap<>(Dialect.class);
         for (Dialect dialect : Dialect.values()) {
             namedSchemaDatabases.put(dialect, createNamedSchemaDatabase(dialect));
+            beforeChangeStreamCreation.put(dialect, Instant.now().minusSeconds(5));
+            changeStreamDatabases.put(dialect, createChangeStreamDatabase(dialect));
         }
     }
 
@@ -315,6 +349,265 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         assertThat(lookupNames(source, "named_async_source")).containsExactly("Ada", "Grace");
     }
 
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void changeStreamMetadataMatchesTheServiceAndReportsExplicitColumns(Dialect dialect)
+            throws Exception {
+        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        try (LogCapture capture =
+                        LogCapture.of(
+                                DefaultSpannerChangeStreamCoordinatorClientFactory.class,
+                                LogCapture.Level.INFO);
+                SpannerChangeStreamCoordinatorClient all =
+                        new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                                        changeStreamDatabase, ALL_CHANGES, null)
+                                .create();
+                SpannerChangeStreamCoordinatorClient explicit =
+                        new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                                        changeStreamDatabase, EXPLICIT_CHANGES, null)
+                                .create()) {
+            assertThat(all.initialize()).isEqualTo(Duration.ofDays(1));
+            assertThat(explicit.initialize()).isEqualTo(Duration.ofDays(7));
+
+            String messages = String.join("\n", capture.getMessages());
+            assertThat(messages)
+                    .contains("scope=ALL")
+                    .contains("retention=PT24H")
+                    .contains("valueCaptureType=OLD_AND_NEW_VALUES")
+                    .contains("excludeTtlDeletes=true")
+                    .contains("excludeInserts=true")
+                    .contains("allowTransactionExclusion=true")
+                    .contains("watches an explicit column list")
+                    .contains("changes")
+                    .contains("Columns added later are not watched automatically");
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void changeStreamRecoversFromCheckpointAndSavepoint(Dialect dialect) throws Exception {
+        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        String runId = "recovery-" + dialect + "-" + UUID.randomUUID();
+        SpannerChangeStreamRealGcpSupport.reset(runId);
+        JobClient first =
+                SpannerChangeStreamRealGcpSupport.start(
+                        changeStreamSource(changeStreamDatabase, StartPosition.latest(), null),
+                        runId,
+                        null,
+                        true);
+        boolean stopped = false;
+        try {
+            awaitChangeStream(
+                    "the initial Spanner query to start",
+                    first,
+                    () ->
+                            SpannerChangeStreamRealGcpSupport.counter(
+                                            runId, "changeStreamQueriesStarted")
+                                    > 0,
+                    runId);
+            writeChangeRows(changeStreamDatabase, 0, CHANGE_STREAM_ROWS / 2);
+            awaitChangeStream(
+                    "the first half of the mutations",
+                    first,
+                    () ->
+                            SpannerChangeStreamRealGcpSupport.uniqueIds(runId)
+                                    >= CHANGE_STREAM_ROWS / 2,
+                    runId);
+            awaitChangeStream(
+                    "a completed checkpoint",
+                    first,
+                    () -> SpannerChangeStreamRealGcpSupport.completedCheckpoint(runId) >= 0,
+                    runId);
+
+            long queriesBeforeFailure =
+                    SpannerChangeStreamRealGcpSupport.counter(runId, "changeStreamQueriesStarted");
+            SpannerChangeStreamRealGcpSupport.armFailure(runId);
+            writeChangeRows(
+                    changeStreamDatabase, CHANGE_STREAM_ROWS / 2, CHANGE_STREAM_ROWS / 2 + 1);
+            awaitChangeStream(
+                    "the deliberate post-checkpoint failure",
+                    first,
+                    () -> SpannerChangeStreamRealGcpSupport.failed(runId),
+                    runId);
+            awaitChangeStream(
+                    "a query to reopen after restart",
+                    first,
+                    () ->
+                            SpannerChangeStreamRealGcpSupport.counter(
+                                            runId, "changeStreamQueriesStarted")
+                                    > queriesBeforeFailure,
+                    runId);
+
+            writeChangeRows(changeStreamDatabase, CHANGE_STREAM_ROWS / 2 + 1, CHANGE_STREAM_ROWS);
+            awaitChangeStream(
+                    "all change-stream mutations after restart",
+                    first,
+                    () -> SpannerChangeStreamRealGcpSupport.uniqueIds(runId) >= CHANGE_STREAM_ROWS,
+                    runId);
+            awaitChangeStream(
+                    "the service heartbeat watermark",
+                    first,
+                    () -> SpannerChangeStreamRealGcpSupport.watermarkAdvanced(runId),
+                    runId);
+
+            assertChangeStreamMetrics(runId);
+            assertThat(SpannerChangeStreamRealGcpSupport.timestampMismatches(runId)).isZero();
+            LOG.info(
+                    "Cloud Spanner Change Streams {} checkpoint evidence: records={}, unique={},"
+                            + " duplicates={}, metrics={}",
+                    dialect,
+                    SpannerChangeStreamRealGcpSupport.realRecordCount(runId),
+                    SpannerChangeStreamRealGcpSupport.uniqueIds(runId),
+                    SpannerChangeStreamRealGcpSupport.duplicateCount(runId),
+                    SpannerChangeStreamRealGcpSupport.metricSummary(runId));
+
+            String savepoint =
+                    first.stopWithSavepoint(
+                                    false,
+                                    savepointDirectory.toUri().toString(),
+                                    SavepointFormatType.CANONICAL)
+                            .get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
+            stopped = true;
+
+            long stoppedGap = CHANGE_STREAM_ROWS;
+            long afterRestore = CHANGE_STREAM_ROWS + 1L;
+            writeChangeRows(changeStreamDatabase, stoppedGap, stoppedGap + 1);
+            JobClient restored =
+                    SpannerChangeStreamRealGcpSupport.start(
+                            changeStreamSource(changeStreamDatabase, StartPosition.latest(), null),
+                            runId,
+                            savepoint,
+                            false);
+            try {
+                writeChangeRows(changeStreamDatabase, afterRestore, afterRestore + 1);
+                awaitChangeStream(
+                        "the mutation written while stopped and the mutation after restore",
+                        restored,
+                        () -> {
+                            Set<Long> ids = SpannerChangeStreamRealGcpSupport.ids(runId);
+                            return ids.contains(stoppedGap) && ids.contains(afterRestore);
+                        },
+                        runId);
+                assertThat(SpannerChangeStreamRealGcpSupport.timestampMismatches(runId)).isZero();
+            } finally {
+                cancelQuietly(restored);
+            }
+        } finally {
+            if (!stopped) {
+                cancelQuietly(first);
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void startBeforeChangeStreamCreationGetsConnectorGuidance(Dialect dialect) throws Exception {
+        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        String runId = "precreation-" + dialect + "-" + UUID.randomUUID();
+        SpannerChangeStreamRealGcpSupport.reset(runId);
+        JobClient job =
+                SpannerChangeStreamRealGcpSupport.start(
+                        changeStreamSource(
+                                changeStreamDatabase,
+                                StartPosition.at(beforeChangeStreamCreation.get(dialect)),
+                                null),
+                        runId,
+                        null,
+                        false);
+
+        Throwable failure = executionFailure(job);
+        assertThat(failureMessages(failure))
+                .contains("initial start timestamp")
+                .contains("change stream was created")
+                .contains("StartPosition.latest()")
+                .contains("StartPosition.at(...)");
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void expiredRestoreFailsByDefaultAndCanUseAnExplicitFallback(Dialect dialect) throws Exception {
+        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        Instant stale = Instant.now().minus(Duration.ofDays(2));
+        String staleRun = "stale-savepoint-" + dialect + "-" + UUID.randomUUID();
+        SpannerChangeStreamRealGcpSupport.reset(staleRun);
+        JobClient scripted =
+                SpannerChangeStreamRealGcpSupport.start(
+                        SpannerChangeStreamTestSourceFactory.staleSource(stale, 2),
+                        staleRun,
+                        null,
+                        false);
+        String staleSavepoint;
+        boolean stopped = false;
+        try {
+            awaitChangeStream(
+                    "the scripted stale partitions",
+                    scripted,
+                    () -> SpannerChangeStreamRealGcpSupport.allRecords(staleRun) >= 2,
+                    staleRun);
+            staleSavepoint =
+                    scripted.stopWithSavepoint(
+                                    false,
+                                    savepointDirectory.toUri().toString(),
+                                    SavepointFormatType.CANONICAL)
+                            .get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
+            stopped = true;
+        } finally {
+            if (!stopped) {
+                cancelQuietly(scripted);
+            }
+        }
+
+        String failedRun = "expired-default-" + dialect + "-" + UUID.randomUUID();
+        SpannerChangeStreamRealGcpSupport.reset(failedRun);
+        JobClient failedRestore =
+                SpannerChangeStreamRealGcpSupport.start(
+                        changeStreamSource(changeStreamDatabase, StartPosition.latest(), null),
+                        failedRun,
+                        staleSavepoint,
+                        false);
+        assertThat(failureMessages(executionFailure(failedRestore)))
+                .contains("older than the computed earliest position")
+                .contains("unavailable range")
+                .contains("No restore fallback was configured");
+        assertThat(
+                        SpannerChangeStreamRealGcpSupport.counter(
+                                failedRun, "changeStreamQueriesStarted"))
+                .isZero();
+
+        String fallbackRun = "expired-fallback-" + dialect + "-" + UUID.randomUUID();
+        SpannerChangeStreamRealGcpSupport.reset(fallbackRun);
+        JobClient fallbackRestore =
+                SpannerChangeStreamRealGcpSupport.start(
+                        changeStreamSource(
+                                changeStreamDatabase,
+                                StartPosition.latest(),
+                                StartPosition.latest()),
+                        fallbackRun,
+                        staleSavepoint,
+                        false);
+        try {
+            awaitChangeStream(
+                    "the fallback query",
+                    fallbackRestore,
+                    () ->
+                            SpannerChangeStreamRealGcpSupport.counter(
+                                            fallbackRun, "changeStreamQueriesStarted")
+                                    > 0,
+                    fallbackRun);
+            long id = 20_000L + dialect.ordinal();
+            writeChangeRows(changeStreamDatabase, id, id + 1);
+            awaitChangeStream(
+                    "the mutation after the explicit fallback",
+                    fallbackRestore,
+                    () -> SpannerChangeStreamRealGcpSupport.ids(fallbackRun).contains(id),
+                    fallbackRun);
+            assertThat(SpannerChangeStreamRealGcpSupport.allRecords(fallbackRun))
+                    .isEqualTo(SpannerChangeStreamRealGcpSupport.realRecordCount(fallbackRun));
+        } finally {
+            cancelQuietly(fallbackRestore);
+        }
+    }
+
     private static Stream<Arguments> namedSchemaCases() {
         return Stream.of(Dialect.values())
                 .flatMap(
@@ -422,6 +715,177 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         + "id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)",
                 "CREATE INDEX `QuotedAnalytics`.`QuotedRecordsByName` ON"
                         + " `QuotedAnalytics`.`QuotedRecords` (name)");
+    }
+
+    private static SpannerDatabase createChangeStreamDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE TABLE changes (id bigint NOT NULL PRIMARY KEY, value varchar)",
+                    "CREATE CHANGE STREAM " + ALL_CHANGES + " FOR ALL WITH (retention_period='1d')",
+                    "CREATE CHANGE STREAM "
+                            + EXPLICIT_CHANGES
+                            + " FOR changes(value) WITH (exclude_ttl_deletes=true,"
+                            + " exclude_insert=true, allow_txn_exclusion=true)");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE TABLE changes (id INT64 NOT NULL, value STRING(MAX)) PRIMARY KEY (id)",
+                "CREATE CHANGE STREAM " + ALL_CHANGES + " FOR ALL OPTIONS (retention_period='1d')",
+                "CREATE CHANGE STREAM "
+                        + EXPLICIT_CHANGES
+                        + " FOR changes(value) OPTIONS (exclude_ttl_deletes=true,"
+                        + " exclude_insert=true, allow_txn_exclusion=true)");
+    }
+
+    private static SpannerChangeStreamSource<String> changeStreamSource(
+            SpannerDatabase changeStreamDatabase,
+            StartPosition start,
+            @Nullable StartPosition resumeFallback) {
+        SpannerChangeStreamSourceBuilder<String> builder =
+                SpannerChangeStreamSource.<String>builder()
+                        .database(changeStreamDatabase)
+                        .changeStreamName(ALL_CHANGES)
+                        .deserializer(SpannerChangeStreamRealGcpSupport.realDeserializer())
+                        .startPosition(start)
+                        .heartbeatInterval(Duration.ofSeconds(1))
+                        .maxConcurrentQueriesPerSubtask(2);
+        if (resumeFallback != null) {
+            builder.resumeFallback(resumeFallback);
+        }
+        return builder.build();
+    }
+
+    private static void writeChangeRows(
+            SpannerDatabase target, long fromInclusive, long toExclusive) {
+        List<Mutation> mutations = new ArrayList<>(SEED_BATCH);
+        for (long id = fromInclusive; id < toExclusive; id++) {
+            mutations.add(
+                    Mutation.newInsertOrUpdateBuilder("changes")
+                            .set("id")
+                            .to(id)
+                            .set("value")
+                            .to("value-" + id)
+                            .build());
+            if (mutations.size() == SEED_BATCH) {
+                client(target).write(mutations);
+                mutations.clear();
+            }
+        }
+        if (!mutations.isEmpty()) {
+            client(target).write(mutations);
+        }
+    }
+
+    private static void awaitChangeStream(
+            String description, JobClient job, BooleanSupplier condition, String runId)
+            throws InterruptedException {
+        await(
+                description,
+                CHANGE_STREAM_WAIT,
+                () -> {
+                    SpannerChangeStreamRealGcpSupport.sampleActiveQueries(runId);
+                    if (condition.getAsBoolean()) {
+                        return true;
+                    }
+                    return runningOrThrow(job, description);
+                },
+                () ->
+                        "job="
+                                + SpannerChangeStreamRealGcpSupport.jobStatus(job)
+                                + "; records="
+                                + SpannerChangeStreamRealGcpSupport.realRecordCount(runId)
+                                + "; unique="
+                                + SpannerChangeStreamRealGcpSupport.uniqueIds(runId)
+                                + "; checkpoints="
+                                + SpannerChangeStreamRealGcpSupport.completedCheckpoint(runId)
+                                + "; metrics="
+                                + SpannerChangeStreamRealGcpSupport.metricSummary(runId));
+    }
+
+    private static boolean runningOrThrow(JobClient job, String description) {
+        JobStatus status = job.getJobStatus().join();
+        if (!status.isGloballyTerminalState()) {
+            return false;
+        }
+        try {
+            job.getJobExecutionResult().join();
+        } catch (CompletionException e) {
+            throw new AssertionError(
+                    "Job terminated with " + status + " while awaiting " + description + ".",
+                    e.getCause());
+        }
+        throw new AssertionError(
+                "Job terminated with " + status + " while awaiting " + description + ".");
+    }
+
+    private static void assertChangeStreamMetrics(String runId) {
+        long discovered =
+                SpannerChangeStreamRealGcpSupport.counter(
+                        runId, "changeStreamPartitionsDiscovered");
+        Map<String, Long> queries =
+                SpannerChangeStreamRealGcpSupport.counterBySubtask(
+                        runId, "changeStreamQueriesStarted");
+        Map<String, Long> peaks = SpannerChangeStreamRealGcpSupport.peakActiveQueries(runId);
+        assertThat(discovered).isPositive();
+        assertThat(queries.values()).anyMatch(value -> value > 0);
+        assertThat(peaks).isNotEmpty();
+        assertThat(peaks.values()).allMatch(value -> value >= 0 && value <= 2);
+
+        long activeSubtasks = queries.values().stream().filter(value -> value > 0).count();
+        if (discovered >= 2) {
+            assertThat(activeSubtasks).isGreaterThanOrEqualTo(2);
+        } else {
+            LOG.info(
+                    "Cloud Spanner produced only {} discovered partition(s) in run {};"
+                            + " cross-subtask partition distribution is best-effort evidence.",
+                    discovered,
+                    runId);
+        }
+        if (discovered >= 4) {
+            assertThat(peaks.values()).anyMatch(value -> value == 2);
+        } else {
+            LOG.info(
+                    "Cloud Spanner produced {} discovered partition(s) in run {};"
+                            + " concurrent-query occupancy above one is best-effort evidence.",
+                    discovered,
+                    runId);
+        }
+    }
+
+    private static Throwable executionFailure(JobClient job) throws Exception {
+        try {
+            job.getJobExecutionResult().get(CHANGE_STREAM_WAIT.toSeconds(), TimeUnit.SECONDS);
+        } catch (ExecutionException e) {
+            return e.getCause();
+        }
+        throw new AssertionError("Expected the Change Streams job to fail.");
+    }
+
+    private static String failureMessages(Throwable failure) {
+        return causeChain(failure).stream()
+                .map(cause -> cause.getClass().getSimpleName() + ": " + cause.getMessage())
+                .collect(Collectors.joining("\n"));
+    }
+
+    private static List<Throwable> causeChain(Throwable failure) {
+        List<Throwable> causes = new ArrayList<>();
+        Throwable current = failure;
+        while (current != null && !causes.contains(current)) {
+            causes.add(current);
+            current = current.getCause();
+        }
+        return causes;
+    }
+
+    private static void cancelQuietly(JobClient job) {
+        try {
+            job.cancel().get(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            LOG.warn("Failed to cancel gated Change Streams job", e);
+        }
     }
 
     private static String namedSchemaTableDdl(

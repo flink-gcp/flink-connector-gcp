@@ -54,7 +54,8 @@ import java.util.function.BiConsumer;
  * docs/adr/0050}).
  *
  * <p>The unsupported operations throw rather than silently accepting work, so the first enumerator
- * that needs one has to come here and decide what it should do.
+ * that needs one has to come here and decide what it should do. Reader-directed source events are
+ * recorded because restore validation may have to release or replace reader-owned splits.
  *
  * @param <SplitT> the split type the enumerator assigns
  */
@@ -67,6 +68,7 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
     private final Map<Integer, List<SplitT>> assignments = new HashMap<>();
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
     private final List<String> events = new ArrayList<>();
+    private final Map<Integer, List<SourceEvent>> sourceEvents = new HashMap<>();
     private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
     private final List<Runnable> periodicAsyncCalls = new ArrayList<>();
 
@@ -128,8 +130,13 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
 
     @Override
     public void sendEventToSourceReader(int subtaskId, SourceEvent event) {
-        throw new UnsupportedOperationException(
-                "A pull-assignment enumerator sends no source events.");
+        checkRegistered(subtaskId, "send a source event to");
+        sourceEvents.computeIfAbsent(subtaskId, ignored -> new ArrayList<>()).add(event);
+    }
+
+    /** Returns the coordinator events sent to one source reader, in order. */
+    public List<SourceEvent> sourceEvents(int subtaskId) {
+        return new ArrayList<>(sourceEvents.getOrDefault(subtaskId, Collections.emptyList()));
     }
 
     @Override

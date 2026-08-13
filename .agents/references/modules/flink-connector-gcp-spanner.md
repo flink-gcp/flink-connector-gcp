@@ -165,6 +165,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   seeds one null-token query because advancing one old token can skip its terminal child record.
 - Missing explicit retention metadata uses the configured fallback, whose connector default is
   seven days.
+- Initialize the dialect, stream scope, watched tables and their all-columns mode, retention,
+  partition mode, value-capture type, and exclusion options before releasing readers. Log the
+  effective settings and warn when an explicit column list will not follow later schema additions
+  automatically.
+- Restored readers queue their splits until the coordinator's metadata and expiry check completes.
+  A valid restore releases them; a whole-ledger fallback discards them before the replacement
+  null-token split is requested. Do not let Flink's independently restored reader state bypass the
+  coordinator decision.
 - A bounded ledger signals no more splits only after every partition is finished. Runtime queues
   and dependency indexes are rebuilt from the checkpointed ledger rather than serialized beside it.
 - `MUTABLE_KEY_RANGE` is rejected before assignment. Its partition start, end, move-in and move-out
@@ -198,6 +206,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Data records carry their commit timestamp as the Flink event timestamp. Heartbeats advance the
   per-split watermark, while child-partitions records are coordinator events rather than user
   records.
+- A reader does not open fresh or restored queries until the coordinator initialization event.
+  Preserve queued state in checkpoints while waiting, and reject duplicate or unknown
+  initialization events.
 - The Change Streams deserialization SPI is collector-based and may emit zero or more outputs for
   one `DataChangeRecord`. Every output gets that record's commit timestamp; a successful call with
   zero outputs increments `recordsSkipped` once; and an exception leaves split progress unchanged
@@ -227,7 +238,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   costs the client's whole retry budget (27 s, measured 2026-08-09) to prove less.
 - An emulator is never the authority. The gated real-GCP suite (#224) is what confirms the
   rejection table, the schema read in both dialects, which query shapes the service will plan, how
-  many partitions it plans, and Data Boost — and it is the only place a client is built over
+  many partitions it plans, Data Boost, and Change Streams checkpoint, savepoint, retention, and
+  fallback behavior in both dialects — and it is the only place a client is built over
   application-default credentials rather than an emulator endpoint.
 - **The gated suite's instance is ephemeral, one per gated class** (`docs/adr/0088`, following
   `docs/adr/0044`):

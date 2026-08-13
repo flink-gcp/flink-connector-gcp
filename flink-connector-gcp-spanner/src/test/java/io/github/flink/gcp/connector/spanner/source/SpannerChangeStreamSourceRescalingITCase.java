@@ -238,10 +238,7 @@ class SpannerChangeStreamSourceRescalingITCase {
             implements SpannerChangeStreamCoordinatorClient {
 
         @Override
-        public void validatePartitionMode() {}
-
-        @Override
-        public Duration retention() {
+        public Duration initialize() {
             return Duration.ofDays(7);
         }
 

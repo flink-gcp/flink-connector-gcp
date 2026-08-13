@@ -14,22 +14,24 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
+package io.github.flink.gcp.connector.spanner.source.changestream;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.connector.source.SourceEvent;
 
-import java.time.Duration;
-
-/** Metadata operations the Spanner Change Streams coordinator needs during initialization. */
+/** Releases readers after the coordinator has validated Change Stream metadata and restore age. */
 @Internal
-public interface SpannerChangeStreamCoordinatorClient extends AutoCloseable {
+public final class SpannerChangeStreamInitializationEvent implements SourceEvent {
 
-    /**
-     * Inspects and reports the stream configuration, rejects unsupported partition modes, and
-     * returns the effective retention period.
-     */
-    Duration initialize() throws Exception;
+    private static final long serialVersionUID = 1L;
 
-    @Override
-    void close() throws Exception;
+    private final boolean discardRestoredSplits;
+
+    public SpannerChangeStreamInitializationEvent(boolean discardRestoredSplits) {
+        this.discardRestoredSplits = discardRestoredSplits;
+    }
+
+    public boolean shouldDiscardRestoredSplits() {
+        return discardRestoredSplits;
+    }
 }
