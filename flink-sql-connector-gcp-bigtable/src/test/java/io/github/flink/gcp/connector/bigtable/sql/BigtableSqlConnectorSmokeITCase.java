@@ -124,6 +124,9 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
         adminClient.createTable(CreateTableRequest.of(table).addFamily("cf1"));
 
         TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        // The write below deliberately uses a clause-less bounded INSERT. This table-local mode
+        // keeps that statement portable across the supported Flink versions without changing the
+        // connector's upsert default.
         tEnv.executeSql(
                 "CREATE TABLE bt (\n"
                         + "  rowkey STRING,\n"
@@ -138,7 +141,8 @@ class BigtableSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
                                 + EMULATOR.getHost()
                                 + ":"
                                 + EMULATOR.getEmulatorPort()
-                                + "'\n")
+                                + "',\n")
+                        + "  'sink.insert-only-input-mode' = 'insert-only'\n"
                         + ")");
 
         // Bounded on purpose: the no-argument await() has no timeout, so an INSERT job that never
