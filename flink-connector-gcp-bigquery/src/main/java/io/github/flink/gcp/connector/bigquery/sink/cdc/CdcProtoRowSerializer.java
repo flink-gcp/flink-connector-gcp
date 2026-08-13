@@ -107,7 +107,10 @@ public final class CdcProtoRowSerializer<T> implements Serializable {
             if (sequenceNumber != null) {
                 row.setField(descriptor.findFieldByName(SEQUENCE_NUMBER_FIELD), sequenceNumber);
             }
-            return row.build().toByteString();
+            // A CDC DELETE may contain only primary-key fields even when the table descriptor
+            // marks non-key columns REQUIRED. Protobuf permits those fields to be absent on the
+            // wire; buildPartial avoids imposing the table-row requirement on the mutation row.
+            return row.buildPartial().toByteString();
         } catch (RuntimeException e) {
             throw new IOException("Failed to add BigQuery CDC metadata to a serialized row", e);
         }

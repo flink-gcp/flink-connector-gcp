@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
@@ -28,18 +29,20 @@ import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 
 /**
  * Serializes the {@code RowData} of a SQL table into BigQuery protobuf rows.
  *
- * <p>The serializable state is the table's {@code RowType} and its schema options; the {@code
- * TableSchema}, the descriptor and the row converter are derived from them. Derivation happens
- * <b>eagerly in the constructor</b> — the rule this module follows everywhere — so a column type
- * BigQuery cannot hold fails while the job graph is built, rather than from {@code serialize()}
- * inside the writers' failure handler, where a dropping policy would swallow one misconfiguration
- * once per record and leave the table empty under a green job. The derived state is also {@code
- * transient}, so a task manager rebuilds it after deserialization.
+ * <p>The serializable state is the table's {@code RowType}, its schema options, and the physical
+ * indexes of any CDC primary key; the {@code TableSchema}, descriptor, and row converters are
+ * derived from them. Derivation happens <b>eagerly in the constructor</b> — the rule this module
+ * follows everywhere — so a column type BigQuery cannot hold fails while the job graph is built,
+ * rather than from {@code serialize()} inside the writers' failure handler, where a dropping policy
+ * would swallow one misconfiguration once per record and leave the table empty under a green job.
+ * The derived state is also {@code transient}, so a task manager rebuilds it after deserialization.
  *
  * <p>{@code @Internal} and not part of the public serializer family: promoting it is cheap if a
  * DataStream-with-{@code RowData} need appears, and starting internal keeps the new Flink-type
@@ -56,6 +59,7 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
 
     private final RowType rowType;
     private final RowDataSchemaOptions options;
+    private final int[] primaryKeyIndexes;
 
     private transient volatile ConversionState state;
 
@@ -67,8 +71,17 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
      * @throws IllegalArgumentException if a column has no BigQuery equivalent
      */
     public RowDataSerializer(RowType rowType, RowDataSchemaOptions options) {
+        this(rowType, options, new int[0]);
+    }
+
+    /** Creates a serializer whose CDC deletes contain only the selected physical key columns. */
+    public RowDataSerializer(
+            RowType rowType, RowDataSchemaOptions options, int[] primaryKeyIndexes) {
         this.rowType = Preconditions.checkNotNull(rowType, "rowType must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
+        this.primaryKeyIndexes =
+                Preconditions.checkNotNull(primaryKeyIndexes, "primaryKeyIndexes must not be null")
+                        .clone();
         // Eagerly, so the failure lands on the client rather than on a task manager.
         state();
     }
@@ -85,7 +98,15 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
 
     @Override
     public ByteString serialize(RowData element) throws IOException {
-        return state().rowConverter.convert(element).toByteString();
+        RowKind kind = element.getRowKind();
+        if (kind == RowKind.UPDATE_BEFORE) {
+            throw new IOException("UPDATE_BEFORE is not part of the BigQuery CDC sink changelog");
+        }
+        ConversionState conversion = state();
+        if (kind == RowKind.DELETE && conversion.deleteRowConverter != null) {
+            return conversion.deleteRowConverter.convertPartial(element).toByteString();
+        }
+        return conversion.rowConverter.convert(element).toByteString();
     }
 
     private ConversionState state() {
@@ -113,11 +134,17 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
                             + " columns",
                     e);
         }
+        RowDataToProtoConverter deleteRowConverter =
+                primaryKeyIndexes.length == 0
+                        ? null
+                        : new RowDataToProtoConverter(
+                                rowType, tableSchema, rowDescriptor, primaryKeyIndexes);
         localState =
                 new ConversionState(
                         tableSchema,
                         rowDescriptor,
-                        new RowDataToProtoConverter(rowType, tableSchema, rowDescriptor));
+                        new RowDataToProtoConverter(rowType, tableSchema, rowDescriptor),
+                        deleteRowConverter);
         state = localState;
         return localState;
     }
@@ -128,14 +155,17 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
         private final TableSchema tableSchema;
         private final Descriptors.Descriptor rowDescriptor;
         private final RowDataToProtoConverter rowConverter;
+        @Nullable private final RowDataToProtoConverter deleteRowConverter;
 
         ConversionState(
                 TableSchema tableSchema,
                 Descriptors.Descriptor rowDescriptor,
-                RowDataToProtoConverter rowConverter) {
+                RowDataToProtoConverter rowConverter,
+                @Nullable RowDataToProtoConverter deleteRowConverter) {
             this.tableSchema = tableSchema;
             this.rowDescriptor = rowDescriptor;
             this.rowConverter = rowConverter;
+            this.deleteRowConverter = deleteRowConverter;
         }
     }
 }

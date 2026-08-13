@@ -210,6 +210,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   implicitly streaming.** A factory test therefore cannot round-trip a non-append
   `write-disposition`, and anything needing a checkpoint interval belongs in
   `BigQueryTableWriteMethodsPlanTest` against a real `TableEnvironment`.
+- Table CDC consumes an upsert changelog only under the default stream and keeps writable sequence
+  metadata after the physical row, outside schema derivation (`docs/adr/0111`).
+  Preserve key-only delete serialization, reject `UPDATE_BEFORE`, and add Debezium ordering one
+  connector profile at a time without a timestamp-only fallback.
 - `sink.table-create.*` checks shape, never the clusterable scalar type list; the
   field-without-granularity rejection has no builder backstop and is load-bearing
   (`docs/adr/0033`).

@@ -216,6 +216,7 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 | Option | Type | Maps to |
 |---|---|---|
 | `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
+| `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.location` | String | `location(...)` |
 | `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
@@ -224,6 +225,105 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 | `sink.json-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `JSON` |
 | `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
 | `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
+
+### Change data capture
+
+Set `sink.cdc.enabled` to `true` to consume a Flink upsert changelog and write BigQuery `UPSERT`
+and `DELETE` mutations through the Storage Write API default stream.
+The option defaults to `false`, is rejected with `storage-api-exactly-once` or `file-loads`, and
+requires the sink DDL to declare a `PRIMARY KEY ... NOT ENFORCED`.
+The destination table must already have the corresponding BigQuery primary key until
+[#627]({{< param BookRepo >}}/issues/627) adds primary-key table creation.
+
+`INSERT` and `UPDATE_AFTER` become `UPSERT`, while `DELETE` becomes `DELETE`.
+`UPDATE_BEFORE` is rejected instead of being guessed to be a delete, because an ordinary update
+also carries an update-before row.
+A primary-key change must therefore reach the sink as `DELETE` for the old key followed by
+`INSERT` or `UPDATE_AFTER` for the new key.
+Delete rows serialize only the declared primary-key fields, so a key-only delete does not need
+values for `REQUIRED` non-key BigQuery columns.
+
+Sequence metadata is optional.
+When selected, exactly one of these writable metadata columns may appear in the sink DDL:
+
+| Metadata key | Data type | Meaning |
+|---|---|---|
+| `change-sequence-number` | `STRING` | An already formatted BigQuery `_CHANGE_SEQUENCE_NUMBER`: one to four slash-separated hexadecimal sections, each at most 16 digits |
+| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL` |
+
+Writable metadata is appended to the runtime row by Flink and is not part of the physical
+BigQuery schema.
+Selecting both sequence sources fails during planning.
+Once a sequence metadata column is selected, every emitted row must supply a non-null valid value;
+missing or invalid values enter the configured row-failure path.
+Without either one, BigQuery resolves colliding mutations for a primary key by arrival order.
+
+The formatted route is immediately usable when the query can construct or forward a valid
+sequence:
+
+```sql
+CREATE TABLE current_orders (
+  id STRING NOT NULL,
+  amount BIGINT,
+  sequence STRING METADATA FROM 'change-sequence-number',
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_orders',
+  'sink.cdc.enabled' = 'true'
+);
+
+INSERT INTO current_orders
+SELECT id, amount, formatted_sequence FROM ordered_changes;
+```
+
+Flink's Debezium JSON format exposes connector-specific ordering fields through
+`value.source.properties` when it is used as a value format, for example:
+
+```sql
+CREATE TABLE source_changes (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING>
+    METADATA FROM 'value.source.properties' VIRTUAL,
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'kafka',
+  'topic' = 'orders',
+  'properties.bootstrap.servers' = 'broker:9092',
+  'value.format' = 'debezium-json'
+);
+
+CREATE TABLE current_orders_from_debezium (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING>
+    METADATA FROM 'debezium-source-properties',
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_orders',
+  'sink.cdc.enabled' = 'true'
+);
+
+INSERT INTO current_orders_from_debezium
+SELECT id, amount, source_properties FROM source_changes;
+```
+
+This page shows Kafka only to make Flink's `value.source.properties` hand-off explicit; this
+repository does not ship a Kafka connector.
+The BigQuery sink owns the public `debezium-source-properties` name because it is writable sink
+metadata, while `value.source.properties` remains owned by the source format.
+Connector profiles choose ordering fields from that map instead of falling back to `ts_ms`, which
+can collide for changes in the same millisecond.
+PostgreSQL, MySQL GTID, and repository-native Spanner profiles are delivered by
+[#629]({{< param BookRepo >}}/issues/629), [#631]({{< param BookRepo >}}/issues/631), and
+[#633]({{< param BookRepo >}}/issues/633), respectively; until a profile is present, use
+`change-sequence-number` for that connector.
 
 ### Table creation
 
@@ -525,8 +625,10 @@ knob of `BufferedStreamOptions` has a default, and `FileLoadsOptions` needs only
 `sink.default-stream.*` is the one family whose absence means absence, because its write method is
 chosen by not choosing.
 
-**No metadata columns.** A BigQuery row has no envelope around it, so there is nothing to expose on
-either direction.
+**Metadata columns are CDC-only and write-only.** A BigQuery row has no envelope around it, so the
+source exposes no readable metadata.
+The sink exposes only the sequence metadata documented under
+[Change data capture](#change-data-capture), and keeps it outside the physical BigQuery schema.
 
 **One table per SQL table.** Per-record routing and per-destination creation options stay on the
 DataStream API; a SQL `INSERT INTO` names one table, and a table-name pattern is deferred until a
