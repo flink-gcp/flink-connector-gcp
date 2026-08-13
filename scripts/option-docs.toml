@@ -69,6 +69,9 @@ sources = [
 [[builders]]
 module = "flink-connector-gcp-cloudtasks"
 page = "docs/content/docs/reference/cloudtasks.md"
+sources = [
+  "flink-connector-gcp-cloudtasks/src/main/java/io/github/flink/gcp/connector/cloudtasks/sink/serializer/AppEngineTargetBuilder.java",
+]
 
 [[builders]]
 module = "flink-connector-gcp-bigtable"

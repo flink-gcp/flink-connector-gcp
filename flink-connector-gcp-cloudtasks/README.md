@@ -1,12 +1,12 @@
 # flink-connector-gcp-cloudtasks
 
-Cloud Tasks sink for Apache Flink — dispatching a stream as HTTP tasks that the service executes
-later, paced by the queue's rate limit.
+Cloud Tasks sink for Apache Flink — dispatching a stream as HTTP or App Engine tasks that the
+service executes later, paced by the queue's rate limit.
 
 | Feature | Status |
 |---|---|
 | Sink design (targets, task naming/dedup, rate limits, checkpoint semantics) | Design settled ([#23](https://github.com/laughingman7743/flink-connector-gcp/issues/23)) |
-| SinkV2 at-least-once sink; HTTP targets; fixed and per-record queue destinations | Implemented ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) |
+| SinkV2 at-least-once sink; HTTP and App Engine targets; fixed and per-record queue destinations | Implemented ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24), [#628](https://github.com/laughingman7743/flink-connector-gcp/issues/628)) |
 | Opt-in named-task deduplication | Implemented ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) |
 | Emulator integration tests | Implemented ([#25](https://github.com/laughingman7743/flink-connector-gcp/issues/25)) |
 | Per-task failure policy (fail, drop or dead-letter) | Implemented ([#207](https://github.com/laughingman7743/flink-connector-gcp/issues/207)) |

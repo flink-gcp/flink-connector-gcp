@@ -8,15 +8,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Sink (`docs/adr/0048`)
 
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
-  queue would discard the throttling that is the reason to use the service. HTTP targets only;
-  OIDC vs OAuth is the target's choice, so the builder rejects setting both.
+  queue would discard the throttling that is the reason to use the service. External HTTP and
+  App Engine targets are separate serializer arms. OIDC vs OAuth is the external HTTP target's
+  choice, so that builder rejects setting both; App Engine uses the task `oneof`'s internal
+  request arm and optional same-project service/version/instance routing.
 - **Retries are the sink's one owned loop in the writer**, never gax `createTaskSettings`;
   `NOT_FOUND` keeps its separate short budget. A failed create parks with a due time; parked
   creates count against `maxInFlightTasks` and drop on close.
 - Task naming: unnamed by default; `taskIdExtractor(...)` on the **sink builder**, key hashed
   SHA-256, `ALREADY_EXISTS` = success; design against the 1 h dedup window (Google's own
-  sources contradict each other). The serialization schema is the two-stage builder
-  (`httpTarget(url)` → `withBody(...)`); a body goes out only under POST/PUT/PATCH.
+  sources contradict each other). `httpTarget(url)` uses the existing two-stage immutable schema
+  API. `appEngineTarget(relativeUri)` returns a mutable builder: `withBody(...)` binds the body
+  type, optional settings stay on that builder, and `build()` produces the immutable serializer.
+  External HTTP bodies go
+  out only under POST/PUT/PATCH; App Engine bodies only under POST/PUT, matching their distinct
+  proto contracts. Queue-level `appEngineRoutingOverride` remains authoritative over task-level
+  routing.
 
 ## Failure policy and metrics (`docs/adr/0049`)
 

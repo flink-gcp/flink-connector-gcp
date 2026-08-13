@@ -30,9 +30,9 @@ import java.io.Serializable;
  * Serializes sink records into Cloud Tasks tasks.
  *
  * <p>Implementations return a full {@link Task}, so every per-record field of a task — URL, HTTP
- * method, headers, body, schedule time, dispatch deadline, authorization — is expressible. Two
- * bounds worth knowing when using them: a schedule time may be at most 30 days ahead, and an HTTP
- * target's dispatch deadline must be between 15 seconds and 30 minutes.
+ * method, headers, body, routing, schedule time, dispatch deadline, authorization — is expressible.
+ * Two bounds worth knowing when using them: a schedule time may be at most 30 days ahead, and an
+ * HTTP target's dispatch deadline must be between 15 seconds and 30 minutes.
  *
  * <p>The task <b>name</b> is the exception: it is composed by the sink from the resolved queue and
  * the SHA-256 digest of the key returned by {@code
@@ -52,6 +52,15 @@ import java.io.Serializable;
  *         .withBody(new MyEventJsonSerializationSchema())
  *         .withHeaders(e -> Map.of("Content-Type", "application/json"))
  *         .withOidcToken("dispatcher@my-project.iam.gserviceaccount.com");
+ * }</pre>
+ *
+ * <p>An App Engine target uses a relative URI and optional service, version, and instance routing:
+ *
+ * <pre>{@code
+ * CloudTasksSerializationSchema.appEngineTarget("/tasks/orders")
+ *         .withBody(new MyEventJsonSerializationSchema())
+ *         .withRouting(AppEngineRouting.newBuilder().setService("worker").build())
+ *         .build();
  * }</pre>
  *
  * @param <T> type of the records written by the sink
@@ -82,10 +91,9 @@ public interface CloudTasksSerializationSchema<T> extends Serializable {
     /**
      * Starts building a schema producing HTTP-target tasks for the given URL.
      *
-     * <p>Only HTTP targets are supported; App Engine targets are out of scope. The endpoint must be
-     * reachable from Cloud Tasks — in practice one with an external IP address, or a Cloud Run
-     * service on its default {@code run.app} URL, whose requests stay on the Google network even
-     * with internal-only ingress.
+     * <p>The endpoint must be reachable from Cloud Tasks — in practice one with an external IP
+     * address, or a Cloud Run service on its default {@code run.app} URL, whose requests stay on
+     * the Google network even with internal-only ingress.
      *
      * <p>The returned stage exists only to let {@link
      * HttpTargetBuilder#withBody(SerializationSchema)} bind the record type, so the rest of the
@@ -96,5 +104,25 @@ public interface CloudTasksSerializationSchema<T> extends Serializable {
      */
     static HttpTargetBuilder httpTarget(String url) {
         return new HttpTargetBuilder(url);
+    }
+
+    /**
+     * Starts an App Engine target builder for the given relative URI.
+     *
+     * <p>The task is delivered to the App Engine application in the queue's project. The queue and
+     * application must use corresponding regions. Task-level service, version, and instance routing
+     * can be added after the body binds the record type; a queue-level {@code
+     * appEngineRoutingOverride} takes precedence over it.
+     *
+     * <p>{@link AppEngineTargetBuilder#withBody(SerializationSchema)} binds the record type. The
+     * builder then accepts optional request settings and produces an immutable schema through
+     * {@link AppEngineTargetBuilder#build()}.
+     *
+     * @param relativeUri an empty string for the root path, or a path beginning with {@code /} and
+     *     an optional query string
+     * @return the App Engine target builder before its body type is bound
+     */
+    static AppEngineTargetBuilder<Void> appEngineTarget(String relativeUri) {
+        return new AppEngineTargetBuilder<>(relativeUri);
     }
 }
