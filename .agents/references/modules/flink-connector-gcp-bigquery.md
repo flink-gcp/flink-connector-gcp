@@ -143,8 +143,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Exactly-once (`docs/adr/0022`)
 
-- One buffered stream per subtask, reused across checkpoints, tracked in writer state; **streams
-  are never finalized anywhere**; commit = synchronous `FlushRows`, `ALREADY_EXISTS` = success.
+- One buffered stream per (subtask, active destination), reused across checkpoints, tracked in
+  writer state; **streams are never finalized anywhere**; commit = synchronous `FlushRows`,
+  `ALREADY_EXISTS` = success. Restore resolves duplicate state per destination, never across
+  destinations. Clean destinations use `BufferedStreamOptions.destinationIdleTimeout` with the
+  same end-of-successful-flush, non-end-of-input eviction boundary as the default-stream writer.
   Exactly-once ITs run against real GCP (the emulator keeps no flush cursor).
 
 ## Tuning (`docs/adr/0028`, `0029`)

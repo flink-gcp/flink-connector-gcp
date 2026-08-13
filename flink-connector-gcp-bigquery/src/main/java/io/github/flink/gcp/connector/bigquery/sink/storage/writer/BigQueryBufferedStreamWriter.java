@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.StatefulSinkWriter;
 import org.apache.flink.metrics.Gauge;
@@ -36,7 +37,6 @@ import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
-import io.github.flink.gcp.connector.bigquery.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
@@ -53,16 +53,19 @@ import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.function.LongSupplier;
 
 /**
  * Exactly-once {@code SinkWriter} appending rows to one application-created BUFFERED Storage Write
- * API stream at explicit offsets. Rows stay invisible until the committer flushes them ({@code
- * FlushRows}) as part of a completed checkpoint's commit — the two-phase-commit contract.
+ * API stream per destination at explicit offsets. Rows stay invisible until the committer flushes
+ * them ({@code FlushRows}) as part of a completed checkpoint's commit — the two-phase-commit
+ * contract.
  *
  * <p>That contract assumes the default {@code failJob()} policy. Under {@code logAndDrop()} or
  * {@code sendToDeadLetterQueue(...)} a completed checkpoint's commit makes every row up to the
@@ -70,11 +73,13 @@ import java.util.concurrent.ExecutionException;
  * so never become visible at all; the error handling below says which failures reach it. A record
  * the serializer skips by returning {@code null} is never appended either, under any policy.
  *
- * <p><b>Stream lifecycle.</b> Each subtask owns one buffered stream, created lazily on the first
- * append and <em>reused across checkpoints</em> (frequent {@code CreateWriteStream} churn is
- * explicitly not intended usage of the API). The stream name and the next append offset are Flink
- * writer state; {@link #prepareCommit()} emits one committable naming the offset a completed
- * checkpoint may flush up to. On a clean run a stream is created once per writer lifetime.
+ * <p><b>Stream lifecycle.</b> Each subtask owns one buffered stream per active destination, created
+ * lazily on its first append and <em>reused across checkpoints</em> (frequent {@code
+ * CreateWriteStream} churn is explicitly not intended usage of the API). Each stream name and next
+ * append offset are Flink writer state; {@link #prepareCommit()} emits one committable per changed
+ * destination naming the offset a completed checkpoint may flush up to. A clean destination that
+ * stays idle past {@link BufferedStreamOptions#getDestinationIdleTimeout()} is evicted after a
+ * successful non-end-of-input flush; a later row creates a new stream for it.
  *
  * <p><b>Restore.</b> A restored writer probes its stream with the first replayed batch,
  * synchronously, at the restored offset: success adopts the stream; {@code OFFSET_ALREADY_EXISTS}
@@ -85,7 +90,8 @@ import java.util.concurrent.ExecutionException;
  * finalized</em> (neither here nor in {@link #close()}): BigQuery rejects {@code FlushRows} on a
  * finalized stream (verified against the real service), so finalizing could permanently break a
  * restored-but-uncommitted committable that still has to flush the old stream; leaving the stream
- * open costs nothing — its unflushed tail stays invisible either way.
+ * open keeps its unflushed tail invisible either way. Whether BigQuery bills that buffered storage
+ * has not been established.
  *
  * <p><b>Error handling.</b> Serialization failures and oversized rows are routed to the {@link
  * FailureHandler} before any stream exists. Transient append failures surfacing past the SDK's
@@ -124,35 +130,26 @@ public class BigQueryBufferedStreamWriter<T>
     private final BufferedStreamServiceFactory serviceFactory;
     private final TableAdmin tableAdmin;
     private final FailureHandler<? super FailedRow> failedRowHandler;
-    private final TableDestination destination;
     private final int subtaskId;
     private final long maxAppendRequestBytes;
+    private final long destinationIdleTimeoutNanos;
     private final RetrySchedule retrySchedule;
     private final BufferedStreamOptions options;
     private final BufferedStreamWriterMetrics metrics;
+    private final LongSupplier nanoClock;
+
+    /** Active destinations in first-seen order; accessed only by the task thread. */
+    private final Map<TableDestination, DestinationState> destinations = new LinkedHashMap<>();
+
+    /** Reporter-safe scalar backing the aggregate in-flight gauge. */
+    private volatile int inFlightCount;
 
     @Nullable private BufferedStreamService service;
-    @Nullable private OffsetRowAppender appender;
-    @Nullable private Descriptors.Descriptor descriptor;
-
-    private String streamName;
-    private long nextOffset;
-    private String lastSnapshotStreamName;
-    private long lastSnapshotOffset;
-
-    /** Whether the restored stream still has to be validated by the synchronous probe append. */
-    private boolean probePending;
-
-    private ProtoRows.Builder pending = ProtoRows.newBuilder();
-    private long pendingBytes;
-
-    /** Appends issued but not yet acknowledged, in append order (task thread only). */
-    private final ArrayDeque<InFlightAppend> inFlight = new ArrayDeque<>();
 
     /**
      * Creates a writer, fresh or restored.
      *
-     * @param config the sink configuration (must carry a fixed destination)
+     * @param config the sink configuration
      * @param options the buffered-stream options
      * @param serviceFactory the Storage Write API service factory
      * @param tableAdmin the admin for creating the destination table
@@ -168,57 +165,87 @@ public class BigQueryBufferedStreamWriter<T>
             SinkWriterMetricGroup metricGroup,
             int subtaskId,
             Collection<BufferedStreamWriterState> restoredStates) {
+        this(
+                config,
+                options,
+                serviceFactory,
+                tableAdmin,
+                metricGroup,
+                subtaskId,
+                restoredStates,
+                System::nanoTime);
+    }
+
+    @VisibleForTesting
+    BigQueryBufferedStreamWriter(
+            BigQuerySinkConfig<T> config,
+            BufferedStreamOptions options,
+            BufferedStreamServiceFactory serviceFactory,
+            TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup,
+            int subtaskId,
+            Collection<BufferedStreamWriterState> restoredStates,
+            LongSupplier nanoClock) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         Preconditions.checkNotNull(options, "options must not be null");
         this.serviceFactory =
                 Preconditions.checkNotNull(serviceFactory, "serviceFactory must not be null");
         this.tableAdmin = Preconditions.checkNotNull(tableAdmin, "tableAdmin must not be null");
         this.failedRowHandler = config.getFailedRowHandler();
-        Preconditions.checkArgument(
-                config.getDestinationResolver() instanceof FixedDestinationResolver,
-                "The buffered-stream writer requires a fixed destination");
-        this.destination =
-                ((FixedDestinationResolver) config.getDestinationResolver()).getDestination();
         this.subtaskId = subtaskId;
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
+        this.destinationIdleTimeoutNanos = options.getDestinationIdleTimeout().toNanos();
         this.retrySchedule = options.toRecoverySchedule();
         this.options = options;
+        this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
         this.metrics =
                 new BufferedStreamWriterMetrics(
                         Preconditions.checkNotNull(metricGroup, "metricGroup must not be null"));
-        // The deque is the task thread's; a reporter thread sampling it can see a size mid-update,
-        // which is what "best-effort" means for a gauge over live writer state.
-        this.metrics.bindWriterState((Gauge<Integer>) inFlight::size);
+        this.metrics.bindWriterState((Gauge<Integer>) () -> inFlightCount);
 
-        BufferedStreamWriterState adopted = null;
+        Map<TableDestination, BufferedStreamWriterState> adoptedByDestination =
+                new LinkedHashMap<>();
         for (BufferedStreamWriterState state : restoredStates) {
-            if (adopted == null || state.getCheckpointId() > adopted.getCheckpointId()) {
-                adopted = state;
+            if (state.getStreamName().equals(BufferedStreamWriterState.NO_STREAM)) {
+                continue;
+            }
+            BufferedStreamWriterState adopted = adoptedByDestination.get(state.getDestination());
+            if (adopted == null
+                    || state.getCheckpointId() > adopted.getCheckpointId()
+                    || (state.getCheckpointId() == adopted.getCheckpointId()
+                            && state.getStreamName().compareTo(adopted.getStreamName()) < 0)) {
+                adoptedByDestination.put(state.getDestination(), state);
             }
         }
-        this.streamName =
-                adopted == null ? BufferedStreamWriterState.NO_STREAM : adopted.getStreamName();
-        this.nextOffset = adopted == null ? 0 : adopted.getNextOffset();
-        this.lastSnapshotStreamName = streamName;
-        this.lastSnapshotOffset = nextOffset;
-        this.probePending = !streamName.equals(BufferedStreamWriterState.NO_STREAM);
-        if (adopted != null) {
-            // Unadopted sibling states (scale-down) are dropped: their streams are left open —
-            // pending committables restored into the committer may still have to flush them —
-            // and their unflushed tails stay invisible forever.
+        long now = nanoClock.getAsLong();
+        for (BufferedStreamWriterState adopted : adoptedByDestination.values()) {
+            destinations.put(adopted.getDestination(), DestinationState.restored(adopted, now));
             LOG.info(
-                    "Restored subtask {} with stream {} at offset {} ({} sibling state(s)"
-                            + " dropped)",
+                    "Restored subtask {} destination {} with stream {} at offset {}",
                     subtaskId,
-                    streamName,
-                    nextOffset,
-                    restoredStates.size() - 1);
+                    adopted.getDestination(),
+                    adopted.getStreamName(),
+                    adopted.getNextOffset());
+        }
+        int dropped = restoredStates.size() - adoptedByDestination.size();
+        if (dropped > 0) {
+            LOG.info(
+                    "Restored subtask {} dropped {} superseded or empty destination state(s)",
+                    subtaskId,
+                    dropped);
         }
     }
 
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
-        drainInFlight(true);
+        TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        DestinationState state = destinations.get(destination);
+        if (state != null) {
+            // Keep the per-record cost independent of the number of active destinations. An
+            // inactive destination's bounded SDK queue is drained at the next record for that
+            // destination or at the checkpoint barrier.
+            drainInFlight(state, true);
+        }
         ByteString row;
         try {
             // A poison record must reach the handler no matter how the serializer fails,
@@ -257,42 +284,65 @@ public class BigQueryBufferedStreamWriter<T>
                             null));
             return;
         }
-        if (pending.getSerializedRowsCount() > 0
-                && pendingBytes + row.size() > maxAppendRequestBytes) {
-            sendAppend();
+        if (state == null) {
+            state = DestinationState.fresh(destination, nanoClock.getAsLong());
+            destinations.put(destination, state);
+        } else {
+            state.lastAccessNanos = nanoClock.getAsLong();
         }
-        pending.addSerializedRows(row);
-        pendingBytes += row.size();
+        if (state.pending.getSerializedRowsCount() > 0
+                && state.pendingBytes + row.size() > maxAppendRequestBytes) {
+            sendAppend(state);
+        }
+        state.pending.addSerializedRows(row);
+        state.pendingBytes += row.size();
     }
 
     @Override
     public void flush(boolean endOfInput) throws IOException {
-        sendAppend();
-        drainInFlight(false);
+        for (DestinationState state : destinations.values()) {
+            sendAppend(state);
+        }
+        for (DestinationState state : destinations.values()) {
+            drainInFlight(state, false);
+        }
         // After the drain: every row-level failure this flush routed has been handled, so the
         // handler can persist them before the checkpoint completes.
         failedRowHandler.flush();
+        if (!endOfInput) {
+            evictIdleDestinations();
+        }
     }
 
     @Override
     public Collection<BufferedStreamCommittable> prepareCommit() {
-        if (streamName.equals(BufferedStreamWriterState.NO_STREAM)
-                || nextOffset == 0
-                || (streamName.equals(lastSnapshotStreamName)
-                        && nextOffset == lastSnapshotOffset)) {
-            return Collections.emptyList();
+        List<BufferedStreamCommittable> committables = new ArrayList<>();
+        for (DestinationState state : destinations.values()) {
+            if (state.streamName.equals(BufferedStreamWriterState.NO_STREAM)
+                    || state.nextOffset == 0
+                    || (state.streamName.equals(state.lastSnapshotStreamName)
+                            && state.nextOffset == state.lastSnapshotOffset)) {
+                continue;
+            }
+            // FlushRows offsets are inclusive: nextOffset - 1 is the last appended row.
+            committables.add(
+                    new BufferedStreamCommittable(
+                            state.streamName, state.nextOffset - 1, subtaskId));
         }
-        // FlushRows offsets are inclusive: nextOffset - 1 is the last appended row.
-        return Collections.singletonList(
-                new BufferedStreamCommittable(streamName, nextOffset - 1, subtaskId));
+        return committables;
     }
 
     @Override
     public List<BufferedStreamWriterState> snapshotState(long checkpointId) {
-        lastSnapshotStreamName = streamName;
-        lastSnapshotOffset = nextOffset;
-        return Collections.singletonList(
-                new BufferedStreamWriterState(streamName, nextOffset, checkpointId));
+        List<BufferedStreamWriterState> snapshots = new ArrayList<>();
+        for (DestinationState state : destinations.values()) {
+            state.lastSnapshotStreamName = state.streamName;
+            state.lastSnapshotOffset = state.nextOffset;
+            snapshots.add(
+                    new BufferedStreamWriterState(
+                            state.destination, state.streamName, state.nextOffset, checkpointId));
+        }
+        return snapshots;
     }
 
     @Override
@@ -305,19 +355,22 @@ public class BigQueryBufferedStreamWriter<T>
         // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
         // too, even when closing the appender or service throws.
         List<AutoCloseable> closeables = new ArrayList<>();
-        if (appender != null) {
-            closeables.add(appender);
-            appender = null;
+        for (DestinationState state : destinations.values()) {
+            if (state.appender != null) {
+                closeables.add(state.appender);
+                state.appender = null;
+            }
+            state.inFlight.clear();
         }
         if (service != null) {
             closeables.add(service);
             service = null;
         }
-        // The deque backs the inFlightAppends gauge, which a reporter may still sample between
+        // The scalar backs the inFlightAppends gauge, which a reporter may still sample between
         // this call and the metric group's own close; a writer torn down mid-flight must not keep
-        // reporting appends it will never wait for again. The appends themselves are unaffected —
-        // this writer never awaited them after close.
-        inFlight.clear();
+        // reporting appends after it has given resource ownership to the close sequence below.
+        inFlightCount = 0;
+        destinations.clear();
         closeables.add(failedRowHandler::close);
         Closers.closeAll(closeables);
     }
@@ -339,29 +392,75 @@ public class BigQueryBufferedStreamWriter<T>
         }
     }
 
+    /** All task-thread state belonging to one dynamic destination. */
+    private static final class DestinationState {
+        final TableDestination destination;
+        @Nullable OffsetRowAppender appender;
+        @Nullable Descriptors.Descriptor descriptor;
+        String streamName;
+        long nextOffset;
+        String lastSnapshotStreamName;
+        long lastSnapshotOffset;
+        boolean probePending;
+        ProtoRows.Builder pending = ProtoRows.newBuilder();
+        long pendingBytes;
+        final ArrayDeque<InFlightAppend> inFlight = new ArrayDeque<>();
+        long lastAccessNanos;
+
+        private DestinationState(
+                TableDestination destination,
+                String streamName,
+                long nextOffset,
+                boolean probePending,
+                long lastAccessNanos) {
+            this.destination = destination;
+            this.streamName = streamName;
+            this.nextOffset = nextOffset;
+            this.lastSnapshotStreamName = streamName;
+            this.lastSnapshotOffset = nextOffset;
+            this.probePending = probePending;
+            this.lastAccessNanos = lastAccessNanos;
+        }
+
+        static DestinationState fresh(TableDestination destination, long now) {
+            return new DestinationState(
+                    destination, BufferedStreamWriterState.NO_STREAM, 0, false, now);
+        }
+
+        static DestinationState restored(BufferedStreamWriterState restored, long now) {
+            return new DestinationState(
+                    restored.getDestination(),
+                    restored.getStreamName(),
+                    restored.getNextOffset(),
+                    true,
+                    now);
+        }
+    }
+
     /** Sends the pending batch: the probe synchronously on a restored stream, pipelined after. */
-    private void sendAppend() throws IOException {
-        if (pending.getSerializedRowsCount() == 0) {
+    private void sendAppend(DestinationState state) throws IOException {
+        if (state.pending.getSerializedRowsCount() == 0) {
             return;
         }
-        ProtoRows batch = pending.build();
-        pending = ProtoRows.newBuilder();
-        pendingBytes = 0;
-        if (probePending) {
-            probeRestoredStream(batch);
+        ProtoRows batch = state.pending.build();
+        state.pending = ProtoRows.newBuilder();
+        state.pendingBytes = 0;
+        if (state.probePending) {
+            probeRestoredStream(state, batch);
             return;
         }
-        ensureStream();
+        ensureStream(state);
         try {
-            ApiFuture<AppendRowsResponse> future = appender.append(batch, nextOffset);
+            ApiFuture<AppendRowsResponse> future = state.appender.append(batch, state.nextOffset);
             // Counted after the hand-off, so a batch the client rejects synchronously — reaching
             // BigQuery not at all — is not reported as sent. Everything re-appended later counts
             // as an appendRetries instead.
             metrics.batchAppended(batch);
-            inFlight.addLast(new InFlightAppend(future, nextOffset, batch));
-            nextOffset += batch.getSerializedRowsCount();
+            state.inFlight.addLast(new InFlightAppend(future, state.nextOffset, batch));
+            inFlightCount++;
+            state.nextOffset += batch.getSerializedRowsCount();
         } catch (RuntimeException e) {
-            throw wrapFailure("Failed to append to BigQuery stream " + streamName, e);
+            throw wrapFailure("Failed to append to BigQuery stream " + state.streamName, e);
         }
     }
 
@@ -370,14 +469,15 @@ public class BigQueryBufferedStreamWriter<T>
      * the drain stops at the first unfinished future (the opportunistic per-record check);
      * otherwise every in-flight append is awaited (the checkpoint barrier).
      */
-    private void drainInFlight(boolean onlyCompleted) throws IOException {
-        while (!inFlight.isEmpty()) {
-            InFlightAppend head = inFlight.peekFirst();
+    private void drainInFlight(DestinationState state, boolean onlyCompleted) throws IOException {
+        while (!state.inFlight.isEmpty()) {
+            InFlightAppend head = state.inFlight.peekFirst();
             if (onlyCompleted && !head.future.isDone()) {
                 return;
             }
-            Throwable failure = awaitFailure(head.future, head.expectedOffset);
-            inFlight.removeFirst();
+            Throwable failure = awaitFailure(state, head.future, head.expectedOffset);
+            state.inFlight.removeFirst();
+            inFlightCount--;
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 // OFFSET_ALREADY_EXISTS outside a replay means a retry of an append that had
                 // already landed (the SDK's in-stream retries can race the acknowledgement), so
@@ -385,7 +485,7 @@ public class BigQueryBufferedStreamWriter<T>
                 continue;
             }
             metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
-            recover(head, failure);
+            recover(state, head, failure);
         }
     }
 
@@ -395,7 +495,8 @@ public class BigQueryBufferedStreamWriter<T>
      * re-appended at the original offset. Row-level rejections escalate to {@link
      * #recoverRowLevel}. Everything else is terminal.
      */
-    private void recover(InFlightAppend failed, Throwable failure) throws IOException {
+    private void recover(DestinationState state, InFlightAppend failed, Throwable failure)
+            throws IOException {
         Exceptions.AppendSerializtionError rowLevel =
                 AppendErrorClassifier.findRowLevel(failure).orElse(null);
         if (rowLevel == null) {
@@ -404,18 +505,21 @@ public class BigQueryBufferedStreamWriter<T>
                     && !AppendErrorClassifier.isWriterClosed(failure)) {
                 throw wrapFailure(
                         "An append to BigQuery stream "
-                                + streamName
+                                + state.streamName
                                 + " at offset "
                                 + failed.expectedOffset
                                 + " failed",
                         failure);
             }
-            rowLevel = resendAtSameOffset(failed.rows, failed.expectedOffset, failure);
+            if (AppendErrorClassifier.isWriterClosed(failure)) {
+                reopenAppender(state);
+            }
+            rowLevel = resendAtSameOffset(state, failed.rows, failed.expectedOffset, failure);
             if (rowLevel == null) {
                 return;
             }
         }
-        recoverRowLevel(failed.rows, failed.expectedOffset, rowLevel);
+        recoverRowLevel(state, failed.rows, failed.expectedOffset, rowLevel);
     }
 
     /**
@@ -425,15 +529,16 @@ public class BigQueryBufferedStreamWriter<T>
      */
     @Nullable
     private Exceptions.AppendSerializtionError resendAtSameOffset(
-            ProtoRows rows, long offset, Throwable initialFailure) throws IOException {
+            DestinationState state, ProtoRows rows, long offset, Throwable initialFailure)
+            throws IOException {
         LOG.info(
                 "Re-appending {} row(s) to {} at offset {} after: {}",
                 rows.getSerializedRowsCount(),
-                streamName,
+                state.streamName,
                 offset,
                 initialFailure.toString());
         for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
-            Throwable failure = syncAppend(rows, offset, false);
+            Throwable failure = syncAppend(state, rows, offset, false);
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 return null;
             }
@@ -450,7 +555,7 @@ public class BigQueryBufferedStreamWriter<T>
             if (!retriable || attempt >= retrySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Re-appending to BigQuery stream "
-                                + streamName
+                                + state.streamName
                                 + " at offset "
                                 + offset
                                 + " failed"
@@ -461,7 +566,7 @@ public class BigQueryBufferedStreamWriter<T>
                         failure);
             }
             if (AppendErrorClassifier.isWriterClosed(failure)) {
-                reopenAppender();
+                reopenAppender(state);
             }
             sleep(retrySchedule.backoffMs(attempt));
         }
@@ -475,23 +580,27 @@ public class BigQueryBufferedStreamWriter<T>
      * replayed with recomputed offsets.
      */
     private void recoverRowLevel(
-            ProtoRows rows, long offset, Exceptions.AppendSerializtionError rowLevel)
+            DestinationState state,
+            ProtoRows rows,
+            long offset,
+            Exceptions.AppendSerializtionError rowLevel)
             throws IOException {
         ArrayDeque<ProtoRows> replay = new ArrayDeque<>();
-        replay.addLast(routeRowLevel(rows, rowLevel));
-        while (!inFlight.isEmpty()) {
-            InFlightAppend entry = inFlight.removeFirst();
+        replay.addLast(routeRowLevel(state, rows, rowLevel));
+        while (!state.inFlight.isEmpty()) {
+            InFlightAppend entry = state.inFlight.removeFirst();
+            inFlightCount--;
             // Deliberately not counted under an error class: every append behind a rejected offset
             // fails *because* of that rejection, which is itself counted, so counting these would
             // multiply one incident by the depth of the pipeline. Same rule as the Pub/Sub sink's
             // cascade cancellations.
-            Throwable failure = awaitFailure(entry.future, entry.expectedOffset);
+            Throwable failure = awaitFailure(state, entry.future, entry.expectedOffset);
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 // Nothing can land beyond a rejected request's offset; an acknowledged later
                 // append contradicts that and leaves the stream content unknowable.
                 throw new IOException(
                         "An append to BigQuery stream "
-                                + streamName
+                                + state.streamName
                                 + " at offset "
                                 + entry.expectedOffset
                                 + " was acknowledged although the append at offset "
@@ -503,19 +612,20 @@ public class BigQueryBufferedStreamWriter<T>
         LOG.info(
                 "Replaying {} batch(es) to {} from offset {} after a row-level rejection",
                 replay.size(),
-                streamName,
+                state.streamName,
                 offset);
-        nextOffset = offset;
-        replayBatches(replay);
+        state.nextOffset = offset;
+        replayBatches(state, replay);
     }
 
     /**
-     * Synchronously appends the batches at recomputed offsets starting at {@link #nextOffset}.
-     * Row-level rejections along the way route more rows to the handler and continue with the
-     * survivors. {@code OFFSET_ALREADY_EXISTS} is terminal here: offsets have shifted, so rows
+     * Synchronously appends the batches at recomputed offsets starting at the destination's next
+     * offset. Row-level rejections along the way route more rows to the handler and continue with
+     * the survivors. {@code OFFSET_ALREADY_EXISTS} is terminal here: offsets have shifted, so rows
      * already present would diverge from what this writer appended.
      */
-    private void replayBatches(ArrayDeque<ProtoRows> replay) throws IOException {
+    private void replayBatches(DestinationState state, ArrayDeque<ProtoRows> replay)
+            throws IOException {
         int attempt = 0;
         while (!replay.isEmpty()) {
             ProtoRows batch = replay.peekFirst();
@@ -523,10 +633,10 @@ public class BigQueryBufferedStreamWriter<T>
                 replay.removeFirst();
                 continue;
             }
-            Throwable failure = syncAppend(batch, nextOffset, false);
+            Throwable failure = syncAppend(state, batch, state.nextOffset, false);
             if (failure == null) {
                 replay.removeFirst();
-                nextOffset += batch.getSerializedRowsCount();
+                state.nextOffset += batch.getSerializedRowsCount();
                 attempt = 0;
                 continue;
             }
@@ -534,14 +644,14 @@ public class BigQueryBufferedStreamWriter<T>
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
-                ProtoRows survivors = routeRowLevel(batch, rowLevel);
+                ProtoRows survivors = routeRowLevel(state, batch, rowLevel);
                 if (survivors.getSerializedRowsCount() >= batch.getSerializedRowsCount()) {
                     // No row matched the reported indices, so nothing was dropped; re-appending
                     // the identical batch could never make progress (mirrors the default-stream
                     // writer's guard in retryBatches).
                     throw wrapFailure(
                             "A replayed append to BigQuery stream "
-                                    + streamName
+                                    + state.streamName
                                     + " failed with row errors matching none of the batch's rows"
                                     + " ("
                                     + attempt
@@ -560,9 +670,9 @@ public class BigQueryBufferedStreamWriter<T>
             if (!retriable || attempt >= retrySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Replaying an append to BigQuery stream "
-                                + streamName
+                                + state.streamName
                                 + " at offset "
-                                + nextOffset
+                                + state.nextOffset
                                 + " failed"
                                 + (retriable ? ", the retry budget is exhausted" : "")
                                 + " ("
@@ -571,7 +681,7 @@ public class BigQueryBufferedStreamWriter<T>
                         failure);
             }
             if (AppendErrorClassifier.isWriterClosed(failure)) {
-                reopenAppender();
+                reopenAppender(state);
             }
             sleep(retrySchedule.backoffMs(attempt));
         }
@@ -583,16 +693,16 @@ public class BigQueryBufferedStreamWriter<T>
      * and re-appends at the same offsets stay valid ({@code OFFSET_ALREADY_EXISTS} still means the
      * original landed).
      */
-    private void reopenAppender() throws IOException {
-        LOG.info("Reopening the writer of stream {} after a client-side close", streamName);
-        if (appender != null) {
-            appender.close();
-            appender = null;
+    private void reopenAppender(DestinationState state) throws IOException {
+        LOG.info("Reopening the writer of stream {} after a client-side close", state.streamName);
+        if (state.appender != null) {
+            state.appender.close();
+            state.appender = null;
         }
         try {
-            appender = service.openAppender(streamName, descriptor());
+            state.appender = service.openAppender(state.streamName, descriptor(state));
         } catch (IOException | RuntimeException e) {
-            throw wrapFailure("Failed to reopen BigQuery stream " + streamName, e);
+            throw wrapFailure("Failed to reopen BigQuery stream " + state.streamName, e);
         }
     }
 
@@ -601,7 +711,8 @@ public class BigQueryBufferedStreamWriter<T>
      * surviving rows. The handler decides per row: returning normally drops the row, throwing fails
      * the writer.
      */
-    private ProtoRows routeRowLevel(ProtoRows rows, Exceptions.AppendSerializtionError rowLevel)
+    private ProtoRows routeRowLevel(
+            DestinationState state, ProtoRows rows, Exceptions.AppendSerializtionError rowLevel)
             throws IOException {
         Map<Integer, String> rowErrors = rowLevel.getRowIndexToErrorMessage();
         ProtoRows.Builder survivors = ProtoRows.newBuilder();
@@ -613,7 +724,10 @@ public class BigQueryBufferedStreamWriter<T>
                 metrics.rowFailed();
                 failedRowHandler.handle(
                         FailedRow.of(
-                                destination, rows.getSerializedRows(i), errorMessage, rowLevel));
+                                state.destination,
+                                rows.getSerializedRows(i),
+                                errorMessage,
+                                rowLevel));
             }
         }
         return survivors.build();
@@ -628,59 +742,78 @@ public class BigQueryBufferedStreamWriter<T>
      * the restored offset. Success adopts the stream; offset conflicts, a dead stream or a failure
      * to open the appender abandon it for a fresh one; transient failures retry within the budget.
      */
-    private void probeRestoredStream(ProtoRows batch) throws IOException {
+    private void probeRestoredStream(DestinationState state, ProtoRows batch) throws IOException {
         ensureService();
         for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
-            if (appender == null) {
+            if (state.appender == null) {
                 try {
-                    appender = service.openAppender(streamName, descriptor());
+                    state.appender = service.openAppender(state.streamName, descriptor(state));
                 } catch (IOException | RuntimeException e) {
-                    LOG.warn("Failed to reopen restored stream {}, abandoning it", streamName, e);
-                    abandonRestoredStream(batch);
+                    LOG.warn(
+                            "Failed to reopen restored stream {}, abandoning it",
+                            state.streamName,
+                            e);
+                    abandonRestoredStream(state, batch);
                     return;
                 }
             }
             // The probe carries the batch sendAppend handed over, so its first attempt is that
             // batch's hand-off; later attempts (and the replay onto a fresh stream, if the
             // restored one is abandoned) re-append rows already counted.
-            Throwable failure = syncAppend(batch, nextOffset, attempt == 1);
+            Throwable failure = syncAppend(state, batch, state.nextOffset, attempt == 1);
             if (failure == null) {
                 LOG.info(
                         "Restored stream {} accepted the probe append at offset {}, reusing it",
-                        streamName,
-                        nextOffset);
-                nextOffset += batch.getSerializedRowsCount();
-                probePending = false;
+                        state.streamName,
+                        state.nextOffset);
+                state.nextOffset += batch.getSerializedRowsCount();
+                state.probePending = false;
                 return;
             }
             metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
+            if (AppendErrorClassifier.isWriterClosed(failure)) {
+                if (attempt >= retrySchedule.maxAttempts()) {
+                    throw wrapFailure(
+                            "Probing restored BigQuery stream "
+                                    + state.streamName
+                                    + " at offset "
+                                    + state.nextOffset
+                                    + " failed because the writer stayed closed ("
+                                    + attempt
+                                    + " attempt(s))",
+                            failure);
+                }
+                reopenAppender(state);
+                sleep(retrySchedule.backoffMs(attempt));
+                continue;
+            }
             if (AppendErrorClassifier.isOffsetAlreadyExists(failure)
                     || AppendErrorClassifier.isOffsetOutOfRange(failure)
                     || AppendErrorClassifier.requiresWriterRefresh(failure)) {
                 LOG.info(
                         "Restored stream {} rejected the probe append at offset {} ({}),"
                                 + " abandoning it",
-                        streamName,
-                        nextOffset,
+                        state.streamName,
+                        state.nextOffset,
                         failure.toString());
-                abandonRestoredStream(batch);
+                abandonRestoredStream(state, batch);
                 return;
             }
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
                 // The stream itself is usable; recover the batch's rows on it.
-                probePending = false;
-                recoverRowLevel(batch, nextOffset, rowLevel);
+                state.probePending = false;
+                recoverRowLevel(state, batch, state.nextOffset, rowLevel);
                 return;
             }
             if (AppendErrorClassifier.classify(failure) != AppendErrorClassifier.Kind.TRANSIENT
                     || attempt >= retrySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Probing restored BigQuery stream "
-                                + streamName
+                                + state.streamName
                                 + " at offset "
-                                + nextOffset
+                                + state.nextOffset
                                 + " failed ("
                                 + attempt
                                 + " attempt(s))",
@@ -696,35 +829,39 @@ public class BigQueryBufferedStreamWriter<T>
      * flush it (BigQuery rejects {@code FlushRows} on a finalized stream), and its tail past the
      * restored offset is never named by a committable, so it stays invisible without cleanup.
      */
-    private void abandonRestoredStream(ProtoRows batch) throws IOException {
-        if (appender != null) {
-            appender.close();
-            appender = null;
+    private void abandonRestoredStream(DestinationState state, ProtoRows batch) throws IOException {
+        if (state.appender != null) {
+            state.appender.close();
+            state.appender = null;
         }
-        streamName = BufferedStreamWriterState.NO_STREAM;
-        nextOffset = 0;
-        probePending = false;
-        ensureStream();
+        state.streamName = BufferedStreamWriterState.NO_STREAM;
+        state.nextOffset = 0;
+        state.probePending = false;
+        ensureStream(state);
         ArrayDeque<ProtoRows> replay = new ArrayDeque<>();
         replay.addLast(batch);
-        replayBatches(replay);
+        replayBatches(state, replay);
     }
 
     /** Creates the stream and opens its appender if not yet open. */
-    private void ensureStream() throws IOException {
-        if (appender != null) {
+    private void ensureStream(DestinationState state) throws IOException {
+        if (state.appender != null) {
             return;
         }
         ensureService();
-        if (streamName.equals(BufferedStreamWriterState.NO_STREAM)) {
-            streamName = createStream();
-            nextOffset = 0;
-            LOG.info("Created buffered stream {} for subtask {}", streamName, subtaskId);
+        if (state.streamName.equals(BufferedStreamWriterState.NO_STREAM)) {
+            state.streamName = createStream(state);
+            state.nextOffset = 0;
+            LOG.info(
+                    "Created buffered stream {} for destination {} in subtask {}",
+                    state.streamName,
+                    state.destination,
+                    subtaskId);
         }
         try {
-            appender = service.openAppender(streamName, descriptor());
+            state.appender = service.openAppender(state.streamName, descriptor(state));
         } catch (IOException | RuntimeException e) {
-            throw wrapFailure("Failed to open BigQuery stream " + streamName, e);
+            throw wrapFailure("Failed to open BigQuery stream " + state.streamName, e);
         }
     }
 
@@ -736,12 +873,12 @@ public class BigQueryBufferedStreamWriter<T>
      * loses the creation race to the per-table quota rather than to an HTTP 409 waits its turn
      * instead of failing the write.
      */
-    private String createStream() throws IOException {
+    private String createStream(DestinationState state) throws IOException {
         boolean tableCreated = false;
         for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
             Throwable failure;
             try {
-                return service.createBufferedStream(destination);
+                return service.createBufferedStream(state.destination);
             } catch (IOException | RuntimeException e) {
                 failure = e;
             }
@@ -754,22 +891,23 @@ public class BigQueryBufferedStreamWriter<T>
                     && config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED) {
                 LOG.info(
                         "Destination table {} may not exist, creating it (CREATE_IF_NEEDED)",
-                        destination);
+                        state.destination);
                 tableAdmin.create(
-                        destination,
-                        config.getSerializer().getTableSchema(destination),
-                        config.getTableCreateOptionsProvider().optionsFor(destination));
+                        state.destination,
+                        config.getSerializer().getTableSchema(state.destination),
+                        config.getTableCreateOptionsProvider().optionsFor(state.destination));
                 tableCreated = true;
             } else if (!(notFound && tableCreated)
                     && AppendErrorClassifier.classify(failure)
                             != AppendErrorClassifier.Kind.TRANSIENT) {
                 throw wrapFailure(
-                        "Failed to create a BigQuery buffered stream on " + destination, failure);
+                        "Failed to create a BigQuery buffered stream on " + state.destination,
+                        failure);
             }
             if (attempt >= retrySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Failed to create a BigQuery buffered stream on "
-                                + destination
+                                + state.destination
                                 + (tableCreated ? " after a table-creation attempt" : "")
                                 + ", the retry budget is exhausted ("
                                 + attempt
@@ -781,17 +919,60 @@ public class BigQueryBufferedStreamWriter<T>
         throw new IllegalStateException("unreachable");
     }
 
+    /**
+     * Releases clean destination-local resources after a successful non-end-of-input flush. The
+     * remote buffered stream is deliberately left unfinalized: a restored committable may still
+     * need to flush it, and BigQuery removes unfinalized streams under its retention policy.
+     */
+    private void evictIdleDestinations() {
+        long now = nanoClock.getAsLong();
+        Iterator<Map.Entry<TableDestination, DestinationState>> iterator =
+                destinations.entrySet().iterator();
+        while (iterator.hasNext()) {
+            DestinationState state = iterator.next().getValue();
+            boolean clean =
+                    state.streamName.equals(state.lastSnapshotStreamName)
+                            && state.nextOffset == state.lastSnapshotOffset;
+            boolean idle = now - state.lastAccessNanos > destinationIdleTimeoutNanos;
+            if (!idle
+                    || !clean
+                    || state.pending.getSerializedRowsCount() != 0
+                    || !state.inFlight.isEmpty()) {
+                continue;
+            }
+            iterator.remove();
+            if (state.appender != null) {
+                try {
+                    state.appender.close();
+                } catch (RuntimeException e) {
+                    LOG.warn(
+                            "Failed to close the local writer for idle destination {} and stream"
+                                    + " {}; the destination was evicted and the remote stream was"
+                                    + " left unfinalized",
+                            state.destination,
+                            state.streamName,
+                            e);
+                }
+                state.appender = null;
+            }
+            LOG.info(
+                    "Evicted idle destination {} and left buffered stream {} unfinalized",
+                    state.destination,
+                    state.streamName);
+        }
+    }
+
     private void ensureService() throws IOException {
         if (service == null) {
             service = serviceFactory.create(config.getLocation(), options);
         }
     }
 
-    private Descriptors.Descriptor descriptor() {
-        if (descriptor == null) {
-            descriptor = config.getSerializer().getDescriptor(destination);
+    private Descriptors.Descriptor descriptor(DestinationState state) {
+        if (state.descriptor == null) {
+            state.descriptor = config.getSerializer().getDescriptor(state.destination);
         }
-        return descriptor;
+        return state.descriptor;
     }
 
     // ------------------------------------------------------------------
@@ -800,11 +981,12 @@ public class BigQueryBufferedStreamWriter<T>
 
     /** Appends synchronously and returns the failure, or {@code null} on success. */
     @Nullable
-    private Throwable syncAppend(ProtoRows rows, long offset, boolean firstAttempt)
+    private Throwable syncAppend(
+            DestinationState state, ProtoRows rows, long offset, boolean firstAttempt)
             throws IOException {
         ApiFuture<AppendRowsResponse> future;
         try {
-            future = appender.append(rows, offset);
+            future = state.appender.append(rows, offset);
         } catch (RuntimeException e) {
             return e;
         }
@@ -816,7 +998,7 @@ public class BigQueryBufferedStreamWriter<T>
         } else {
             metrics.appendRetried();
         }
-        return awaitFailure(future, offset);
+        return awaitFailure(state, future, offset);
     }
 
     /**
@@ -826,7 +1008,8 @@ public class BigQueryBufferedStreamWriter<T>
      * accounting and the stream have diverged.
      */
     @Nullable
-    private Throwable awaitFailure(ApiFuture<AppendRowsResponse> future, long expectedOffset)
+    private Throwable awaitFailure(
+            DestinationState state, ApiFuture<AppendRowsResponse> future, long expectedOffset)
             throws IOException {
         AppendRowsResponse response;
         try {
@@ -837,7 +1020,7 @@ public class BigQueryBufferedStreamWriter<T>
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while awaiting appends to BigQuery", e);
         }
-        Throwable failure = responseToThrowable(response);
+        Throwable failure = responseToThrowable(state, response);
         if (failure != null) {
             return failure;
         }
@@ -846,7 +1029,7 @@ public class BigQueryBufferedStreamWriter<T>
             if (acknowledged != expectedOffset) {
                 return new IOException(
                         "BigQuery acknowledged an append to "
-                                + streamName
+                                + state.streamName
                                 + " at offset "
                                 + acknowledged
                                 + " although offset "
@@ -865,7 +1048,7 @@ public class BigQueryBufferedStreamWriter<T>
      * become a synthesized row-level error, anything else is terminal.
      */
     @Nullable
-    private Throwable responseToThrowable(AppendRowsResponse response) {
+    private Throwable responseToThrowable(DestinationState state, AppendRowsResponse response) {
         if (response.hasError()) {
             if (AppendErrorClassifier.isTransientCode(response.getError().getCode())) {
                 return Status.fromCodeValue(response.getError().getCode())
@@ -888,7 +1071,7 @@ public class BigQueryBufferedStreamWriter<T>
             return new Exceptions.AppendSerializtionError(
                     Status.Code.INVALID_ARGUMENT.value(),
                     "An append to BigQuery stream "
-                            + streamName
+                            + state.streamName
                             + " completed with "
                             + response.getRowErrorsCount()
                             + " row error(s)",

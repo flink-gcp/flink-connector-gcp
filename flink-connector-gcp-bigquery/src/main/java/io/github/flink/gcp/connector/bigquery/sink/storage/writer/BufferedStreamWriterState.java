@@ -18,10 +18,12 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+
 import java.util.Objects;
 
 /**
- * The buffered-stream writer's checkpointed state: which stream the subtask owns and how many rows
+ * One destination's buffered-stream writer state: which stream the subtask owns and how many rows
  * it had appended (acknowledged) as of the checkpoint.
  *
  * <p>The checkpoint id resolves restores that hand a subtask more than one state (scale-down): the
@@ -33,6 +35,7 @@ public final class BufferedStreamWriterState {
     /** The stream name of a writer that has not created its stream yet. */
     public static final String NO_STREAM = "";
 
+    private final TableDestination destination;
     private final String streamName;
     private final long nextOffset;
     private final long checkpointId;
@@ -40,14 +43,22 @@ public final class BufferedStreamWriterState {
     /**
      * Creates a state snapshot.
      *
+     * @param destination the destination table the stream belongs to
      * @param streamName the buffered write stream name, or {@link #NO_STREAM} if none was created
      * @param nextOffset the next append offset (== rows appended so far)
      * @param checkpointId the checkpoint this snapshot belongs to
      */
-    public BufferedStreamWriterState(String streamName, long nextOffset, long checkpointId) {
+    public BufferedStreamWriterState(
+            TableDestination destination, String streamName, long nextOffset, long checkpointId) {
+        this.destination = destination;
         this.streamName = streamName;
         this.nextOffset = nextOffset;
         this.checkpointId = checkpointId;
+    }
+
+    /** Returns the destination table the stream belongs to. */
+    public TableDestination getDestination() {
+        return destination;
     }
 
     /** Returns the buffered write stream name, or {@link #NO_STREAM} if none was created. */
@@ -76,17 +87,20 @@ public final class BufferedStreamWriterState {
         BufferedStreamWriterState that = (BufferedStreamWriterState) o;
         return nextOffset == that.nextOffset
                 && checkpointId == that.checkpointId
+                && destination.equals(that.destination)
                 && streamName.equals(that.streamName);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(streamName, nextOffset, checkpointId);
+        return Objects.hash(destination, streamName, nextOffset, checkpointId);
     }
 
     @Override
     public String toString() {
-        return "BufferedStreamWriterState{streamName="
+        return "BufferedStreamWriterState{destination="
+                + destination
+                + ", streamName="
                 + streamName
                 + ", nextOffset="
                 + nextOffset

@@ -54,6 +54,7 @@ public final class BufferedStreamOptionsMapper {
     private static final List<ConfigOption<?>> FAMILY =
             Arrays.asList(
                     BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES,
+                    BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT,
                     BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF,
                     BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_BACKOFF,
                     BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_ATTEMPTS,
@@ -88,6 +89,8 @@ public final class BufferedStreamOptionsMapper {
         config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES)
                 .map(MemorySize::getBytes)
                 .ifPresent(builder::maxAppendRequestBytes);
+        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT)
+                .ifPresent(builder::destinationIdleTimeout);
 
         config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF)
                 .ifPresent(builder::recoveryInitialBackoff);

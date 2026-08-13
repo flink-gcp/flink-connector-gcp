@@ -33,7 +33,7 @@ section; the three forms of the Default column are explained
 |---|---|---|
 | `writeMethod` | `STORAGE_API_AT_LEAST_ONCE` | Which write path the sink dispatches to at graph construction |
 | `destination` | **required**, unless `destinationResolver` is set | Writes every record to one fixed table |
-| `destinationResolver` | — | Resolves the table per record. Rejected under `STORAGE_API_EXACTLY_ONCE` |
+| `destinationResolver` | — | Resolves the table per record for every write method |
 | `serializer` | **required** | Converts each record into the protobuf row the Storage Write API accepts, or into `null` to skip it |
 | `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job. `CREATE_IF_NEEDED` also lets `STORAGE_API_EXACTLY_ONCE` wait out the post-creation propagation window at commit time, so `CREATE_NEVER` opts out of both |
 | `tableCreateOptions` | plain tables | [Creation settings](#tablecreateoptions) for every table the sink creates |
@@ -115,6 +115,7 @@ creation, transient re-appends, the restore probe and the committer's flush retr
 | Option | Default | What it does |
 |---|---|---|
 | `maxAppendRequestBytes` | 512 KiB | Serialized-row bytes per append request |
+| `destinationIdleTimeout` | 1 h | How long a checkpoint-clean destination may go without records before its local appender and writer state are dropped. A later record creates a new buffered stream; the old remote stream is never finalized. Set a very large duration to avoid eviction — up to about 292 years (`Duration.ofNanos(Long.MAX_VALUE)`) |
 | `recoveryInitialBackoff` | 500 ms | First backoff of the connector-driven recovery schedule |
 | `recoveryMaxBackoff` | 10 s | Cap that schedule doubles up to, before jitter |
 | `recoveryMaxAttempts` | 10 | Attempt cap of that schedule |

@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Map;
 
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.CONTEXT;
+import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.DESTINATION;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -157,7 +158,7 @@ class BigQueryBufferedStreamWriterMetricsTest {
     @Test
     void countsTheOffsetProbeOfARestoredStreamAsASend() throws Exception {
         BigQueryBufferedStreamWriter<String> writer =
-                writer(new BufferedStreamWriterState("p/d/t/streams/restored", 7, 1));
+                writer(new BufferedStreamWriterState(DESTINATION, "p/d/t/streams/restored", 7, 1));
 
         writer.write("aa", CONTEXT);
         writer.flush(false);

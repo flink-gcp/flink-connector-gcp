@@ -33,6 +33,8 @@ class BufferedStreamOptionsTest {
 
         assertThat(options.getMaxAppendRequestBytes())
                 .isEqualTo(BufferedStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES);
+        assertThat(options.getDestinationIdleTimeout())
+                .isEqualTo(BufferedStreamOptions.DEFAULT_DESTINATION_IDLE_TIMEOUT);
         assertThat(options.getRecoveryInitialBackoff())
                 .isEqualTo(BufferedStreamOptions.DEFAULT_RECOVERY_INITIAL_BACKOFF);
         assertThat(options.getRecoveryMaxBackoff())
@@ -131,12 +133,14 @@ class BufferedStreamOptionsTest {
         BufferedStreamOptions options =
                 BufferedStreamOptions.builder()
                         .maxAppendRequestBytes(1024)
+                        .destinationIdleTimeout(Duration.ofMinutes(15))
                         .recoveryInitialBackoff(Duration.ofMillis(100))
                         .recoveryMaxBackoff(Duration.ofSeconds(5))
                         .recoveryMaxAttempts(3)
                         .build();
 
         assertThat(options.getMaxAppendRequestBytes()).isEqualTo(1024);
+        assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(15));
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(5));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
@@ -166,12 +170,47 @@ class BufferedStreamOptionsTest {
         assertThatThrownBy(() -> BufferedStreamOptions.builder().maxAppendRequestBytes(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(
+                        () -> BufferedStreamOptions.builder().destinationIdleTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("destinationIdleTimeout");
+        assertThatThrownBy(
+                        () ->
+                                BufferedStreamOptions.builder()
+                                        .destinationIdleTimeout(Duration.ofSeconds(Long.MAX_VALUE)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must be at most");
+        assertThatThrownBy(
                         () -> BufferedStreamOptions.builder().recoveryInitialBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> BufferedStreamOptions.builder().recoveryMaxBackoff(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> BufferedStreamOptions.builder().recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void equalityAndDiagnosticsIncludeDestinationIdleTimeout() {
+        BufferedStreamOptions configured =
+                BufferedStreamOptions.builder()
+                        .destinationIdleTimeout(Duration.ofMinutes(2))
+                        .build();
+
+        assertThat(configured).isNotEqualTo(BufferedStreamOptions.builder().build());
+        assertThat(configured.toString()).contains("destinationIdleTimeout=PT2M");
+    }
+
+    @Test
+    void optionsSerializedBeforeTheIdleTimeoutWasAddedReceiveItsDefault() throws Exception {
+        BufferedStreamOptions restored = BufferedStreamOptions.builder().build();
+        java.lang.reflect.Field field =
+                BufferedStreamOptions.class.getDeclaredField("destinationIdleTimeout");
+        field.setAccessible(true);
+        field.set(restored, null);
+
+        assertThat(restored.getDestinationIdleTimeout())
+                .isEqualTo(BufferedStreamOptions.DEFAULT_DESTINATION_IDLE_TIMEOUT);
+        assertThat(restored).isEqualTo(BufferedStreamOptions.builder().build());
+        assertThat(restored.toString()).contains("destinationIdleTimeout=PT1H");
     }
 
     /**

@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink.storage;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.RichMapFunction;
+import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy;
 import org.apache.flink.configuration.Configuration;
@@ -67,6 +69,8 @@ class BigQueryBufferedStreamExactlyOnceITCase {
 
     private static final String RUN_ID = TestNames.runId();
     private static final String TABLE_RESTART = "buffered_stream_it_restart_" + RUN_ID;
+    private static final String TABLE_DYNAMIC_EVEN = "buffered_stream_it_dynamic_even_" + RUN_ID;
+    private static final String TABLE_DYNAMIC_ODD = "buffered_stream_it_dynamic_odd_" + RUN_ID;
     private static final String TABLE_CLEAN = "buffered_stream_it_clean_" + RUN_ID;
     private static final String TABLE_BATCH = "buffered_stream_it_batch_" + RUN_ID;
 
@@ -77,9 +81,13 @@ class BigQueryBufferedStreamExactlyOnceITCase {
     /** Trips once per JVM: the induced failure fires on the first pass only. */
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
 
+    private static final AtomicBoolean DYNAMIC_FAILED_ONCE = new AtomicBoolean();
+    private static final AtomicBoolean DYNAMIC_CHECKPOINT_COMPLETED = new AtomicBoolean();
+
     @AfterAll
     static void cleanUp() {
-        RealBigQuery.deleteTables(TABLE_RESTART, TABLE_CLEAN, TABLE_BATCH);
+        RealBigQuery.deleteTables(
+                TABLE_RESTART, TABLE_DYNAMIC_EVEN, TABLE_DYNAMIC_ODD, TABLE_CLEAN, TABLE_BATCH);
     }
 
     @Test
@@ -120,6 +128,45 @@ class BigQueryBufferedStreamExactlyOnceITCase {
                 .containsExactly(RECORD_COUNT);
         assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + restartPath))
                 .containsExactly(RECORD_COUNT * (RECORD_COUNT - 1) / 2);
+    }
+
+    @Test
+    void dynamicDestinationsAreExactlyOnceAcrossAnInducedRestart() throws Exception {
+        createTable(TABLE_DYNAMIC_EVEN);
+        createTable(TABLE_DYNAMIC_ODD);
+        Configuration configuration = new Configuration();
+        configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
+        configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 2);
+        StreamExecutionEnvironment env =
+                StreamExecutionEnvironment.getExecutionEnvironment(configuration);
+        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
+        env.enableCheckpointing(2_000);
+        env.setParallelism(2);
+
+        env.fromSource(source(), WatermarkStrategy.noWatermarks(), "rows")
+                .map(new FailDynamicOnceAfterCompletedCheckpoint())
+                .sinkTo(
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destinationResolver(
+                                        (element, context) -> {
+                                            long value =
+                                                    Long.parseLong(element.split("\\|", -1)[1]);
+                                            return RealBigQuery.destination(
+                                                    value % 2 == 0
+                                                            ? TABLE_DYNAMIC_EVEN
+                                                            : TABLE_DYNAMIC_ODD);
+                                        })
+                                .serializer(new NameValueRowSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .build());
+
+        env.execute("buffered-stream-dynamic-destinations-restart-it");
+
+        assertThat(DYNAMIC_CHECKPOINT_COMPLETED).isTrue();
+        assertThat(DYNAMIC_FAILED_ONCE).isTrue();
+        assertDynamicPartition(TABLE_DYNAMIC_EVEN, 20, 380, 0);
+        assertDynamicPartition(TABLE_DYNAMIC_ODD, 20, 400, 1);
     }
 
     @Test
@@ -191,5 +238,44 @@ class BigQueryBufferedStreamExactlyOnceITCase {
 
     private static void createTable(String table) {
         RealBigQuery.createTable(table, NameValueRowSerializer.SCHEMA);
+    }
+
+    private static void assertDynamicPartition(String table, long count, long sum, long parity)
+            throws Exception {
+        String tablePath = RealBigQuery.tablePath(table);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + tablePath))
+                .containsExactly(count);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(DISTINCT value) FROM " + tablePath))
+                .containsExactly(count);
+        assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + tablePath))
+                .containsExactly(sum);
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNTIF(MOD(value, 2) != "
+                                        + parity
+                                        + ") FROM "
+                                        + tablePath))
+                .containsExactly(0L);
+    }
+
+    /** Fails the first record observed after Flink confirms that a checkpoint completed. */
+    private static final class FailDynamicOnceAfterCompletedCheckpoint
+            extends RichMapFunction<String, String> implements CheckpointListener {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String map(String element) {
+            if (DYNAMIC_CHECKPOINT_COMPLETED.get()
+                    && DYNAMIC_FAILED_ONCE.compareAndSet(false, true)) {
+                throw new IllegalStateException(
+                        "induced dynamic-destination failure after a completed checkpoint");
+            }
+            return element;
+        }
+
+        @Override
+        public void notifyCheckpointComplete(long checkpointId) {
+            DYNAMIC_CHECKPOINT_COMPLETED.set(true);
+        }
     }
 }

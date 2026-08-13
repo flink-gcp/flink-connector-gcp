@@ -25,8 +25,10 @@ import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.Constructor;
 
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.CONTEXT;
+import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.DESTINATION;
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.config;
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.fastOptions;
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.onlyCommittable;
@@ -65,7 +67,7 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         writer.write("a", CONTEXT);
         writer.write("b", CONTEXT);
@@ -97,14 +99,14 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         writer.flush(false);
 
         assertThat(writer.prepareCommit()).isEmpty();
         assertThat(service.openedAppenders).isEmpty();
         assertThat(writer.snapshotState(4))
-                .containsExactly(new BufferedStreamWriterState(RESTORED_STREAM, 5, 4));
+                .containsExactly(new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 4));
     }
 
     @Test
@@ -155,7 +157,7 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         writer.write("a", CONTEXT);
         writer.flush(false);
@@ -187,7 +189,7 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         writer.write("a", CONTEXT);
         writer.flush(false);
@@ -207,7 +209,7 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         writer.write("a", CONTEXT);
         writer.flush(false);
@@ -216,6 +218,30 @@ class BigQueryBufferedStreamWriterRestoreTest {
         assertThat(service.appends.get(0).offset).isEqualTo(5);
         assertThat(service.appends.get(1).offset).isEqualTo(5);
         assertThat(service.createdStreams).isEmpty();
+        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(5);
+    }
+
+    @Test
+    void closedWriterDuringProbeIsReopenedOnTheSameRestoredStream() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(service.openedAppenders).containsExactly(RESTORED_STREAM, RESTORED_STREAM);
+        assertThat(service.closedAppenders).containsExactly(RESTORED_STREAM);
+        assertThat(service.createdStreams).isEmpty();
+        assertThat(service.appends).hasSize(2);
+        assertThat(service.appends.get(0).offset).isEqualTo(5);
+        assertThat(service.appends.get(1).offset).isEqualTo(5);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(5);
     }
 
@@ -233,7 +259,7 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         assertThatThrownBy(
                         () -> {
@@ -254,8 +280,8 @@ class BigQueryBufferedStreamWriterRestoreTest {
                         fastOptions(3),
                         service,
                         BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
-                        new BufferedStreamWriterState(olderStream, 9, 2),
-                        new BufferedStreamWriterState(RESTORED_STREAM, 5, 3));
+                        new BufferedStreamWriterState(DESTINATION, olderStream, 9, 2),
+                        new BufferedStreamWriterState(DESTINATION, RESTORED_STREAM, 5, 3));
 
         writer.write("a", CONTEXT);
         writer.flush(false);
@@ -264,5 +290,35 @@ class BigQueryBufferedStreamWriterRestoreTest {
         // committable of it must stay flushable.
         assertThat(service.appends.get(0).streamName).isEqualTo(RESTORED_STREAM);
         assertThat(service.appends.get(0).offset).isEqualTo(5);
+    }
+
+    @Test
+    void equalCheckpointIdsUseTheLexicographicallyFirstStreamPerDestination() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        String laterName = DESTINATION.toTablePath() + "/streams/z";
+        String firstName = DESTINATION.toTablePath() + "/streams/a";
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        new BufferedStreamWriterState(DESTINATION, laterName, 9, 3),
+                        new BufferedStreamWriterState(DESTINATION, firstName, 5, 3));
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        assertThat(service.openedAppenders).containsExactly(firstName);
+        assertThat(service.appends.get(0).offset).isEqualTo(5);
+    }
+
+    /** The SDK's constructor is protected in a final class; tests synthesize via reflection. */
+    private static Exceptions.StreamWriterClosedException writerClosed() throws Exception {
+        Constructor<Exceptions.StreamWriterClosedException> constructor =
+                Exceptions.StreamWriterClosedException.class.getDeclaredConstructor(
+                        Status.class, String.class, String.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(Status.FAILED_PRECONDITION, "stream", "writer-id");
     }
 }

@@ -374,10 +374,8 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
     @Test
     void closedStreamWriterIsReopenedAndTheAppendResent() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
-        // The pipelined append and the first resend fail with the SDK's client-side closed-writer
-        // error; the writer must reopen an appender on the same stream and resend at the same
-        // offset.
-        service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
+        // The pipelined append fails with the SDK's client-side closed-writer error; the writer
+        // must reopen an appender on the same stream before resending at the same offset.
         service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
         BigQueryBufferedStreamWriter<String> writer =
                 writer(
@@ -390,8 +388,8 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(service.openedAppenders).hasSize(2);
-        assertThat(service.appends).hasSize(3);
-        assertThat(service.appends.get(2).offset).isEqualTo(0);
+        assertThat(service.appends).hasSize(2);
+        assertThat(service.appends.get(1).offset).isEqualTo(0);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
     }
 
@@ -399,15 +397,13 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
     void callbackWaitTimeoutIsRepairedByReopeningTheWriter() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         // The SDK's connection watchdog killed the connection: the first in-flight append fails
-        // with the raw callback-wait timeout exception, which carries no gRPC status; the poisoned
-        // writer then fails the first resend fast with the closed-writer error. The writer must
-        // treat the timeout as a client-side dead writer — resend at the same offset, reopening an
-        // appender on the same stream — not as a terminal failure.
+        // with the raw callback-wait timeout exception, which carries no gRPC status. The writer
+        // must treat the timeout as a client-side dead writer — reopen the appender on the same
+        // stream and resend at the same offset — not as a terminal failure.
         service.appendResults.add(
                 FakeBufferedStreamService.failure(
                         new Exceptions.MaximumRequestCallbackWaitTimeExceededException(
                                 Duration.ofMinutes(6), "writer-id", Duration.ofMinutes(5))));
-        service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
         BigQueryBufferedStreamWriter<String> writer =
                 writer(
                         config(),
@@ -419,8 +415,8 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(service.openedAppenders).hasSize(2);
-        assertThat(service.appends).hasSize(3);
-        assertThat(service.appends.get(2).offset).isEqualTo(0);
+        assertThat(service.appends).hasSize(2);
+        assertThat(service.appends.get(1).offset).isEqualTo(0);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
     }
 

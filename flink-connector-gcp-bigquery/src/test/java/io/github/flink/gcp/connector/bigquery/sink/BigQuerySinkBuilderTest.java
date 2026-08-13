@@ -33,9 +33,13 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStrea
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.storage.writer.BufferedStreamWriterState;
 import io.github.flink.gcp.connector.bigquery.sink.storage.writer.WriteClientBufferedStreamServiceFactory;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -337,18 +341,40 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void exactlyOnceRequiresAFixedDestination() {
-        assertThatThrownBy(
-                        () ->
-                                BigQuerySink.<String>builder()
-                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                        .destinationResolver((element, context) -> DESTINATION)
-                                        .serializer(new TestSerializer())
-                                        .bufferedStreamOptions(
-                                                BufferedStreamOptions.builder().build())
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("fixed destination");
+    void exactlyOnceAcceptsDynamicDestinations() {
+        Sink<String> sink =
+                BigQuerySink.<String>builder()
+                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                        .destinationResolver((element, context) -> DESTINATION)
+                        .serializer(new TestSerializer())
+                        .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                        .build();
+
+        assertThat(sink).isInstanceOf(BigQueryBufferedStreamSink.class);
+    }
+
+    @Test
+    void exactlyOnceSinkWiresItsFixedDestinationIntoVersionOneStateMigration() throws Exception {
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .build();
+        String streamName = DESTINATION.toTablePath() + "/streams/legacy";
+        byte[] versionOne;
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                DataOutputStream out = new DataOutputStream(bytes)) {
+            out.writeUTF(streamName);
+            out.writeLong(13L);
+            out.writeLong(5L);
+            versionOne = bytes.toByteArray();
+        }
+
+        assertThat(sink.getWriterStateSerializer().deserialize(1, versionOne))
+                .isEqualTo(new BufferedStreamWriterState(DESTINATION, streamName, 13L, 5L));
     }
 
     @Test

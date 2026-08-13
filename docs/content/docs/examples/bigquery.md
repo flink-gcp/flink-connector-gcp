@@ -75,15 +75,12 @@ BigQuerySink.<OrderEvent>builder()
         .build();
 ```
 
-Two things to plan for with a resolver that keeps producing new destinations. Each one holds its
-own stream writer, so `DefaultStreamOptions`' `destinationIdleTimeout` (one hour by default) is
-what stops per-destination state from growing without bound in a long-lived job. And every new
-table is created on its first record under the default create disposition, so
+Two things need planning when a resolver keeps producing new destinations.
+Each active destination holds its own stream writer, so `DefaultStreamOptions` and
+`BufferedStreamOptions` both expose `destinationIdleTimeout` (one hour by default) to bound local
+per-destination state in a long-lived job.
+Every new table is also created on its first record under the default create disposition, so
 [table auto-creation](#table-auto-creation) applies to every day this produces, not only the first.
-
-**`STORAGE_API_EXACTLY_ONCE` rejects `destinationResolver(...)`** at graph construction — that
-write method takes one fixed destination. Dynamic destinations there are
-[#76]({{< param BookRepo >}}/issues/76).
 
 ## Exactly-once
 
@@ -97,8 +94,8 @@ so needs no line in either job below — but a cluster setting `execution.checkp
 
 ### Buffered streams
 
-Rows are appended to a per-subtask Storage Write API buffered stream at explicit offsets, invisible
-until a completed checkpoint makes exactly that checkpoint's rows visible.
+Rows are appended to one Storage Write API buffered stream per (subtask, destination) at explicit
+offsets, invisible until a completed checkpoint makes exactly that checkpoint's rows visible.
 
 ```java
 StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -111,7 +108,8 @@ env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
         .sinkTo(
                 BigQuerySink.<OrderEvent>builder()
                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(TableDestination.of("my-project", "my_dataset", "orders"))
+                        .destinationResolver(
+                                new DailyTableResolver("my-project", "my_dataset", "orders"))
                         .serializer(serializer)
                         .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                         .build());
@@ -123,6 +121,9 @@ env.execute("bigquery-exactly-once");
 every knob in it is defaulted — `builder().build()` is how to say "the defaults" out loud. The
 checkpoint interval is the visibility latency: rows land when the checkpoint that named them
 completes.
+Each active destination uses a dedicated connection and contributes its own stream creation and
+flush calls, so high-cardinality routing should use an idle timeout appropriate to its churn and
+must account for the Storage Write API's stream-creation quota.
 
 ### File loads
 

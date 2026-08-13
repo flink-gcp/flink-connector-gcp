@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-03
-- Issues: [#210] (the [#37] series' last metrics sub-issue)
+- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Metrics, § Committer
   metrics
@@ -27,11 +27,14 @@ limitations under the License.
 
 `DefaultStreamWriterMetrics`, `BufferedStreamWriterMetrics` (both `sink.storage.writer`) and
 `FileLoadsWriterMetrics` (`sink.fileloads.writer`) over the shared `base.metrics` helpers, plus
-one committer counter. Three classes rather than one conditionally-registering class, so **no
-writer registers a metric it can never increment**: the buffered path has one fixed destination
-with a schema pinned at stream creation, so `openDestinations`, `tablesCreated`,
-`schemaReconciliations` and the per-destination pair would all be constants there, and
-FILE_LOADS makes no per-record request, so it has no error-class dimension at all.
+one committer counter.
+Three classes rather than one conditionally-registering class keep each write method's metrics
+aligned with the operations it reports.
+After [#76], the buffered path may have dynamic destinations but deliberately retains aggregate
+counters plus its aggregate `inFlightAppends` gauge: checkpoint state records the exact active set,
+`destinationIdleTimeout` bounds it, and this change does not add cardinality-bearing metrics.
+It still has no schema reconciliation, while FILE_LOADS makes no per-record request and therefore
+has no error-class dimension at all.
 
 - **`numRecordsSend` is counted where the batch is first handed to the client**: `appendPending`
   on the default-stream path (the repair path re-appends from `retryBatches`, a different call
@@ -78,3 +81,4 @@ FILE_LOADS makes no per-record request, so it has no error-class dimension at al
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
 [#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
+[#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76

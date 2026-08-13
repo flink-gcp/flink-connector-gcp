@@ -30,7 +30,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 | Write method | Semantics |
 |---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool |
-| `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit on checkpoints; single fixed destination |
+| `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit on checkpoints; fixed or dynamic destinations |
 | `FILE_LOADS` | GCS-staged files (Avro by default, Parquet opt-in) + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once |
 
 Per-feature implementation status is tracked in the
@@ -522,7 +522,7 @@ rewrites each record into the protobuf row the Storage Write API accepts.
 ```java
 Sink<GenericRecord> sink =
         BigQuerySink.<GenericRecord>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .destinationResolver(myDestinationResolver)
                 .serializer(AvroRecordSerializer.of(schema))
                 .build();
 ```
@@ -1021,33 +1021,48 @@ env.enableCheckpointing(60_000); // EXACTLY_ONCE mode (the default)
 ```
 
 Method-specific settings live in `BufferedStreamOptions` (required for this write method,
-rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default) and
-the connector-driven recovery schedule (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff`
-10 s, `recoveryMaxAttempts` 10, each backoff jittered by ±25%) governing stream creation,
-transient re-appends and the restore probe. The SDK's in-stream retries below that budget are
-configured by the same `retry*` and `maxRetryDuration` knobs `DefaultStreamOptions` carries, with
-the same defaults — see [Tuning](#tuning). Unlike the default-stream path these appenders never
-enter the SDK's connection pool (each buffered stream gets a dedicated writer), so there is no
-first-writer-wins caveat and no pool-sizing knob.
+rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default),
+`destinationIdleTimeout` (one hour), and the connector-driven recovery schedule
+(`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff` 10 s, `recoveryMaxAttempts` 10, each backoff
+jittered by ±25%) governing stream creation, transient re-appends and the restore probe.
+The SDK's in-stream retries below that budget are configured by the same `retry*` and
+`maxRetryDuration` knobs `DefaultStreamOptions` carries, with the same defaults — see
+[Tuning](#tuning).
+Unlike the default-stream path these appenders never enter the SDK's connection pool: each active
+buffered stream gets a dedicated connection, so there is no first-writer-wins caveat and no
+pool-sizing knob.
 
-**Stream lifecycle.** Each writer subtask owns **one buffered stream, created lazily on its first
-append and reused across checkpoints** — per GCP guidance, frequent `CreateWriteStream` churn
-(e.g. a new stream per checkpoint × parallelism) is not intended usage of the API; a clean run
-creates exactly one stream per subtask for its whole lifetime. The stream name and next append
-offset are Flink writer state. The SDK connection pool is default-stream-only, so each stream
-gets a dedicated `StreamWriter` connection; backpressure comes from the SDK's bounded in-flight
-window. `prepareCommit()` emits one committable per subtask naming the offset the completed
-checkpoint may flush up to; `FlushRows` is naturally idempotent (re-flushing an already-flushed
-offset answers `ALREADY_EXISTS` = success), so re-commits after restarts need no deterministic-id
-machinery, no checkpoint stamping, and no global committer routing — the committer runs at the
-sink's parallelism.
+**Stream lifecycle.** Each writer subtask owns **one buffered stream per active destination,
+created lazily on that table's first append and reused across checkpoints**.
+Per GCP guidance, frequent `CreateWriteStream` churn (for example a new stream per checkpoint ×
+parallelism × destinations) is not intended usage of the API.
+The destination, stream name and next append offset are Flink writer state.
+The SDK connection pool is default-stream-only, so each stream gets a dedicated `StreamWriter`
+connection; backpressure comes from the SDK's bounded in-flight window.
+`prepareCommit()` emits one committable per changed destination naming the offset the completed
+checkpoint may flush up to.
+`FlushRows` is naturally idempotent (re-flushing an already-flushed offset answers
+`ALREADY_EXISTS` = success), so re-commits after restarts need no deterministic-id machinery, no
+checkpoint stamping, and no global committer routing — the committer runs at the sink's parallelism.
 
-**Restore.** A restored writer probes its stream with the first replayed batch at the restored
-offset, synchronously. Success reuses the stream; `OFFSET_ALREADY_EXISTS` (the pre-crash attempt
-appended past the restored offset), `OFFSET_OUT_OF_RANGE`, a finalized/unknown stream, or a
-failure to reopen it abandon the stream and a fresh one starts at offset zero. This cannot lose
-or duplicate data: rows appended past the restored offset were never named by any committable,
-so nothing ever flushes them. Abandoned streams (and streams of closing writers) are
+A checkpoint-clean destination that receives no record for longer than `destinationIdleTimeout`
+is evicted after the next successful non-end-of-input flush.
+The local appender is closed and its writer state is removed; the remote stream is deliberately
+not finalized, and a later row creates a new buffered stream for that table.
+The default is one hour.
+Use a timeout appropriate to the resolver's destination churn: eviction bounds local state and
+connections, but repeated eviction and reactivation consumes the project-and-region
+[`CreateWriteStream` quota](https://docs.cloud.google.com/bigquery/quotas#write-api-limits), which is
+10,000 requests per hour.
+
+**Restore.** State is grouped by destination, so every restored table independently adopts and
+probes its newest stream with the first replayed batch at the restored offset, synchronously.
+Success reuses the stream; `OFFSET_ALREADY_EXISTS` (the pre-crash attempt appended past the
+restored offset), `OFFSET_OUT_OF_RANGE`, a finalized/unknown stream, or a failure to reopen it
+abandon that stream and a fresh one starts at offset zero.
+This cannot lose or duplicate data: rows appended past the restored offset were never named by any
+committable, so nothing ever flushes them.
+Abandoned streams (and streams of closing or evicted writers) are
 deliberately **never finalized** — BigQuery rejects `FlushRows` on a finalized stream (verified
 against the real service, and the reason batch commits happen after writer close), so finalizing
 could permanently break a restored-but-uncommitted committable; an open stream's unflushed tail
@@ -1062,25 +1077,27 @@ TTL matters across downtime: a job stopped for longer than the TTL and then rest
 committables still pending references a stream that may no longer exist, and those flushes may
 fail permanently. The only escape from a permanently failing commit is to start without state,
 which drops those rows — the same class of hazard as an expired FILE_LOADS staging object. A
-subtask that received rows and then went idle past the TTL while the job is still running hits
-the same expiry; a missing stream is terminal mid-run, so the job restarts and the restore probe
-starts a fresh stream. **What exactly happens at expiry — whether the flush fails, with which
-error, whether the seven days is configurable, and whether unflushed buffered rows are billed as
-storage — is not stated in the documentation and has not been verified here.**
+destination that remains locally cached but receives no traffic past the TTL can hit the same
+expiry; the one-hour default idle eviction normally removes it first.
+A missing stream is terminal mid-run, so the job restarts and the restore probe starts a fresh
+stream.
+**What exactly happens at expiry — whether the flush fails, with which error, whether the seven
+days is configurable, and whether unflushed buffered rows are billed as storage — is not stated in
+the documentation and has not been verified here.**
 
 **Execution modes.** The mode must be explicit (`AUTOMATIC` is rejected at graph construction —
 were it to resolve to streaming without checkpointing, buffered rows would never become visible).
 Streaming requires checkpointing with `CheckpointingMode.EXACTLY_ONCE` and
 checkpoints-after-tasks-finish enabled (the final batch of a bounded job rides the post-finish
 checkpoint); a slow flush delays the next checkpoint — that is the backpressure, and `commit()`
-returning means the rows are visible. `BATCH` execution is supported: the single end-of-input
-committable is committed when the job completes. There is no checkpoint-cadence quota guard:
-`FlushRows` once per subtask per checkpoint is far below its quota (unlike FILE_LOADS' per-table
-daily load-job limit).
+returning means the rows are visible.
+`BATCH` execution is supported: the end-of-input committables are committed when the job completes.
+There is no checkpoint-cadence quota guard: each changed destination contributes one `FlushRows`
+call per checkpoint, unlike FILE_LOADS' per-table daily load-job limit.
 
-**Scope (v1).** One fixed `destination(...)` per sink — the builder rejects
-`destinationResolver(...)` for this write method (dynamic destinations are a planned follow-up).
-The table schema is pinned when the stream is created: **mid-stream schema evolution is not
+**Scope.** Fixed `destination(...)` and per-record `destinationResolver(...)` are both supported.
+Each destination has independent batching, offsets, recovery, checkpoint state and committables.
+The table schema is pinned when each stream is created: **mid-stream schema evolution is not
 supported** — no fingerprint refresh and no connector-driven schema updates, so the builder
 rejects an enabled `schemaUpdateOptions(...)` rather than accepting a setting this write method
 would silently ignore, and a schema mismatch fails the job with a hint (update the table out of
@@ -1104,8 +1121,10 @@ to the handler and replays the surviving rows plus every batch appended behind t
 at recomputed offsets. Transient failures are re-appended at their original offset
 (`OFFSET_ALREADY_EXISTS` then means the original landed); a client-side dead `StreamWriter` (the
 SDK's closed-writer error, or its callback-wait watchdog timing out a sent append after 5
-minutes without a response) is reopened on the same stream before the resend. Stream-state
-errors mid-run
+minutes without a response) is reopened on the same stream before the resend.
+With dynamic destinations, that repair closes and replaces only the affected table's local
+appender; other destinations keep their connections and offsets.
+Stream-state errors mid-run
 (`STREAM_FINALIZED`, `STREAM_NOT_FOUND`, `INVALID_STREAM_STATE`) are terminal — the restart +
 restore protocol is the repair. Consistency guards (an acknowledged append behind a rejected one,
 an offset-echo mismatch, `OFFSET_ALREADY_EXISTS` during an offset-shifting replay) fail the job
@@ -1900,9 +1919,10 @@ same meanings, plus one of its own:
 |---|---|---|
 | `inFlightAppends` | gauge | appends the service has not acknowledged |
 
-It has no `openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters:
-this write method takes one fixed destination whose schema is pinned when the stream is created, so
-each would be a constant.
+It has no `openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters.
+Its aggregate counters and in-flight gauge cover all destinations, while checkpoint state records
+the exact active set and `destinationIdleTimeout` bounds it; cardinality-bearing metrics are not
+part of this write method's surface.
 
 **`FILE_LOADS`**:
 
@@ -2099,17 +2119,21 @@ Caveats — the pool is JVM-global:
   writer. A second sink configuring different pool bounds in the same JVM is ignored with a
   warning. The floor is latched when a pool is constructed; the ceiling is read live.
 
-**Writer housekeeping** — `destinationIdleTimeout` and `flushInterval`, both per-subtask
-behavior of the writer itself.
+**Writer housekeeping** — `destinationIdleTimeout` on both Storage Write API option classes, and
+`flushInterval` on `DefaultStreamOptions`, are per-subtask behavior of the writer itself.
 
 Cold-destination eviction is memory hygiene for long-lived jobs with dynamic destinations (for
 example date-suffixed daily tables), whose per-destination state otherwise grows without bound.
 The sweep runs at the end of each successful flush — the point where nothing is pending or in
-flight, so closing a stream writer cannot cancel a live append. Correctness is unaffected: an
-evicted destination that receives a record again rebuilds its stream writer transparently, at
-the cost of that one rebuild. To never evict, set a very large duration — up to about 292 years
-(`Duration.ofNanos(Long.MAX_VALUE)`), which is as long as the writer's nanosecond clock can
-express and therefore the largest value the builder accepts.
+flight, so closing a stream writer cannot cancel a live append.
+On the default-stream path, an evicted destination that receives a record again rebuilds its writer
+transparently.
+On the buffered exactly-once path, eviction additionally requires that the destination's stream
+name and offset still match its latest checkpoint snapshot, then drops that destination from the
+next snapshot and creates a new remote stream if records return; it never finalizes the old stream.
+To avoid eviction, set a very large duration — up to about 292 years
+(`Duration.ofNanos(Long.MAX_VALUE)`), which is as long as the writer's nanosecond clock can express
+and therefore the largest value either builder accepts.
 
 `flushInterval` bounds the loss window of streaming jobs running *without* checkpointing, where
 Flink only flushes at end of input: every interval, the writer appends all pending batches and
@@ -2180,7 +2204,8 @@ presence-less columns carry `""`/`0`, `optional` and the unselected `oneof` bran
 the query works around two emulator deviations around an *empty* repeated column, where
 `ARRAY_TO_STRING` panics the emulator and `ARRAY_LENGTH` returns NULL instead of 0), and a
 buffered-stream smoke test of the production
-exactly-once client wiring (`BigQueryBufferedStreamSmokeITCase` — single flush only: the
+exactly-once client wiring and two dynamic destinations (`BigQueryBufferedStreamSmokeITCase` —
+single flush per stream only: the
 emulator keeps no flush cursor, every `FlushRows` re-inserts all rows up to the offset, and
 buffered appends neither honor the request offset nor raise `OFFSET_ALREADY_EXISTS`
 ([goccy/bigquery-emulator#505](https://github.com/goccy/bigquery-emulator/issues/505)), so the
@@ -2266,8 +2291,8 @@ credential-less CI:
   ([#282]({{< param BookRepo >}}/issues/282))
 - buffered-stream exactly-once semantics: idempotent re-flush, the restore probe, and the
   [issue #30]({{< param BookRepo >}}/issues/30) acceptance criterion — a MiniCluster streaming job
-  with an induced mid-run restart showing no duplicates and no gaps — plus a clean streaming run
-  and batch execution
+  with an induced mid-run restart showing no duplicates and no gaps — plus the same restart across
+  two dynamic destinations, a clean streaming run and batch execution
   (`BigQueryBufferedStreamExactlyOnceITCase`, gated on `BQ_IT_PROJECT`/`BQ_IT_DATASET` only;
   no bucket needed)
 
