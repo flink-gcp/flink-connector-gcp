@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
 
-import java.util.Locale;
-
 /** Whether the sink may create destination tables that do not exist. */
 @PublicEvolving
 public enum CreateDisposition {
@@ -28,10 +26,16 @@ public enum CreateDisposition {
      * Create the destination table when it does not exist, deriving the table schema from the
      * record's protobuf descriptor.
      */
-    CREATE_IF_NEEDED,
+    CREATE_IF_NEEDED("create-if-needed"),
 
     /** Never create destination tables; writing to a missing table fails. */
-    CREATE_NEVER;
+    CREATE_NEVER("create-never");
+
+    private final String value;
+
+    CreateDisposition(String value) {
+        this.value = value;
+    }
 
     /**
      * Returns the hyphenated lower-case spelling this constant takes in a {@code
@@ -43,6 +47,6 @@ public enum CreateDisposition {
      */
     @Override
     public String toString() {
-        return name().toLowerCase(Locale.ROOT).replace('_', '-');
+        return value;
     }
 }

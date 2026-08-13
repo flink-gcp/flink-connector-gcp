@@ -27,7 +27,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -52,13 +51,19 @@ public final class TableCreateOptions implements Serializable {
     /** Granularity of time-based partitioning. */
     public enum TimePartitioningType {
         /** One partition per hour. */
-        HOUR,
+        HOUR("hour"),
         /** One partition per day. */
-        DAY,
+        DAY("day"),
         /** One partition per month. */
-        MONTH,
+        MONTH("month"),
         /** One partition per year. */
-        YEAR;
+        YEAR("year");
+
+        private final String value;
+
+        TimePartitioningType(String value) {
+            this.value = value;
+        }
 
         /**
          * Returns the lower-case spelling this constant takes in a {@code
@@ -73,7 +78,7 @@ public final class TableCreateOptions implements Serializable {
          */
         @Override
         public String toString() {
-            return name().toLowerCase(Locale.ROOT).replace('_', '-');
+            return value;
         }
     }
 

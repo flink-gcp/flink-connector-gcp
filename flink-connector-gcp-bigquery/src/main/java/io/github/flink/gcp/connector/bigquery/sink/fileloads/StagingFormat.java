@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import org.apache.flink.annotation.PublicEvolving;
 
-import java.util.Locale;
-
 /**
  * The file format {@link io.github.flink.gcp.connector.bigquery.sink.WriteMethod#FILE_LOADS
  * FILE_LOADS} stages rows in before loading them, set by {@code
@@ -38,7 +36,7 @@ import java.util.Locale;
 public enum StagingFormat {
 
     /** Avro container files. The default, and the only format with no unshipped dependencies. */
-    AVRO(".avro"),
+    AVRO("avro", ".avro"),
 
     /**
      * Parquet files. Opt-in, and worth it mainly for a batch job whose per-destination volume
@@ -48,11 +46,13 @@ public enum StagingFormat {
      * is set to: a {@code PARQUET} load is refused at job-configuration level when the provided
      * schema names one, so it is a correctness override rather than a preference.
      */
-    PARQUET(".parquet");
+    PARQUET("parquet", ".parquet");
 
+    private final String value;
     private final String extension;
 
-    StagingFormat(String extension) {
+    StagingFormat(String value, String extension) {
+        this.value = value;
         this.extension = extension;
     }
 
@@ -71,6 +71,6 @@ public enum StagingFormat {
      */
     @Override
     public String toString() {
-        return name().toLowerCase(Locale.ROOT);
+        return value;
     }
 }

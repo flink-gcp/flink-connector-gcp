@@ -25,6 +25,8 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -44,26 +46,17 @@ class ConnectorEnumOptionSpellingTest {
 
     @Test
     void enumsSpellThemselvesTheWayADdlIsWritten() {
-        assertThat(WriteMethod.STORAGE_API_AT_LEAST_ONCE).hasToString("storage-api-at-least-once");
-        assertThat(WriteMethod.STORAGE_API_EXACTLY_ONCE).hasToString("storage-api-exactly-once");
-        assertThat(WriteMethod.FILE_LOADS).hasToString("file-loads");
-        assertThat(CreateDisposition.CREATE_IF_NEEDED).hasToString("create-if-needed");
-        assertThat(CreateDisposition.CREATE_NEVER).hasToString("create-never");
-        assertThat(WriteDisposition.WRITE_APPEND).hasToString("write-append");
-        assertThat(WriteDisposition.WRITE_TRUNCATE).hasToString("write-truncate");
-        assertThat(WriteDisposition.WRITE_EMPTY).hasToString("write-empty");
-        assertThat(TableCreateOptions.TimePartitioningType.HOUR).hasToString("hour");
-        assertThat(TableCreateOptions.TimePartitioningType.DAY).hasToString("day");
-        assertThat(TableCreateOptions.TimePartitioningType.MONTH).hasToString("month");
-        assertThat(TableCreateOptions.TimePartitioningType.YEAR).hasToString("year");
-    }
-
-    @Test
-    void noConstantOfAnyEnumKeepsTheUnderscoreSpelling() {
-        assertHyphenated(WriteMethod.class);
-        assertHyphenated(CreateDisposition.class);
-        assertHyphenated(WriteDisposition.class);
-        assertHyphenated(TableCreateOptions.TimePartitioningType.class);
+        assertSpellings(
+                WriteMethod.class,
+                "storage-api-at-least-once",
+                "storage-api-exactly-once",
+                "file-loads");
+        assertSpellings(CreateDisposition.class, "create-if-needed", "create-never");
+        assertSpellings(WriteDisposition.class, "write-append", "write-truncate", "write-empty");
+        assertSpellings(
+                TableCreateOptions.TimePartitioningType.class, "hour", "day", "month", "year");
+        assertSpellings(StagingFormat.class, "avro", "parquet");
+        assertSpellings(ParquetCompression.class, "zstd", "none");
     }
 
     @Test
@@ -72,6 +65,8 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(CreateDisposition.class);
         assertRoundTrips(WriteDisposition.class);
         assertRoundTrips(TableCreateOptions.TimePartitioningType.class);
+        assertRoundTrips(StagingFormat.class);
+        assertRoundTrips(ParquetCompression.class);
     }
 
     @Test
@@ -97,14 +92,6 @@ class ConnectorEnumOptionSpellingTest {
         assertThat(WriteDisposition.WRITE_TRUNCATE.name()).isEqualTo("WRITE_TRUNCATE");
     }
 
-    private static <E extends Enum<E>> void assertHyphenated(Class<E> enumClass) {
-        for (E constant : enumClass.getEnumConstants()) {
-            assertThat(constant.toString())
-                    .as("%s.%s", enumClass.getSimpleName(), constant.name())
-                    .isEqualTo(constant.name().toLowerCase(Locale.ROOT).replace('_', '-'));
-        }
-    }
-
     private static <E extends Enum<E>> void assertRoundTrips(Class<E> enumClass) {
         ConfigOption<E> option = ConfigOptions.key("k").enumType(enumClass).noDefaultValue();
         for (E constant : enumClass.getEnumConstants()) {
@@ -112,6 +99,13 @@ class ConnectorEnumOptionSpellingTest {
             assertThat(parse(option, constant.toString().toUpperCase(Locale.ROOT)))
                     .isEqualTo(constant);
         }
+    }
+
+    private static <E extends Enum<E>> void assertSpellings(
+            Class<E> enumClass, String... expectedSpellings) {
+        assertThat(enumClass.getEnumConstants())
+                .extracting(Object::toString)
+                .containsExactly(expectedSpellings);
     }
 
     private static <E extends Enum<E>> E parse(ConfigOption<E> option, String value) {

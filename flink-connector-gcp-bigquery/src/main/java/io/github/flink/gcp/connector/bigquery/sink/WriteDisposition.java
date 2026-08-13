@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
 
-import java.util.Locale;
-
 /**
  * How data lands in a destination table that already contains data. Mirrors the BigQuery load-job
  * write dispositions; only {@link io.github.flink.gcp.connector.bigquery.sink.WriteMethod
@@ -29,13 +27,19 @@ import java.util.Locale;
 public enum WriteDisposition {
 
     /** Appends loaded rows to the existing table data. The default. */
-    WRITE_APPEND,
+    WRITE_APPEND("write-append"),
 
     /** Replaces the existing table data (and schema) with the loaded rows. */
-    WRITE_TRUNCATE,
+    WRITE_TRUNCATE("write-truncate"),
 
     /** Fails the load when the destination table is not empty. */
-    WRITE_EMPTY;
+    WRITE_EMPTY("write-empty");
+
+    private final String value;
+
+    WriteDisposition(String value) {
+        this.value = value;
+    }
 
     /**
      * Returns the hyphenated lower-case spelling this constant takes in a {@code
@@ -48,6 +52,6 @@ public enum WriteDisposition {
      */
     @Override
     public String toString() {
-        return name().toLowerCase(Locale.ROOT).replace('_', '-');
+        return value;
     }
 }
