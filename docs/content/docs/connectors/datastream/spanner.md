@@ -490,6 +490,10 @@ Each column keeps the complete recursive type descriptor as normalized JSON with
 Nested array descriptors, annotations, `TOKENLIST`, and service codes added before a client-library release therefore survive deserialization and Java serialization.
 The record's own `valueCaptureType` and `columnTypes` describe the configuration and schema in effect when that change was captured, so a running job can cross both kinds of change without rebuilding the source.
 
+`TypeInformation.of(DataChangeRecord.class)` selects the connector's field serializer rather than reflective Kryo.
+The serializer preserves the immutable record, its collection order, and absent values across network and state boundaries without requiring access to JDK implementation fields.
+If a transformation erases a stream that still emits `DataChangeRecord`, declare the same type information with `.returns(TypeInformation.of(DataChangeRecord.class))`.
+
 Returning successfully without emitting output skips that data-change record and increments `recordsSkipped` once.
 If deserialization fails, the split progress does not advance, so recovery can replay the data-change record under the source's at-least-once contract.
 Heartbeats and child-partitions records do not call the user deserializer.
