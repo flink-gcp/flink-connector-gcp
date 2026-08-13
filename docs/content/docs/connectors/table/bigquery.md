@@ -218,8 +218,8 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 | `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.location` | String | `location(...)` |
-| `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Setting it to `true` is rejected under `storage-api-exactly-once`: a buffered stream's schema is pinned when the stream is created. `false` is accepted there, so one DDL can be templated across write methods |
-| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. `true` is rejected under `storage-api-exactly-once`, as above. Under `file-loads` both keys are ignored unless the disposition is `write-append`, which is BigQuery's own rule for load jobs |
+| `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
+| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load-job option is `write-append`-only, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
 | `sink.derive-required-columns` | Boolean | Derives a `REQUIRED` column from a `NOT NULL` one; off, every derived column is `NULLABLE` |
 | `sink.json-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `JSON` |
 | `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
@@ -423,6 +423,25 @@ and the temporal types ISO-8601 strings. A `MULTISET` has no JSON form and is re
 with non-string keys. `GEOGRAPHY` may only mark a `STRING`: no structured value means a geometry to
 BigQuery.
 
+## Schema evolution
+
+The two `sink.schema-update.*` options are accepted under every write method.
+Whenever the connector reconciles rather than replaces a table schema, they select the same additive union rules: existing fields are not removed, reordered or retyped, new fields are added as `NULLABLE`, and `REPEATED` modes do not change.
+
+`sink.derive-required-columns` and `sink.schema-update.allow-field-relaxation` operate at different stages.
+The former changes the desired schema derived from the DDL: when enabled, a `NOT NULL` column becomes `REQUIRED`; when disabled, every non-repeated derived column is `NULLABLE`.
+The latter permits the connector to relax an existing table column from `REQUIRED` to `NULLABLE` when the DDL-derived schema is nullable.
+During additive reconciliation it never tightens a `NULLABLE` table column to `REQUIRED`, and a new `REQUIRED`-derived column is added to an existing table as `NULLABLE` because BigQuery cannot add required fields.
+Changing `sink.derive-required-columns` alone therefore does not rewrite an existing table.
+
+The selected write method decides when that union is applied.
+`storage-api-at-least-once` rebuilds its default-stream writer after reconciling the table.
+`storage-api-exactly-once` drains old-schema rows and reconnects the same buffered stream at the same next offset.
+`file-loads` reconciles once per destination before loading each batch run or streaming checkpoint, then puts the reconciled schema on every load job.
+For `file-loads`, `write-append` jobs also carry BigQuery's native schema-update options, `write-empty` relies on the connector's pre-load reconciliation, and `write-truncate` replaces the table schema instead of reconciling it.
+
+See [Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) on the DataStream page for the nullability result table, failure behavior, propagation waits and serializer compatibility rules.
+
 ## Delivery guarantees
 
 `sink.write-method` decides them. **In streaming execution all three need checkpointing enabled**
@@ -436,11 +455,11 @@ on the DataStream page for the full statement; what a SQL user needs is:
 - **`storage-api-exactly-once`** — rows become visible only when a completed checkpoint commits
   them, so a restart **from a checkpoint or savepoint** neither loses nor duplicates. A *stateless*
   redeploy is the exception, and it loses: rows appended but not yet flushed stay invisible forever.
-  The checkpoint interval is therefore the visibility latency as well. It cannot evolve the table's
-  schema mid-run — the stream's schema is pinned when the stream is created, which is why setting
-  either `sink.schema-update.*` key to `true` is rejected with it — and it needs Flink's
-  `EXACTLY_ONCE` checkpointing mode with checkpoints-after-tasks-finish enabled. Both are already
-  Flink's defaults; a cluster that overrides either has the job refused when the graph is built.
+  The checkpoint interval is therefore the visibility latency as well. A schema change drains rows
+  encoded with the old descriptor, widens the table when a `sink.schema-update.*` option permits it,
+  and reconnects the same buffered stream at its next offset. It needs Flink's `EXACTLY_ONCE`
+  checkpointing mode with checkpoints-after-tasks-finish enabled. Both are already Flink's defaults;
+  a cluster that overrides either has the job refused when the graph is built.
 - **`file-loads`** — always exactly-once, by staging rows as files on Cloud Storage and importing
   them with load jobs. In streaming execution each checkpoint issues at least one load job per
   table, against BigQuery's quota of **1,500 per table per day**, so the checkpoint interval has a
@@ -496,11 +515,9 @@ would buy an earlier failure at the risk of refusing a table a later BigQuery wo
 **A tuning key of a write method you did not select is rejected, not ignored.** Each write method
 owns one options object on the DataStream API, and the builder already refuses a mismatched pair —
 but its message names `bufferedStreamOptions(...)`, a method a SQL user never called and cannot
-call. The connector therefore restates the rule in option keys, naming the offending ones. The two
-rules that are not about a family read the same way: a `sink.schema-update.*` key set to `true`
-under `storage-api-exactly-once`, and `emulator-endpoint` / `emulator-rest-endpoint` under
-`file-loads`,
-which stages to Cloud Storage that no emulator provides.
+call. The connector therefore restates the rule in option keys, naming the offending ones.
+The emulator endpoints remain a separate incompatibility under `file-loads`, which stages to Cloud
+Storage that no emulator provides.
 
 **The two required families are built from the write method, not from key presence.** Selecting
 `storage-api-exactly-once` or `file-loads` and tuning nothing is a complete configuration: every

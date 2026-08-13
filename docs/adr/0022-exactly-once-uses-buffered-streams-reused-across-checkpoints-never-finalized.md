@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0022: Exactly-once uses buffered streams reused across checkpoints, never finalized
 
 - Status: Accepted
-- Date: 2026-07-25; dynamic destinations added 2026-08-13 ([#76])
-- Issues: [#30], [#76]
+- Date: 2026-07-25; dynamic destinations and schema evolution added 2026-08-13 ([#76], [#77])
+- Issues: [#30], [#76], [#77]
 - Modules: bigquery (`sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Exactly-once
   (buffered streams)
@@ -59,14 +59,33 @@ limitations under the License.
 - A clean destination idle past `BufferedStreamOptions.destinationIdleTimeout` is evicted after a
   successful non-end-of-input flush; the local appender closes, the remote stream is not finalized,
   and a later row creates a new stream.
-- No mid-stream schema evolution (each stream's schema is pinned at creation), BATCH supported
-  (commit at end of input), streaming requires EXACTLY_ONCE + checkpoints-after-tasks-finish;
-  recovery and eviction knobs are builder-configurable via `BufferedStreamOptions` with defaults.
+- Mid-stream schema evolution drains old-descriptor rows before closing the local appender and
+  reopening the same remote stream with the serializer's current descriptor.
+  The stream name and next offset do not change, so writer state stays version 2 and committables
+  stay version 1.
+  Fingerprint changes perform this refresh proactively; schema-mismatch responses perform it
+  reactively and use the shared schema propagation schedule.
+  Enabled `schemaUpdateOptions(...)` runs the same additive, etag-conditioned table reconciliation
+  as the default-stream writer before reconnecting.
+  Dynamic destinations reconcile and reconnect independently.
+  `SchemaUnifier` is the common policy across both Storage Write API methods and `FILE_LOADS`.
+  The Storage writers share `StorageWriteSchemaReconciler`, while `FILE_LOADS` retains its
+  load-specific orchestration because it must return the schema carried by each load job, memoize
+  it per destination and run write-disposition-specific behavior.
+- BATCH is supported (commit at end of input), streaming requires EXACTLY_ONCE +
+  checkpoints-after-tasks-finish; recovery and eviction knobs are builder-configurable via
+  `BufferedStreamOptions` with defaults.
 
 ## Consequences
 
-The goccy emulator keeps no flush cursor (re-flush duplicates), so exactly-once ITs run against
-real GCP; the emulator gets a single-flush smoke test only.
+The goccy emulator keeps no flush cursor, ignores requested append offsets and can hang after a
+same-stream descriptor reconnect, so exactly-once schema-evolution semantics run against
+deterministic fakes and real GCP.
+The normal real-service schema test pre-creates the widened table so it does not inherit metadata
+propagation latency.
+Connector-driven propagation has a separately gated manual probe because the default-stream path
+has previously shown a rare service-controlled tail near two hours.
 
 [#30]: https://github.com/laughingman7743/flink-connector-gcp/issues/30
 [#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
+[#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77

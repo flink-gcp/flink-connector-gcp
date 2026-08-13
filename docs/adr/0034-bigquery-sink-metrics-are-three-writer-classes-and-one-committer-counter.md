@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-03
-- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76]
+- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Metrics, § Committer
   metrics
@@ -33,8 +33,9 @@ aligned with the operations it reports.
 After [#76], the buffered path may have dynamic destinations but deliberately retains aggregate
 counters plus its aggregate `inFlightAppends` gauge: checkpoint state records the exact active set,
 `destinationIdleTimeout` bounds it, and this change does not add cardinality-bearing metrics.
-It still has no schema reconciliation, while FILE_LOADS makes no per-record request and therefore
-has no error-class dimension at all.
+After [#77], it registers the aggregate `schemaReconciliations` counter because it can apply the
+same table updates as the default-stream writer.
+FILE_LOADS makes no per-record request and therefore has no error-class dimension at all.
 
 - **`numRecordsSend` is counted where the batch is first handed to the client**: `appendPending`
   on the default-stream path (the repair path re-appends from `retryBatches`, a different call
@@ -82,3 +83,4 @@ has no error-class dimension at all.
 [#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
 [#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
 [#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
+[#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77

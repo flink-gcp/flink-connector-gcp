@@ -305,24 +305,17 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void exactlyOnceRejectsEnabledSchemaUpdateOptions() {
-        // The buffered stream's schema is pinned at creation, so the writer never consults
-        // schemaUpdateOptions — accepting them silently would promise evolution that never runs.
-        assertThatThrownBy(
-                        () ->
-                                BigQuerySink.<String>builder()
-                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                        .destination(DESTINATION)
-                                        .serializer(new TestSerializer())
-                                        .schemaUpdateOptions(
-                                                SchemaUpdateOptions.builder()
-                                                        .allowNewFields()
-                                                        .build())
-                                        .bufferedStreamOptions(
-                                                BufferedStreamOptions.builder().build())
-                                        .build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("schemaUpdateOptions");
+    void exactlyOnceAcceptsEnabledSchemaUpdateOptions() {
+        Sink<String> sink =
+                BigQuerySink.<String>builder()
+                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                        .destination(DESTINATION)
+                        .serializer(new TestSerializer())
+                        .schemaUpdateOptions(SchemaUpdateOptions.builder().allowNewFields().build())
+                        .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                        .build();
+
+        assertThat(sink).isInstanceOf(BigQueryBufferedStreamSink.class);
     }
 
     @Test

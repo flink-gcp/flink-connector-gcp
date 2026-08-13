@@ -669,18 +669,10 @@ class BigQueryDynamicTableFactoryTest {
     }
 
     @Test
-    void schemaEvolutionUnderExactlyOnceIsRejectedByKeyName() {
-        // A buffered stream's schema is pinned at stream creation. The builder says so naming
-        // schemaUpdateOptions(...); this says it in keys.
+    void schemaEvolutionUnderExactlyOnceIsAccepted() {
         Map<String, String> options = optionsFor(WriteMethod.STORAGE_API_EXACTLY_ONCE);
         options.put("sink.schema-update.allow-field-relaxation", "true");
-        assertThatThrownBy(() -> sink(options))
-                .isInstanceOf(ValidationException.class)
-                // The opening clause, not "pinned when the stream is created": the builder's own
-                // message carries that phrase verbatim, so it would not tell the two apart in a
-                // test that reaches the builder — as the planner-level sibling does.
-                .hasStackTraceContaining("ask the sink to evolve the table schema")
-                .hasStackTraceContaining("sink.schema-update.allow-field-relaxation");
+        assertThat(built(options)).isInstanceOf(BigQueryBufferedStreamSink.class);
     }
 
     @Test

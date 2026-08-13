@@ -73,6 +73,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
 
     public final List<String> createdStreams = new ArrayList<>();
     public final List<String> openedAppenders = new ArrayList<>();
+    public final List<Descriptors.Descriptor> openedDescriptors = new ArrayList<>();
     public final List<String> closedAppenders = new ArrayList<>();
     public final List<AppendCall> appends = new ArrayList<>();
     public final List<FlushCall> flushes = new ArrayList<>();
@@ -131,6 +132,7 @@ public class FakeBufferedStreamService implements BufferedStreamService {
             throwScripted(openAppenderFailures.removeFirst());
         }
         openedAppenders.add(streamName);
+        openedDescriptors.add(rowDescriptor);
         return new OffsetRowAppender() {
             @Override
             public ApiFuture<AppendRowsResponse> append(ProtoRows rows, long offset) {

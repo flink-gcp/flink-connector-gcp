@@ -37,9 +37,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * through {@code FactoryMocks} — which is where a SQL user meets them, and where Flink's own
  * wrapping of the exception happens.
  *
- * <p>No BigQuery of any kind is contacted: every case throws while the job graph is being built,
- * before a client is opened, so the endpoint below is a string that only has to parse. That is why
- * this is not an ITCase — an emulator container would be infrastructure no test uses.
+ * <p>No BigQuery of any kind is contacted: rejection cases throw while the job graph is being
+ * built, and acceptance cases stop at {@code explainSql}, before a client is opened. The endpoint
+ * below is therefore a string that only has to parse. That is why this is not an ITCase — an
+ * emulator container would be infrastructure no test uses.
  *
  * <p>Refusals are all any local test can carry for the two write methods this issue adds, and the
  * emulator is why. FILE_LOADS stages to Cloud Storage, which nothing here stands in for — the last
@@ -116,9 +117,10 @@ class BigQueryTableWriteMethodsPlanTest {
     }
 
     @Test
-    void refusesSchemaEvolutionUnderExactlyOnceAtPlanTime() {
+    void acceptsSchemaEvolutionUnderExactlyOnceAtPlanTime() {
         TableEnvironment tEnv =
                 tableEnvironmentWith(
+                        checkpointingEvery(Duration.ofSeconds(1)),
                         "CREATE TABLE events (name STRING) "
                                 + withOptions(
                                         "schema_update",
@@ -127,13 +129,8 @@ class BigQueryTableWriteMethodsPlanTest {
                                         "sink.schema-update.allow-new-fields",
                                         "true"));
 
-        assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO events VALUES ('alice')"))
-                .isInstanceOf(ValidationException.class)
-                // The opening clause, deliberately: the builder's own rejection — which this level
-                // reaches, unlike a FactoryMocks test — says "pinned when the stream is created"
-                // verbatim, so that phrase would not tell the two apart.
-                .hasStackTraceContaining("ask the sink to evolve the table schema")
-                .hasStackTraceContaining("sink.schema-update.allow-new-fields");
+        assertThatCode(() -> tEnv.explainSql("INSERT INTO events VALUES ('alice')"))
+                .doesNotThrowAnyException();
     }
 
     @Test
