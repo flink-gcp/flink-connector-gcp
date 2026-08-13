@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-07-19 ([#14]); load stage revised 2026-07-20 ([#69]); committer schedules
   2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
   (2026-08-08); load-job grouping refined by [#284] (2026-08-08); job locations revised by
-  [#491] (2026-08-10); streaming overflow revised by [#72] (2026-08-13)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491]
+  [#491] (2026-08-10); streaming overflow revised by [#72] (2026-08-13); hierarchical overflow
+  revised by [#598] (2026-08-13)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -49,9 +50,27 @@ limitations under the License.
   [#14] post-commit-topology design was replaced in [#69]: records emitted to a post-commit
   topology during job shutdown are not guaranteed to be processed — verified empirically, the
   final streaming batch was lost — while committer commits ride the final-checkpoint wait and
-  the framework's committer state. Jobs are submitted all at once then awaited. Cleanup is
-  best-effort on success only; a staging bucket lifecycle rule is the documented mitigation for
-  orphans.
+  the framework's committer state. Independent jobs are submitted and awaited in deterministic
+  waves of at most 50,000, keeping one connector run within BigQuery's per-project, per-region
+  pending-job limit. Cleanup is best-effort on success only; a staging bucket lifecycle rule is
+  the documented mitigation for orphans.
+- **Overflow keeps one final copy through a deterministic hierarchy** ([#598]). Each load
+  partition first lands in an idempotent leaf temporary table. Up to 1,200 leaves feed the final
+  copy unchanged. A larger set is grouped in source order into copy jobs of at most 1,200 sources;
+  each group of two or more becomes an intermediate temporary table, while a final singleton is
+  carried forward without spending a copy job. A level is fully awaited before the next level is
+  submitted, and only the final level writes the destination. Every intermediate uses
+  `CREATE_IF_NEEDED` plus `WRITE_TRUNCATE`, so the existing deterministic job re-attachment also
+  makes a retry idempotent. Names and ids hash their ordered inputs and include the hierarchy level,
+  group and checkpoint attribution. Leaf and intermediate tables remain until the final copy
+  succeeds, then join the existing best-effort cleanup.
+- **The complete job graph is bounded and validated before side effects** ([#598]). One commit may
+  plan at most 100,000 load jobs and 100,000 copy jobs, matching BigQuery's project-wide daily
+  quotas. The planner constructs every copy with at most 1,200 sources before schema reconciliation,
+  table creation or job submission begins. This does not reserve shared quota: other workloads and
+  failed attempts still consume the project's daily allowance. The cap is deliberately not a
+  public option; a plan large enough to spend a whole project's default daily quota should be
+  reduced with larger staging files or smaller commits instead.
 - **Streaming FILE_LOADS** ([#69]): same `WriteMethod.FILE_LOADS` value, allowed under explicit
   `STREAMING` + checkpointing (`AUTOMATIC` stays rejected); `WRITE_APPEND` only. The checkpoint
   is the trigger: each completed checkpoint's committables are committed synchronously (a slow
@@ -62,9 +81,10 @@ limitations under the License.
   `-c<checkpointId>` segment (hash material unchanged) and derive their Flink-job segment from
   the committable's originating job id (stamped by the writer) so re-commits after a new-JobID
   restore still re-attach. On overflow, batch and streaming both load idempotent partitions into
-  temporary tables and append them to the final table with one atomic copy job; streaming
-  temporary-table names include the checkpoint id, and their digest also distinguishes staging
-  formats that coexist during a transition. Streaming also requires EXACTLY_ONCE checkpointing and
+  temporary tables, reduce more than 1,200 leaves through intermediate copy levels, and append only
+  the final level to the destination with one atomic copy job; streaming temporary-table names
+  include the checkpoint id, and leaf digests also distinguish staging formats that coexist during
+  a transition. Streaming also requires EXACTLY_ONCE checkpointing and
   checkpoints-after-tasks-finish (the final batch rides the post-finish checkpoint). Quota guard
   at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5 min
   warns (1,500 load jobs/table/day, with an overflow copy still consuming one destination-table
@@ -73,7 +93,7 @@ limitations under the License.
   `FileLoadsOptions`, mapped by `toLoadJobPollSchedule()` / `toSchemaReconcileSchedule()`. Both
   pass the [#54] workload-versus-service test that kept the default-stream schema-wait schedule
   unexposed: completion polling paces the **caller's own** `jobs.get` quota and latency (it
-  covers the overflow path's copy job too), and the etag-race budget absorbs contention from
+  covers every overflow copy level too), and the etag-race budget absorbs contention from
   **other writers of the same table** — a property of the deployment, not of BigQuery. **It is
   not about this job's parallelism**: `prepared.global()` means one job has exactly one
   reconciler. (The first draft said the opposite, transplanting the wording from the
@@ -176,3 +196,4 @@ limitations under the License.
 [#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
 [#380]: https://github.com/laughingman7743/flink-connector-gcp/issues/380
 [#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491
+[#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598

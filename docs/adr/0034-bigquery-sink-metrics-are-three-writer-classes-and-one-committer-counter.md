@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0034: BigQuery sink metrics are three writer classes and one committer counter
 
 - Status: Accepted
-- Date: 2026-08-03
-- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77]
+- Date: 2026-08-03; copy hierarchy wording revised by [#598] (2026-08-13)
+- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77], [#598]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Metrics, § Committer
   metrics
@@ -70,7 +70,7 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
   `DestinationMetrics.Counters.recordsSent(long)` was added to the base helper for the same
   reason — a batching connector counts n records in one call.
 - **The FILE_LOADS committer's `loadJobsSubmitted` counts load jobs only**, not the overflow
-  path's copy job (the name is the contract), threaded into
+  path's final or intermediate copy jobs (the name is the contract), threaded into
   `LoadJobOrchestrator` as a `Counter` because that type is constructed per commit while the
   metric is registered once per committer. It is the whole job's rate (`prepared.global()` means
   one committer subtask). The framework's own committer metrics are **documented, not built**,
@@ -84,3 +84,4 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
 [#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
 [#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
 [#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77
+[#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598

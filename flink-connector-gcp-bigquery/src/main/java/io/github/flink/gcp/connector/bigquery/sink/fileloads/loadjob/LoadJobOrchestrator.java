@@ -57,6 +57,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.function.Function;
 
 /**
  * Turns the staged files of one run — a whole batch job, or one checkpoint of a streaming job —
@@ -79,16 +80,19 @@ import java.util.TreeMap;
  * schema update options on {@code WRITE_APPEND} jobs; with other dispositions they are omitted —
  * {@code WRITE_TRUNCATE} replaces the schema wholesale anyway.)
  *
- * <p><b>Overflow — temporary tables plus one copy job.</b> If any staging format for a table
+ * <p><b>Overflow — temporary tables plus a copy hierarchy.</b> If any staging format for a table
  * exceeds the limits, every format for that table is loaded partition-by-partition into temporary
  * tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED}, so a retried partition load is
- * idempotent), then appended to the final table with a single atomic copy job. Copy jobs support no
- * schema update options and require matching schemas, so the temporary tables are loaded with the
- * reconciled schema. Streaming temporary-table names include the checkpoint id so consecutive
- * checkpoints do not collide.
+ * idempotent). At most 1,200 sources feed one copy job. A larger source set is reduced through
+ * deterministic intermediate tables until one final copy can atomically append it to the final
+ * table. Copy jobs support no schema update options and require matching schemas, so every leaf is
+ * loaded with the reconciled schema and every intermediate inherits it. Streaming temporary-table
+ * names include the checkpoint id so consecutive checkpoints do not collide.
  *
- * <p><b>Concurrency.</b> All jobs are submitted first and awaited second — BigQuery runs them
- * concurrently server-side, so no thread pool is needed.
+ * <p><b>Concurrency.</b> Independent jobs are submitted first and awaited second in deterministic
+ * waves of at most 50,000 submissions, within BigQuery's per-project, per-region pending-job limit.
+ * Copy levels are barriers: a level is complete before a job that reads its tables is submitted.
+ * BigQuery runs each wave concurrently server-side, so no thread pool is needed.
  *
  * <p><b>Determinism and retries.</b> Files are sorted by URI before bin-packing, so a retried run
  * over the same committables produces identical partitions, temporary table names and job ids
@@ -112,6 +116,12 @@ public final class LoadJobOrchestrator {
     /** BigQuery's maximum source-table count for one copy job. */
     @VisibleForTesting static final int MAX_SOURCE_TABLES_PER_COPY = 1_200;
 
+    /** BigQuery's project-wide daily quota for each of load and copy jobs. */
+    @VisibleForTesting static final int MAX_JOBS_PER_COMMIT = 100_000;
+
+    /** BigQuery's maximum pending jobs per project and region. */
+    @VisibleForTesting static final int MAX_SUBMISSIONS_PER_WAVE = 50_000;
+
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;
     private final RetrySchedule schemaReconcileSchedule;
@@ -121,6 +131,7 @@ public final class LoadJobOrchestrator {
     private final String flinkJobId;
     @Nullable private final Long checkpointId;
     private final Counter loadJobsSubmitted;
+    private final Limits limits;
 
     /** Per-run memo of {@link #ensureFinalTable}; see {@link #finalTableSchema}. */
     private final Map<TableDestination, Schema> finalTableSchemas = new HashMap<>();
@@ -149,6 +160,29 @@ public final class LoadJobOrchestrator {
             String flinkJobId,
             @Nullable Long checkpointId,
             Counter loadJobsSubmitted) {
+        this(
+                config,
+                options,
+                runner,
+                tableAdmin,
+                storage,
+                flinkJobId,
+                checkpointId,
+                loadJobsSubmitted,
+                Limits.BIGQUERY);
+    }
+
+    @VisibleForTesting
+    LoadJobOrchestrator(
+            BigQuerySinkConfig<?> config,
+            FileLoadsOptions options,
+            LoadJobRunner runner,
+            TableAdmin tableAdmin,
+            StagingStorage storage,
+            String flinkJobId,
+            @Nullable Long checkpointId,
+            Counter loadJobsSubmitted,
+            Limits limits) {
         this.config = config;
         this.options = options;
         this.schemaReconcileSchedule = options.toSchemaReconcileSchedule();
@@ -158,6 +192,7 @@ public final class LoadJobOrchestrator {
         this.flinkJobId = flinkJobId;
         this.loadJobsSubmitted = loadJobsSubmitted;
         this.checkpointId = checkpointId;
+        this.limits = limits;
     }
 
     /**
@@ -171,57 +206,26 @@ public final class LoadJobOrchestrator {
             LOG.info("No staged files; nothing to load");
             return;
         }
-        List<DestinationLoad> loads = plan(committables);
-        Map<TableDestination, DestinationCopy> copies = new LinkedHashMap<>();
-        Map<TableDestination, Integer> formatCounts = new HashMap<>();
-        Set<TableDestination> overflowingDestinations = new HashSet<>();
-        for (DestinationLoad load : loads) {
-            formatCounts.merge(load.destination, 1, Integer::sum);
-            if (load.partitions.size() > 1) {
-                overflowingDestinations.add(load.destination);
-            }
-        }
-        for (TableDestination destination : overflowingDestinations) {
-            int sourceTables =
-                    loads.stream()
-                            .filter(load -> load.destination.equals(destination))
-                            .mapToInt(load -> load.partitions.size())
-                            .sum();
-            if (sourceTables > MAX_SOURCE_TABLES_PER_COPY) {
-                throw new IOException(
-                        "FILE_LOADS overflow for "
-                                + destination
-                                + " requires "
-                                + sourceTables
-                                + " temporary tables, but BigQuery copy jobs accept at most "
-                                + MAX_SOURCE_TABLES_PER_COPY
-                                + " source tables; increase maxStagingFileBytes or reduce the"
-                                + " volume per commit");
-            }
-        }
+        CommitPlan plan = planCommit(committables);
 
-        for (DestinationLoad load : loads) {
-            boolean useTempTables = overflowingDestinations.contains(load.destination);
-            submitLoads(load, useTempTables, formatCounts.get(load.destination) > 1);
-            if (useTempTables) {
-                copies.computeIfAbsent(load.destination, DestinationCopy::new)
-                        .tempTables
-                        .addAll(load.tempTables);
+        runInWaves(plan.loads, this::submitLoad, load -> load.jobId);
+        for (int level = 0; level < plan.intermediateLevelCount; level++) {
+            List<PlannedCopy> jobs = new ArrayList<>();
+            for (DestinationCopy copy : plan.copies) {
+                if (level < copy.intermediateLevels.size()) {
+                    jobs.addAll(copy.intermediateLevels.get(level));
+                }
             }
+            runInWaves(jobs, this::submitCopy, copy -> copy.jobId);
         }
-        for (DestinationLoad load : loads) {
-            for (String jobId : load.loadJobIds) {
-                runner.awaitJob(jobId);
-            }
+        List<PlannedCopy> finalCopies = new ArrayList<>(plan.copies.size());
+        for (DestinationCopy copy : plan.copies) {
+            finalCopies.add(copy.finalCopy);
         }
-        for (DestinationCopy copy : copies.values()) {
-            submitCopy(copy);
-        }
-        for (DestinationCopy copy : copies.values()) {
-            runner.awaitJob(copy.copyJobId);
-        }
-        for (DestinationLoad load : loads) {
-            for (TableDestination tempTable : load.tempTables) {
+        runInWaves(finalCopies, this::submitCopy, copy -> copy.jobId);
+
+        for (DestinationCopy copy : plan.copies) {
+            for (TableDestination tempTable : copy.cleanupTables) {
                 runner.deleteTable(tempTable);
             }
         }
@@ -237,8 +241,167 @@ public final class LoadJobOrchestrator {
                 "Loaded {} rows from {} staged files into {} tables{}",
                 rows,
                 committables.size(),
-                loads.size(),
+                plan.destinationFormatCount,
                 checkpointId != null ? " for checkpoint " + checkpointId : "");
+    }
+
+    /** Builds and validates every load, copy level and cleanup target before any side effect. */
+    private CommitPlan planCommit(List<FileLoadsCommittable> committables) throws IOException {
+        List<DestinationLoad> destinationLoads = plan(committables);
+        Map<TableDestination, Integer> formatCounts = new HashMap<>();
+        Set<TableDestination> overflowingDestinations = new HashSet<>();
+        for (DestinationLoad load : destinationLoads) {
+            formatCounts.merge(load.destination, 1, Integer::sum);
+            if (load.partitions.size() > 1) {
+                overflowingDestinations.add(load.destination);
+            }
+        }
+
+        List<PlannedLoad> loads = new ArrayList<>();
+        Map<TableDestination, List<TableDestination>> copySources = new LinkedHashMap<>();
+        for (DestinationLoad load : destinationLoads) {
+            boolean useTempTables = overflowingDestinations.contains(load.destination);
+            for (int partitionIndex = 0;
+                    partitionIndex < load.partitions.size();
+                    partitionIndex++) {
+                List<FileLoadsCommittable> partition = load.partitions.get(partitionIndex);
+                List<String> uris = urisOf(partition);
+                if (useTempTables) {
+                    TableDestination tempTable =
+                            tempTable(
+                                    load.destination,
+                                    load.format,
+                                    formatCounts.get(load.destination) > 1,
+                                    partitionIndex);
+                    loads.add(
+                            new PlannedLoad(
+                                    load.destination,
+                                    tempTable,
+                                    load.format,
+                                    uris,
+                                    jobId(
+                                            "flink-bq-load",
+                                            load.destination,
+                                            uris,
+                                            "p" + partitionIndex),
+                                    false));
+                    copySources
+                            .computeIfAbsent(load.destination, unused -> new ArrayList<>())
+                            .add(tempTable);
+                } else {
+                    loads.add(
+                            new PlannedLoad(
+                                    load.destination,
+                                    load.destination,
+                                    load.format,
+                                    uris,
+                                    jobId("flink-bq-load", load.destination, uris, null),
+                                    true));
+                }
+            }
+        }
+
+        List<DestinationCopy> copies = new ArrayList<>(copySources.size());
+        int intermediateLevelCount = 0;
+        long copyJobCount = 0;
+        for (Map.Entry<TableDestination, List<TableDestination>> entry : copySources.entrySet()) {
+            DestinationCopy copy = planCopy(entry.getKey(), entry.getValue());
+            copies.add(copy);
+            intermediateLevelCount =
+                    Math.max(intermediateLevelCount, copy.intermediateLevels.size());
+            copyJobCount += copy.jobCount();
+        }
+        validateJobCounts(loads.size(), copyJobCount, limits);
+        return new CommitPlan(loads, copies, intermediateLevelCount, destinationLoads.size());
+    }
+
+    private DestinationCopy planCopy(
+            TableDestination destination, List<TableDestination> leafTables) {
+        List<TableDestination> cleanupTables = new ArrayList<>(leafTables);
+        List<List<PlannedCopy>> intermediateLevels = new ArrayList<>();
+        List<TableDestination> sources = new ArrayList<>(leafTables);
+        int level = 1;
+        while (sources.size() > limits.maxSourceTablesPerCopy) {
+            List<PlannedCopy> jobs = new ArrayList<>();
+            List<TableDestination> nextSources = new ArrayList<>();
+            for (int start = 0, group = 0;
+                    start < sources.size();
+                    start += limits.maxSourceTablesPerCopy, group++) {
+                int end = Math.min(start + limits.maxSourceTablesPerCopy, sources.size());
+                List<TableDestination> groupSources = List.copyOf(sources.subList(start, end));
+                if (groupSources.size() == 1) {
+                    nextSources.add(groupSources.get(0));
+                    continue;
+                }
+                TableDestination intermediate =
+                        intermediateTable(destination, groupSources, level, group);
+                cleanupTables.add(intermediate);
+                nextSources.add(intermediate);
+                jobs.add(
+                        new PlannedCopy(
+                                jobId(
+                                        "flink-bq-copy",
+                                        intermediate,
+                                        tablePaths(groupSources),
+                                        "l" + level + "g" + group),
+                                new CopyJobSpec(
+                                        groupSources,
+                                        intermediate,
+                                        JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                        JobInfo.WriteDisposition.WRITE_TRUNCATE)));
+            }
+            intermediateLevels.add(jobs);
+            sources = nextSources;
+            level++;
+        }
+
+        PlannedCopy finalCopy =
+                new PlannedCopy(
+                        jobId("flink-bq-copy", destination, tablePaths(sources), null),
+                        new CopyJobSpec(
+                                sources,
+                                destination,
+                                JobInfo.CreateDisposition.CREATE_NEVER,
+                                toWriteDisposition(options.getWriteDisposition())));
+        return new DestinationCopy(intermediateLevels, finalCopy, cleanupTables);
+    }
+
+    @VisibleForTesting
+    static void validateJobCounts(long loadJobs, long copyJobs) throws IOException {
+        validateJobCounts(loadJobs, copyJobs, Limits.BIGQUERY);
+    }
+
+    private static void validateJobCounts(long loadJobs, long copyJobs, Limits limits)
+            throws IOException {
+        if (loadJobs > limits.maxLoadJobsPerCommit) {
+            throw new IOException(
+                    "FILE_LOADS commit requires "
+                            + loadJobs
+                            + " load jobs, but one commit may plan at most "
+                            + limits.maxLoadJobsPerCommit
+                            + "; increase maxStagingFileBytes or reduce the volume per commit");
+        }
+        if (copyJobs > limits.maxCopyJobsPerCommit) {
+            throw new IOException(
+                    "FILE_LOADS commit requires "
+                            + copyJobs
+                            + " copy jobs, but one commit may plan at most "
+                            + limits.maxCopyJobsPerCommit
+                            + "; increase maxStagingFileBytes or reduce the volume per commit");
+        }
+    }
+
+    private <T> void runInWaves(List<T> jobs, JobSubmitter<T> submitter, Function<T, String> jobId)
+            throws IOException {
+        for (int start = 0; start < jobs.size(); start += limits.maxSubmissionsPerWave) {
+            int end = Math.min(start + limits.maxSubmissionsPerWave, jobs.size());
+            for (int i = start; i < end; i++) {
+                submitter.submit(jobs.get(i));
+            }
+            for (int i = start; i < end; i++) {
+                runner.awaitJob(jobId.apply(jobs.get(i)));
+            }
+        }
     }
 
     /**
@@ -324,76 +487,27 @@ public final class LoadJobOrchestrator {
         return partitions;
     }
 
-    private void submitLoads(DestinationLoad load, boolean useTempTables, boolean multipleFormats)
-            throws IOException {
-        TableDestination destination = load.destination;
-        if (!useTempTables) {
-            load.loadJobIds.add(submitDirectLoad(destination, load.format, load.partitions.get(0)));
-            return;
-        }
-        // Copy jobs require matching schemas, so temp tables are loaded with the final table's
-        // reconciled schema.
-        Schema schema = finalTableSchema(destination);
-        for (int i = 0; i < load.partitions.size(); i++) {
-            List<String> uris = urisOf(load.partitions.get(i));
-            TableDestination tempTable = tempTable(destination, load.format, multipleFormats, i);
-            load.tempTables.add(tempTable);
-            String jobId = jobId("flink-bq-load", destination, uris, "p" + i);
-            load.loadJobIds.add(jobId);
-            loadJobsSubmitted.inc();
-            runner.submitLoad(
-                    jobId,
-                    new LoadJobSpec(
-                            tempTable,
-                            uris,
-                            schema,
-                            JobInfo.CreateDisposition.CREATE_IF_NEEDED,
-                            // Truncating makes a retried partition load idempotent.
-                            JobInfo.WriteDisposition.WRITE_TRUNCATE,
-                            List.of(),
-                            load.format));
-        }
-    }
-
-    /**
-     * Submits one load job straight into the destination table — reconciled first, so the job
-     * carries the live table's schema — with the configured dispositions, and returns its job id
-     * (not yet awaited).
-     */
-    private String submitDirectLoad(
-            TableDestination destination,
-            StagingFormat format,
-            List<FileLoadsCommittable> partition)
-            throws IOException {
-        Schema schema = finalTableSchema(destination);
-        List<String> uris = urisOf(partition);
-        String jobId = jobId("flink-bq-load", destination, uris, null);
+    private void submitLoad(PlannedLoad load) throws IOException {
+        Schema schema = finalTableSchema(load.finalDestination);
         loadJobsSubmitted.inc();
         runner.submitLoad(
-                jobId,
+                load.jobId,
                 new LoadJobSpec(
-                        destination,
-                        uris,
+                        load.jobDestination,
+                        load.uris,
                         schema,
-                        toCreateDisposition(config.getCreateDisposition()),
-                        toWriteDisposition(options.getWriteDisposition()),
-                        schemaUpdateOptions(),
-                        format));
-        return jobId;
+                        load.direct
+                                ? toCreateDisposition(config.getCreateDisposition())
+                                : JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                        load.direct
+                                ? toWriteDisposition(options.getWriteDisposition())
+                                : JobInfo.WriteDisposition.WRITE_TRUNCATE,
+                        load.direct ? schemaUpdateOptions() : List.of(),
+                        load.format));
     }
 
-    private void submitCopy(DestinationCopy copy) throws IOException {
-        List<String> tempTablePaths = new ArrayList<>(copy.tempTables.size());
-        for (TableDestination tempTable : copy.tempTables) {
-            tempTablePaths.add(tempTable.toTablePath());
-        }
-        copy.copyJobId = jobId("flink-bq-copy", copy.destination, tempTablePaths, null);
-        runner.submitCopy(
-                copy.copyJobId,
-                new CopyJobSpec(
-                        copy.tempTables,
-                        copy.destination,
-                        toWriteDisposition(options.getWriteDisposition())));
+    private void submitCopy(PlannedCopy copy) throws IOException {
+        runner.submitCopy(copy.jobId, copy.spec);
     }
 
     /**
@@ -539,6 +653,28 @@ public final class LoadJobOrchestrator {
         return TableDestination.of(destination.getProject(), dataset, name);
     }
 
+    private TableDestination intermediateTable(
+            TableDestination destination, List<TableDestination> sources, int level, int group) {
+        String dataset =
+                options.getTempDataset() != null
+                        ? options.getTempDataset()
+                        : destination.getDataset();
+        String hash =
+                sha256Hex(destination.toTablePath() + "\n" + String.join("\n", tablePaths(sources)))
+                        .substring(0, 12);
+        String name =
+                "tmp_"
+                        + flinkJobId
+                        + "_"
+                        + hash
+                        + (checkpointId != null ? "_c" + checkpointId : "")
+                        + "_l"
+                        + level
+                        + "_g"
+                        + group;
+        return TableDestination.of(destination.getProject(), dataset, name);
+    }
+
     /**
      * A deterministic job id: prefix, Flink job id, and a hash of the destination and sources. The
      * hash alone is the idempotency key — source URI sets are unique per run by construction — and
@@ -566,6 +702,14 @@ public final class LoadJobOrchestrator {
             uris.add(file.getUri());
         }
         return uris;
+    }
+
+    private static List<String> tablePaths(List<TableDestination> tables) {
+        List<String> paths = new ArrayList<>(tables.size());
+        for (TableDestination table : tables) {
+            paths.add(table.toTablePath());
+        }
+        return paths;
     }
 
     private static String sha256Hex(String value) {
@@ -601,8 +745,6 @@ public final class LoadJobOrchestrator {
         private final TableDestination destination;
         private final StagingFormat format;
         private final List<List<FileLoadsCommittable>> partitions;
-        private final List<String> loadJobIds = new ArrayList<>();
-        private final List<TableDestination> tempTables = new ArrayList<>();
 
         DestinationLoad(
                 TableDestination destination,
@@ -614,15 +756,127 @@ public final class LoadJobOrchestrator {
         }
     }
 
-    /** One destination table's combined overflow copy across all staging formats. */
+    /** BigQuery limits used by the planner; tests shrink them to exercise deep hierarchies. */
+    @VisibleForTesting
+    static final class Limits {
+
+        private static final Limits BIGQUERY =
+                new Limits(
+                        MAX_SOURCE_TABLES_PER_COPY,
+                        MAX_JOBS_PER_COMMIT,
+                        MAX_JOBS_PER_COMMIT,
+                        MAX_SUBMISSIONS_PER_WAVE);
+
+        private final int maxSourceTablesPerCopy;
+        private final int maxLoadJobsPerCommit;
+        private final int maxCopyJobsPerCommit;
+        private final int maxSubmissionsPerWave;
+
+        Limits(
+                int maxSourceTablesPerCopy,
+                int maxLoadJobsPerCommit,
+                int maxCopyJobsPerCommit,
+                int maxSubmissionsPerWave) {
+            if (maxSourceTablesPerCopy < 2
+                    || maxLoadJobsPerCommit < 1
+                    || maxCopyJobsPerCommit < 1
+                    || maxSubmissionsPerWave < 1) {
+                throw new IllegalArgumentException(
+                        "Planner limits must be positive and fan-out >= 2");
+            }
+            this.maxSourceTablesPerCopy = maxSourceTablesPerCopy;
+            this.maxLoadJobsPerCommit = maxLoadJobsPerCommit;
+            this.maxCopyJobsPerCommit = maxCopyJobsPerCommit;
+            this.maxSubmissionsPerWave = maxSubmissionsPerWave;
+        }
+    }
+
+    /** Every job and cleanup target for one commit, validated before execution. */
+    private static final class CommitPlan {
+
+        private final List<PlannedLoad> loads;
+        private final List<DestinationCopy> copies;
+        private final int intermediateLevelCount;
+        private final int destinationFormatCount;
+
+        CommitPlan(
+                List<PlannedLoad> loads,
+                List<DestinationCopy> copies,
+                int intermediateLevelCount,
+                int destinationFormatCount) {
+            this.loads = loads;
+            this.copies = copies;
+            this.intermediateLevelCount = intermediateLevelCount;
+            this.destinationFormatCount = destinationFormatCount;
+        }
+    }
+
+    /** One deterministic leaf load. */
+    private static final class PlannedLoad {
+
+        private final TableDestination finalDestination;
+        private final TableDestination jobDestination;
+        private final StagingFormat format;
+        private final List<String> uris;
+        private final String jobId;
+        private final boolean direct;
+
+        PlannedLoad(
+                TableDestination finalDestination,
+                TableDestination jobDestination,
+                StagingFormat format,
+                List<String> uris,
+                String jobId,
+                boolean direct) {
+            this.finalDestination = finalDestination;
+            this.jobDestination = jobDestination;
+            this.format = format;
+            this.uris = uris;
+            this.jobId = jobId;
+            this.direct = direct;
+        }
+    }
+
+    /** One deterministic intermediate or final copy. */
+    private static final class PlannedCopy {
+
+        private final String jobId;
+        private final CopyJobSpec spec;
+
+        PlannedCopy(String jobId, CopyJobSpec spec) {
+            this.jobId = jobId;
+            this.spec = spec;
+        }
+    }
+
+    /** One destination table's combined overflow hierarchy across all staging formats. */
     private static final class DestinationCopy {
 
-        private final TableDestination destination;
-        private final List<TableDestination> tempTables = new ArrayList<>();
-        private String copyJobId;
+        private final List<List<PlannedCopy>> intermediateLevels;
+        private final PlannedCopy finalCopy;
+        private final List<TableDestination> cleanupTables;
 
-        DestinationCopy(TableDestination destination) {
-            this.destination = destination;
+        DestinationCopy(
+                List<List<PlannedCopy>> intermediateLevels,
+                PlannedCopy finalCopy,
+                List<TableDestination> cleanupTables) {
+            this.intermediateLevels = intermediateLevels;
+            this.finalCopy = finalCopy;
+            this.cleanupTables = cleanupTables;
         }
+
+        long jobCount() {
+            long count = 1;
+            for (List<PlannedCopy> level : intermediateLevels) {
+                count += level.size();
+            }
+            return count;
+        }
+    }
+
+    @FunctionalInterface
+    private interface JobSubmitter<T> {
+
+        void submit(T job) throws IOException;
     }
 }

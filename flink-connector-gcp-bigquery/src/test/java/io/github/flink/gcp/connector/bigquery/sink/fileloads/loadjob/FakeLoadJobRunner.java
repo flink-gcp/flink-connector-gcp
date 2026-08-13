@@ -31,6 +31,7 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
 
     public final Map<String, LoadJobSpec> loads = new LinkedHashMap<>();
     public final Map<String, CopyJobSpec> copies = new LinkedHashMap<>();
+    public final List<String> events = new ArrayList<>();
     public final List<String> awaited = new ArrayList<>();
     public final List<TableDestination> deletedTables = new ArrayList<>();
     public final Set<String> failOnAwait = new HashSet<>();
@@ -38,16 +39,19 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
 
     @Override
     public void submitLoad(String jobId, LoadJobSpec spec) {
+        events.add("submit-load:" + jobId);
         loads.put(jobId, spec);
     }
 
     @Override
     public void submitCopy(String jobId, CopyJobSpec spec) {
+        events.add("submit-copy:" + jobId);
         copies.put(jobId, spec);
     }
 
     @Override
     public void awaitJob(String jobId) throws IOException {
+        events.add("await:" + jobId);
         awaited.add(jobId);
         if (failAllAwaits || failOnAwait.contains(jobId)) {
             throw new IOException("Job " + jobId + " failed (scripted)");

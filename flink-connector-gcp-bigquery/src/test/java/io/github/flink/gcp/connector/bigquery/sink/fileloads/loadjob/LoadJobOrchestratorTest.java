@@ -46,6 +46,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 
@@ -59,6 +60,8 @@ class LoadJobOrchestratorTest {
     private static final String FLINK_JOB_ID = "0123456789abcdef0123456789abcdef";
     private static final TableDestination T1 = TableDestination.of("p", "d", "t1");
     private static final TableDestination T2 = TableDestination.of("p", "d", "t2");
+    private static final TableDestination T3 = TableDestination.of("p", "d", "t3");
+    private static final TableDestination T4 = TableDestination.of("p", "d", "t4");
 
     private static final TableSchema SCHEMA =
             TableSchema.newBuilder()
@@ -156,6 +159,15 @@ class LoadJobOrchestratorTest {
                 Consumer<BigQuerySinkBuilder<Object>> customizer,
                 Long checkpointId,
                 TableSchema serializerSchema) {
+            this(options, customizer, checkpointId, serializerSchema, null);
+        }
+
+        Harness(
+                FileLoadsOptions options,
+                Consumer<BigQuerySinkBuilder<Object>> customizer,
+                Long checkpointId,
+                TableSchema serializerSchema,
+                LoadJobOrchestrator.Limits limits) {
             BigQuerySinkBuilder<Object> builder =
                     BigQuerySink.builder()
                             .writeMethod(WriteMethod.FILE_LOADS)
@@ -166,15 +178,26 @@ class LoadJobOrchestratorTest {
             BigQuerySinkConfig<Object> config =
                     ((BigQueryFileLoadsSink<Object>) builder.build()).getConfig();
             this.orchestrator =
-                    new LoadJobOrchestrator(
-                            config,
-                            options,
-                            runner,
-                            tableAdmin,
-                            storage,
-                            FLINK_JOB_ID,
-                            checkpointId,
-                            loadJobsSubmitted);
+                    limits == null
+                            ? new LoadJobOrchestrator(
+                                    config,
+                                    options,
+                                    runner,
+                                    tableAdmin,
+                                    storage,
+                                    FLINK_JOB_ID,
+                                    checkpointId,
+                                    loadJobsSubmitted)
+                            : new LoadJobOrchestrator(
+                                    config,
+                                    options,
+                                    runner,
+                                    tableAdmin,
+                                    storage,
+                                    FLINK_JOB_ID,
+                                    checkpointId,
+                                    loadJobsSubmitted,
+                                    limits);
         }
 
         static Harness plain() {
@@ -188,6 +211,15 @@ class LoadJobOrchestratorTest {
                     FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
                     builder -> {},
                     checkpointId);
+        }
+
+        static Harness withLimits(LoadJobOrchestrator.Limits limits) {
+            return new Harness(
+                    FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                    builder -> {},
+                    7L,
+                    SCHEMA,
+                    limits);
         }
     }
 
@@ -796,20 +828,58 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
-    void overflowBeyondTheCopySourceTableLimitFailsBeforeSubmittingJobs() {
+    void firstHierarchyCaseCopiesTwelveHundredSourcesAndCarriesTheLast() throws IOException {
         Harness harness = Harness.streaming(7);
         List<FileLoadsCommittable> files =
-                IntStream.rangeClosed(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1)
-                        .mapToObj(i -> file(T1, "part-" + i, 6L << 40))
-                        .toList();
+                new ArrayList<>(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1);
+        files.add(file(T1, "avro", 10, StagingFormat.AVRO));
+        IntStream.rangeClosed(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY)
+                .mapToObj(i -> file(T1, "parquet-" + i, 6L << 40, StagingFormat.PARQUET))
+                .forEach(files::add);
 
-        assertThatThrownBy(() -> harness.orchestrator.run(files))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("requires 1201 temporary tables")
-                .hasMessageContaining("at most 1200 source tables");
+        harness.orchestrator.run(files);
 
-        assertThat(harness.runner.loads).isEmpty();
-        assertThat(harness.runner.copies).isEmpty();
+        assertThat(harness.runner.loads)
+                .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1);
+        assertThat(harness.runner.copies).hasSize(2);
+        List<CopyJobSpec> copies = new ArrayList<>(harness.runner.copies.values());
+        CopyJobSpec intermediate = copies.get(0);
+        assertThat(intermediate.getSourceTables())
+                .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY);
+        assertThat(intermediate.getDestination().getTable()).contains("_c7_l1_g0");
+        assertThat(intermediate.getCreateDisposition())
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(intermediate.getWriteDisposition())
+                .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+
+        CopyJobSpec finalCopy = copies.get(1);
+        assertThat(finalCopy.getDestination()).isEqualTo(T1);
+        assertThat(finalCopy.getSourceTables())
+                .containsExactly(
+                        intermediate.getDestination(),
+                        harness.runner.loads.values().stream()
+                                .map(LoadJobSpec::getDestination)
+                                .reduce((first, second) -> second)
+                                .orElseThrow());
+        assertThat(finalCopy.getCreateDisposition())
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
+        assertThat(finalCopy.getWriteDisposition())
+                .isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
+        assertThat(harness.runner.deletedTables)
+                .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 2)
+                .contains(intermediate.getDestination());
+        assertThat(harness.storage.getDeleted()).hasSize(files.size());
+
+        Harness retry = Harness.streaming(7);
+        retry.orchestrator.run(new ArrayList<>(files));
+        assertThat(retry.runner.loads.keySet()).isEqualTo(harness.runner.loads.keySet());
+        assertThat(retry.runner.copies.keySet()).isEqualTo(harness.runner.copies.keySet());
+        assertThat(retry.runner.copies.values())
+                .extracting(CopyJobSpec::getSourceTables, CopyJobSpec::getDestination)
+                .containsExactlyElementsOf(
+                        harness.runner.copies.values().stream()
+                                .map(copy -> tuple(copy.getSourceTables(), copy.getDestination()))
+                                .toList());
     }
 
     @Test
@@ -834,21 +904,134 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
-    void copySourceTableLimitCountsEveryFormatForTheDestination() {
-        Harness harness = Harness.streaming(7);
+    void reducedLimitsExerciseMultipleLevelsAndSubmissionWaves() throws IOException {
+        Harness harness = Harness.withLimits(new LoadJobOrchestrator.Limits(3, 100, 100, 2));
         List<FileLoadsCommittable> files =
-                new ArrayList<>(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1);
-        files.add(file(T1, "avro", 10, StagingFormat.AVRO));
-        IntStream.rangeClosed(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY)
-                .mapToObj(i -> file(T1, "parquet-" + i, 6L << 40, StagingFormat.PARQUET))
-                .forEach(files::add);
+                IntStream.rangeClosed(1, 10)
+                        .mapToObj(i -> file(T1, "part-" + i, 6L << 40))
+                        .toList();
 
-        assertThatThrownBy(() -> harness.orchestrator.run(files))
+        harness.orchestrator.run(files);
+
+        List<Map.Entry<String, CopyJobSpec>> copies =
+                new ArrayList<>(harness.runner.copies.entrySet());
+        assertThat(copies).hasSize(5);
+        assertThat(copies.subList(0, 3))
+                .allSatisfy(
+                        copy -> {
+                            assertThat(copy.getValue().getSourceTables()).hasSize(3);
+                            assertThat(copy.getValue().getDestination().getTable())
+                                    .contains("_l1_");
+                        });
+        assertThat(copies.get(3).getValue().getSourceTables()).hasSize(3);
+        assertThat(copies.get(3).getValue().getDestination().getTable()).contains("_l2_g0");
+        assertThat(copies.get(4).getValue().getSourceTables()).hasSize(2);
+        assertThat(copies.get(4).getValue().getDestination()).isEqualTo(T1);
+
+        String lastLevelOne = copies.get(2).getKey();
+        String levelTwo = copies.get(3).getKey();
+        String finalCopy = copies.get(4).getKey();
+        assertThat(harness.runner.events.indexOf("await:" + lastLevelOne))
+                .isLessThan(harness.runner.events.indexOf("submit-copy:" + levelTwo));
+        assertThat(harness.runner.events.indexOf("await:" + levelTwo))
+                .isLessThan(harness.runner.events.indexOf("submit-copy:" + finalCopy));
+
+        List<String> loadEvents =
+                harness.runner.events.stream().filter(event -> event.contains("-load-")).toList();
+        assertThat(loadEvents.subList(0, 4))
+                .satisfiesExactly(
+                        event -> assertThat(event).startsWith("submit-load:"),
+                        event -> assertThat(event).startsWith("submit-load:"),
+                        event -> assertThat(event).startsWith("await:"),
+                        event -> assertThat(event).startsWith("await:"));
+    }
+
+    @Test
+    void jobCapsAreValidatedBeforeTableOrJobSideEffects() {
+        Harness tooManyLoads = Harness.withLimits(new LoadJobOrchestrator.Limits(3, 3, 100, 2));
+
+        assertThatThrownBy(
+                        () ->
+                                tooManyLoads.orchestrator.run(
+                                        List.of(
+                                                file(T1, "a", 10),
+                                                file(T2, "b", 10),
+                                                file(T3, "c", 10),
+                                                file(T4, "d", 10))))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("requires 1201 temporary tables");
+                .hasMessageContaining("requires 4 load jobs")
+                .hasMessageContaining("at most 3");
+        assertThat(tooManyLoads.runner.loads).isEmpty();
+        assertThat(tooManyLoads.tableAdmin.created).isEmpty();
 
-        assertThat(harness.runner.loads).isEmpty();
-        assertThat(harness.runner.copies).isEmpty();
+        Harness tooManyCopies = Harness.withLimits(new LoadJobOrchestrator.Limits(3, 10, 1, 2));
+        long sixTiB = 6L << 40;
+
+        assertThatThrownBy(
+                        () ->
+                                tooManyCopies.orchestrator.run(
+                                        List.of(
+                                                file(T1, "a", sixTiB),
+                                                file(T1, "b", sixTiB),
+                                                file(T2, "c", sixTiB),
+                                                file(T2, "d", sixTiB))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("requires 2 copy jobs")
+                .hasMessageContaining("at most 1");
+        assertThat(tooManyCopies.runner.loads).isEmpty();
+        assertThat(tooManyCopies.tableAdmin.created).isEmpty();
+    }
+
+    @Test
+    void publishedDailyJobBoundariesAreAcceptedAndRejectedOnTheCorrectSide() throws IOException {
+        LoadJobOrchestrator.validateJobCounts(
+                LoadJobOrchestrator.MAX_JOBS_PER_COMMIT, LoadJobOrchestrator.MAX_JOBS_PER_COMMIT);
+
+        assertThatThrownBy(
+                        () ->
+                                LoadJobOrchestrator.validateJobCounts(
+                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT + 1L,
+                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("100001 load jobs");
+        assertThatThrownBy(
+                        () ->
+                                LoadJobOrchestrator.validateJobCounts(
+                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT,
+                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT + 1L))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("100001 copy jobs");
+    }
+
+    @Test
+    void aFailureAtEveryCopyLevelStopsDependentWorkAndCleanup() throws IOException {
+        LoadJobOrchestrator.Limits limits = new LoadJobOrchestrator.Limits(3, 100, 100, 2);
+        List<FileLoadsCommittable> files =
+                IntStream.rangeClosed(1, 10)
+                        .mapToObj(i -> file(T1, "part-" + i, 6L << 40))
+                        .toList();
+        Harness successful = Harness.withLimits(limits);
+        successful.orchestrator.run(files);
+        List<String> copyJobIds = new ArrayList<>(successful.runner.copies.keySet());
+
+        String finalCopyJobId = copyJobIds.get(4);
+        for (String failingJobId : List.of(copyJobIds.get(0), copyJobIds.get(3), finalCopyJobId)) {
+            Harness retry = Harness.withLimits(limits);
+            retry.runner.failOnAwait.add(failingJobId);
+
+            assertThatThrownBy(() -> retry.orchestrator.run(files)).isInstanceOf(IOException.class);
+
+            assertThat(retry.runner.copies).containsKey(failingJobId);
+            if (failingJobId.equals(finalCopyJobId)) {
+                assertThat(retry.runner.copies.values())
+                        .anySatisfy(copy -> assertThat(copy.getDestination()).isEqualTo(T1));
+            } else {
+                assertThat(retry.runner.copies.values())
+                        .noneSatisfy(copy -> assertThat(copy.getDestination()).isEqualTo(T1));
+            }
+            assertThat(retry.runner.deletedTables).isEmpty();
+            assertThat(retry.storage.getDeleted()).isEmpty();
+        }
     }
 
     @Test

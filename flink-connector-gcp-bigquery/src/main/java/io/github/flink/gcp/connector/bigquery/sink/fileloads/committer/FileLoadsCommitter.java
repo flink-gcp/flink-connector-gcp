@@ -59,11 +59,11 @@ import java.util.function.Supplier;
  * originating Flink job id), so the runner re-attaches instead of double-loading even when the
  * restore runs under a new Flink job id.
  *
- * <p>Loads are synchronous: a commit returns only when every load job of its batch has completed
- * (jobs are submitted first and awaited second, so BigQuery still runs them concurrently
- * server-side). In streaming execution a slow load therefore delays the next checkpoint — the
- * backpressure mechanism — and a failed load fails the job with the staged files left in place for
- * the post-restart retry.
+ * <p>Loads are synchronous: a commit returns only when every load and copy job of its batch has
+ * completed. Independent jobs are submitted then awaited in bounded waves, so BigQuery still runs
+ * each wave concurrently server-side; a copy level is awaited before its dependent level begins. In
+ * streaming execution a slow job therefore delays the next checkpoint — the backpressure mechanism
+ * — and a failed job fails the Flink job with every retry input left in place.
  */
 @Internal
 public final class FileLoadsCommitter implements Committer<FileLoadsCommittable> {
@@ -75,7 +75,7 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
     /**
      * Load jobs this committer has submitted to BigQuery. The one custom metric of the FILE_LOADS
      * path's commit side: it is what turns "the checkpoint took a while" into "the checkpoint
-     * issued N load jobs". The overflow path's copy job is deliberately not counted because the
+     * issued N load jobs". The overflow path's copy jobs are deliberately not counted because the
      * name says load jobs.
      *
      * <p>The framework registers the standard committer metrics ({@code totalCommittables} and

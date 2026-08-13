@@ -89,8 +89,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
-  checkpoint, synchronously; every overflow uses temp tables plus one copy per destination, with
-  checkpoint-scoped names in streaming (`docs/adr/0018`). The polling attempt cap stays
+  checkpoint, synchronously; every overflow uses temp tables plus one final copy per destination,
+  inserting deterministic intermediate copy levels when more than 1,200 leaves must be combined.
+  The whole plan is validated before side effects, and each independent level runs in waves of at
+  most 50,000 jobs (`docs/adr/0018`). The polling attempt cap stays
   `Integer.MAX_VALUE` — do not expose it.
   **`awaitJob` re-fetches
   through `BigQuery#getJob`, never `Job#reload()`**: the convenience throws `BigQueryException`

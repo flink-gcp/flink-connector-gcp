@@ -316,7 +316,7 @@ default, and required by the write method rather than by the connector — and l
 | Option | Type | Maps to |
 |---|---|---|
 | `sink.file-loads.staging-path` | String | `stagingPath(...)` — `gs://bucket` or `gs://bucket/prefix`. **Required** under this write method |
-| `sink.file-loads.temp-dataset` | String | `tempDataset(...)`, holding the temporary tables a load too large for one job goes through. Absent, each destination table's own dataset. Applies to batch and streaming overflow |
+| `sink.file-loads.temp-dataset` | String | `tempDataset(...)`, holding the leaf and intermediate temporary tables a load too large for one job goes through. It must share the final destination's BigQuery location. Absent, each destination table's own dataset. Applies to batch and streaming overflow |
 | `sink.file-loads.write-disposition` | Enum | `writeDisposition(...)` — `write-append`, `write-truncate` or `write-empty`. Streaming execution accepts `write-append` only, since every checkpoint commits its own staged files |
 | `sink.file-loads.min-checkpoint-interval` | Duration | `minCheckpointInterval(...)`, the smallest checkpoint interval streaming execution accepts. Lowering it is an explicit opt-in: each checkpoint consumes at least one destination-table modification, a direct load or an overflow copy, against BigQuery's daily limits |
 | `sink.file-loads.max-staging-file-bytes` | MemorySize | `maxStagingFileBytes(...)`, the size at which an open staging file is finished and the next one opened. The default is measured — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) — and raising it matters mainly for a very large volume to one destination, since the 10,000-URI per-load-job cap is a file count |
