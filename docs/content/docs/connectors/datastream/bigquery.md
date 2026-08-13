@@ -935,6 +935,9 @@ Caveats:
 
 ## Delivery guarantees and state
 
+See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
+cross-connector comparison.
+
 The `STORAGE_API_AT_LEAST_ONCE` writer is **stateless by design**: rows are appended
 asynchronously as batches fill, and on **every checkpoint** Flink invokes the writer's `flush()`
 (before the barrier is emitted), which appends all pending batches and awaits every in-flight

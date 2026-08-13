@@ -251,6 +251,9 @@ it.
 
 ## Delivery guarantees and state
 
+See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
+cross-connector comparison.
+
 The sink is **at-least-once**, and its writer is **stateless by design**. Tasks are created
 asynchronously through `createTaskCallable().futureCall(...)`, and on every checkpoint Flink calls
 the writer's `flush()`, which waits for every outstanding create to complete — including those

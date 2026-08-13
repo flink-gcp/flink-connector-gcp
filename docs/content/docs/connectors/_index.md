@@ -24,5 +24,9 @@ limitations under the License.
 
 Google Cloud connectors for Apache Flink.
 
+Start with [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) when
+checkpoint durability, replay behavior, or exactly-once delivery determines which sink method to
+use.
+
 The connector types named on these pages are documented in the
 [Java API reference]({{< param ApiDocsURL >}}).

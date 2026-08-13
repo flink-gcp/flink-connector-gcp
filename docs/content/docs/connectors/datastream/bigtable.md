@@ -260,6 +260,9 @@ job pointed at a missing instance fails when the repair's own creation is refuse
 
 ## Delivery guarantees and state
 
+See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
+cross-connector comparison.
+
 **At-least-once.** The writer is stateless — it stores nothing in Flink state — and `flush()` runs
 at every checkpoint barrier: it sends what the client has buffered and then waits until every
 outstanding mutation has been acknowledged. So a completed checkpoint means Bigtable has applied
