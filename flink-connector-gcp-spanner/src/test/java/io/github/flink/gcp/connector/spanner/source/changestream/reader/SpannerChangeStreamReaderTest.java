@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgre
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
@@ -141,7 +142,8 @@ class SpannerChangeStreamReaderTest {
                 .extracting(SpannerChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-token:a", "change-stream-token:b");
 
-        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+        reader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
 
         assertThat(client.openIds())
                 .containsExactly("change-stream-token:a", "change-stream-token:b");
@@ -156,12 +158,61 @@ class SpannerChangeStreamReaderTest {
         reader.addSplits(java.util.Arrays.asList(split("a"), split("b")));
         reader.start();
 
-        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true));
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true, Long.MIN_VALUE));
 
         assertThat(client.openIds()).isEmpty();
         assertThat(reader.snapshotState(1)).isEmpty();
         assertThat(context.splitRequests()).isEqualTo(1);
         assertThat(gauge("queuedChangeStreamPartitions")).isEqualTo(0);
+    }
+
+    @Test
+    void initializationAndUpdatesEmitOneMonotonicSourceWatermarkFromTheMainOutput()
+            throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 1, client);
+        long initialWatermark = START.toEpochMilli() - 1;
+        reader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, initialWatermark));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+
+        assertThat(reader.isAvailable()).isCompleted();
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        assertThat(output.watermarks).containsExactly(initialWatermark);
+        assertThat(output.splitWatermarks).isEmpty();
+        assertThat(output.mainIdleMarks).isZero();
+
+        long advanced = START.plusSeconds(5).toEpochMilli() - 1;
+        reader.handleSourceEvents(new SpannerChangeStreamWatermarkEvent(advanced));
+        reader.handleSourceEvents(new SpannerChangeStreamWatermarkEvent(advanced));
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        assertThat(output.watermarks).containsExactly(initialWatermark, advanced);
+        assertThat(output.splitWatermarks).isEmpty();
+        assertThat(output.mainIdleMarks).isZero();
+
+        assertThatThrownBy(
+                        () ->
+                                reader.handleSourceEvents(
+                                        new SpannerChangeStreamWatermarkEvent(advanced - 1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("moved backwards");
+    }
+
+    @Test
+    void rejectsAFrontierUpdateBeforeCoordinatorInitialization() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 1, client);
+
+        assertThatThrownBy(
+                        () ->
+                                reader.handleSourceEvents(
+                                        new SpannerChangeStreamWatermarkEvent(
+                                                START.toEpochMilli() - 1)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("before initialization");
     }
 
     @Test
@@ -179,6 +230,8 @@ class SpannerChangeStreamReaderTest {
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
         assertThat(output.records).containsExactly("7");
         assertThat(output.timestamps).containsExactly(START.plusSeconds(1).toEpochMilli());
+        assertThat(output.recordSplits).containsExactly("change-stream-token:a");
+        assertThat(output.mainRecords).isEmpty();
         assertThat(client.resumes("change-stream-token:a")).isEqualTo(1);
         assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
                 .isEqualTo(START.plusSeconds(1));
@@ -206,7 +259,7 @@ class SpannerChangeStreamReaderTest {
     }
 
     @Test
-    void heartbeatAdvancesWatermarkAndChildEventPrecedesSuccessfulCompletion() throws Exception {
+    void heartbeatReportsProgressBeforeTheCoordinatorAdvancesTheSourceWatermark() throws Exception {
         reader = reader(1, new SequenceDeserializer());
         SpannerChangeStreamPartitionSplit initial =
                 SpannerChangeStreamPartitionSplit.initial(START, null, 2_000)
@@ -218,7 +271,16 @@ class SpannerChangeStreamReaderTest {
         Instant heartbeat = START.plusSeconds(5);
         client.record(initial.splitId(), new SpannerChangeStreamRecord.Heartbeat(heartbeat));
         reader.pollNext(output);
-        assertThat(output.watermarks).containsEntry(initial.splitId(), heartbeat.toEpochMilli());
+        assertThat(output.watermarks).isEmpty();
+        assertThat(output.splitWatermarks).isEmpty();
+        assertThat(output.totalIdleMarks()).isZero();
+
+        long sourceWatermark = heartbeat.toEpochMilli() - 1;
+        reader.handleSourceEvents(new SpannerChangeStreamWatermarkEvent(sourceWatermark));
+        reader.pollNext(output);
+        assertThat(output.watermarks).containsExactly(sourceWatermark);
+        assertThat(output.splitWatermarks).isEmpty();
+        assertThat(output.totalIdleMarks()).isZero();
 
         client.record(
                 initial.splitId(),
@@ -509,7 +571,8 @@ class SpannerChangeStreamReaderTest {
                         filter("other", null, null, null, false),
                         1,
                         firstClient);
-        firstReader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+        firstReader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
         firstReader.addSplits(Collections.singletonList(split("a")));
         firstReader.start();
         firstClient.record(
@@ -603,7 +666,8 @@ class SpannerChangeStreamReaderTest {
             int maximum, SpannerChangeStreamDeserializationSchema<String> deserializer) {
         SpannerChangeStreamReader<String> created =
                 new SpannerChangeStreamReader<>(context, DATABASE, deserializer, maximum, client);
-        created.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+        created.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
         return created;
     }
 
@@ -614,7 +678,8 @@ class SpannerChangeStreamReaderTest {
         SpannerChangeStreamReader<String> created =
                 new SpannerChangeStreamReader<>(
                         context, DATABASE, deserializer, filter, maximum, client);
-        created.handleSourceEvents(new SpannerChangeStreamInitializationEvent(false));
+        created.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
         return created;
     }
 
@@ -872,8 +937,12 @@ class SpannerChangeStreamReaderTest {
 
         private final List<T> records = new ArrayList<>();
         private final List<Long> timestamps = new ArrayList<>();
-        private final Map<String, Long> watermarks = new LinkedHashMap<>();
-        private String currentSplit;
+        private final List<Long> watermarks = new ArrayList<>();
+        private final List<T> mainRecords = new ArrayList<>();
+        private final List<String> recordSplits = new ArrayList<>();
+        private final Map<String, List<Long>> splitWatermarks = new LinkedHashMap<>();
+        private final Map<String, Integer> splitIdleMarks = new LinkedHashMap<>();
+        private int mainIdleMarks;
         private RuntimeException collectFailure;
 
         private void failOnCollect(RuntimeException failure) {
@@ -882,16 +951,12 @@ class SpannerChangeStreamReaderTest {
 
         @Override
         public void collect(T record) {
-            throwCollectFailure();
-            records.add(record);
-            timestamps.add(null);
+            mainRecords.add(record);
         }
 
         @Override
         public void collect(T record, long timestamp) {
-            throwCollectFailure();
-            records.add(record);
-            timestamps.add(timestamp);
+            mainRecords.add(record);
         }
 
         private void throwCollectFailure() {
@@ -902,22 +967,66 @@ class SpannerChangeStreamReaderTest {
 
         @Override
         public void emitWatermark(Watermark watermark) {
-            watermarks.put(currentSplit, watermark.getTimestamp());
+            watermarks.add(watermark.getTimestamp());
         }
 
         @Override
-        public void markIdle() {}
+        public void markIdle() {
+            mainIdleMarks++;
+        }
 
         @Override
         public void markActive() {}
 
         @Override
         public SourceOutput<T> createOutputForSplit(String splitId) {
-            currentSplit = splitId;
-            return this;
+            return new TrackingSplitOutput(splitId);
         }
 
         @Override
         public void releaseOutputForSplit(String splitId) {}
+
+        private int totalIdleMarks() {
+            return mainIdleMarks
+                    + splitIdleMarks.values().stream().mapToInt(Integer::intValue).sum();
+        }
+
+        private final class TrackingSplitOutput implements SourceOutput<T> {
+
+            private final String splitId;
+
+            private TrackingSplitOutput(String splitId) {
+                this.splitId = splitId;
+            }
+
+            @Override
+            public void collect(T record) {
+                collect(record, Long.MIN_VALUE);
+                timestamps.set(timestamps.size() - 1, null);
+            }
+
+            @Override
+            public void collect(T record, long timestamp) {
+                throwCollectFailure();
+                records.add(record);
+                timestamps.add(timestamp);
+                recordSplits.add(splitId);
+            }
+
+            @Override
+            public void emitWatermark(Watermark watermark) {
+                splitWatermarks
+                        .computeIfAbsent(splitId, ignored -> new ArrayList<>())
+                        .add(watermark.getTimestamp());
+            }
+
+            @Override
+            public void markIdle() {
+                splitIdleMarks.merge(splitId, 1, Integer::sum);
+            }
+
+            @Override
+            public void markActive() {}
+        }
     }
 }

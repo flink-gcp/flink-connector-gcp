@@ -42,6 +42,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgre
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -88,6 +90,7 @@ public final class SpannerChangeStreamSplitEnumerator
     private final Map<String, Set<String>> childrenByParent = new HashMap<>();
     private final Deque<String> scheduledPartitions = new ArrayDeque<>();
     private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
+    private final TreeMap<Long, Integer> unfinishedWatermarkCounts = new TreeMap<>();
     private final Set<Integer> waitingReaders = new LinkedHashSet<>();
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicLong scheduledCount = new AtomicLong();
@@ -101,6 +104,7 @@ public final class SpannerChangeStreamSplitEnumerator
     private boolean discardRestoredReaderSplits;
     private boolean boundedLedger;
     private int unfinishedPartitions;
+    private long sourceWatermark = Long.MIN_VALUE;
     private volatile boolean closed;
 
     public SpannerChangeStreamSplitEnumerator(
@@ -168,7 +172,8 @@ public final class SpannerChangeStreamSplitEnumerator
             return Initialization.fresh(
                     SpannerChangeStreamPartitionSplit.initial(
                             resolver.resolve(startPosition), endTimestamp, heartbeatMillis),
-                    false);
+                    false,
+                    Long.MIN_VALUE);
         }
 
         List<RestoreExpiry> expiries = new ArrayList<>();
@@ -180,7 +185,8 @@ public final class SpannerChangeStreamSplitEnumerator
                     .ifPresent(expiries::add);
         }
         if (expiries.isEmpty()) {
-            return Initialization.restored(restoredState.getPartitions());
+            return Initialization.restored(
+                    restoredState.getPartitions(), restoredState.getSourceWatermark());
         }
         if (!resumeFallback.isPresent()) {
             FlinkRuntimeException expiry = expiries.get(0).asFailure();
@@ -211,7 +217,8 @@ public final class SpannerChangeStreamSplitEnumerator
         return Initialization.fresh(
                 SpannerChangeStreamPartitionSplit.initial(
                         resolvedFallback, endTimestamp, heartbeatMillis),
-                true);
+                true,
+                Long.MIN_VALUE);
     }
 
     private synchronized boolean installClient(SpannerChangeStreamCoordinatorClient created)
@@ -248,6 +255,8 @@ public final class SpannerChangeStreamSplitEnumerator
             ledger.put(partition.splitId(), partition);
         }
         rebuildRuntimeIndexes();
+        sourceWatermark = initialization.sourceWatermark;
+        initializeSourceWatermark();
         discardRestoredReaderSplits = initialization.discardRestoredReaderSplits;
         initialized = true;
         for (Integer subtaskId : context.registeredReaders().keySet()) {
@@ -357,6 +366,7 @@ public final class SpannerChangeStreamSplitEnumerator
                             later(current.getWatermark(), returned.getWatermark()));
             schedule(merged);
         }
+        refreshSourceWatermark();
         splitsReturned.inc(splits.size());
         serveWaitingReaders();
     }
@@ -370,7 +380,9 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private void sendInitializationEvent(int subtaskId) {
         context.sendEventToSourceReader(
-                subtaskId, new SpannerChangeStreamInitializationEvent(discardRestoredReaderSplits));
+                subtaskId,
+                new SpannerChangeStreamInitializationEvent(
+                        discardRestoredReaderSplits, sourceWatermark));
     }
 
     @Override
@@ -407,11 +419,12 @@ public final class SpannerChangeStreamSplitEnumerator
         if (current == null || current.getLifecycleState() != PartitionLifecycleState.RUNNING) {
             return;
         }
-        ledger.put(
-                current.splitId(),
+        replacePartition(
+                current,
                 current.withProgress(
                         later(current.getCurrentPosition(), progress.getCurrentPosition()),
                         later(current.getWatermark(), progress.getWatermark())));
+        refreshSourceWatermark();
     }
 
     private void acceptChildren(int subtaskId, ChildPartitionsEvent event) {
@@ -459,6 +472,7 @@ public final class SpannerChangeStreamSplitEnumerator
             SpannerChangeStreamPartitionSplit existing = ledger.get(childId);
             if (existing == null) {
                 ledger.put(childId, discovered);
+                trackUnfinishedWatermark(discovered);
                 unfinishedPartitions++;
                 partitionsDiscovered.inc();
                 indexCreatedPartition(discovered);
@@ -471,6 +485,7 @@ public final class SpannerChangeStreamSplitEnumerator
                 promoteIfReady(existing);
             }
         }
+        refreshSourceWatermark();
         serveWaitingReaders();
     }
 
@@ -499,7 +514,7 @@ public final class SpannerChangeStreamSplitEnumerator
                                 later(current.getCurrentPosition(), event.getCurrentPosition()),
                                 later(current.getWatermark(), event.getWatermark()))
                         .withLifecycleState(PartitionLifecycleState.FINISHED);
-        ledger.put(finished.splitId(), finished);
+        replacePartition(current, finished);
         unfinishedPartitions--;
         Set<String> children = childrenByParent.remove(finished.splitId());
         for (String childId : children == null ? Collections.<String>emptySet() : children) {
@@ -508,6 +523,7 @@ public final class SpannerChangeStreamSplitEnumerator
                 promoteIfReady(child);
             }
         }
+        refreshSourceWatermark();
         serveWaitingReaders();
     }
 
@@ -515,6 +531,7 @@ public final class SpannerChangeStreamSplitEnumerator
         childrenByParent.clear();
         scheduledPartitions.clear();
         scheduledPositionCounts.clear();
+        unfinishedWatermarkCounts.clear();
         scheduledCount.set(0);
         unfinishedPartitions = 0;
         boundedLedger = false;
@@ -522,6 +539,7 @@ public final class SpannerChangeStreamSplitEnumerator
             boundedLedger |= partition.getEndTimestamp() != null;
             if (partition.getLifecycleState() != PartitionLifecycleState.FINISHED) {
                 unfinishedPartitions++;
+                trackUnfinishedWatermark(partition);
             }
             if (partition.getLifecycleState() == PartitionLifecycleState.SCHEDULED) {
                 scheduledPartitions.addLast(partition.splitId());
@@ -564,7 +582,13 @@ public final class SpannerChangeStreamSplitEnumerator
     private void schedule(SpannerChangeStreamPartitionSplit partition) {
         SpannerChangeStreamPartitionSplit scheduled =
                 partition.withLifecycleState(PartitionLifecycleState.SCHEDULED);
-        ledger.put(scheduled.splitId(), scheduled);
+        SpannerChangeStreamPartitionSplit current = ledger.get(scheduled.splitId());
+        if (current == null) {
+            ledger.put(scheduled.splitId(), scheduled);
+            trackUnfinishedWatermark(scheduled);
+        } else {
+            replacePartition(current, scheduled);
+        }
         scheduledPartitions.addLast(scheduled.splitId());
         scheduledCount.incrementAndGet();
         trackScheduledPosition(scheduled.getCurrentPosition().toEpochMilli());
@@ -607,13 +631,89 @@ public final class SpannerChangeStreamSplitEnumerator
         return right.isAfter(left) ? right : left;
     }
 
+    private void replacePartition(
+            SpannerChangeStreamPartitionSplit current,
+            SpannerChangeStreamPartitionSplit replacement) {
+        boolean sameIndexedWatermark =
+                current.getLifecycleState() != PartitionLifecycleState.FINISHED
+                        && replacement.getLifecycleState() != PartitionLifecycleState.FINISHED
+                        && SpannerChangeStreamWatermarks.beforeInstant(current.getWatermark())
+                                == SpannerChangeStreamWatermarks.beforeInstant(
+                                        replacement.getWatermark());
+        if (!sameIndexedWatermark) {
+            untrackUnfinishedWatermark(current);
+        }
+        ledger.put(replacement.splitId(), replacement);
+        if (!sameIndexedWatermark) {
+            trackUnfinishedWatermark(replacement);
+        }
+    }
+
+    private void trackUnfinishedWatermark(SpannerChangeStreamPartitionSplit partition) {
+        if (partition.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+            unfinishedWatermarkCounts.merge(
+                    SpannerChangeStreamWatermarks.beforeInstant(partition.getWatermark()),
+                    1,
+                    Integer::sum);
+        }
+    }
+
+    private void untrackUnfinishedWatermark(SpannerChangeStreamPartitionSplit partition) {
+        if (partition.getLifecycleState() == PartitionLifecycleState.FINISHED) {
+            return;
+        }
+        long watermark = SpannerChangeStreamWatermarks.beforeInstant(partition.getWatermark());
+        Integer count = unfinishedWatermarkCounts.get(watermark);
+        Preconditions.checkState(count != null, "Unfinished watermark index is inconsistent.");
+        if (count == 1) {
+            unfinishedWatermarkCounts.remove(watermark);
+        } else {
+            unfinishedWatermarkCounts.put(watermark, count - 1);
+        }
+    }
+
+    private void refreshSourceWatermark() {
+        if (unfinishedWatermarkCounts.isEmpty()) {
+            return;
+        }
+        long next = unfinishedWatermarkCounts.firstKey();
+        Preconditions.checkState(
+                next >= sourceWatermark,
+                "Spanner Change Streams complete-ledger watermark moved backwards from %s to %s.",
+                sourceWatermark,
+                next);
+        if (next == sourceWatermark) {
+            return;
+        }
+        sourceWatermark = next;
+        SpannerChangeStreamWatermarkEvent event = new SpannerChangeStreamWatermarkEvent(next);
+        for (Integer subtaskId : context.registeredReaders().keySet()) {
+            context.sendEventToSourceReader(subtaskId, event);
+        }
+    }
+
+    private void initializeSourceWatermark() {
+        if (unfinishedWatermarkCounts.isEmpty()) {
+            return;
+        }
+        long candidate = unfinishedWatermarkCounts.firstKey();
+        Preconditions.checkState(
+                candidate >= sourceWatermark,
+                "Restored Spanner Change Streams source watermark %s is ahead of complete-ledger"
+                        + " frontier %s.",
+                sourceWatermark,
+                candidate);
+        sourceWatermark = candidate;
+    }
+
     @Override
     public SpannerChangeStreamEnumeratorState snapshotState(long checkpointId) {
         Preconditions.checkState(
                 initialized,
                 "Spanner Change Streams initialization is still outstanding; retry the"
                         + " checkpoint after its deferred reader actions have been replayed.");
-        return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(ledger.values());
+        return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
+                ledger.values(), sourceWatermark);
     }
 
     private void registerMetrics() {
@@ -685,22 +785,30 @@ public final class SpannerChangeStreamSplitEnumerator
 
         private final List<SpannerChangeStreamPartitionSplit> partitions;
         private final boolean discardRestoredReaderSplits;
+        private final long sourceWatermark;
 
         private Initialization(
                 List<SpannerChangeStreamPartitionSplit> partitions,
-                boolean discardRestoredReaderSplits) {
+                boolean discardRestoredReaderSplits,
+                long sourceWatermark) {
             this.partitions = partitions;
             this.discardRestoredReaderSplits = discardRestoredReaderSplits;
+            this.sourceWatermark = sourceWatermark;
         }
 
         private static Initialization fresh(
-                SpannerChangeStreamPartitionSplit initial, boolean discardRestoredReaderSplits) {
+                SpannerChangeStreamPartitionSplit initial,
+                boolean discardRestoredReaderSplits,
+                long sourceWatermark) {
             return new Initialization(
-                    Collections.singletonList(initial), discardRestoredReaderSplits);
+                    Collections.singletonList(initial),
+                    discardRestoredReaderSplits,
+                    sourceWatermark);
         }
 
-        private static Initialization restored(List<SpannerChangeStreamPartitionSplit> partitions) {
-            return new Initialization(new ArrayList<>(partitions), false);
+        private static Initialization restored(
+                List<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+            return new Initialization(new ArrayList<>(partitions), false, sourceWatermark);
         }
     }
 

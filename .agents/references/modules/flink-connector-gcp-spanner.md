@@ -165,6 +165,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The enumerator state is the only partition-lifecycle recovery record; do not add Beam's external
   metadata table. It checkpoints scheduled and running entries and the finished parents that
   establish child dependencies.
+- The enumerator owns one checkpointed source-watermark frontier: the minimum safe watermark across
+  every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` ledger entry. Broadcast it to every reader,
+  including readers with no assigned split, and reject any transition that would move it backwards.
+  Maintain its counted ordered runtime index incrementally and rebuild that index from the ledger;
+  do not scan the complete lineage on every record-progress event.
 - Child discovery does not finish a parent. A reader forwards every child-partitions record and
   sends a separate completion event only after its query ends successfully. A child becomes
   schedulable only after every named parent is finished.
@@ -216,8 +221,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   watermark. Restore queries that timestamp inclusively, so the boundary can repeat and delivery
   is at least once; advancing it would skip records that share a commit timestamp.
 - Data records carry their commit timestamp as the Flink event timestamp. Heartbeats advance the
-  per-split watermark, while child-partitions records are coordinator events rather than user
-  records.
+  partition watermark reported to the coordinator, while child-partitions records are coordinator
+  events rather than user records. Readers emit only the coordinator's complete-ledger frontier
+  through the main source output and never mark a quiet partition idle.
+- Convert an inclusive Spanner heartbeat instant to Flink milliseconds by subtracting one after
+  `toEpochMilli()`, saturating at `Long.MIN_VALUE`. A later nanosecond instant can truncate to the
+  same millisecond, and Flink treats records at or below its watermark as late.
 - A reader does not open fresh or restored queries until the coordinator initialization event.
   Preserve queued state in checkpoints while waiting, and reject duplicate or unknown
   initialization events.
@@ -232,10 +241,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `missedHeartbeatIntervals` excludes the initial null-token query and reports the maximum whole
   intervals across active token queries. Lag gauges use the oldest current position, clamp a future
   position to zero, saturate overflow, and read zero for an empty set.
-- Do not duplicate `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, or `sourceIdleTime`,
-  nor Flink 2.2's per-split `currentWatermark`. The Flink source runtime derives the metrics
-  available in that Flink version from the commit timestamps and split watermarks this reader
-  emits.
+- Do not duplicate `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, or `sourceIdleTime`.
+  The Flink source runtime derives the metrics available in that Flink version from the commit
+  timestamps and source-wide watermarks this reader emits.
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 
@@ -268,8 +276,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the key as `TIMESTAMP_LTZ(3)` because Flink rowtime precision stops at 3; the compatible planner
   cast is intentional.
 - `SupportsSourceWatermark.applySourceWatermark()` adds no generator. The FLIP-27 reader already
-  timestamps data records at commit time and emits per-partition heartbeat watermarks, and that
-  remains the only progress policy.
+  timestamps data records at commit time and emits the coordinator's complete-ledger heartbeat
+  frontier, and that remains the only progress policy.
 - Reuse `StructToRowDataConverter` through typed synthetic Spanner values so bounded, lookup, and
   CDC paths retain one decimal, UUID, JSON, PROTO, ENUM, timestamp, array, and null contract.
 - Flink 1.20 uses its sole upsert declaration, while Flink 2.x declares key-only deletes through

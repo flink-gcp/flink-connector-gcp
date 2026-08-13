@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12
+- Date: 2026-08-12; revised 2026-08-13
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#534](https://github.com/laughingman7743/flink-connector-gcp/issues/534),
-  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535)
+  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
+  [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -51,6 +52,12 @@ Reader progress events keep the running entries' current position and watermark 
 A returned split keeps that progress and moves back to `SCHEDULED`; a restored running entry waits for Flink to return its reader-owned split rather than being assigned twice.
 The coordinator signals no more splits when every entry in a bounded ledger is finished.
 
+The coordinator also owns the source-wide event-time frontier.
+It is the minimum safe watermark across every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` entry in the complete ledger, including partitions that no reader currently owns.
+Finished parents remain lineage evidence but leave this minimum after their children have been accepted.
+The enumerator checkpoints the last emitted source frontier beside the ledger and sends it to every registered reader, including readers with no split, so restore and rescaling cannot move event time backwards.
+At runtime, a counted ordered index tracks unfinished partition watermarks and is rebuilt from the ledger after restore; ordinary data progress with an unchanged partition watermark does not scan or rewrite that index.
+
 Fresh initialization resolves `StartPosition` once and creates exactly one null-token entry.
 Restore validates every unfinished entry against the one retained window from ADR-0094 and never creates an initial entry while the ledger remains valid.
 The connector reads retention and partition mode through dialect-specific `CHANGE_STREAM_OPTIONS` queries behind a serializable factory and a small runtime client interface.
@@ -67,6 +74,7 @@ This handshake is necessary because Flink restores reader state independently of
 
 Both checkpoint serializers use connector-owned versioned formats.
 They encode optional values and lifecycle states with explicit tags and reject unknown versions, tags, negative counts, and invalid timestamps.
+Enumerator state version 2 adds the source-wide frontier; version 1 restore derives a conservative frontier from its complete ledger.
 
 ## Evidence
 

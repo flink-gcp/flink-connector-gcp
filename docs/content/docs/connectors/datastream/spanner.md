@@ -576,7 +576,11 @@ The connector does not create a metadata table and needs no write permission for
 ### Event time
 
 Data records carry their Spanner commit timestamp as the Flink event timestamp.
-Heartbeat records advance the watermark for their partition, and Flink combines active split watermarks before exposing the source watermark.
+Heartbeat records advance their partition's safe progress in the coordinator ledger.
+The source watermark is one coordinator-owned minimum across every unfinished partition, including discovered, scheduled, reader-queued, and running partitions.
+The coordinator broadcasts that frontier to every source reader, including readers with no assigned split, so failover and rescaling do not omit temporarily unowned work.
+The conversion subtracts one millisecond from the heartbeat instant after truncation because a later nanosecond timestamp can occupy the same Flink millisecond; this prevents an on-time record from being classified as late.
+Quiet partitions are not marked idle because doing so would remove them from the safety minimum.
 The default two-second heartbeat can be configured from one second through five minutes.
 
 `WatermarkStrategy.noWatermarks()` in the example prevents downstream timestamp assignment from replacing these source watermarks.
@@ -666,14 +670,13 @@ Registered on the split enumerator's coordinator group and on each source reader
 | `lastChangeStreamRecordWaitMillis` | gauge | Wall-clock time spent waiting for the most recently returned non-heartbeat result |
 | `currentEmitEventTimeLag` | gauge (Flink standard) | Time between the latest emitted record's commit timestamp and now, frozen at the idle-start time while the subtask is idle |
 | `watermarkLag` | gauge (Flink standard) | Time between the current source watermark and now, frozen at the idle-start time while the subtask is idle |
-| `currentWatermark` | gauge (Flink standard), Flink 2.2 per split | Latest watermark emitted by this Change Stream partition output |
 | `sourceIdleTime` | gauge (Flink standard) | Time since this source subtask last became idle, or zero while active |
 
-On Flink 2.2, heartbeats move that split's `currentWatermark`; on every supported version they move the source watermark without incrementing `numRecordsIn`.
+Heartbeats move the coordinator-owned source watermark without incrementing `numRecordsIn`.
 Child-partitions records and query-completion signals are coordinator events, so neither counter treats them as user records.
 Table-filtered records and records skipped without a projected change advance partition progress but do not increment `numRecordsIn` or `recordsSkipped`.
 `changeStreamColumnOccurrencesFiltered` counts one occurrence for removed `columnTypes` metadata and one for each removed member in each old or new value object, and counts only records passed to the deserializer.
-The connector does not register its own copies of the standard metrics: the Flink source runtime derives the metrics available in that Flink version from the commit timestamps and split watermarks the reader emits.
+The connector does not register its own copies of the standard metrics: the Flink source runtime derives the metrics available in that Flink version from the commit timestamps and source watermarks the reader emits.
 No metric uses a partition token as a label, because split and merge would make those labels unbounded.
 
 Read the query and lag metrics together:

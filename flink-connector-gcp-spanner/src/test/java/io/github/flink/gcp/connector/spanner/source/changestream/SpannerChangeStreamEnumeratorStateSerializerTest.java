@@ -46,7 +46,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                         PartitionLifecycleState.RUNNING,
                         start.plusSeconds(2));
         SpannerChangeStreamEnumeratorState state =
-                new SpannerChangeStreamEnumeratorState(Arrays.asList(initial, child));
+                new SpannerChangeStreamEnumeratorState(
+                        Arrays.asList(initial, child), start.plusSeconds(1).toEpochMilli());
         SpannerChangeStreamEnumeratorStateSerializer serializer =
                 new SpannerChangeStreamEnumeratorStateSerializer();
 
@@ -64,12 +65,13 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                 serializer.serialize(
                         new SpannerChangeStreamEnumeratorState(Collections.singletonList(initial)));
 
-        assertThatThrownBy(() -> serializer.deserialize(2, bytes))
+        assertThatThrownBy(() -> serializer.deserialize(3, bytes))
                 .isInstanceOf(java.io.IOException.class)
-                .hasMessageContaining("version 2");
+                .hasMessageContaining("version 3");
 
         DataOutputSerializer empty = new DataOutputSerializer(4);
         empty.writeInt(0);
+        empty.writeLong(Long.MIN_VALUE);
         assertThatThrownBy(
                         () ->
                                 serializer.deserialize(
@@ -91,6 +93,7 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
         corrupt.writeInt(2);
         SpannerChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
         SpannerChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
+        corrupt.writeLong(Long.MIN_VALUE);
         assertThatThrownBy(
                         () ->
                                 serializer.deserialize(
@@ -151,6 +154,58 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("before parent")
                 .hasMessageContaining("FINISHED");
+    }
+
+    @Test
+    void readsVersionOneStateWithTheCompleteLedgerMinimum() throws Exception {
+        Instant start = Instant.parse("2026-08-12T00:00:00Z");
+        SpannerChangeStreamPartitionSplit initial =
+                SpannerChangeStreamPartitionSplit.initial(start, null, 2_000)
+                        .withLifecycleState(PartitionLifecycleState.FINISHED);
+        SpannerChangeStreamPartitionSplit child =
+                new SpannerChangeStreamPartitionSplit(
+                        "child",
+                        Collections.singletonList(initial.splitId()),
+                        start.plusSeconds(1),
+                        null,
+                        2_000,
+                        start.plusSeconds(2),
+                        PartitionLifecycleState.RUNNING,
+                        start.plusSeconds(2));
+        DataOutputSerializer versionOne = new DataOutputSerializer(512);
+        versionOne.writeInt(2);
+        SpannerChangeStreamPartitionSplitSerializer.writeSplit(versionOne, initial);
+        SpannerChangeStreamPartitionSplitSerializer.writeSplit(versionOne, child);
+
+        SpannerChangeStreamEnumeratorState restored =
+                new SpannerChangeStreamEnumeratorStateSerializer()
+                        .deserialize(1, versionOne.getCopyOfBuffer());
+
+        assertThat(restored.getSourceWatermark())
+                .isEqualTo(child.getWatermark().toEpochMilli() - 1);
+    }
+
+    @Test
+    void rejectsACheckpointedWatermarkAheadOfAnUnfinishedPartition() throws Exception {
+        Instant start = Instant.parse("2026-08-12T00:00:00Z");
+        SpannerChangeStreamPartitionSplit initial =
+                SpannerChangeStreamPartitionSplit.initial(start, null, 2_000);
+        DataOutputSerializer corrupt = new DataOutputSerializer(512);
+        corrupt.writeInt(1);
+        SpannerChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
+        corrupt.writeLong(start.toEpochMilli());
+
+        assertThatThrownBy(
+                        () ->
+                                new SpannerChangeStreamEnumeratorStateSerializer()
+                                        .deserialize(2, corrupt.getCopyOfBuffer()))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("Corrupt")
+                .hasRootCauseMessage(
+                        "source watermark "
+                                + start.toEpochMilli()
+                                + " is ahead of complete-ledger frontier "
+                                + (start.toEpochMilli() - 1));
     }
 
     @Test

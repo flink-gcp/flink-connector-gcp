@@ -93,6 +93,7 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
         private final ScheduledExecutorService callbacks;
 
         private boolean initialPublished;
+        private boolean heartbeatPublished;
         private boolean closed;
 
         private ScriptedQuery(
@@ -128,7 +129,7 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
             DataChangeRecord record =
                     new DataChangeRecord(
                             timestamp,
-                            split.splitId() + "|" + split.getCurrentPosition().toEpochMilli(),
+                            split.splitId() + "|" + timestamp.toEpochMilli(),
                             "scripted-transaction",
                             true,
                             "scripted_table",
@@ -147,6 +148,13 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
         public synchronized void resume() {
             if (!closed && initialPublished && split.getPartitionToken() == null) {
                 callbacks.execute(listener::finished);
+            } else if (!closed && initialPublished && !heartbeatPublished) {
+                heartbeatPublished = true;
+                callbacks.execute(
+                        () ->
+                                listener.record(
+                                        new SpannerChangeStreamRecord.Heartbeat(
+                                                split.getCurrentPosition().plusMillis(2))));
             }
         }
 
