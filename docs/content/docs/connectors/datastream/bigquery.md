@@ -27,15 +27,6 @@ BigQuery sink for Apache Flink with a unified, `BigQueryIO`-style write API, pro
 
 One builder dispatches to a write-method implementation at job-graph construction time:
 
-| Write method | Semantics |
-|---|---|
-| `STORAGE_API_AT_LEAST_ONCE` | Storage Write API default stream; dynamic per-record table destinations; connection multiplexing delegated to the client's connection pool |
-| `STORAGE_API_EXACTLY_ONCE` | Storage Write API buffered streams + two-phase commit on checkpoints; fixed or dynamic destinations |
-| `FILE_LOADS` | GCS-staged files (Avro by default, Parquet opt-in) + BigQuery load jobs; batch and streaming (checkpoint-triggered), exactly-once |
-
-Per-feature implementation status is tracked in the
-[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
-
 ```java
 Sink<MyEvent> sink =
         BigQuerySink.<MyEvent>builder()
@@ -45,6 +36,122 @@ Sink<MyEvent> sink =
                 .serializer(new MyEventProtoSerializer())
                 .build();
 ```
+
+Per-feature implementation status is tracked in the
+[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
+
+## Choosing a write method
+
+Choose a write method from the required visibility latency and delivery guarantee first, then check
+whether its ingestion price and capacity model fit the workload.
+
+| | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` | `FILE_LOADS` |
+|---|---|---|---|
+| Best fit | Low-latency streaming where downstream processing can tolerate or remove duplicates | Low-latency streaming or batch jobs that require exactly-once delivery | Streaming or batch jobs that accept minute-level visibility to avoid volume-based Storage Write API ingestion pricing |
+| Visibility | Rows are queryable after `AppendRows` succeeds; batching and an in-flight request limit decide the delay | Rows are queryable when the synchronous `FlushRows` commit completes: per checkpoint in streaming, or at end of input in batch | Rows are queryable when the synchronous load or final copy completes: per checkpoint in streaming, or at end of input in batch |
+| Delivery | At least once | Exactly once while Flink state is retained | Exactly once through deterministic load jobs while Flink state and staged objects are retained |
+| Ingestion price | Volume-based Storage Write API pricing | Volume-based Storage Write API pricing | Batch loading is free on the shared slot pool; Cloud Storage, cross-region transfer, and dedicated `PIPELINE` reservations can still incur charges |
+| Capacity | Per-project Storage Write API throughput and connection quotas | The same throughput quota, plus application-created stream quotas | Free shared slots with no capacity or throughput guarantee; dedicated `PIPELINE` slots are optional |
+| Slow-path effect | A full in-flight window slows the writer, and checkpoint flush waits for pending appends | Append backpressure slows the writer, and a slow `FlushRows` commit delays the next checkpoint | Staging I/O slows the writer, and a slow load lengthens checkpoint completion |
+| Destinations | Fixed or dynamic | Fixed or dynamic | Fixed or dynamic |
+| Column surface | Every type the selected serializer and the Storage Write descriptor can express | The same as at-least-once | Staging additionally rejects `INTERVAL`, `RANGE`, and flexible column names; a `JSON` destination uses Avro even when Parquet is selected |
+
+The two Storage Write API methods use the same volume-based
+[ingestion pricing](https://cloud.google.com/bigquery/pricing#data_ingestion_pricing) and published
+[write quotas](https://cloud.google.com/bigquery/quotas#write-api-limits).
+The default-stream method is the simpler choice when duplicates are acceptable; the buffered-stream
+method adds checkpoint-aligned exactly-once visibility and the state-lifetime considerations
+described in [Exactly-once](#exactly-once-buffered-streams).
+
+`FILE_LOADS` uses BigQuery's free shared pool for batch loading, whose available capacity and
+throughput are not guaranteed.
+A deployment that needs predictable load-job capacity can assign paid `PIPELINE` slots instead.
+See Google's [batch-loading capacity and pricing](https://cloud.google.com/bigquery/docs/batch-loading-data#load_job_capacity)
+and the connector's [File loads](#file-loads) section for its quota guard, staging formats and
+recovery contract.
+
+### Sizing a streaming FILE_LOADS job
+
+Size a streaming `FILE_LOADS` job from **staged bytes per checkpoint**, not from the file-roll
+threshold alone.
+For one destination with evenly distributed records, the first estimate is:
+
+```text
+staged bytes per checkpoint = records/second × staged bytes/record × checkpoint seconds
+staged bytes per subtask     = staged bytes per checkpoint ÷ sink parallelism
+```
+
+Suppose a job receives 100,000 records/s, each record occupies 150 bytes after conversion and
+compression, and the sink runs at parallelism 256.
+The 150-byte input is staged size rather than source-message size; measure it from representative
+staging objects when compression or schema shape makes the difference material.
+
+| Checkpoint interval | Staged per checkpoint | Staged per subtask | Effect of the default 16 MiB roll threshold |
+|---|---:|---:|---|
+| 3 minutes | `100,000 × 150 B × 180 = 2.7 GB` | about 10.5 MB (10.1 MiB) | Below the threshold: about one object per subtask, or 256 objects |
+| 5 minutes | `100,000 × 150 B × 300 = 4.5 GB` | about 17.6 MB (16.8 MiB) | Just above the threshold: about two objects per subtask, or 512 objects |
+
+Those object counts assume one active destination and balanced partitions.
+Encoded row sizes, partition skew, and the unflushed Avro block or Parquet row group can move the
+actual count.
+Additional destinations create independently rolled files and divide the staged bytes according to
+the resolver's traffic distribution.
+
+Rolling a file does not by itself create another load job.
+Within the per-job URI and byte limits, the single committer groups all files for one destination
+and staging format into one direct load per checkpoint.
+The roll threshold primarily changes file-level read parallelism and how soon the overflow path is
+needed; the checkpoint interval and active destination count decide the daily direct-load count.
+
+At a 3-minute interval, one active destination normally uses `24 × 60 ÷ 3 = 480` load jobs and
+destination-table modifications per day.
+Two hundred active destinations therefore use about `480 × 200 = 96,000` of the project's 100,000
+daily load jobs, before failed jobs, retries, format transitions, overflow loads, or other workloads
+consume the remaining quota.
+At a 5-minute interval the corresponding count is 288 per destination per day.
+
+The one-minute mathematical floor gives 1,440 modifications per destination per day, leaving only
+60 below the table's 1,500 daily limit and no practical retry allowance.
+By default, the connector rejects configured intervals below 2 minutes and warns below 5 minutes;
+lowering `minCheckpointInterval(...)` is an explicit opt-in for safe, short-lived jobs.
+Google's [batch-loading guidance](https://cloud.google.com/bigquery/docs/batch-loading-data#example_use_case)
+recommends a 5-minute
+incremental load cadence to retain retry headroom.
+A warning at 3 minutes means that the deployment must account for its destination count and retries,
+not that the configuration is automatically invalid.
+
+### Replacing a two-stage load
+
+`FILE_LOADS` can replace a pipeline that first lands source records on Cloud Storage and then runs a
+separate job to parse, convert and batch-load them.
+When the Flink job performs that parsing and conversion, the sink stages and loads its output in the
+same checkpointed job, removing the second scheduler, batch execution path and cross-pipeline
+recovery procedure.
+
+This consolidation does not create a raw archive.
+Staging objects contain converted BigQuery rows and are deleted best-effort after a successful load,
+so they cannot replay source bytes after a parser or transformation bug is discovered.
+Keep an independent sink for the original records when that replay path is required.
+The `FailureHandler` handles row-level serialization and conversion failures; it cannot identify a
+parser that produced valid but semantically wrong rows.
+
+### Switching away from FILE_LOADS
+
+Changing from `FILE_LOADS` to a Storage Write API method is not only a `WriteMethod` change:
+
+- **Method options**: remove `FileLoadsOptions`; the default-stream options are optional, while the
+  buffered-stream method requires `BufferedStreamOptions`.
+- **Delivery**: at-least-once permits duplicates, while buffered streams keep exactly-once delivery
+  only with their checkpointed writer and committer state.
+- **Checkpoint behavior**: remove the load-job quota floor, then select the checkpoint cadence for
+  default-stream flushing or buffered-stream visibility and recovery.
+- **Resources and permissions**: remove staging-bucket and temporary-table dependencies, grant the
+  Storage Write API permissions, and account for volume-based ingestion charges and write quotas.
+- **Write behavior**: Storage Write API methods always append, so `WRITE_TRUNCATE`, `WRITE_EMPTY`,
+  staging formats, cleanup rules and load-job polling no longer apply.
+
+All three methods support fixed and dynamic destinations, so an existing `destinationResolver(...)`
+does not need to change solely because the write method changes.
 
 ## Credentials
 
