@@ -69,6 +69,11 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
         return combined;
     }
 
+    private static String readbackOptions(String tableId, String... keysAndValues) {
+        return withOptions(
+                tableId, append(keysAndValues, "sink.insert-only-input-mode", "insert-only"));
+    }
+
     private static Stream<Arguments> pointLookupModes() {
         return Stream.of(
                 Arguments.of("sync", new String[0]),
@@ -322,7 +327,7 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                         + "  cf2 ROW<flag BOOLEAN, seen TIMESTAMP_LTZ(3)>,\n"
                         + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
                         + ") "
-                        + withOptions("sql-select"));
+                        + readbackOptions("sql-select"));
 
         tEnv.executeSql(
                         "INSERT INTO bt VALUES"
@@ -354,7 +359,7 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                         + "  cf1 ROW<name STRING, amount BIGINT>,\n"
                         + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
                         + ") "
-                        + withOptions("sql-select-null", "null-string-literal", "<none>"));
+                        + readbackOptions("sql-select-null", "null-string-literal", "<none>"));
 
         // The sink writes a null string as the literal and a null BIGINT as an empty cell; both
         // must come back as SQL NULLs through the same option.
@@ -378,7 +383,7 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                         + "  cf2 ROW<amount BIGINT>,\n"
                         + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
                         + ") "
-                        + withOptions("sql-projection"));
+                        + readbackOptions("sql-projection"));
         tEnv.executeSql(
                         "INSERT INTO bt VALUES ('r1', ROW('alice'), ROW(CAST(7 AS BIGINT))),"
                                 + " ('r2', ROW('bob'), ROW(CAST(9 AS BIGINT)))")

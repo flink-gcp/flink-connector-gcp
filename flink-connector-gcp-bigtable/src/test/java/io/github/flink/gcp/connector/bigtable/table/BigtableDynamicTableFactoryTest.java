@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
@@ -35,27 +37,34 @@ import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
+import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
+import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamEnvelopeSchema;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -83,6 +92,42 @@ class BigtableDynamicTableFactoryTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my-instance", "my-table");
+
+    private static final DataType CHANGE_STREAM_GENERIC_VALUE =
+            DataTypes.ROW(
+                    DataTypes.FIELD("value_type", DataTypes.STRING()),
+                    DataTypes.FIELD("bytes_value", DataTypes.BYTES()),
+                    DataTypes.FIELD("long_value", DataTypes.BIGINT()));
+
+    private static final ResolvedSchema CHANGE_STREAM_SCHEMA =
+            changeStreamSchema(CHANGE_STREAM_GENERIC_VALUE);
+
+    private static ResolvedSchema changeStreamSchema(DataType qualifierType) {
+        return ResolvedSchema.of(
+                Column.physical("row_key", DataTypes.BYTES()),
+                Column.physical(
+                        "entries",
+                        DataTypes.ARRAY(
+                                DataTypes.ROW(
+                                        DataTypes.FIELD("entry_index", DataTypes.INT()),
+                                        DataTypes.FIELD("kind", DataTypes.STRING()),
+                                        DataTypes.FIELD("family", DataTypes.STRING()),
+                                        DataTypes.FIELD("qualifier", qualifierType),
+                                        DataTypes.FIELD("timestamp", CHANGE_STREAM_GENERIC_VALUE),
+                                        DataTypes.FIELD("value", CHANGE_STREAM_GENERIC_VALUE),
+                                        DataTypes.FIELD(
+                                                "delete_range",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD(
+                                                                "start_bound", DataTypes.STRING()),
+                                                        DataTypes.FIELD(
+                                                                "start_micros", DataTypes.BIGINT()),
+                                                        DataTypes.FIELD(
+                                                                "end_bound", DataTypes.STRING()),
+                                                        DataTypes.FIELD(
+                                                                "end_micros",
+                                                                DataTypes.BIGINT())))))));
+    }
 
     private static ResolvedSchema withPrimaryKey(String... columns) {
         return new ResolvedSchema(
@@ -434,6 +479,18 @@ class BigtableDynamicTableFactoryTest {
         return FactoryMocks.createTableSource(SCHEMA, options);
     }
 
+    private static DynamicTableSource source(ResolvedSchema schema, Map<String, String> options) {
+        return FactoryMocks.createTableSource(schema, options);
+    }
+
+    private static Map<String, String> minimalChangeStreamOptions() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.mode", "change-stream");
+        options.put("scan.change-stream.changelog-mode", "envelope");
+        options.put("scan.app-profile-id", "single-cluster-profile");
+        return options;
+    }
+
     /**
      * The connector's own source configuration, as the planner would build it — the source-side
      * mirror of {@link #built(ResolvedSchema, Map)}.
@@ -457,6 +514,295 @@ class BigtableDynamicTableFactoryTest {
                 .isInstanceOf(BigtableDynamicSource.class)
                 .extracting(DynamicTableSource::asSummaryString)
                 .isEqualTo("Bigtable table source");
+    }
+
+    @Test
+    void buildsTheGenericChangeStreamEnvelopeSource() {
+        DynamicTableSource source = source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions());
+
+        assertThat(source)
+                .isInstanceOf(BigtableChangeStreamDynamicSource.class)
+                .extracting(DynamicTableSource::asSummaryString)
+                .isEqualTo("Bigtable Change Streams");
+        assertThat(((ScanTableSource) source).getChangelogMode().getContainedKinds())
+                .containsExactly(org.apache.flink.types.RowKind.INSERT);
+        assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+    }
+
+    @Test
+    void mapsEveryChangeStreamBuilderOptionAndLeavesLatestAsTheBuilderDefault() {
+        Map<String, String> configured = minimalChangeStreamOptions();
+        configured.put("service-account-key-file", "/var/run/secrets/bigtable.json");
+        configured.put("scan.startup.mode", "timestamp");
+        configured.put("scan.startup.timestamp-millis", "1000");
+        configured.put("scan.resume-fallback.mode", "earliest");
+        configured.put("scan.end-timestamp-millis", "2000");
+        configured.put("scan.max-concurrent-streams-per-subtask", "5");
+        configured.put("scan.parallelism", "3");
+
+        DynamicTableSource actual = source(CHANGE_STREAM_SCHEMA, configured);
+        BigtableChangeStreamDynamicSource expected =
+                new BigtableChangeStreamDynamicSource(
+                        DESTINATION,
+                        "single-cluster-profile",
+                        "/var/run/secrets/bigtable.json",
+                        StartPosition.at(Instant.ofEpochMilli(1000L)),
+                        StartPosition.earliest(),
+                        Instant.ofEpochMilli(2000L),
+                        5,
+                        3,
+                        BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull());
+
+        assertThat(actual).isEqualTo(expected);
+        assertThat(actual.copy()).isEqualTo(actual).hasSameHashCodeAs(actual);
+
+        Map<String, String> defaults = minimalChangeStreamOptions();
+        assertThat(source(CHANGE_STREAM_SCHEMA, defaults))
+                .isEqualTo(
+                        new BigtableChangeStreamDynamicSource(
+                                DESTINATION,
+                                "single-cluster-profile",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull()));
+        assertThat(actual).isNotEqualTo(source(CHANGE_STREAM_SCHEMA, defaults));
+    }
+
+    @Test
+    void mapsEveryLegalChangeStreamStartAndFallbackMode() {
+        Map<String, String> latest = minimalChangeStreamOptions();
+        latest.put("scan.startup.mode", "latest");
+        assertThat(source(CHANGE_STREAM_SCHEMA, latest))
+                .isEqualTo(
+                        new BigtableChangeStreamDynamicSource(
+                                DESTINATION,
+                                "single-cluster-profile",
+                                null,
+                                StartPosition.latest(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull()));
+
+        Map<String, String> timestampFallback = minimalChangeStreamOptions();
+        timestampFallback.put("scan.resume-fallback.mode", "timestamp");
+        timestampFallback.put("scan.resume-fallback.timestamp-millis", "3000");
+        assertThat(source(CHANGE_STREAM_SCHEMA, timestampFallback))
+                .isEqualTo(
+                        new BigtableChangeStreamDynamicSource(
+                                DESTINATION,
+                                "single-cluster-profile",
+                                null,
+                                null,
+                                StartPosition.at(Instant.ofEpochMilli(3000L)),
+                                null,
+                                null,
+                                null,
+                                BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull()));
+    }
+
+    @Test
+    void rejectsKafkaOffsetNamesForChangeStreamPositions() {
+        for (String mode : Arrays.asList("earliest-offset", "latest-offset")) {
+            Map<String, String> options = minimalChangeStreamOptions();
+            options.put("scan.startup.mode", mode);
+
+            assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, options))
+                    .as("with Kafka offset mode '%s'", mode)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("scan.startup.mode");
+        }
+    }
+
+    @Test
+    void buildsTheExistingDataStreamSourceWithBoundednessAndParallelism() {
+        Map<String, String> options = minimalChangeStreamOptions();
+        options.put("scan.end-timestamp-millis", "2000");
+        options.put("scan.parallelism", "4");
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source(CHANGE_STREAM_SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+
+        Source<?, ?, ?> runtime = provider.createSource();
+        assertThat(runtime).isInstanceOf(BigtableChangeStreamSource.class);
+        assertThat(runtime.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
+        assertThat(provider.getParallelism()).contains(4);
+    }
+
+    @Test
+    void mapsEveryConfiguredValueAcrossTheDataStreamBuilderBoundary() {
+        Map<String, String> options = minimalChangeStreamOptions();
+        options.put("service-account-key-file", "/var/run/secrets/bigtable.json");
+        options.put("scan.startup.mode", "timestamp");
+        options.put("scan.startup.timestamp-millis", "1000");
+        options.put("scan.resume-fallback.mode", "earliest");
+        options.put("scan.end-timestamp-millis", "2000");
+        options.put("scan.max-concurrent-streams-per-subtask", "5");
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source(CHANGE_STREAM_SCHEMA, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+
+        assertThat(provider.createSource())
+                .extracting(
+                        "config.table",
+                        "config.appProfileId",
+                        "config.serviceAccountKeyFile",
+                        "config.startPosition",
+                        "config.resumeFallback",
+                        "config.endTime",
+                        "config.maxConcurrentStreamsPerSubtask")
+                .containsExactly(
+                        DESTINATION,
+                        "single-cluster-profile",
+                        "/var/run/secrets/bigtable.json",
+                        StartPosition.at(Instant.ofEpochMilli(1000L)),
+                        Optional.of(StartPosition.earliest()),
+                        Instant.ofEpochMilli(2000L),
+                        5);
+    }
+
+    @Test
+    void requiresTheEnvelopeModeAndSingleClusterAppProfile() {
+        Map<String, String> noEnvelope = minimalChangeStreamOptions();
+        noEnvelope.remove("scan.change-stream.changelog-mode");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, noEnvelope))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("is required when 'scan.mode' = 'change-stream'")
+                .hasStackTraceContaining("Set it to 'envelope'");
+
+        Map<String, String> noProfile = minimalChangeStreamOptions();
+        noProfile.remove("scan.app-profile-id");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, noProfile))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("single-cluster application profile");
+    }
+
+    @Test
+    void requiresTheExactEnvelopeSchemaAndNoPrimaryKey() {
+        assertThatThrownBy(() -> source(SCHEMA, minimalChangeStreamOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires exactly this physical schema");
+
+        DataType renamedDiscriminator =
+                DataTypes.ROW(
+                        DataTypes.FIELD("type", DataTypes.STRING()),
+                        DataTypes.FIELD("bytes_value", DataTypes.BYTES()),
+                        DataTypes.FIELD("long_value", DataTypes.BIGINT()));
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        changeStreamSchema(renamedDiscriminator),
+                                        minimalChangeStreamOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires exactly this physical schema");
+
+        DataType nonNullDiscriminator =
+                DataTypes.ROW(
+                        DataTypes.FIELD("value_type", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("bytes_value", DataTypes.BYTES()),
+                        DataTypes.FIELD("long_value", DataTypes.BIGINT()));
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        changeStreamSchema(nonNullDiscriminator),
+                                        minimalChangeStreamOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires exactly this physical schema");
+
+        ResolvedSchema keyed =
+                new ResolvedSchema(
+                        CHANGE_STREAM_SCHEMA.getColumns(),
+                        Collections.emptyList(),
+                        UniqueConstraint.primaryKey("pk", Collections.singletonList("row_key")));
+        assertThatThrownBy(() -> source(keyed, minimalChangeStreamOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must not declare a primary key");
+    }
+
+    @Test
+    void rejectsOptionsOwnedByTheOtherSourceMode() {
+        for (Map.Entry<String, String> incompatible :
+                Arrays.asList(
+                        Map.entry("scan.change-stream.changelog-mode", "envelope"),
+                        Map.entry("scan.startup.mode", "latest"),
+                        Map.entry("scan.startup.timestamp-millis", "1000"),
+                        Map.entry("scan.resume-fallback.mode", "earliest"),
+                        Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
+                        Map.entry("scan.end-timestamp-millis", "2000"),
+                        Map.entry("scan.max-concurrent-streams-per-subtask", "1"))) {
+            Map<String, String> bounded = minimalOptions();
+            bounded.put(incompatible.getKey(), incompatible.getValue());
+            assertThatThrownBy(() -> source(bounded))
+                    .as("with incompatible option '%s'", incompatible.getKey())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("not valid when 'scan.mode' = 'bounded'");
+        }
+
+        for (Map.Entry<String, String> incompatible :
+                Arrays.asList(
+                        Map.entry("emulator-endpoint", "localhost:8086"),
+                        Map.entry("null-string-literal", "<null>"),
+                        Map.entry("scan.row-key-encoding", "UTF8"),
+                        Map.entry("scan.row-prefix", "a"),
+                        Map.entry("scan.row-range.start-closed", "a"),
+                        Map.entry("scan.row-range.end-open", "z"),
+                        Map.entry("scan.row-ranges", "[a,z)"),
+                        Map.entry("lookup.async", "true"),
+                        Map.entry("lookup.cache", "none"),
+                        Map.entry("lookup.max-retries", "4"),
+                        Map.entry("lookup.partial-cache.expire-after-access", "1 min"),
+                        Map.entry("lookup.partial-cache.expire-after-write", "2 min"),
+                        Map.entry("lookup.partial-cache.cache-missing-key", "false"),
+                        Map.entry("lookup.partial-cache.max-rows", "100"),
+                        Map.entry("lookup.full-cache.reload-strategy", "TIMED"),
+                        Map.entry("lookup.full-cache.periodic-reload.interval", "5 min"),
+                        Map.entry("lookup.full-cache.periodic-reload.schedule-mode", "FIXED_RATE"),
+                        Map.entry("lookup.full-cache.timed-reload.iso-time", "10:15Z"),
+                        Map.entry("lookup.full-cache.timed-reload.interval-in-days", "2"))) {
+            Map<String, String> changeStream = minimalChangeStreamOptions();
+            changeStream.put(incompatible.getKey(), incompatible.getValue());
+            assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, changeStream))
+                    .as("with incompatible option '%s'", incompatible.getKey())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("not valid when 'scan.mode' = 'change-stream'");
+        }
+    }
+
+    @Test
+    void validatesChangeStreamPositionPairsAndConcurrencyAtPlanningTime() {
+        Map<String, String> missingTimestamp = minimalChangeStreamOptions();
+        missingTimestamp.put("scan.startup.mode", "timestamp");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, missingTimestamp))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires option 'scan.startup.timestamp-millis'");
+
+        Map<String, String> unusedTimestamp = minimalChangeStreamOptions();
+        unusedTimestamp.put("scan.resume-fallback.timestamp-millis", "1000");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, unusedTimestamp))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("was set without 'scan.resume-fallback.mode'");
+
+        Map<String, String> timestampForLatest = minimalChangeStreamOptions();
+        timestampForLatest.put("scan.startup.mode", "latest");
+        timestampForLatest.put("scan.startup.timestamp-millis", "1000");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, timestampForLatest))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "'scan.startup.timestamp-millis' is only valid when"
+                                + " 'scan.startup.mode' = 'timestamp'");
+
+        Map<String, String> zeroConcurrency = minimalChangeStreamOptions();
+        zeroConcurrency.put("scan.max-concurrent-streams-per-subtask", "0");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, zeroConcurrency))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must be positive, but was 0");
     }
 
     @Test

@@ -116,7 +116,7 @@ class BigtableChangeStreamRecordEmitterTest {
     }
 
     @Test
-    void filteredMutationCountsAsSkipped() throws Exception {
+    void filteredMutationCountsAsSkippedAndStillAdvancesProtocolState() throws Exception {
         BigtableChangeStreamRecordEmitter<String> emitter =
                 new BigtableChangeStreamRecordEmitter<>(
                         new BigtableChangeStreamDeserializationSchema<String>() {
@@ -132,16 +132,20 @@ class BigtableChangeStreamRecordEmitterTest {
                         },
                         context,
                         metrics);
+        Instant watermark = Instant.parse("2026-08-11T02:59:00Z");
+        ChangeStreamPartitionSplitState state = state();
+        CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
 
         emitter.emitRecord(
                 TestChangeStreamRecords.mutation(
-                        Instant.parse("2026-08-11T03:00:00Z"),
-                        Instant.parse("2026-08-11T02:59:00Z"),
-                        "filtered"),
-                new CollectingSourceOutput<>(),
-                state());
+                        Instant.parse("2026-08-11T03:00:00Z"), watermark, "filtered"),
+                output,
+                state);
 
+        assertThat(output.records()).isEmpty();
         assertThat(counter("recordsSkipped")).isEqualTo(1);
+        assertThat(state.toSplit().getContinuationTokens().get(0).getToken()).isEqualTo("filtered");
+        assertThat(state.getLowWatermark()).isEqualTo(watermark);
     }
 
     private long counter(String name) {

@@ -253,15 +253,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   but never completes it. Reader lag gauges use the minimum checkpointed assigned position, and
   enumerator lag uses the oldest unassigned position; both clamp clock skew and overflow.
 
-## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
+## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`, Change Streams `docs/adr/0106`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
-  setter, `getOptional(...).ifPresent(...)`, no default restated. The **five** table-owned options
-  are `null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
+  setter, `getOptional(...).ifPresent(...)`, no default restated. The **six** table-owned options
+  are `scan.mode`, `null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
   `sink.cell-timestamp.truncate-to-millis`, plus `sink.insert-only-input-mode`, which have no
   builder default behind them, and
   `BigtableConnectorOptionsTest` asserts that partition **exactly** rather than exempting it — a
   mapped option gaining a default and a table-owned one losing its own both fail.
+- **Change Streams uses one exact insert-only mutation envelope** (#600, ADR-0106).
+  It preserves the row key and ordered `SetCell`, `DeleteCells`, `DeleteFamily`, `AddToCell` and
+  `MergeToCell` entries through discriminated raw-value, raw-timestamp and integer fields.
+  It never claims row-level update or delete semantics without before and full after images.
+  Reject a primary key, any physical schema change, an unknown future SDK entry/value subtype and
+  every option owned by the bounded scan instead of widening or ignoring the contract.
 - **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
   normative** — one atomic column is the row key, every `ROW<...>` column is a family, cell bytes
   are `Bytes` as `HBaseSerde` applies them. `HBaseSerde` is the interop target, **not**

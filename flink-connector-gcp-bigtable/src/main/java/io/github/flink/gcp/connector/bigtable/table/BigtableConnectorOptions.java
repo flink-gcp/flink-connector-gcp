@@ -41,9 +41,9 @@ import java.util.List;
  *       default" are the same state. The exception is an option the <em>table layer itself</em>
  *       owns, which has no connector default to be a second copy of: {@link #NULL_STRING_LITERAL},
  *       {@link #SCAN_ROW_KEY_ENCODING}, {@link #LOOKUP_ASYNC}, {@link
- *       #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS} and {@link #SINK_INSERT_ONLY_INPUT_MODE} are the
- *       five here, and the parity test asserts that partition exactly rather than tolerating a
- *       default anywhere.
+ *       #SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS}, {@link #SINK_INSERT_ONLY_INPUT_MODE} and {@link
+ *       #SCAN_MODE} are the six here, and the parity test asserts that partition exactly rather
+ *       than tolerating a default anywhere.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Bigtable row is a schema this DDL describes —
@@ -126,6 +126,14 @@ public final class BigtableConnectorOptions {
     //  Scan
     // ------------------------------------------------------------------------
 
+    public static final ConfigOption<ScanMode> SCAN_MODE =
+            ConfigOptions.key("scan.mode")
+                    .enumType(ScanMode.class)
+                    .defaultValue(ScanMode.BOUNDED)
+                    .withDescription(
+                            "Whether the source reads the current table through a bounded scan or"
+                                    + " reads mutations through Bigtable Change Streams.");
+
     public static final ConfigOption<String> SCAN_APP_PROFILE_ID =
             ConfigOptions.key("scan.app-profile-id")
                     .stringType()
@@ -190,6 +198,62 @@ public final class BigtableConnectorOptions {
                                     + " additive with 'scan.row-prefix' and 'scan.row-range.*',"
                                     + " and 'scan.row-key-encoding' controls how each endpoint is"
                                     + " decoded.");
+
+    public static final ConfigOption<ChangeStreamChangelogMode> SCAN_CHANGE_STREAM_CHANGELOG_MODE =
+            ConfigOptions.key("scan.change-stream.changelog-mode")
+                    .enumType(ChangeStreamChangelogMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "The physical changelog representation for Change Streams."
+                                    + " ENVELOPE emits one insert-only generic mutation"
+                                    + " envelope per Bigtable mutation.");
+
+    public static final ConfigOption<ChangeStreamStartMode> SCAN_STARTUP_MODE =
+            ConfigOptions.key("scan.startup.mode")
+                    .enumType(ChangeStreamStartMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Where a fresh Change Streams source starts. Unset leaves the"
+                                    + " DataStream builder's latest position unchanged.");
+
+    public static final ConfigOption<Long> SCAN_STARTUP_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.startup.timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The epoch-millisecond instant used by scan.startup.mode = timestamp.");
+
+    public static final ConfigOption<ChangeStreamStartMode> SCAN_RESUME_FALLBACK_MODE =
+            ConfigOptions.key("scan.resume-fallback.mode")
+                    .enumType(ChangeStreamStartMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "An explicit start position used only when a restored Change Streams"
+                                    + " continuation has expired. Unset fails the restore.");
+
+    public static final ConfigOption<Long> SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.resume-fallback.timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The epoch-millisecond instant used by scan.resume-fallback.mode ="
+                                    + " timestamp.");
+
+    public static final ConfigOption<Long> SCAN_END_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.end-timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Stop a Change Streams source after this epoch-millisecond instant."
+                                    + " Unset keeps the source continuous and unbounded.");
+
+    public static final ConfigOption<Integer> SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK =
+            ConfigOptions.key("scan.max-concurrent-streams-per-subtask")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum open Change Streams partition reads in each source"
+                                    + " subtask. Unset keeps the DataStream builder default.");
 
     // ------------------------------------------------------------------------
     //  Lookup
