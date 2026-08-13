@@ -243,6 +243,9 @@ recorded here so it is not rediscovered as "just one extra call".
 
 ## Task naming and deduplication
 
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the Table and DataStream API comparison.
+
 **The default is unnamed tasks.** Cloud Tasks assigns the name, task creation runs at full speed,
 and a task that Flink replays after a failure is created twice.
 
@@ -262,8 +265,15 @@ builder also separates *what to send* (the serializer) from *how to deduplicate*
 and means the serializer's `Task` is always returned without a name.
 
 With an extractor supplied, a repeated create for an id Cloud Tasks has already seen fails with
-`ALREADY_EXISTS`, **which the sink treats as success**. A replayed record therefore does not
-produce a second call to the endpoint, which is as close to exactly-once as this service reaches.
+`ALREADY_EXISTS`, **which the sink treats as success**. A replayed record still sends a create
+request, but Cloud Tasks does not dispatch a second task to the endpoint. This is as close to
+exactly-once as this service reaches.
+
+Task creation is not an upsert.
+Cloud Tasks cannot update a task after creation, and the sink accepts `ALREADY_EXISTS` without
+comparing the existing task's payload or schedule with the replayed record.
+The extracted value must therefore identify an immutable logical task.
+Include a content or schedule version in that value when a changed record must create another task.
 
 The window is bounded, but by how much is **contradicted between Google's own sources**: the REST
 reference says an id takes "up to 24 hours" to be released, while the v2 proto comment for the same

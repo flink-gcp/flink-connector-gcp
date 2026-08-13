@@ -92,8 +92,8 @@ are in [ADR-0075](https://github.com/laughingman7743/flink-connector-gcp/blob/ma
 
 ### Delivery guarantee, and why the mutation operation is your decision
 
-See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
-cross-connector comparison.
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the Table and DataStream API comparison.
 
 The sink is **at-least-once** and stateless: it keeps nothing across checkpoints, because it empties
 its batch before the barrier passes. A completed checkpoint means every record up to it was
@@ -105,12 +105,17 @@ restart, and also within one attempt, when a request whose outcome never arrived
 
 Which mutation operation the serializer builds is what decides whether that matters:
 
-| Operation | Replayed |
+| Operation | Same mutation replayed |
 |---|---|
-| `insertOrUpdate`, `replace` | Idempotent — the sink is effectively-once |
+| `insertOrUpdate`, `replace` | Idempotent for that mutation |
 | `delete` | Idempotent, and a delete of a row that is not there is simply applied |
 | `insert` | Refused with `ALREADY_EXISTS`, routed to the failure handler |
 | `update` | Idempotent — but if the row was deleted in between, Spanner answers `NOT_FOUND`, which **fails the job**. See below |
+
+This per-mutation idempotence is not a latest-value ordering guarantee.
+The writer sends records as separate `BatchWrite` mutation groups, and Spanner may apply independent
+groups in an unspecified order.
+Successive records for the same key can therefore finish out of input order even without a replay.
 
 ## Batching
 

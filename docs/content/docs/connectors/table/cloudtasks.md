@@ -412,6 +412,28 @@ The separate App Engine target type, `AppEngineHttpRequest`, has routing and reg
 does not fit this HTTP metadata contract and is tracked in
 [#608]({{< param BookRepo >}}/issues/608).
 
+## Delivery guarantees and task identity
+
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the Table and DataStream API comparison.
+
+The connector accepts an insert-only Flink changelog.
+That planner contract prevents update and delete rows from becoming new HTTP requests, but it does
+not deduplicate task creation by itself.
+Without writable `task-id` metadata, a replay creates another unnamed task.
+
+Selecting `task-id` installs the DataStream sink's existing task-id extractor for every row.
+A remembered duplicate returns `ALREADY_EXISTS`, which the sink treats as successful creation
+without comparing the existing task's payload or schedule.
+Cloud Tasks cannot update a task after creation, so reusing an ID does not replace the originally
+created task definition, even when only the executed or deleted task's retained name remains.
+The metadata value must identify an immutable logical task, or include a content or schedule
+version when a changed row must create another task.
+
+This is bounded effectively-once task creation, not exactly-once handler execution.
+Cloud Tasks may dispatch the handler more than once, so the handler still needs an idempotent
+operation or its own durable event ledger.
+
 ## Options
 
 The queue is fixed for a table.
@@ -465,7 +487,3 @@ explains why `NOT_FOUND` has a separate short budget and why no setting controls
 | `sink.not-found-retry.max-attempts` | Integer | 3 | `notFoundMaxAttempts` |
 | `sink.metrics.per-destination` | Boolean | `false` | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | job parallelism | the sink operator parallelism |
-
-The connector is insert-only.
-It rejects an updating changelog rather than serializing `UPDATE_BEFORE` or `DELETE` rows as new
-HTTP requests.

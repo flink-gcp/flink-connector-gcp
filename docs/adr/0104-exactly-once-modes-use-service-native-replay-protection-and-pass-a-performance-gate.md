@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0104: Exactly-once modes use service-native replay protection and pass a performance gate
 
 - Status: Accepted
-- Date: 2026-08-13
-- Issues: [#591](https://github.com/laughingman7743/flink-connector-gcp/issues/591)
+- Date: 2026-08-13; revised by [#596](https://github.com/laughingman7743/flink-connector-gcp/issues/596) (2026-08-14)
+- Issues: [#591](https://github.com/laughingman7743/flink-connector-gcp/issues/591),
+  [#596](https://github.com/laughingman7743/flink-connector-gcp/issues/596)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 
@@ -64,6 +65,11 @@ primitive that atomically binds a stable application event identity to the prote
 The mechanism may be an eager idempotent or transactional write; it does not have to be a Flink
 two-phase commit.
 
+**BigQuery remains the only connector for which an exactly-once sink mode is supported or
+planned.**
+No non-BigQuery exactly-once implementation or additional performance stage is planned without a
+concrete non-idempotent user requirement that the existing write shapes cannot satisfy.
+
 The connector documentation distinguishes four boundaries:
 
 - checkpoint durability;
@@ -80,8 +86,9 @@ The connector-specific decisions are:
   A producer event attribute can support downstream deduplication, but the topic can still contain
   duplicate physical messages.
 - **Cloud Tasks retains bounded effectively-once task creation only.**
-  `taskIdExtractor(...)` supplies the stable identity and `ALREADY_EXISTS` is successful creation
-  within the service's name-retention window.
+  DataStream `taskIdExtractor(...)` and Table API `task-id` metadata supply the stable identity,
+  and `ALREADY_EXISTS` is successful creation within the service's name-retention window.
+  A repeated ID neither compares nor updates the existing task.
   The handler remains at least once, and no broader guarantee is claimed.
 - **The Bigtable same-row marker candidate is correctness-feasible but performance-inconclusive,
   and is not a supported connector mode.**
@@ -94,13 +101,24 @@ The connector-specific decisions are:
   The ledger and effects must share a database and a short read-write transaction.
   The connector must not keep a transaction open across a Flink checkpoint.
 
-Bigtable and Spanner must repeat Stage 1 with evenly distributed keys.
-Cloud Tasks must repeat Stage 1 until its run-to-run variation is within the preregistered limit.
-Passing Stage 1 is permission to measure Stage 2, not permission to implement.
-Stage 2 requires separate resource and cost approval and covers 64 KiB payloads, hot keys,
-concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals 1, 10, and 60 seconds.
-An implementation that passes requires a connector-specific ADR to settle identity, schema or
-marker ownership, retention, failure routing, recovery tests, and operational limits.
+The stronger Bigtable and Spanner candidates address narrower non-idempotent effects than ordinary
+idempotent keyed mutations.
+Spanner's individual mutation replay safety does not promise ordering between same-key
+`BatchWrite` mutation groups.
+Their schema, retention, routing, batching, and failure-policy costs are not justified without a
+concrete requirement that the current row-key, cell, or mutation upserts cannot meet.
+Cloud Tasks already exposes its useful replay primitive through both connector APIs, while Pub/Sub
+exposes no publisher-side replay primitive to add.
+
+If such a requirement reopens a candidate, Bigtable and Spanner must first repeat Stage 1 with
+evenly distributed keys, while Cloud Tasks must first produce a stable run-to-run result.
+Passing Stage 1 would permit Stage 2 measurement, not implementation.
+Stage 2 would require separate resource and cost approval and would cover 64 KiB payloads, hot
+keys, concurrency and Flink parallelism 1, 4, and 16, and checkpoint intervals of 1, 10, and 60
+seconds.
+Any implementation that passed those gates would require a connector-specific ADR to settle
+identity, schema or marker ownership, retention, failure routing, recovery tests, and operational
+limits.
 
 The preregistered support thresholds remain the decision rule:
 
@@ -210,6 +228,11 @@ estimate.
   semantics.
 - **Treat the Cloud Tasks averages as a pass** — doing so would discard the variability rule after
   observing its result and turn a preregistered gate into post-hoc judgment.
+- **Continue measuring without a concrete non-idempotent requirement** — Spanner and Bigtable
+  already expose idempotent keyed mutation shapes for workloads that respect each service's
+  ordering constraints, while Cloud Tasks already exposes bounded task-creation deduplication.
+  The stronger candidates impose service-specific schema and failure-policy costs without an
+  identified workload that needs them.
 
 ## Consequences
 
@@ -218,9 +241,10 @@ estimate.
 - BigQuery's BUFFERED-stream implementation is documented as related to, but not a copy of, the
   official COMMITTED-stream example.
 - Pub/Sub has no connector-only implementation issue to pursue.
-- Cloud Tasks keeps its existing bounded creation guarantee and needs a separately approved Stage 1
-  repeat before any performance recommendation changes.
-- Bigtable and batched Spanner may receive compliant Stage 1 repeats.
-  Only a passing repeat permits a separate Stage 2 investigation.
-  Their eventual implementation sessions, if any, own their detailed ADRs and public APIs.
+- Cloud Tasks keeps its existing bounded creation guarantee through both connector APIs, and no
+  broader mode or repeat is planned.
+- Bigtable and Spanner keep their current keyed write shapes and their documented replay and
+  ordering boundaries.
+  A concrete non-idempotent requirement must justify reopening measurement before either candidate
+  advances.
 - No unsupported exactly-once mode is added by this documentation decision.
