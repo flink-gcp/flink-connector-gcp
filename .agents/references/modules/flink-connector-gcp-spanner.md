@@ -148,10 +148,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   emulator-versus-credentials branch is exactly what `docs/adr/0064` exists for; do not grow a
   second copy.
 - `SpannerCredentials` loads only service-account JSON and returns `null` when no credential
-  override is configured. Serialize only `serviceAccountKeyFile` paths: bounded enumerators load on the JobManager,
-  bounded readers and sink writers load on TaskManagers, and Table lookup functions load when they
-  open. Restored components reload independently, emulator endpoints are mutually exclusive, and
-  loading failures remain cause-free so paths and credential material cannot leak.
+  override is configured. Serialize only `serviceAccountKeyFile` paths: bounded and Change Streams
+  coordinators load on the JobManager, bounded and Change Streams readers and sink writers load on
+  TaskManagers, and Table lookup functions load when they open. Restored components reload
+  independently, emulator endpoints are mutually exclusive, and loading failures remain cause-free
+  so paths and credential material cannot leak.
 - **A test needing a `Partition` or a `BatchTransactionId` goes through
   `src/test/java/com/google/cloud/spanner/TestPartitions.java`** — the second file in this
   repository declaring a vendor package, taken under `docs/adr/0067`'s bar and recorded in
@@ -229,6 +230,34 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   nor Flink 2.2's per-split `currentWatermark`. The Flink source runtime derives the metrics
   available in that Flink version from the commit timestamps and split watermarks this reader
   emits.
+
+## Table Change Streams CDC (`docs/adr/0105`)
+
+- `scan.mode` defaults to the independent bounded source. Change-stream mode implements only
+  `ScanTableSource`: no bounded projection or filter pushdown and no lookup provider.
+- Match `DataChangeRecord.tableName` through `SpannerTableName`'s dialect-aware native API key.
+  A record for another watched table emits nothing and still advances source progress; never use a
+  regex to approximate named-schema or quoted-identifier identity.
+- Full changelog mode requires `NEW_ROW_AND_OLD_VALUES`. Emit an adjacent before/after pair by
+  copying the complete new row and overlaying the reported old values. Upsert mode accepts
+  `NEW_ROW` and `NEW_ROW_AND_OLD_VALUES`, requires the DDL and record primary keys to match, and
+  emits key-only deletes.
+- Validate every declared physical column against the record's recursive type descriptor. Ignore
+  extra watched columns, but fail on missing declared columns, incompatible native types, named
+  type FQNs, capture modes, or absent values needed for a complete row.
+- Keep absent JSON members distinct from explicit JSON null. A missing complete-row value is not a
+  nullable value and must never become SQL null.
+- Stage every row from one `DataChangeRecord` before collecting any of them. A malformed later mod
+  must not partially emit the record. Failures name only sanitized record identity and the mod
+  index; do not attach a cause containing JSON or credential paths.
+- Keep record validation and changelog construction in `DataChangeRecordToRowDataConverter`.
+  `SpannerChangeStreamRowDataDeserializationSchema` is the collector and produced-type adapter;
+  do not grow physical conversion branches back into that SPI wrapper.
+- Reuse `StructToRowDataConverter` through typed synthetic Spanner values so bounded, lookup, and
+  CDC paths retain one decimal, UUID, JSON, PROTO, ENUM, timestamp, array, and null contract.
+- Flink 1.20 uses its sole upsert declaration, while Flink 2.x declares key-only deletes through
+  the boolean overload in their versioned `CrossVersionChangelogMode` sources. Do not call the
+  newer overload from common code.
 
 ## Testing
 

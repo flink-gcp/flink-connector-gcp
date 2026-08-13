@@ -125,6 +125,7 @@ Its partition lifecycle, checkpoint recovery, and delivery semantics are under [
 | `heartbeatInterval` | `2 s` | Service heartbeat interval, from 1 second through 5 minutes. Heartbeats advance per-partition watermarks |
 | `rpcPriority` | `HIGH` | `LOW`, `MEDIUM`, or `HIGH`, applied to every partition query |
 | `maxConcurrentQueriesPerSubtask` | `8` | Maximum partition queries one source subtask opens concurrently. Source parallelism multiplied by this value is the job's configured capacity, not a published Spanner quota |
+| `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by the JobManager coordinator and every TaskManager reader when they open. The job graph contains the path, not credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) |
 | `tableIncludeList` | empty | Java regular expressions for table names to retain. Each expression must match the complete Spanner-reported table name. Mutually exclusive with `tableExcludeList` |
 | `tableExcludeList` | empty | Java regular expressions for table names to remove before deserialization. Each expression must match the complete name. Mutually exclusive with `tableIncludeList` |
 | `columnIncludeList` | empty | Java regular expressions for `table.column` identifiers to retain. Primary-key columns are always retained. Mutually exclusive with `columnExcludeList` |

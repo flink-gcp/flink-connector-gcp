@@ -73,6 +73,11 @@ When the planner retains no physical column, the first DDL column is a carrier f
 Nested projection is not advertised, and no range option is exposed because Spanner plans partitions from physical storage rather than from a user-selected column.
 Partition hints, Data Boost, RPC priority, snapshot bounds, and source parallelism map directly onto the existing source builder.
 
+**The same physical mapping serves an opt-in Change Streams scan source.**
+`scan.mode` defaults to the bounded source above and selects a separate unbounded source only when set to `change-stream`.
+The CDC converter validates each record's self-describing native types against this mapping and reuses the same native-value-to-`RowData` conversion.
+Its full and upsert changelog contracts, exact table matching, and atomic per-record conversion are settled separately in [ADR-0105](0105-the-spanner-table-change-stream-source-emits-full-or-keyed-changelogs.md).
+
 **Bounded scans push the exact key subset and can select a secondary index.**
 The source translates equality and ordered comparisons over consecutive key columns into native `KeySet` points and lexicographic ranges.
 A complete primary-key equality and a leading equality prefix, optionally followed by one range column, are exact, so Flink need not evaluate them again.

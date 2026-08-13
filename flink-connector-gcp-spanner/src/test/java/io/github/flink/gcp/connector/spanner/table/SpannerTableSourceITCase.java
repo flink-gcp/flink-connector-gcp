@@ -19,13 +19,16 @@ package io.github.flink.gcp.connector.spanner.table;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -40,6 +43,90 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** End-to-end bounded SQL scan coverage against both emulator dialects. */
 class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
+
+    @ParameterizedTest
+    @MethodSource("changeStreamTableCases")
+    void readsTableChangelogForDefaultNamedAndQuotedTables(Dialect dialect, String schemaKind)
+            throws Exception {
+        boolean named = !"default".equals(schemaKind);
+        boolean quoted = "quoted".equals(schemaKind);
+        String schema = namedIdentifier(dialect, quoted, "analytics", "QuotedAnalytics");
+        String tableName = namedIdentifier(dialect, quoted, "records", "QuotedRecords");
+        String qualified = named ? schema + "." + tableName : tableName;
+        String tableDdl =
+                dialect == Dialect.POSTGRESQL
+                        ? "CREATE TABLE "
+                                + qualified
+                                + " (id bigint NOT NULL PRIMARY KEY, name varchar(64))"
+                        : "CREATE TABLE "
+                                + qualified
+                                + " (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)";
+        List<String> ddl = new ArrayList<>();
+        if (named) {
+            ddl.add("CREATE SCHEMA " + schema);
+        }
+        ddl.add(tableDdl);
+        ddl.add("CREATE CHANGE STREAM changes FOR " + qualified);
+        ddl.add(
+                dialect == Dialect.POSTGRESQL
+                        ? "ALTER CHANGE STREAM changes SET (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')"
+                        : "ALTER CHANGE STREAM changes SET OPTIONS (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')");
+        SpannerDatabase database = createDatabase(dialect, ddl.toArray(new String[0]));
+        String apiTable =
+                named
+                        ? SpannerTableName.of(schema, tableName, dialect).apiName()
+                        : SpannerTableName.of(null, tableName, dialect).apiName();
+        Timestamp firstCommit =
+                client(database)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertBuilder(apiTable)
+                                                .set("id")
+                                                .to(1L)
+                                                .set("name")
+                                                .to("Ada")
+                                                .build()));
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newUpdateBuilder(apiTable)
+                                        .set("id")
+                                        .to(1L)
+                                        .set("name")
+                                        .to("Grace")
+                                        .build()));
+        client(database)
+                .write(List.of(Mutation.delete(apiTable, com.google.cloud.spanner.Key.of(1L))));
+
+        TableEnvironment table =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                changeStreamTableDdl(
+                        database,
+                        dialect,
+                        named ? schema : null,
+                        tableName,
+                        firstCommit.toSqlTimestamp().toInstant().toEpochMilli()));
+
+        assertThat(firstRows(table, "SELECT id, name FROM cdc", 4))
+                .containsExactly(
+                        Row.ofKind(RowKind.INSERT, 1L, "Ada"),
+                        Row.ofKind(RowKind.UPDATE_BEFORE, 1L, "Ada"),
+                        Row.ofKind(RowKind.UPDATE_AFTER, 1L, "Grace"),
+                        Row.ofKind(RowKind.DELETE, 1L, "Grace"));
+    }
+
+    private static Stream<Arguments> changeStreamTableCases() {
+        return Stream.of(Dialect.values())
+                .flatMap(
+                        dialect ->
+                                Stream.of(
+                                        Arguments.of(dialect, "default"),
+                                        Arguments.of(dialect, "named"),
+                                        Arguments.of(dialect, "quoted")));
+    }
 
     @ParameterizedTest
     @MethodSource("namedSchemaCases")
@@ -258,6 +345,17 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
         List<Row> rows = new ArrayList<>();
         try (CloseableIterator<Row> iterator = table.executeSql(sql).collect()) {
             iterator.forEachRemaining(rows::add);
+        }
+        return rows;
+    }
+
+    private static List<Row> firstRows(TableEnvironment table, String sql, int count)
+            throws Exception {
+        List<Row> rows = new ArrayList<>();
+        try (CloseableIterator<Row> iterator = table.executeSql(sql).collect()) {
+            while (rows.size() < count && iterator.hasNext()) {
+                rows.add(iterator.next());
+            }
         }
         return rows;
     }
@@ -490,6 +588,50 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "  'lookup.async' = '"
                 + async
                 + "',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String changeStreamTableDdl(
+            SpannerDatabase database,
+            Dialect dialect,
+            String schema,
+            String tableName,
+            long startupTimestampMillis) {
+        return "CREATE TABLE cdc (\n"
+                + "  id BIGINT,\n"
+                + "  name STRING,\n"
+                + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + (schema == null ? "" : "  'schema' = '" + schema + "',\n")
+                + "  'table' = '"
+                + tableName
+                + "',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'scan.mode' = 'change-stream',\n"
+                + "  'scan.change-stream.name' = 'changes',\n"
+                + "  'scan.change-stream.changelog-mode' = 'full',\n"
+                + "  'scan.startup.mode' = 'timestamp',\n"
+                + "  'scan.startup.timestamp-millis' = '"
+                + startupTimestampMillis
+                + "',\n"
+                + "  'scan.change-stream.heartbeat-interval' = '1 s',\n"
+                + "  'scan.max-concurrent-queries-per-subtask' = '2',\n"
+                + "  'scan.parallelism' = '1',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'\n"

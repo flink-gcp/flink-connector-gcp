@@ -70,6 +70,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     private List<Pattern> columnIncludeList = Collections.emptyList();
     private List<Pattern> columnExcludeList = Collections.emptyList();
     private boolean skipMessagesWithoutChange;
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private Instant endTimestamp;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
@@ -221,6 +222,23 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Authenticates the source with the service-account JSON key at the given path instead of
+     * application-default credentials.
+     *
+     * <p>The JobManager reads the file when the coordinator initializes, and each TaskManager reads
+     * it when its reader opens. Only the path is serialized. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel carries no credentials.
+     */
+    public SpannerChangeStreamSourceBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
     public SpannerChangeStreamSourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
         this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
         return this;
@@ -260,6 +278,11 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         Preconditions.checkState(
                 columnIncludeList.isEmpty() || columnExcludeList.isEmpty(),
                 "columnIncludeList(...) and columnExcludeList(...) must not both be set.");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         SpannerChangeStreamCoordinatorClientFactory coordinatorFactory =
                 coordinatorClientFactory != null
                         ? coordinatorClientFactory
@@ -267,7 +290,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                                 database,
                                 changeStreamName,
                                 absentRetentionFallback,
-                                emulatorEndpoint);
+                                emulatorEndpoint,
+                                serviceAccountKeyFile);
         SpannerChangeStreamQueryClientFactory readerFactory =
                 queryClientFactory != null
                         ? queryClientFactory
@@ -276,7 +300,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                                 changeStreamName,
                                 rpcPriority,
                                 maxConcurrentQueriesPerSubtask,
-                                emulatorEndpoint);
+                                emulatorEndpoint,
+                                serviceAccountKeyFile);
         return new SpannerChangeStreamSource<>(
                 new SpannerChangeStreamSourceConfig<>(
                         database,
@@ -288,6 +313,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                         heartbeatInterval.toMillis(),
                         rpcPriority,
                         maxConcurrentQueriesPerSubtask,
+                        serviceAccountKeyFile,
                         new SpannerChangeStreamRecordFilter(
                                 tableIncludeList,
                                 tableExcludeList,

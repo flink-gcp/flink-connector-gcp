@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.spanner.table;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
@@ -32,11 +33,13 @@ import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.spanner.table.source.SpannerChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 
 /** Creates the {@code spanner} table source and sink from a SQL DDL. */
@@ -73,6 +76,16 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCHEMA_UUID_FIELD_PATHS,
                         SpannerConnectorOptions.SCHEMA_PROTO_TYPE_NAMES,
                         SpannerConnectorOptions.SCHEMA_ENUM_TYPE_NAMES,
+                        SpannerConnectorOptions.SCAN_MODE,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                        SpannerConnectorOptions.SCAN_STARTUP_MODE,
+                        SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
+                        SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
+                        SpannerConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
+                        SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK,
                         SpannerConnectorOptions.SCAN_INDEX,
                         SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         SpannerConnectorOptions.SCAN_PARTITION_SIZE,
@@ -135,6 +148,11 @@ public final class SpannerDynamicTableFactory
         validateCredentialsMode(config);
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
+        validateSourceMode(context.getCatalogTable().getOptions(), config, schema);
+        if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
+            return SpannerChangeStreamDynamicSource.from(
+                    schema, physicalType, config, tableName(config));
+        }
         return new SpannerDynamicSource(
                 schema,
                 SpannerDatabase.of(
@@ -144,6 +162,79 @@ public final class SpannerDynamicTableFactory
                 config.get(SpannerConnectorOptions.TABLE),
                 physicalType,
                 config);
+    }
+
+    private static void validateSourceMode(
+            Map<String, String> supplied,
+            ReadableConfig config,
+            SpannerTableSchemaConverter schema) {
+        ScanMode mode = config.get(SpannerConnectorOptions.SCAN_MODE);
+        if (mode == ScanMode.BOUNDED) {
+            rejectSupplied(
+                    supplied,
+                    "scan.mode=bounded",
+                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
+                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                    SpannerConnectorOptions.SCAN_STARTUP_MODE,
+                    SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
+                    SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
+                    SpannerConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
+                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
+                    SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK);
+            return;
+        }
+        rejectSupplied(
+                supplied,
+                "scan.mode=change-stream",
+                SpannerConnectorOptions.SCAN_INDEX,
+                SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
+                SpannerConnectorOptions.SCAN_PARTITION_SIZE,
+                SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED,
+                SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP,
+                SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_EXACT_STALENESS,
+                SpannerConnectorOptions.LOOKUP_ASYNC,
+                LookupOptions.CACHE_TYPE,
+                LookupOptions.MAX_RETRIES,
+                LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
+                LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
+                LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
+                LookupOptions.PARTIAL_CACHE_MAX_ROWS);
+        requireNonBlank(config, SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME);
+        ChangeStreamChangelogMode changelog =
+                config.getOptional(SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                "scan.change-stream.changelog-mode is required when scan.mode=change-stream."));
+        if (changelog == ChangeStreamChangelogMode.UPSERT && !schema.hasPrimaryKey()) {
+            throw new ValidationException(
+                    "scan.change-stream.changelog-mode=upsert requires a PRIMARY KEY declared NOT ENFORCED in the table DDL.");
+        }
+        ChangeStreamStartPositionMapper.validate(config, supplied);
+    }
+
+    @SafeVarargs
+    private static void rejectSupplied(
+            Map<String, String> supplied, String mode, ConfigOption<?>... options) {
+        for (ConfigOption<?> option : options) {
+            if (supplied.containsKey(option.key())) {
+                throw new ValidationException(option.key() + " is incompatible with " + mode + ".");
+            }
+        }
+    }
+
+    private static void requireNonBlank(ReadableConfig config, ConfigOption<String> option) {
+        String value =
+                config.getOptional(option)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                option.key()
+                                                        + " is required when scan.mode=change-stream."));
+        if (value.isBlank()) {
+            throw new ValidationException(option.key() + " must not be blank.");
+        }
     }
 
     private static void validateCredentialsMode(ReadableConfig config) {

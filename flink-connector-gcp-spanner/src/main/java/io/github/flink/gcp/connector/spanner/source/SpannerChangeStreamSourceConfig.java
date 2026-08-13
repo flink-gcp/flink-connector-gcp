@@ -47,6 +47,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
     final long heartbeatMillis;
     final SpannerRpcPriority rpcPriority;
     final int maxConcurrentQueriesPerSubtask;
+    @Nullable final String serviceAccountKeyFile;
     final SpannerChangeStreamRecordFilter recordFilter;
     @Nullable final Instant endTimestamp;
     final SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
@@ -62,6 +63,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
             long heartbeatMillis,
             SpannerRpcPriority rpcPriority,
             int maxConcurrentQueriesPerSubtask,
+            @Nullable String serviceAccountKeyFile,
             SpannerChangeStreamRecordFilter recordFilter,
             @Nullable Instant endTimestamp,
             SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory,
@@ -75,6 +77,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         this.heartbeatMillis = heartbeatMillis;
         this.rpcPriority = rpcPriority;
         this.maxConcurrentQueriesPerSubtask = maxConcurrentQueriesPerSubtask;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.recordFilter = recordFilter;
         this.endTimestamp = endTimestamp;
         this.coordinatorClientFactory = coordinatorClientFactory;
@@ -115,6 +118,10 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
 
     public int getMaxConcurrentQueriesPerSubtask() {
         return maxConcurrentQueriesPerSubtask;
+    }
+
+    public java.util.Optional<String> getServiceAccountKeyFile() {
+        return java.util.Optional.ofNullable(serviceAccountKeyFile);
     }
 
     public SpannerChangeStreamRecordFilter getRecordFilter() {

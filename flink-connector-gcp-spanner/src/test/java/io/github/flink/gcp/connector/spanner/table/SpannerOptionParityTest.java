@@ -21,6 +21,7 @@ import org.apache.flink.configuration.Configuration;
 
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import org.junit.jupiter.api.Test;
 
@@ -139,6 +140,44 @@ class SpannerOptionParityTest {
     }
 
     @Test
+    void everyChangeStreamBuilderSetterIsMappedOrDeliberatelyFixedByTheTableLayer() {
+        assertThat(publicSettersOf(SpannerChangeStreamSourceBuilder.class))
+                .containsExactlyInAnyOrder(
+                        "database",
+                        "changeStreamName",
+                        "deserializer",
+                        "startPosition",
+                        "resumeFallback",
+                        "absentRetentionFallback",
+                        "heartbeatInterval",
+                        "rpcPriority",
+                        "maxConcurrentQueriesPerSubtask",
+                        "tableIncludeList",
+                        "tableExcludeList",
+                        "columnIncludeList",
+                        "columnExcludeList",
+                        "skipMessagesWithoutChange",
+                        "serviceAccountKeyFile",
+                        "emulatorEndpoint");
+
+        // The table layer supplies database and RowData deserialization, and performs exact table
+        // matching itself. It deliberately does not expose the builder's regex projections.
+        assertThat(declaredKeys())
+                .contains(
+                        "scan.change-stream.name",
+                        "scan.startup.mode",
+                        "scan.startup.timestamp-millis",
+                        "scan.resume-fallback.mode",
+                        "scan.resume-fallback.timestamp-millis",
+                        "scan.change-stream.absent-retention-fallback",
+                        "scan.change-stream.heartbeat-interval",
+                        "scan.rpc-priority",
+                        "scan.max-concurrent-queries-per-subtask",
+                        "service-account-key-file",
+                        "emulator-endpoint");
+    }
+
+    @Test
     void everyDeclaredOptionHasAHomeInTheTableConnector() {
         assertThat(declaredKeys())
                 .containsExactlyInAnyOrder(
@@ -154,6 +193,16 @@ class SpannerOptionParityTest {
                         "schema.uuid-field-paths",
                         "schema.proto-type-names",
                         "schema.enum-type-names",
+                        "scan.mode",
+                        "scan.change-stream.name",
+                        "scan.change-stream.changelog-mode",
+                        "scan.startup.mode",
+                        "scan.startup.timestamp-millis",
+                        "scan.resume-fallback.mode",
+                        "scan.resume-fallback.timestamp-millis",
+                        "scan.change-stream.absent-retention-fallback",
+                        "scan.change-stream.heartbeat-interval",
+                        "scan.max-concurrent-queries-per-subtask",
                         "scan.index",
                         "scan.partition.max-partitions",
                         "scan.partition.size",
