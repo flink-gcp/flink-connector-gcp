@@ -153,6 +153,9 @@ threshold below the in-flight cap.
 
 ## Delivery guarantees and state
 
+See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
+cross-connector comparison.
+
 The sink is **at-least-once** and the writer is **stateless by design**: records are published
 asynchronously through `google-cloud-pubsub` `Publisher` instances (which batch by element
 count, bytes and delay), and on **every checkpoint** Flink invokes the writer's `flush()`

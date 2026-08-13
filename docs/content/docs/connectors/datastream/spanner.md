@@ -67,6 +67,9 @@ are in [ADR-0075](https://github.com/laughingman7743/flink-connector-gcp/blob/ma
 
 ### Delivery guarantee, and why the mutation operation is your decision
 
+See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
+cross-connector comparison.
+
 The sink is **at-least-once** and stateless: it keeps nothing across checkpoints, because it empties
 its batch before the barrier passes. A completed checkpoint means every record up to it was
 applied, skipped by the serializer, or handed to the failure handler.
