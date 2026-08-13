@@ -433,9 +433,29 @@ Source parallelism multiplied by that value is configured job capacity, not a Bi
 Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
 queryable metadata.
 The `estimated-low-watermark` value belongs to the partition that produced the mutation; it is not
-a safe stream-wide event-time frontier and does not enable `SOURCE_WATERMARK()`.
-That ability requires the separate coordination design in
-[#604]({{< param BookRepo >}}/issues/604).
+a safe stream-wide event-time frontier, and the connector does not provide native
+`SOURCE_WATERMARK()` support.
+Bigtable permits a future record below a previously observed estimate, so including queued and
+enumerator-held partitions would still not satisfy Flink's non-early contract.
+
+Do not declare `SOURCE_WATERMARK()` for this connector.
+Flink can retain that expression in a separate watermark operator when the source does not support
+pushdown, but the Bigtable source does not provide the source-generated watermark it requests.
+
+A DDL can instead declare an ordinary, application-owned watermark expression over commit-time
+metadata:
+
+```sql
+commit_timestamp TIMESTAMP_LTZ(3) NOT NULL
+  METADATA FROM 'commit-timestamp' VIRTUAL,
+WATERMARK FOR commit_timestamp AS commit_timestamp - INTERVAL '5' MINUTE
+```
+
+The five-minute delay is an example policy, not a recommended or service-backed bound.
+Bigtable publishes no finite maximum lateness, and source concurrency can leave partitions queued
+or unassigned, so the job must choose how it handles records behind that watermark.
+See [ADR-0109]({{< param BookRepo >}}/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md)
+for the decision and the different Spanner heartbeat contract.
 
 ### Filter pushdown
 

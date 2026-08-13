@@ -253,6 +253,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   fails the task without reporting a transition; connector cancellation can rotate or close a read
   but never completes it. Reader lag gauges use the minimum checkpointed assigned position, and
   enumerator lag uses the oldest unassigned position; both clamp clock skew and overflow.
+- **An estimated low watermark is checkpoint progress and observability, not a Flink source
+  watermark** (`docs/adr/0109`). Bigtable explicitly permits a future record below an earlier
+  estimate, so neither a coordinator-wide minimum nor a finite delay can prove the non-early
+  contract. The builder exposes no native-watermark opt-in, the Table source does not implement
+  `SupportsSourceWatermark`, and applications own any ordinary watermark strategy and late-data
+  policy they choose.
 
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`, Change Streams `docs/adr/0106`; shared rules `docs/adr/0014`)
 

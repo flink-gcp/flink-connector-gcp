@@ -753,10 +753,22 @@ failure between downstream emission and the next completed checkpoint, so side e
 idempotent. A savepoint is the supported cross-job handoff: starting a separate job at a wall-clock
 time is not an exact continuation-token transfer.
 
-Watermark generation remains the job's `WatermarkStrategy`; the source does not emit service low
-watermarks as Flink watermarks. For a quiet stream, configure idleness on that strategy so one idle
-partition does not hold back the downstream watermark. The estimated low watermark is exposed as a
-reader metric for lag monitoring.
+Watermark generation remains the job's `WatermarkStrategy`; the source does not emit Bigtable's
+estimated low watermark as a Flink watermark.
+Bigtable describes that value as an estimate and explicitly permits a future record with an older
+commit timestamp, so even a minimum across every active, queued, unassigned, pending-merge and
+missing partition would not prove Flink's non-early watermark contract.
+The estimate remains checkpoint progress and a reader metric for lag monitoring.
+
+An application can replace `WatermarkStrategy.noWatermarks()` with its own bounded-out-of-orderness
+and idleness policy over the commit timestamps attached to emitted records.
+That policy is an application-owned completeness/latency trade-off rather than a Bigtable guarantee:
+the service publishes no finite maximum lateness, and connector concurrency can leave a partition
+queued or unassigned before Flink has a split output for it.
+Configure downstream allowed lateness or late-data routing for records that violate the chosen
+assumption.
+The decision and the difference from Spanner's heartbeat contract are recorded in
+[ADR-0109](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md).
 
 ## Metrics
 

@@ -101,7 +101,7 @@ This prevents a valid-looking DDL from carrying options that no selected runtime
 - **Expose continuation tokens as metadata.**
   They are checkpoint protocol state rather than mutation data, and a query must not take ownership of source resumption.
 - **Treat the estimated low watermark as a Flink source watermark.**
-  One mutation reports one partition's estimate, while bounded reader concurrency can leave older partitions queued or unassigned.
+  One mutation reports one partition's estimate, bounded reader concurrency can leave older partitions queued or unassigned, and Bigtable permits future records below a previously observed estimate.
 
 ## Consequences
 
@@ -112,5 +112,5 @@ This prevents a valid-looking DDL from carrying options that no selected runtime
 - Selected-cell mode is a keyed upsert stream only for the documented atomic producer protocol; existing arbitrary Bigtable writers do not satisfy that contract automatically.
 - A downstream keyed materialization interprets the first `UPDATE_AFTER` it sees as the current value; the source does not relabel it as `INSERT`.
 - The SQL uber-jar does not bundle Flink formats, so a selected-cell deployment supplies its chosen format jar separately.
-- Stream-wide source watermarks need a safe frontier across active, queued, and unassigned partitions and are tracked by [#604](https://github.com/laughingman7743/flink-connector-gcp/issues/604).
+- The source deliberately omits native source watermarks because Bigtable does not guarantee that its partition estimate is non-early ([ADR-0109](0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md)).
 - Real-GCP Table API acceptance remains in the staged follow-up [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602).
