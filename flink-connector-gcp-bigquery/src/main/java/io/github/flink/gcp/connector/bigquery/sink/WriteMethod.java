@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
 
-import java.util.Locale;
-
 /** The mechanism used to write records to BigQuery. */
 @PublicEvolving
 public enum WriteMethod {
@@ -31,7 +29,7 @@ public enum WriteMethod {
      * multiplexing across destination tables is delegated to the BigQuery Storage client's
      * connection pool.
      */
-    STORAGE_API_AT_LEAST_ONCE,
+    STORAGE_API_AT_LEAST_ONCE("storage-api-at-least-once"),
 
     /**
      * Writes through application-created Storage Write API buffered streams committed with a
@@ -45,7 +43,7 @@ public enum WriteMethod {
      * Mid-stream schema changes reconnect the same remote stream with the current serializer
      * descriptor, preserving its name and append offset.
      */
-    STORAGE_API_EXACTLY_ONCE,
+    STORAGE_API_EXACTLY_ONCE("storage-api-exactly-once"),
 
     /**
      * Stages records as files on Cloud Storage and imports them with BigQuery load jobs.
@@ -55,7 +53,13 @@ public enum WriteMethod {
      * only, and mind BigQuery's daily load-job and destination-table modification limits —
      * checkpoint intervals of 2-5 minutes or more).
      */
-    FILE_LOADS;
+    FILE_LOADS("file-loads");
+
+    private final String value;
+
+    WriteMethod(String value) {
+        this.value = value;
+    }
 
     /**
      * Returns the hyphenated lower-case spelling this constant takes in a {@code sink.write-method}
@@ -68,6 +72,6 @@ public enum WriteMethod {
      */
     @Override
     public String toString() {
-        return name().toLowerCase(Locale.ROOT).replace('_', '-');
+        return value;
     }
 }

@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import org.apache.flink.annotation.PublicEvolving;
 
-import java.util.Locale;
-
 /**
  * How {@link StagingFormat#PARQUET} staging files are compressed. Rejected when the staging format
  * is {@link StagingFormat#AVRO}, whose codec is not configurable.
@@ -33,7 +31,7 @@ import java.util.Locale;
 public enum ParquetCompression {
 
     /** Zstandard. The default, and what the size comparison against Avro is measured with. */
-    ZSTD,
+    ZSTD("zstd"),
 
     /**
      * No compression, which is the only Parquet configuration that needs no Hadoop runtime.
@@ -45,7 +43,13 @@ public enum ParquetCompression {
      * inflating the input also moves a load relative to the 256 MiB threshold the docs page
      * describes.
      */
-    NONE;
+    NONE("none");
+
+    private final String value;
+
+    ParquetCompression(String value) {
+        this.value = value;
+    }
 
     /**
      * Returns the lower-case spelling this constant takes in a {@code
@@ -57,6 +61,6 @@ public enum ParquetCompression {
      */
     @Override
     public String toString() {
-        return name().toLowerCase(Locale.ROOT);
+        return value;
     }
 }
