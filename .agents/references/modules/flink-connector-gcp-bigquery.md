@@ -178,7 +178,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   first physical column as a carrier for a zero-column planner projection.
   It does not advertise nested projection or filter pushdown; `source.row-restriction` is the raw
   BigQuery expression surface, not an attempted translation of Flink predicates.
-- No `format` option — the DDL schema is the schema (`docs/adr/0031`). `TIME(p)` caps at 3;
+- Storage Read `RANGE<DATE>`, `RANGE<DATETIME>` and `RANGE<TIMESTAMP>` are source-only rows whose
+  nullable `start` and `end` fields use `DATE`, `TIMESTAMP` and `TIMESTAMP_LTZ`, respectively
+  (#566; `docs/adr/0100`).
+  A sink derives an ordinary `STRUCT` from the same row declaration and never infers a range from
+  its field names.
+- BigQuery `INTERVAL` remains rejected in both directions (#566; `docs/adr/0100`).
+  Measured 2026-08-13, Storage Read returned the undocumented record
+  `google.sqlType.INTERVAL(months int, days int, microseconds long)` and one value populated all
+  three components.
+  Flink splits intervals into year-month and day-time values, and its day-time internal value is
+  milliseconds, so neither mapping is lossless; reject the raw-record `ROW` escape hatch too.
+- No `format` option — the DDL schema is the schema (`docs/adr/0031`). Flink 1.20 and 2.2 resolve
+  SQL `TIME(p)` to `TIME(0)`, while 2.3 retains precision through `TIME(3)`; a programmatically
+  constructed catalog type can retain milliseconds through `TIME(3)` on every supported version.
   `TIMESTAMP` → `DATETIME`, `TIMESTAMP_LTZ` → `TIMESTAMP` — both measured. `PARTITIONED BY` is
   rejected, not ignored.
 - The buffered/FILE_LOADS mappers build unconditionally, the factory decides by write method —

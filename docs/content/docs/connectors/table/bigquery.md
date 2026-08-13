@@ -331,32 +331,64 @@ default, and required by the write method rather than by the connector — and l
 
 ## Type mapping
 
-A sink column's BigQuery type is derived from its SQL type, and the derived schema is what the
-connector creates a missing table with. A source reads the corresponding Storage Read API Avro
-shape by physical column name and converts it to the declared SQL type. The DDL must therefore
-agree with the source table or query result; the connector does not fetch a live schema while the
-statement is planned.
+A sink derives the BigQuery column type from the SQL declaration and uses that schema when it
+creates a missing table.
+A source reads the Storage Read API's Avro field by physical name and converts it to the declared
+SQL type.
+The DDL must therefore agree with the source table or query result because planning does not fetch
+the live schema.
 
-| Flink type | BigQuery type |
-|---|---|
-| `CHAR`, `VARCHAR`, `STRING` | `STRING`, or `JSON` / `GEOGRAPHY` when marked |
-| `BOOLEAN` | `BOOL` |
-| `BINARY`, `VARBINARY`, `BYTES` | `BYTES` |
-| `TINYINT`, `SMALLINT`, `INT`, `BIGINT` | `INT64` |
-| `FLOAT`, `DOUBLE` | `FLOAT64` |
-| `DECIMAL(p, s)` | `NUMERIC` when `s <= 9` and `p - s <= 29`, otherwise `BIGNUMERIC` |
-| `DATE` | `DATE` |
-| `TIME(p)` | `TIME`; `p > 3` is rejected |
-| `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected |
-| `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected |
-| `ROW` | `STRUCT`, recursively — or `JSON` when marked |
-| `ARRAY<T>` | `REPEATED T`; nested arrays are rejected. Sink schema derivation also rejects nullable element declarations; a source declaration may be nullable although BigQuery repeated values contain no null elements |
-| `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` |
-| `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected when the job graph is built |
+| Flink declaration | BigQuery source column | BigQuery sink column |
+|---|---|---|
+| `CHAR`, `VARCHAR`, `STRING` | `STRING`, `JSON` or `GEOGRAPHY` | `STRING`, or `JSON` / `GEOGRAPHY` when marked |
+| `BOOLEAN` | `BOOL` | `BOOL` |
+| `BINARY`, `VARBINARY`, `BYTES` | `BYTES` | `BYTES` |
+| `TINYINT`, `SMALLINT`, `INT`, `BIGINT` | `INT64` | `INT64` |
+| `FLOAT`, `DOUBLE` | `FLOAT64` | `FLOAT64` |
+| `DECIMAL(p, s)` | A fitting `NUMERIC` or `BIGNUMERIC` value | `NUMERIC` when `s <= 9` and `p - s <= 29`; otherwise `BIGNUMERIC` |
+| `DATE` | `DATE` | `DATE` |
+| `TIME(p)` | `TIME`; Flink 1.20 and 2.2 resolve SQL `p` to `0`, while 2.3 retains it through `3` | `TIME`; the same Flink-version boundary applies |
+| `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected | `DATETIME`; `p > 6` is rejected |
+| `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected | `TIMESTAMP`; `p > 6` is rejected |
+| `ROW` | `STRUCT`, recursively | `STRUCT`, recursively, or `JSON` when marked |
+| `` ROW<`start` DATE, `end` DATE> `` | `RANGE<DATE>`; source only | `STRUCT<start DATE, end DATE>` |
+| `` ROW<`start` TIMESTAMP(p), `end` TIMESTAMP(p)> `` | `RANGE<DATETIME>`; source only | `STRUCT<start DATETIME, end DATETIME>` |
+| `` ROW<`start` TIMESTAMP_LTZ(p), `end` TIMESTAMP_LTZ(p)> `` | `RANGE<TIMESTAMP>`; source only | `STRUCT<start TIMESTAMP, end TIMESTAMP>` |
+| `ARRAY<T>` | `REPEATED T`; declarations may use nullable elements although BigQuery values contain none | `REPEATED T`; nested arrays and nullable element declarations are rejected |
+| `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` | `REPEATED STRUCT<key, value>` |
+| `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected | rejected |
 
-Unsupported type shapes are rejected on the client when the job graph is built, not per record.
+Unsupported Flink logical types are rejected on the client when the job graph is built.
+A DDL that disguises BigQuery `INTERVAL` as a `ROW` is rejected from the live writer schema before
+the first value is converted.
 A source decimal that does not fit the declared precision fails the read rather than becoming
 `NULL`.
+
+### `RANGE` is source-only
+
+The Storage Read API represents `RANGE<T>` as a record with nullable `start` and `end` fields.
+Declare that record as one of the three `ROW` shapes in the table above.
+A null endpoint means that side is unbounded, while a null `ROW` means the range value itself is
+null.
+
+The sink does not infer `RANGE` from a two-field `ROW`.
+The same declaration sent to a sink creates a BigQuery `STRUCT`, which keeps source and sink schema
+derivation deterministic instead of guessing from field names.
+
+### `INTERVAL` remains unsupported
+
+BigQuery returned `INTERVAL` as an undocumented Avro record containing months, days and
+microseconds in a real-service measurement on 2026-08-13.
+Flink divides intervals into a year-month value and a day-time value, so neither type can preserve
+all three components.
+Flink's internal day-time value is also measured in milliseconds and cannot preserve the observed
+microseconds.
+
+The source therefore rejects both Flink interval types and rejects declaring BigQuery `INTERVAL`
+as a raw `ROW<months INT, days INT, microseconds BIGINT>`.
+If the textual representation is sufficient, use a query source that casts the BigQuery interval
+to `STRING` and declare that result column as Flink `STRING`.
+The sink continues to reject interval declarations because it has no lossless BigQuery mapping.
 
 ### `TIMESTAMP` is civil and `TIMESTAMP_LTZ` is an instant
 
@@ -365,11 +397,18 @@ instant, so it becomes `TIMESTAMP`. The GoogleCloudDataproc connector maps these
 round, which stores a wall-clock value as an instant and an instant as a wall-clock value. If you
 are migrating from it, this is the row to check.
 
-### `TIME` stops at millisecond precision
+### SQL `TIME` precision depends on the Flink version
 
-BigQuery's `TIME` holds microseconds, but Flink carries a time of day as an `int` of milliseconds,
-so a column declared `TIME(6)` could only ever be filled to `TIME(3)`. Rather than derive a schema
-claiming more than the values can carry, `TIME(p)` with `p > 3` is rejected.
+BigQuery Storage Read returns `TIME` as Avro `time-micros`. Flink 1.20 and 2.2 resolve a SQL
+declaration such as `TIME(3)` to `TIME(0)` before the connector sees the schema, so source and sink
+SQL paths on those versions carry only whole seconds. Flink 2.3 retains the declared precision and
+the connector preserves milliseconds through `TIME(3)`. Use a query source that casts the value to
+`STRING` when fractional text must be preserved on the earlier versions.
+
+A catalog schema constructed programmatically can carry `TIME(1)` through `TIME(3)` to the
+connector on every supported version, whose internal value stores milliseconds. The connector
+rejects a programmatic precision above `3` rather than claiming it can preserve BigQuery's
+microseconds.
 
 ### Marked columns
 
