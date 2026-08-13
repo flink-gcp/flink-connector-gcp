@@ -230,7 +230,9 @@ Set `scan.mode = change-stream` to read the table's mutation log through the Dat
 Streams source.
 The default remains `bounded`, so existing DDL keeps its current row-scan behavior.
 
-A Change Streams table is source-only and uses this exact physical schema:
+A Change Streams table is source-only.
+Its physical envelope has exactly the `row_key` and `entries` columns; this example also selects
+all optional metadata as virtual columns:
 
 ```sql
 CREATE TABLE profile_mutations (
@@ -248,7 +250,17 @@ CREATE TABLE profile_mutations (
       end_bound STRING,
       end_micros BIGINT
     >
-  >>
+  >>,
+  mutation_type STRING NOT NULL
+    METADATA FROM 'mutation-type' VIRTUAL,
+  source_cluster_id STRING
+    METADATA FROM 'source-cluster-id' VIRTUAL,
+  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL
+    METADATA FROM 'commit-timestamp' VIRTUAL,
+  tie_breaker INT NOT NULL
+    METADATA FROM 'tie-breaker' VIRTUAL,
+  estimated_low_watermark TIMESTAMP_LTZ(9) NOT NULL
+    METADATA FROM 'estimated-low-watermark' VIRTUAL
 ) WITH (
   'connector' = 'bigtable',
   'project' = 'my-project',
@@ -264,6 +276,21 @@ The source emits one `INSERT` row per Bigtable mutation.
 `entries` retains the service order, and `entry_index` is its zero-based position in that list.
 The source rejects a primary key because two mutations for the same `row_key` are distinct log
 records rather than updates to one Flink row.
+
+The metadata columns expose scalar fields attached to the mutation:
+
+| Metadata key | Type | Meaning |
+|---|---|---|
+| `mutation-type` | `STRING NOT NULL` | `USER` for a user mutation or `GARBAGE_COLLECTION` for a garbage-collection mutation |
+| `source-cluster-id` | `STRING` | The originating cluster for a user mutation; null for garbage collection |
+| `commit-timestamp` | `TIMESTAMP_LTZ(9) NOT NULL` | The service commit time, retaining nanoseconds |
+| `tie-breaker` | `INT NOT NULL` | The service tie breaker for mutations committed at the same time |
+| `estimated-low-watermark` | `TIMESTAMP_LTZ(9) NOT NULL` | The producing partition's estimated low watermark at this mutation |
+
+The declared column names are local to the DDL; `METADATA FROM` selects the stable connector key.
+Flink permits an explicitly castable declared type and applies the cast after the source, while the
+connector always emits the type in the table above.
+Marking the columns `VIRTUAL` keeps them out of a sink schema if the catalog table is reused.
 
 | `kind` | `qualifier` | `timestamp` | `value` | `delete_range` |
 |---|---|---|---|---|
@@ -281,6 +308,36 @@ field.
 Fields that do not apply to an entry kind are null.
 If a later client library introduces an entry or value subtype the converter does not know, the
 job fails with that subtype's class name instead of emitting an incomplete row.
+
+`UNNEST` expands the ordered entry array for relational processing:
+
+```sql
+SELECT
+  row_key,
+  mutation_type,
+  commit_timestamp,
+  entry_index,
+  kind,
+  family,
+  qualifier,
+  entry_timestamp,
+  entry_value,
+  delete_range
+FROM profile_mutations
+CROSS JOIN UNNEST(entries) AS entry_table(
+  entry_index,
+  kind,
+  family,
+  qualifier,
+  entry_timestamp,
+  entry_value,
+  delete_range
+);
+```
+
+SQL result rows have no implicit arrival order.
+`entry_index` carries each entry's original zero-based service position through the expansion, so a
+downstream keyed computation can reconstruct the order without relying on `UNNEST` output order.
 
 The envelope is a mutation record, not a reconstructed Bigtable row.
 Bigtable does not supply before or complete after images, so a cell or family deletion remains an
@@ -309,10 +366,12 @@ Set `scan.end-timestamp-millis` to make the source bounded; without it the sourc
 keeps the DataStream builder's default of two when absent.
 Source parallelism multiplied by that value is configured job capacity, not a Bigtable quota.
 
-This first envelope surface carries mutation contents only.
-Commit-time and stream-position metadata are staged in
-[#601]({{< param BookRepo >}}/issues/601), and safe stream-wide source watermarks require the
-separate frontier design in [#604]({{< param BookRepo >}}/issues/604).
+Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
+queryable metadata.
+The `estimated-low-watermark` value belongs to the partition that produced the mutation; it is not
+a safe stream-wide event-time frontier and does not enable `SOURCE_WATERMARK()`.
+That ability requires the separate coordination design in
+[#604]({{< param BookRepo >}}/issues/604).
 
 ### Filter pushdown
 
@@ -779,3 +838,10 @@ filter's server-side `NOT_FOUND` for a declared family the table lacks, which th
 with an empty result instead. The explicit-key path cannot accompany the emulator and does not need
 a service RPC to prove credential injection: unit and runtime-boundary tests parse a key file and
 inspect every affected client settings family.
+
+Change Streams metadata and `UNNEST(entries)` are covered without a service: converter tests use
+SDK mutation models directly, planner tests select and cast metadata, and the existing
+`flink-sql-connector-gcp-bigtable` uber-jar plans the same DDL through its discovered `bigtable`
+factory.
+The emulator implements no Change Streams RPC, so real-GCP Table API acceptance remains in
+[#602]({{< param BookRepo >}}/issues/602).

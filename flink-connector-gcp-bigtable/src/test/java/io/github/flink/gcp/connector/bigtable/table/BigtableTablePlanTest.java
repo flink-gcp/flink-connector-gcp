@@ -63,6 +63,17 @@ class BigtableTablePlanTest {
                     + "  'emulator-endpoint' = 'localhost:1'\n"
                     + ")";
 
+    private static final String CHANGE_STREAM_WITH_CLAUSE =
+            "WITH (\n"
+                    + "  'connector' = 'bigtable',\n"
+                    + "  'project' = 'my-project',\n"
+                    + "  'instance' = 'my-instance',\n"
+                    + "  'table' = 'my-table',\n"
+                    + "  'scan.mode' = 'change-stream',\n"
+                    + "  'scan.change-stream.changelog-mode' = 'envelope',\n"
+                    + "  'scan.app-profile-id' = 'single-cluster-profile'\n"
+                    + ")";
+
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
     }
@@ -172,6 +183,54 @@ class BigtableTablePlanTest {
                                                 + ") "
                                                 + WITH_CLAUSE))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void changeStreamMetadataAndOrderedEntryExpansionArePlanned() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE mutations (\n"
+                        + "  row_key BYTES,\n"
+                        + "  entries ARRAY<ROW<\n"
+                        + "    entry_index INT,\n"
+                        + "    kind STRING,\n"
+                        + "    family STRING,\n"
+                        + "    qualifier ROW<value_type STRING, bytes_value BYTES, long_value"
+                        + " BIGINT>,\n"
+                        + "    `timestamp` ROW<value_type STRING, bytes_value BYTES, long_value"
+                        + " BIGINT>,\n"
+                        + "    `value` ROW<value_type STRING, bytes_value BYTES, long_value"
+                        + " BIGINT>,\n"
+                        + "    delete_range ROW<start_bound STRING, start_micros BIGINT,"
+                        + " end_bound STRING, end_micros BIGINT>\n"
+                        + "  >>,\n"
+                        + "  mutation_type STRING NOT NULL METADATA FROM 'mutation-type'"
+                        + " VIRTUAL,\n"
+                        + "  source_cluster STRING METADATA FROM 'source-cluster-id' VIRTUAL,\n"
+                        + "  committed_at TIMESTAMP_LTZ(3) NOT NULL METADATA FROM"
+                        + " 'commit-timestamp' VIRTUAL,\n"
+                        + "  tie BIGINT NOT NULL METADATA FROM 'tie-breaker' VIRTUAL,\n"
+                        + "  low_watermark TIMESTAMP_LTZ(9) NOT NULL METADATA FROM"
+                        + " 'estimated-low-watermark' VIRTUAL\n"
+                        + ") "
+                        + CHANGE_STREAM_WITH_CLAUSE);
+
+        String metadataPlan =
+                tEnv.explainSql(
+                        "SELECT low_watermark, mutation_type, committed_at, tie FROM mutations");
+        String entriesPlan =
+                tEnv.explainSql(
+                        "SELECT row_key, entry_index, kind, mutation_type "
+                                + "FROM mutations CROSS JOIN UNNEST(entries) AS entry_table("
+                                + "entry_index, kind, family, qualifier, entry_timestamp,"
+                                + " entry_value, delete_range)");
+
+        assertThat(metadataPlan)
+                .contains("low_watermark", "mutation_type", "committed_at", "tie")
+                .contains("CAST");
+        assertThat(entriesPlan)
+                .contains("entry_index", "kind", "mutation_type")
+                .contains("Uncollect");
     }
 
     @Test

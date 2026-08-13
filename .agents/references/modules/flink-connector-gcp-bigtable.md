@@ -268,6 +268,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   It never claims row-level update or delete semantics without before and full after images.
   Reject a primary key, any physical schema change, an unknown future SDK entry/value subtype and
   every option owned by the bounded scan instead of widening or ignoring the contract.
+- **Readable Change Streams metadata is scalar mutation data, not source protocol state** (#601,
+  ADR-0106). `mutation-type` is `STRING NOT NULL`; `source-cluster-id` is nullable and maps the GC
+  model's empty id to null; `commit-timestamp` and `estimated-low-watermark` are
+  `TIMESTAMP_LTZ(9) NOT NULL`; and `tie-breaker` is `INT NOT NULL`. Append only the planner-selected
+  keys in the order it supplies and retain `java.time.Instant` nanoseconds. Continuation tokens
+  remain checkpoint state, and a partition's estimated low watermark does not implement
+  `SOURCE_WATERMARK()` (#604).
 - **The DDL model and the cell encoding are Flink's HBase connector's, and the encoding is
   normative** — one atomic column is the row key, every `ROW<...>` column is a family, cell bytes
   are `Bytes` as `HBaseSerde` applies them. `HBaseSerde` is the interop target, **not**

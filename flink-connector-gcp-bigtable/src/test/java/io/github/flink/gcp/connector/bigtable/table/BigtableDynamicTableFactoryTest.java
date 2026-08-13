@@ -30,6 +30,7 @@ import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
@@ -527,6 +528,99 @@ class BigtableDynamicTableFactoryTest {
         assertThat(((ScanTableSource) source).getChangelogMode().getContainedKinds())
                 .containsExactly(org.apache.flink.types.RowKind.INSERT);
         assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+    }
+
+    @Test
+    void appliesReadableMetadataIdempotentlyAndCarriesItThroughCopies() {
+        BigtableChangeStreamDynamicSource source =
+                (BigtableChangeStreamDynamicSource)
+                        source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions());
+        DataType firstProducedType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("row_key", DataTypes.BYTES()),
+                        DataTypes.FIELD(
+                                "entries", CHANGE_STREAM_SCHEMA.getColumnDataTypes().get(1)),
+                        DataTypes.FIELD("kind", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("committed_at", DataTypes.TIMESTAMP_LTZ(9).notNull()));
+
+        SupportsReadingMetadata metadataSource = source;
+        assertThat(metadataSource.listReadableMetadata())
+                .containsOnlyKeys(
+                        "mutation-type",
+                        "source-cluster-id",
+                        "commit-timestamp",
+                        "tie-breaker",
+                        "estimated-low-watermark");
+        metadataSource.applyReadableMetadata(
+                Arrays.asList("mutation-type", "commit-timestamp"), firstProducedType);
+
+        assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+        assertThat(source).isNotEqualTo(source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions()));
+
+        DataType secondProducedType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("row_key", DataTypes.BYTES()),
+                        DataTypes.FIELD(
+                                "entries", CHANGE_STREAM_SCHEMA.getColumnDataTypes().get(1)),
+                        DataTypes.FIELD("tie", DataTypes.INT().notNull()));
+        metadataSource.applyReadableMetadata(
+                Collections.singletonList("tie-breaker"), secondProducedType);
+
+        BigtableChangeStreamDynamicSource same =
+                (BigtableChangeStreamDynamicSource)
+                        source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions());
+        same.applyReadableMetadata(Collections.singletonList("tie-breaker"), secondProducedType);
+        assertThat(source.copy()).isEqualTo(source).isEqualTo(same);
+    }
+
+    @Test
+    void selectedMetadataKeysArePartOfTheSourceIdentity() {
+        DataType producedType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("row_key", DataTypes.BYTES()),
+                        DataTypes.FIELD(
+                                "entries", CHANGE_STREAM_SCHEMA.getColumnDataTypes().get(1)),
+                        DataTypes.FIELD("metadata", DataTypes.STRING()));
+        BigtableChangeStreamDynamicSource mutationType =
+                (BigtableChangeStreamDynamicSource)
+                        source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions());
+        mutationType.applyReadableMetadata(
+                Collections.singletonList("mutation-type"), producedType);
+        BigtableChangeStreamDynamicSource sourceCluster =
+                (BigtableChangeStreamDynamicSource)
+                        source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions());
+        sourceCluster.applyReadableMetadata(
+                Collections.singletonList("source-cluster-id"), producedType);
+
+        assertThat(mutationType).isNotEqualTo(sourceCluster);
+    }
+
+    @Test
+    void selectedMetadataReachesTheRuntimeDeserializerInPlannerOrder() {
+        BigtableChangeStreamDynamicSource source =
+                (BigtableChangeStreamDynamicSource)
+                        source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions());
+        DataType producedType =
+                DataTypes.ROW(
+                        DataTypes.FIELD("row_key", DataTypes.BYTES()),
+                        DataTypes.FIELD(
+                                "entries", CHANGE_STREAM_SCHEMA.getColumnDataTypes().get(1)),
+                        DataTypes.FIELD("low_watermark", DataTypes.TIMESTAMP_LTZ(9).notNull()),
+                        DataTypes.FIELD("mutation_type", DataTypes.STRING().notNull()));
+        source.applyReadableMetadata(
+                Arrays.asList("estimated-low-watermark", "mutation-type"), producedType);
+
+        SourceProvider provider =
+                (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+
+        assertThat(provider.createSource())
+                .extracting("config.deserializer.metadata")
+                .satisfies(
+                        selected ->
+                                assertThat((Object[]) selected)
+                                        .extracting(Object::toString)
+                                        .containsExactly(
+                                                "ESTIMATED_LOW_WATERMARK", "MUTATION_TYPE"));
     }
 
     @Test
