@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.table;
 
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
@@ -29,6 +31,7 @@ import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushD
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -177,6 +180,24 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(config.getQuery()).isNull();
         assertThat(config.getParentProject()).isEqualTo("my-project");
         assertThat(config.getSelectedFields()).containsExactly("id", "amount");
+    }
+
+    @Test
+    void flinkSqlTimePrecisionMatchesTheSupportedVersion() {
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(
+                "CREATE TABLE times (clock TIME(3)) WITH ('connector'='bigquery', "
+                        + "'project'='my-project', 'dataset'='my_dataset', 'table'='my_table')");
+
+        DataType expected = flinkRetainsSqlTimePrecision() ? DataTypes.TIME(3) : DataTypes.TIME(0);
+        assertThat(table.from("times").getResolvedSchema().getColumnDataTypes())
+                .containsExactly(expected);
+    }
+
+    private static boolean flinkRetainsSqlTimePrecision() {
+        String version = DataTypes.class.getPackage().getImplementationVersion();
+        return version != null && version.startsWith("2.3.");
     }
 
     @Test

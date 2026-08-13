@@ -177,6 +177,16 @@ final class GenericRecordToRowDataConverter implements Serializable {
                 return map((MapType) type, path);
             case MULTISET:
                 return multiset((MultisetType) type, path);
+            case INTERVAL_YEAR_MONTH:
+            case INTERVAL_DAY_TIME:
+                throw new IllegalArgumentException(
+                        "Column "
+                                + path
+                                + " has unsupported Table source type "
+                                + type
+                                + ": BigQuery INTERVAL has no lossless Flink interval mapping;"
+                                + " use a query source that casts it to STRING if its text form is"
+                                + " sufficient");
             default:
                 throw new IllegalArgumentException(
                         "Column " + path + " has unsupported Table source type " + type);
@@ -191,20 +201,36 @@ final class GenericRecordToRowDataConverter implements Serializable {
                             field.getName(),
                             converter(field.getType(), path + "." + field.getName())));
         }
-        return nullable(
-                (value, schema) -> {
-                    GenericRecord record = (GenericRecord) value;
-                    GenericRowData row = new GenericRowData(nested.size());
-                    for (int i = 0; i < nested.size(); i++) {
-                        FieldPlan field = nested.get(i);
-                        row.setField(
-                                i,
-                                field.converter.convert(
-                                        record.get(field.name),
-                                        record.getSchema().getField(field.name).schema()));
-                    }
-                    return row;
-                });
+        return (value, schema) -> {
+            Schema recordSchema = nonNull(schema);
+            if (isBigQueryInterval(recordSchema)) {
+                throw new IllegalArgumentException(
+                        "Column "
+                                + path
+                                + " reads BigQuery INTERVAL, which has no lossless Flink Table"
+                                + " source mapping; use a query source that casts it to STRING if"
+                                + " its text form is sufficient");
+            }
+            if (value == null) {
+                return null;
+            }
+            GenericRecord record = (GenericRecord) value;
+            GenericRowData row = new GenericRowData(nested.size());
+            for (int i = 0; i < nested.size(); i++) {
+                FieldPlan field = nested.get(i);
+                row.setField(
+                        i,
+                        field.converter.convert(
+                                record.get(field.name),
+                                record.getSchema().getField(field.name).schema()));
+            }
+            return row;
+        };
+    }
+
+    private static boolean isBigQueryInterval(Schema schema) {
+        return "google.sqlType.INTERVAL".equals(schema.getFullName())
+                || "INTERVAL".equals(schema.getProp("sqlType"));
     }
 
     private static ValueConverter array(ArrayType type, String path) {

@@ -53,7 +53,8 @@ class GenericRecordToRowDataConverterTest {
                     + "{\"name\":\"bytes\",\"type\":\"bytes\"},"
                     + "{\"name\":\"dec\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":38,\"scale\":9}},"
                     + "{\"name\":\"day\",\"type\":\"int\"},"
-                    + "{\"name\":\"clock\",\"type\":\"long\"},"
+                    + "{\"name\":\"clock\",\"type\":{\"type\":\"long\","
+                    + "\"logicalType\":\"time-micros\"}},"
                     + "{\"name\":\"civil\",\"type\":\"string\"},"
                     + "{\"name\":\"instant\",\"type\":\"long\"},"
                     + "{\"name\":\"nested\",\"type\":{\"type\":\"record\",\"name\":\"nested_record\",\"fields\":[{\"name\":\"v\",\"type\":\"string\"}]}},"
@@ -130,6 +131,150 @@ class GenericRecordToRowDataConverterTest {
         assertThat(counts.size()).isEqualTo(1);
         assertThat(counts.keyArray().getString(0).toString()).isEqualTo("seen");
         assertThat(counts.valueArray().getInt(0)).isEqualTo(2);
+    }
+
+    @Test
+    void convertsDocumentedBigQueryRangeRecordsAsRows() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"ranges\",\"fields\":["
+                                        + "{\"name\":\"date_range\",\"type\":[\"null\",{\"type\":\"record\","
+                                        + "\"namespace\":\"google.sqlType\",\"name\":\"RANGE_DATE\","
+                                        + "\"sqlType\":\"RANGE\",\"fields\":[{\"name\":\"start\","
+                                        + "\"type\":[\"null\",{\"type\":\"int\",\"logicalType\":\"date\"}]},"
+                                        + "{\"name\":\"end\",\"type\":[\"null\",{\"type\":\"int\","
+                                        + "\"logicalType\":\"date\"}]}]}]},"
+                                        + "{\"name\":\"datetime_range\",\"type\":[\"null\",{\"type\":\"record\","
+                                        + "\"namespace\":\"google.sqlType\",\"name\":\"RANGE_DATETIME\","
+                                        + "\"sqlType\":\"RANGE\",\"fields\":[{\"name\":\"start\","
+                                        + "\"type\":[\"null\",{\"type\":\"string\",\"logicalType\":\"datetime\"}]},"
+                                        + "{\"name\":\"end\",\"type\":[\"null\",{\"type\":\"string\","
+                                        + "\"logicalType\":\"datetime\"}]}]}]},"
+                                        + "{\"name\":\"timestamp_range\",\"type\":[\"null\",{\"type\":\"record\","
+                                        + "\"namespace\":\"google.sqlType\",\"name\":\"RANGE_TIMESTAMP\","
+                                        + "\"sqlType\":\"RANGE\",\"fields\":[{\"name\":\"start\","
+                                        + "\"type\":[\"null\",{\"type\":\"long\",\"logicalType\":\"timestamp-micros\"}]},"
+                                        + "{\"name\":\"end\",\"type\":[\"null\",{\"type\":\"long\","
+                                        + "\"logicalType\":\"timestamp-micros\"}]}]}]}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "date_range",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("start", DataTypes.DATE()),
+                                                        DataTypes.FIELD("end", DataTypes.DATE()))),
+                                        DataTypes.FIELD(
+                                                "datetime_range",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD(
+                                                                "start", DataTypes.TIMESTAMP(6)),
+                                                        DataTypes.FIELD(
+                                                                "end", DataTypes.TIMESTAMP(6)))),
+                                        DataTypes.FIELD(
+                                                "timestamp_range",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD(
+                                                                "start",
+                                                                DataTypes
+                                                                        .TIMESTAMP_WITH_LOCAL_TIME_ZONE(
+                                                                                6)),
+                                                        DataTypes.FIELD(
+                                                                "end",
+                                                                DataTypes
+                                                                        .TIMESTAMP_WITH_LOCAL_TIME_ZONE(
+                                                                                6)))))
+                                .getLogicalType();
+        GenericRecord root = new GenericData.Record(schema);
+        GenericRecord date = recordFor(schema.getField("date_range").schema());
+        date.put("start", -1);
+        date.put("end", null);
+        root.put("date_range", date);
+        GenericRecord datetime = recordFor(schema.getField("datetime_range").schema());
+        datetime.put("start", null);
+        datetime.put("end", "1969-12-31T23:59:59.999999");
+        root.put("datetime_range", datetime);
+        GenericRecord timestamp = recordFor(schema.getField("timestamp_range").schema());
+        timestamp.put("start", -1L);
+        timestamp.put("end", null);
+        root.put("timestamp_range", timestamp);
+
+        RowData converted = new GenericRecordToRowDataConverter(type, null).convert(root);
+
+        RowData dateRange = converted.getRow(0, 2);
+        assertThat(dateRange.getInt(0)).isEqualTo(-1);
+        assertThat(dateRange.isNullAt(1)).isTrue();
+        RowData datetimeRange = converted.getRow(1, 2);
+        assertThat(datetimeRange.isNullAt(0)).isTrue();
+        assertThat(datetimeRange.getTimestamp(1, 6).toLocalDateTime())
+                .isEqualTo(LocalDateTime.parse("1969-12-31T23:59:59.999999"));
+        RowData timestampRange = converted.getRow(2, 2);
+        assertThat(timestampRange.getTimestamp(0, 6).toInstant())
+                .isEqualTo(Instant.parse("1969-12-31T23:59:59.999999Z"));
+        assertThat(timestampRange.isNullAt(1)).isTrue();
+    }
+
+    @Test
+    void rejectsBigQueryIntervalEvenWhenDeclaredAsARowAndNull() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"root_interval\",\"fields\":["
+                                        + "{\"name\":\"span\",\"type\":[\"null\",{\"type\":\"record\","
+                                        + "\"namespace\":\"google.sqlType\",\"name\":\"INTERVAL\","
+                                        + "\"fields\":[{\"name\":\"months\",\"type\":\"int\"},"
+                                        + "{\"name\":\"days\",\"type\":\"int\"},{\"name\":\"microseconds\","
+                                        + "\"type\":\"long\"}]}]}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "span",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("months", DataTypes.INT()),
+                                                        DataTypes.FIELD("days", DataTypes.INT()),
+                                                        DataTypes.FIELD(
+                                                                "microseconds",
+                                                                DataTypes.BIGINT()))))
+                                .getLogicalType();
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("span", null);
+
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(type, null).convert(record))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("reads BigQuery INTERVAL")
+                .hasMessageContaining("no lossless Flink Table source mapping")
+                .hasMessageContaining("query source that casts it to STRING");
+    }
+
+    @Test
+    void rejectsBothFlinkIntervalFamiliesAtPlanTime() {
+        RowType yearMonth =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "span",
+                                                DataTypes.INTERVAL(
+                                                        DataTypes.YEAR(), DataTypes.MONTH())))
+                                .getLogicalType();
+        RowType dayTime =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "span",
+                                                DataTypes.INTERVAL(
+                                                        DataTypes.DAY(), DataTypes.SECOND(6))))
+                                .getLogicalType();
+
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(yearMonth, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("no lossless Flink interval mapping")
+                .hasMessageContaining("query source that casts it to STRING");
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(dayTime, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("no lossless Flink interval mapping")
+                .hasMessageContaining("query source that casts it to STRING");
     }
 
     @Test
@@ -313,6 +458,15 @@ class GenericRecordToRowDataConverterTest {
         count.put("value", 2L);
         record.put("counts", Collections.singletonList(count));
         return record;
+    }
+
+    private static GenericRecord recordFor(Schema schema) {
+        for (Schema member : schema.getTypes()) {
+            if (member.getType() != Schema.Type.NULL) {
+                return new GenericData.Record(member);
+            }
+        }
+        throw new AssertionError("The test schema has no record member");
     }
 
     private static void assertIntegerOverflow(
