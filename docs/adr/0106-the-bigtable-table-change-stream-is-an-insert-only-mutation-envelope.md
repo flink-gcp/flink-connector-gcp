@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600)
+- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600), [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601)
 - Modules: bigtable (`table`, `table.source`)
 - Current behavior: [Change Streams](../content/docs/connectors/table/bigtable.md#change-streams)
 
@@ -47,6 +47,15 @@ Fields that do not apply to an entry kind are null.
 The converter handles every entry and generic-value subtype in client 2.80.0.
 An unknown future subtype fails the job with its class name instead of emitting a partial envelope.
 
+The source exposes five scalar mutation fields through Flink's readable-metadata ability.
+`mutation-type` is a non-null string, `source-cluster-id` is a nullable string, `commit-timestamp` and `estimated-low-watermark` are non-null `TIMESTAMP_LTZ(9)` values, and `tie-breaker` is a non-null integer.
+The empty cluster identifier on a garbage-collection mutation becomes SQL null because that mutation has no source cluster.
+The timestamp conversion retains all nine fractional digits carried by the SDK's `java.time.Instant`.
+
+Continuation tokens and partition ranges remain internal to the FLIP-27 source protocol.
+The estimated low watermark belongs to the partition that produced the mutation and is readable data, not a Flink source watermark.
+A stream-wide watermark requires a coordinated frontier across active, queued, and unassigned partitions.
+
 Change Streams options map onto the DataStream builder.
 An absent startup mode retains the builder's latest-position default; a restored checkpoint position takes precedence under ADR-0094, and an expired restored position fails unless the DDL explicitly configures a resume fallback.
 An end timestamp makes the source bounded, and the per-subtask stream option retains ADR-0103's builder default when absent.
@@ -67,12 +76,17 @@ This prevents a valid-looking DDL from carrying options that no selected runtime
   A typo or copied bounded-scan setting would then plan successfully while doing nothing.
 - **Infer the envelope schema from arbitrary column names.**
   A fixed contract lets saved DDL, SQL queries, and downstream schemas agree on entry meaning and makes an SDK model addition fail visibly.
+- **Expose continuation tokens as metadata.**
+  They are checkpoint protocol state rather than mutation data, and a query must not take ownership of source resumption.
+- **Treat the estimated low watermark as a Flink source watermark.**
+  One mutation reports one partition's estimate, while bounded reader concurrency can leave older partitions queued or unassigned.
 
 ## Consequences
 
 - The envelope is lossless for the mutation entry models in client 2.80.0, but it is not a materialized Bigtable row.
 - Consumers derive their own stateful interpretation from the ordered mutation log.
+- SQL can select or cast the five readable metadata fields without changing the physical envelope.
 - The source remains insert-only even when an entry deletes a cell or family.
 - A table-shaped upsert mode needs a separate state and bootstrap design and is tracked by [#603](https://github.com/laughingman7743/flink-connector-gcp/issues/603).
 - Stream-wide source watermarks need a safe frontier across active, queued, and unassigned partitions and are tracked by [#604](https://github.com/laughingman7743/flink-connector-gcp/issues/604).
-- Mutation metadata and packaged SQL acceptance remain in the staged follow-ups [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601) and [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602).
+- Real-GCP Table API acceptance remains in the staged follow-up [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602).

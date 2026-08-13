@@ -18,7 +18,9 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
@@ -36,9 +38,16 @@ final class ChangeStreamMutationRowDataDeserializationSchema
 
     private final ChangeStreamMutationToRowDataConverter converter =
             new ChangeStreamMutationToRowDataConverter();
+    private final ChangeStreamReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedType;
 
     ChangeStreamMutationRowDataDeserializationSchema(TypeInformation<RowData> producedType) {
+        this(new ChangeStreamReadableMetadata[0], producedType);
+    }
+
+    ChangeStreamMutationRowDataDeserializationSchema(
+            ChangeStreamReadableMetadata[] metadata, TypeInformation<RowData> producedType) {
+        this.metadata = Preconditions.checkNotNull(metadata, "metadata must not be null").clone();
         this.producedType =
                 Preconditions.checkNotNull(producedType, "producedType must not be null");
     }
@@ -46,7 +55,16 @@ final class ChangeStreamMutationRowDataDeserializationSchema
     @Override
     public void deserialize(ChangeStreamMutation mutation, Collector<RowData> out)
             throws IOException {
-        out.collect(converter.convert(mutation));
+        RowData physical = converter.convert(mutation);
+        if (metadata.length == 0) {
+            out.collect(physical);
+            return;
+        }
+        GenericRowData metadataRow = new GenericRowData(metadata.length);
+        for (int index = 0; index < metadata.length; index++) {
+            metadataRow.setField(index, metadata[index].read(mutation));
+        }
+        out.collect(new JoinedRowData(physical.getRowKind(), physical, metadataRow));
     }
 
     @Override

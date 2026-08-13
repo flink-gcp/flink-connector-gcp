@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
@@ -43,8 +44,83 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 class ChangeStreamMutationToRowDataConverterTest {
+
+    @Test
+    void readableMetadataHasStableTypesAndOrderWithoutProtocolState() {
+        assertThat(ChangeStreamReadableMetadata.listAll())
+                .containsExactly(
+                        entry("mutation-type", DataTypes.STRING().notNull()),
+                        entry("source-cluster-id", DataTypes.STRING()),
+                        entry("commit-timestamp", DataTypes.TIMESTAMP_LTZ(9).notNull()),
+                        entry("tie-breaker", DataTypes.INT().notNull()),
+                        entry("estimated-low-watermark", DataTypes.TIMESTAMP_LTZ(9).notNull()))
+                .doesNotContainKeys("token", "continuation-token");
+    }
+
+    @Test
+    void appendsSelectedMetadataInRequestedOrderAndPreservesNanoseconds() throws Exception {
+        Instant commit = Instant.parse("2026-08-13T00:00:00.123456789Z");
+        Instant watermark = Instant.parse("2026-08-12T23:59:00.987654321Z");
+        ChangeStreamMutation mutation =
+                mutationWithMetadata(
+                        ChangeStreamMutation.MutationType.USER,
+                        "cluster-1",
+                        commit,
+                        7,
+                        "private-token",
+                        watermark);
+        ChangeStreamMutationRowDataDeserializationSchema schema =
+                new ChangeStreamMutationRowDataDeserializationSchema(
+                        new ChangeStreamReadableMetadata[] {
+                            ChangeStreamReadableMetadata.ESTIMATED_LOW_WATERMARK,
+                            ChangeStreamReadableMetadata.MUTATION_TYPE,
+                            ChangeStreamReadableMetadata.SOURCE_CLUSTER_ID,
+                            ChangeStreamReadableMetadata.COMMIT_TIMESTAMP,
+                            ChangeStreamReadableMetadata.TIE_BREAKER
+                        },
+                        TypeInformation.of(RowData.class));
+        List<RowData> output = new ArrayList<>();
+
+        schema.deserialize(mutation, collectingInto(output));
+
+        RowData row = output.get(0);
+        assertThat(row.getArity()).isEqualTo(7);
+        assertThat(row.getRowKind()).isEqualTo(RowKind.INSERT);
+        assertThat(row.getTimestamp(2, 9).toInstant()).isEqualTo(watermark);
+        assertThat(row.getString(3).toString()).isEqualTo("USER");
+        assertThat(row.getString(4).toString()).isEqualTo("cluster-1");
+        assertThat(row.getTimestamp(5, 9).toInstant()).isEqualTo(commit);
+        assertThat(row.getInt(6)).isEqualTo(7);
+    }
+
+    @Test
+    void garbageCollectionMetadataHasNoSourceCluster() throws Exception {
+        ChangeStreamMutation mutation =
+                mutationWithMetadata(
+                        ChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
+                        "",
+                        Instant.parse("2026-08-13T00:00:00Z"),
+                        3,
+                        "private-token",
+                        Instant.parse("2026-08-12T23:59:00Z"));
+        ChangeStreamMutationRowDataDeserializationSchema schema =
+                new ChangeStreamMutationRowDataDeserializationSchema(
+                        new ChangeStreamReadableMetadata[] {
+                            ChangeStreamReadableMetadata.MUTATION_TYPE,
+                            ChangeStreamReadableMetadata.SOURCE_CLUSTER_ID
+                        },
+                        TypeInformation.of(RowData.class));
+        List<RowData> output = new ArrayList<>();
+
+        schema.deserialize(mutation, collectingInto(output));
+
+        RowData row = output.get(0);
+        assertThat(row.getString(2).toString()).isEqualTo("GARBAGE_COLLECTION");
+        assertThat(row.isNullAt(3)).isTrue();
+    }
 
     @Test
     void preservesEverySdkEntryKindAndItsOrderedGenericValues() throws Exception {
@@ -139,13 +215,33 @@ class ChangeStreamMutationToRowDataConverterTest {
     void theSchemaSurvivesJavaSerialization() throws Exception {
         ChangeStreamMutationRowDataDeserializationSchema schema =
                 new ChangeStreamMutationRowDataDeserializationSchema(
+                        new ChangeStreamReadableMetadata[] {
+                            ChangeStreamReadableMetadata.ESTIMATED_LOW_WATERMARK,
+                            ChangeStreamReadableMetadata.MUTATION_TYPE
+                        },
                         TypeInformation.of(RowData.class));
 
         ChangeStreamMutationRowDataDeserializationSchema copy = roundTrip(schema);
         List<RowData> output = new ArrayList<>();
-        copy.deserialize(mutationWithEveryEntryKind(), collectingInto(output));
+        Instant watermark = Instant.parse("2026-08-12T23:59:00.987654321Z");
+        copy.deserialize(
+                mutationWithMetadata(
+                        ChangeStreamMutation.MutationType.USER,
+                        "cluster-1",
+                        Instant.parse("2026-08-13T00:00:00.123456789Z"),
+                        7,
+                        "private-token",
+                        watermark),
+                collectingInto(output));
 
-        assertThat(output).hasSize(1);
+        assertThat(output)
+                .singleElement()
+                .satisfies(
+                        row -> {
+                            assertThat(row.getArity()).isEqualTo(4);
+                            assertThat(row.getTimestamp(2, 9).toInstant()).isEqualTo(watermark);
+                            assertThat(row.getString(3).toString()).isEqualTo("USER");
+                        });
         assertThat(copy.getProducedType()).isEqualTo(schema.getProducedType());
     }
 
@@ -224,6 +320,57 @@ class ChangeStreamMutationToRowDataConverterTest {
             @Override
             public ImmutableList<Entry> getEntries() {
                 return ImmutableList.copyOf(entries);
+            }
+        };
+    }
+
+    private static ChangeStreamMutation mutationWithMetadata(
+            ChangeStreamMutation.MutationType type,
+            String sourceClusterId,
+            Instant commitTime,
+            int tieBreaker,
+            String token,
+            Instant estimatedLowWatermark) {
+        Entry entry = mutationWithEveryEntryKind().getEntries().get(0);
+        return new ChangeStreamMutation() {
+            @Override
+            public ByteString getRowKey() {
+                return ByteString.copyFromUtf8("row-1");
+            }
+
+            @Override
+            public MutationType getType() {
+                return type;
+            }
+
+            @Override
+            public String getSourceClusterId() {
+                return sourceClusterId;
+            }
+
+            @Override
+            public Instant getCommitTime() {
+                return commitTime;
+            }
+
+            @Override
+            public int getTieBreaker() {
+                return tieBreaker;
+            }
+
+            @Override
+            public String getToken() {
+                return token;
+            }
+
+            @Override
+            public Instant getEstimatedLowWatermarkTime() {
+                return estimatedLowWatermark;
+            }
+
+            @Override
+            public ImmutableList<Entry> getEntries() {
+                return ImmutableList.of(entry);
             }
         };
     }

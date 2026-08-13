@@ -22,6 +22,7 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 
@@ -33,11 +34,16 @@ import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceB
 import javax.annotation.Nullable;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /** Insert-only generic mutation-envelope source backed by the DataStream Change Streams source. */
 @Internal
-public final class BigtableChangeStreamDynamicSource implements ScanTableSource {
+public final class BigtableChangeStreamDynamicSource
+        implements ScanTableSource, SupportsReadingMetadata {
 
     private final TableDestination destination;
     private final String appProfileId;
@@ -47,7 +53,13 @@ public final class BigtableChangeStreamDynamicSource implements ScanTableSource 
     @Nullable private final Instant endTime;
     @Nullable private final Integer maxConcurrentStreamsPerSubtask;
     @Nullable private final Integer parallelism;
-    private final DataType producedDataType;
+    private final DataType physicalDataType;
+
+    /** Metadata keys selected by the planner, in the order appended to produced rows. */
+    private List<String> metadataKeys;
+
+    /** The physical envelope plus the metadata selected by the planner. */
+    private DataType producedDataType;
 
     public BigtableChangeStreamDynamicSource(
             TableDestination destination,
@@ -67,6 +79,22 @@ public final class BigtableChangeStreamDynamicSource implements ScanTableSource 
         this.endTime = endTime;
         this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
         this.parallelism = parallelism;
+        this.physicalDataType = Objects.requireNonNull(producedDataType);
+        this.metadataKeys = Collections.emptyList();
+        this.producedDataType = producedDataType;
+    }
+
+    @Override
+    public Map<String, DataType> listReadableMetadata() {
+        return ChangeStreamReadableMetadata.listAll();
+    }
+
+    @Override
+    public void applyReadableMetadata(List<String> metadataKeys, DataType producedDataType) {
+        for (String key : metadataKeys) {
+            ChangeStreamReadableMetadata.of(key);
+        }
+        this.metadataKeys = Collections.unmodifiableList(new ArrayList<>(metadataKeys));
         this.producedDataType = Objects.requireNonNull(producedDataType);
     }
 
@@ -78,13 +106,17 @@ public final class BigtableChangeStreamDynamicSource implements ScanTableSource 
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         TypeInformation<RowData> typeInformation = context.createTypeInformation(producedDataType);
+        ChangeStreamReadableMetadata[] selectedMetadata =
+                metadataKeys.stream()
+                        .map(ChangeStreamReadableMetadata::of)
+                        .toArray(ChangeStreamReadableMetadata[]::new);
         BigtableChangeStreamSourceBuilder<RowData> builder =
                 BigtableChangeStreamSource.<RowData>builder()
                         .table(destination)
                         .appProfileId(appProfileId)
                         .deserializer(
                                 new ChangeStreamMutationRowDataDeserializationSchema(
-                                        typeInformation));
+                                        selectedMetadata, typeInformation));
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
@@ -105,16 +137,19 @@ public final class BigtableChangeStreamDynamicSource implements ScanTableSource 
 
     @Override
     public DynamicTableSource copy() {
-        return new BigtableChangeStreamDynamicSource(
-                destination,
-                appProfileId,
-                serviceAccountKeyFile,
-                startPosition,
-                resumeFallback,
-                endTime,
-                maxConcurrentStreamsPerSubtask,
-                parallelism,
-                producedDataType);
+        BigtableChangeStreamDynamicSource copy =
+                new BigtableChangeStreamDynamicSource(
+                        destination,
+                        appProfileId,
+                        serviceAccountKeyFile,
+                        startPosition,
+                        resumeFallback,
+                        endTime,
+                        maxConcurrentStreamsPerSubtask,
+                        parallelism,
+                        physicalDataType);
+        copy.applyReadableMetadata(metadataKeys, producedDataType);
+        return copy;
     }
 
     @Override
@@ -140,6 +175,8 @@ public final class BigtableChangeStreamDynamicSource implements ScanTableSource 
                 && Objects.equals(
                         maxConcurrentStreamsPerSubtask, that.maxConcurrentStreamsPerSubtask)
                 && Objects.equals(parallelism, that.parallelism)
+                && physicalDataType.equals(that.physicalDataType)
+                && metadataKeys.equals(that.metadataKeys)
                 && producedDataType.equals(that.producedDataType);
     }
 
@@ -154,6 +191,8 @@ public final class BigtableChangeStreamDynamicSource implements ScanTableSource 
                 endTime,
                 maxConcurrentStreamsPerSubtask,
                 parallelism,
+                physicalDataType,
+                metadataKeys,
                 producedDataType);
     }
 }
