@@ -18,7 +18,7 @@ Both dialects, GoogleSQL and PostgreSQL.
 | Table API / SQL lookup source | Implemented ([#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504)) |
 | Relocated SQL uber-jar | Implemented ([#505](https://github.com/laughingman7743/flink-connector-gcp/issues/505)) |
 | Gated real-GCP integration tests | Implemented ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
-| Change-stream CDC changelog scan in the Table API and SQL | Implemented ([#582](https://github.com/laughingman7743/flink-connector-gcp/issues/582)); metadata columns, source watermarks, and real-service acceptance remain in [#225](https://github.com/laughingman7743/flink-connector-gcp/issues/225) |
+| Change-stream CDC changelog scan, readable metadata, and source watermarks in the Table API and SQL | Implemented ([#582](https://github.com/laughingman7743/flink-connector-gcp/issues/582), [#583](https://github.com/laughingman7743/flink-connector-gcp/issues/583)) |
 
 ```java
 Sink<OrderEvent> sink =
@@ -65,8 +65,10 @@ reports — which is also why Beam's limits, values it chose for a `Commit`, are
 rather than figures the service is documented to enforce on this RPC. The
 [Spanner connector for Apache Spark](https://github.com/GoogleCloudDataproc/spark-spanner-connector)
 and [debezium-connector-spanner](https://github.com/debezium/debezium-connector-spanner) (both
-Apache-2.0) were read as further design references for the batch source and the planned
-change-stream work. The implemented Change Streams source design otherwise
+Apache-2.0) were read as further design references for the batch source and Change Streams work.
+The Table source's transaction and mod metadata vocabulary follows Debezium's Spanner source
+metadata where the same Spanner fields exist.
+The implemented Change Streams source design otherwise
 follows the Cloud Tasks sink in this repository, whose writer likewise owns its retry loop.
 
 No source code has been copied into this module.

@@ -18,8 +18,12 @@ package io.github.flink.gcp.connector.spanner.sql;
 
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackagingITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.jar.JarFile;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Asserts the shape of this module's uber-jar. The checks are the shared ones; what is Spanner's
@@ -39,6 +43,20 @@ import java.util.List;
  * <p>{@link SpannerSqlConnectorSmokeITCase} is what proves the relocated classes actually work.
  */
 class SpannerSqlConnectorPackagingITCase extends AbstractSqlConnectorPackagingITCase {
+
+    @Test
+    void changeStreamMetadataImplementationIsInTheShadedArtifact() throws Exception {
+        try (JarFile jar = new JarFile(UberJar.SHADED.path().toFile())) {
+            assertThat(
+                            jar.getJarEntry(
+                                    "io/github/flink/gcp/connector/spanner/table/source/ReadableMetadata.class"))
+                    .isNotNull();
+            assertThat(
+                            jar.getJarEntry(
+                                    "io/github/flink/gcp/connector/spanner/table/source/SpannerChangeStreamDynamicSource.class"))
+                    .isNotNull();
+        }
+    }
 
     @Override
     protected ShadedJar shadedJar() {

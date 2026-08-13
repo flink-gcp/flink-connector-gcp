@@ -253,6 +253,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Keep record validation and changelog construction in `DataChangeRecordToRowDataConverter`.
   `SpannerChangeStreamRowDataDeserializationSchema` is the collector and produced-type adapter;
   do not grow physical conversion branches back into that SPI wrapper.
+- Expose stable scalar `DataChangeRecord` fields through `SupportsReadingMetadata` in the order the
+  planner selects them. Keep raw JSON, partition tokens, low watermarks, runtime timestamps, and
+  configured resource names outside the metadata surface.
+- `mod-number` is zero-based in the original record's mod list. Preserve it while staging rows, and
+  attach the same number to both rows of a full-mode update.
+- Advertise `commit-timestamp` as non-null `TIMESTAMP_LTZ(9)`. A SQL watermark column must declare
+  the key as `TIMESTAMP_LTZ(3)` because Flink rowtime precision stops at 3; the compatible planner
+  cast is intentional.
+- `SupportsSourceWatermark.applySourceWatermark()` adds no generator. The FLIP-27 reader already
+  timestamps data records at commit time and emits per-partition heartbeat watermarks, and that
+  remains the only progress policy.
 - Reuse `StructToRowDataConverter` through typed synthetic Spanner values so bounded, lookup, and
   CDC paths retain one decimal, UUID, JSON, PROTO, ENUM, timestamp, array, and null contract.
 - Flink 1.20 uses its sole upsert declaration, while Flink 2.x declares key-only deletes through

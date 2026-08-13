@@ -102,6 +102,66 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
     }
 
     @Test
+    void appendsSelectedMetadataInPlannerOrderAndPreservesModIdentity() throws Exception {
+        SpannerChangeStreamRowDataDeserializationSchema deserializer =
+                deserializer(
+                        ChangeStreamChangelogMode.FULL,
+                        table(null, "people"),
+                        ReadableMetadata.MOD_NUMBER,
+                        ReadableMetadata.COMMIT_TIMESTAMP,
+                        ReadableMetadata.SEQUENCE,
+                        ReadableMetadata.SERVER_TRANSACTION_ID,
+                        ReadableMetadata.IS_LAST_RECORD_IN_TRANSACTION_IN_PARTITION,
+                        ReadableMetadata.TABLE,
+                        ReadableMetadata.MOD_TYPE,
+                        ReadableMetadata.VALUE_CAPTURE_TYPE,
+                        ReadableMetadata.NUMBER_OF_RECORDS_IN_TRANSACTION,
+                        ReadableMetadata.NUMBER_OF_PARTITIONS_IN_TRANSACTION,
+                        ReadableMetadata.TRANSACTION_TAG,
+                        ReadableMetadata.SYSTEM_TRANSACTION);
+        List<RowData> rows = new ArrayList<>();
+
+        deserializer.deserialize(
+                record(
+                        "people",
+                        COLUMNS,
+                        ModType.UPDATE,
+                        ValueCaptureType.NEW_ROW_AND_OLD_VALUES,
+                        Arrays.asList(
+                                new Mod(
+                                        "{\"id\":\"1\"}",
+                                        "{\"name\":\"Grace\"}",
+                                        "{\"name\":\"Ada\"}"),
+                                new Mod(
+                                        "{\"id\":\"2\"}",
+                                        "{\"name\":\"Lin\"}",
+                                        "{\"name\":\"Lynn\"}"))),
+                collector(rows));
+
+        assertThat(rows)
+                .extracting(RowData::getRowKind)
+                .containsExactly(
+                        RowKind.UPDATE_BEFORE,
+                        RowKind.UPDATE_AFTER,
+                        RowKind.UPDATE_BEFORE,
+                        RowKind.UPDATE_AFTER);
+        assertThat(rows).extracting(row -> row.getInt(2)).containsExactly(0, 0, 1, 1);
+        RowData first = rows.get(0);
+        assertThat(first.getTimestamp(3, 9).toInstant())
+                .isEqualTo(Instant.parse("2026-08-13T00:00:00.123456789Z"));
+        assertThat(first.getString(4).toString()).isEqualTo("0001");
+        assertThat(first.getString(5).toString()).isEqualTo("tx-1");
+        assertThat(first.getBoolean(6)).isTrue();
+        assertThat(first.getString(7).toString()).isEqualTo("people");
+        assertThat(first.getString(8).toString()).isEqualTo("UPDATE");
+        assertThat(first.getString(9).toString()).isEqualTo("NEW_ROW_AND_OLD_VALUES");
+        assertThat(first.getLong(10)).isEqualTo(1L);
+        assertThat(first.getLong(11)).isEqualTo(1L);
+        assertThat(first.getString(12).toString()).isEmpty();
+        assertThat(first.getBoolean(13)).isFalse();
+    }
+
+    @Test
     void upsertModeEmitsKeyOnlyDeletesAndValidatesTheRuntimePrimaryKey() throws Exception {
         SpannerChangeStreamRowDataDeserializationSchema deserializer =
                 deserializer(ChangeStreamChangelogMode.UPSERT, table(null, "people"));
@@ -693,6 +753,11 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
 
     private static SpannerChangeStreamRowDataDeserializationSchema deserializer(
             ChangeStreamChangelogMode mode, SpannerTableName table) {
+        return deserializer(mode, table, new ReadableMetadata[0]);
+    }
+
+    private static SpannerChangeStreamRowDataDeserializationSchema deserializer(
+            ChangeStreamChangelogMode mode, SpannerTableName table, ReadableMetadata... metadata) {
         RowType rowType =
                 RowType.of(
                         new org.apache.flink.table.types.logical.LogicalType[] {
@@ -710,6 +775,7 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
                         Collections.emptyMap()),
                 table,
                 mode,
+                metadata,
                 TypeInformation.of(RowData.class));
     }
 
@@ -729,7 +795,7 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
             ValueCaptureType capture,
             List<Mod> mods) {
         return new DataChangeRecord(
-                Instant.parse("2026-08-13T00:00:00Z"),
+                Instant.parse("2026-08-13T00:00:00.123456789Z"),
                 "0001",
                 "tx-1",
                 true,

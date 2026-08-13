@@ -45,6 +45,86 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
 
     @ParameterizedTest
+    @MethodSource("changeStreamMetadataCases")
+    void readsChangeStreamMetadataAndUsesSourceWatermarks(Dialect dialect, String changelogMode)
+            throws Exception {
+        String tableDdl =
+                dialect == Dialect.POSTGRESQL
+                        ? "CREATE TABLE metadata_records (id bigint NOT NULL PRIMARY KEY, name varchar(64))"
+                        : "CREATE TABLE metadata_records (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)";
+        String alterStream =
+                dialect == Dialect.POSTGRESQL
+                        ? "ALTER CHANGE STREAM metadata_changes SET (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')"
+                        : "ALTER CHANGE STREAM metadata_changes SET OPTIONS (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')";
+        SpannerDatabase database =
+                createDatabase(
+                        dialect,
+                        tableDdl,
+                        "CREATE CHANGE STREAM metadata_changes FOR metadata_records",
+                        alterStream);
+        Timestamp commit =
+                client(database)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertBuilder("metadata_records")
+                                                .set("id")
+                                                .to(1L)
+                                                .set("name")
+                                                .to("Ada")
+                                                .build(),
+                                        Mutation.newInsertBuilder("metadata_records")
+                                                .set("id")
+                                                .to(2L)
+                                                .set("name")
+                                                .to("Grace")
+                                                .build()));
+        TableEnvironment table =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                changeStreamMetadataTableDdl(
+                        database,
+                        dialect,
+                        changelogMode,
+                        commit.toSqlTimestamp().toInstant().toEpochMilli()));
+        java.time.Instant commitAtWatermarkPrecision =
+                java.time.Instant.ofEpochMilli(commit.toSqlTimestamp().toInstant().toEpochMilli());
+
+        List<Row> rows = firstRows(table, "SELECT * FROM metadata_cdc", 2);
+
+        assertThat(rows).extracting(Row::getKind).containsOnly(RowKind.INSERT);
+        assertThat(rows).extracting(row -> row.getFieldAs(0)).containsExactlyInAnyOrder(1L, 2L);
+        assertThat(rows)
+                .allSatisfy(
+                        row -> {
+                            assertThat((Object) row.getField(2))
+                                    .isEqualTo(commitAtWatermarkPrecision);
+                            assertThat(row.getFieldAs(3).toString()).isNotBlank();
+                            assertThat(row.getFieldAs(4).toString()).isNotBlank();
+                            assertThat((Object) row.getField(5)).isEqualTo(true);
+                            assertThat(row.getFieldAs(6).toString()).isEqualTo("metadata_records");
+                            assertThat(row.getFieldAs(7).toString()).isEqualTo("INSERT");
+                            assertThat(row.getFieldAs(8).toString())
+                                    .isEqualTo("NEW_ROW_AND_OLD_VALUES");
+                            assertThat((Object) row.getField(9)).isEqualTo(1L);
+                            assertThat((Object) row.getField(10)).isEqualTo(1L);
+                            assertThat(row.getFieldAs(11).toString()).isEmpty();
+                            assertThat((Object) row.getField(12)).isEqualTo(false);
+                        });
+        assertThat(rows).extracting(row -> row.getFieldAs(13)).containsExactlyInAnyOrder(0, 1);
+    }
+
+    private static Stream<Arguments> changeStreamMetadataCases() {
+        return Stream.of(Dialect.values())
+                .flatMap(
+                        dialect ->
+                                Stream.of(
+                                        Arguments.of(dialect, "full"),
+                                        Arguments.of(dialect, "upsert")));
+    }
+
+    @ParameterizedTest
     @MethodSource("changeStreamTableCases")
     void readsTableChangelogForDefaultNamedAndQuotedTables(Dialect dialect, String schemaKind)
             throws Exception {
@@ -631,6 +711,60 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + "',\n"
                 + "  'scan.change-stream.heartbeat-interval' = '1 s',\n"
                 + "  'scan.max-concurrent-queries-per-subtask' = '2',\n"
+                + "  'scan.parallelism' = '1',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String changeStreamMetadataTableDdl(
+            SpannerDatabase database,
+            Dialect dialect,
+            String changelogMode,
+            long startupTimestampMillis) {
+        return "CREATE TABLE metadata_cdc (\n"
+                + "  id BIGINT,\n"
+                + "  name STRING,\n"
+                + "  commit_timestamp TIMESTAMP_LTZ(3) METADATA FROM 'commit-timestamp',\n"
+                + "  record_sequence STRING METADATA FROM 'sequence',\n"
+                + "  server_transaction_id STRING METADATA FROM 'server-transaction-id',\n"
+                + "  is_last_record BOOLEAN METADATA FROM 'is-last-record-in-transaction-in-partition',\n"
+                + "  source_table STRING METADATA FROM 'table',\n"
+                + "  mod_type STRING METADATA FROM 'mod-type',\n"
+                + "  value_capture_type STRING METADATA FROM 'value-capture-type',\n"
+                + "  records_in_transaction BIGINT METADATA FROM 'number-of-records-in-transaction',\n"
+                + "  partitions_in_transaction BIGINT METADATA FROM 'number-of-partitions-in-transaction',\n"
+                + "  transaction_tag STRING METADATA FROM 'transaction-tag',\n"
+                + "  system_transaction BOOLEAN METADATA FROM 'system-transaction',\n"
+                + "  mod_number INT METADATA FROM 'mod-number',\n"
+                + "  WATERMARK FOR commit_timestamp AS SOURCE_WATERMARK(),\n"
+                + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + "  'table' = 'metadata_records',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'scan.mode' = 'change-stream',\n"
+                + "  'scan.change-stream.name' = 'metadata_changes',\n"
+                + "  'scan.change-stream.changelog-mode' = '"
+                + changelogMode
+                + "',\n"
+                + "  'scan.startup.mode' = 'timestamp',\n"
+                + "  'scan.startup.timestamp-millis' = '"
+                + startupTimestampMillis
+                + "',\n"
+                + "  'scan.change-stream.heartbeat-interval' = '1 s',\n"
                 + "  'scan.parallelism' = '1',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()

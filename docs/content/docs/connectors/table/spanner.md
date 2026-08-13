@@ -189,6 +189,11 @@ CREATE TABLE order_changes (
   order_id BIGINT,
   customer STRING,
   status STRING,
+  commit_timestamp TIMESTAMP_LTZ(3) METADATA FROM 'commit-timestamp' VIRTUAL,
+  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
+  server_transaction_id STRING METADATA FROM 'server-transaction-id' VIRTUAL,
+  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
+  WATERMARK FOR commit_timestamp AS SOURCE_WATERMARK(),
   PRIMARY KEY (order_id) NOT ENFORCED
 ) WITH (
   'connector' = 'spanner',
@@ -203,6 +208,16 @@ CREATE TABLE order_changes (
 );
 ```
 
+The source exposes the stable scalar identity, transaction, and record fields listed in the [Spanner metadata reference]({{< relref "docs/reference/spanner" >}}#table-change-stream-readable-metadata).
+The vocabulary follows Debezium's Spanner source metadata where it represents the same Spanner field, with hyphenated keys matching this connector's SQL conventions.
+The native `commit-timestamp` metadata type is non-null `TIMESTAMP_LTZ(9)`, preserving Spanner's nanosecond precision.
+Flink permits watermark columns only through precision 3, so the example declares that metadata column as `TIMESTAMP_LTZ(3)` and lets the planner apply the compatible precision cast.
+Omit the watermark declaration and use `TIMESTAMP_LTZ(9)` when downstream SQL must retain the full commit timestamp.
+`SOURCE_WATERMARK()` uses the Change Streams source's existing commit-timestamped records and per-partition heartbeat watermarks; it does not introduce a second clock or a second out-of-orderness policy.
+
+`mod-number` is the zero-based position of the mod in its original Spanner data-change record.
+The adjacent before and after rows produced for one full-mode update carry the same `mod-number`, so metadata never splits the logical identity of that mod.
+
 Each data-change record is validated against the DDL's physical names, native Spanner types, and, in upsert mode, primary-key column membership before any row from that record is emitted.
 Extra watched columns are ignored, while a missing declared column, a type mismatch, an incompatible value-capture mode, or an absent required row value fails deserialization.
 Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
@@ -210,7 +225,6 @@ A conversion failure identifies the table, commit timestamp, transaction, record
 
 Startup, expired-restore fallback, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
 The checkpoint, retention, delivery, and capacity contracts therefore remain those of the [DataStream Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
-Readable metadata columns, source watermarks, and real-service Table API acceptance remain outside this slice.
 
 ## Lookup behavior
 

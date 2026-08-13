@@ -28,6 +28,8 @@ import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
+import org.apache.flink.table.connector.source.abilities.SupportsSourceWatermark;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
@@ -61,6 +63,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
 class SpannerDynamicTableFactoryTest {
 
@@ -316,6 +319,49 @@ class SpannerDynamicTableFactoryTest {
                         org.apache.flink.types.RowKind.UPDATE_BEFORE,
                         org.apache.flink.types.RowKind.UPDATE_AFTER,
                         org.apache.flink.types.RowKind.DELETE);
+    }
+
+    @Test
+    void exposesChangeStreamMetadataAndKeepsAppliedAbilityState() {
+        SpannerChangeStreamDynamicSource dynamic =
+                (SpannerChangeStreamDynamicSource) source(SCHEMA, changeStreamOptions("full"));
+        SupportsReadingMetadata metadata = dynamic;
+
+        assertThat(metadata.listReadableMetadata())
+                .containsExactly(
+                        entry("commit-timestamp", DataTypes.TIMESTAMP_LTZ(9).notNull()),
+                        entry("sequence", DataTypes.STRING().notNull()),
+                        entry("server-transaction-id", DataTypes.STRING().notNull()),
+                        entry(
+                                "is-last-record-in-transaction-in-partition",
+                                DataTypes.BOOLEAN().notNull()),
+                        entry("table", DataTypes.STRING().notNull()),
+                        entry("mod-type", DataTypes.STRING().notNull()),
+                        entry("value-capture-type", DataTypes.STRING().notNull()),
+                        entry("number-of-records-in-transaction", DataTypes.BIGINT().notNull()),
+                        entry("number-of-partitions-in-transaction", DataTypes.BIGINT().notNull()),
+                        entry("transaction-tag", DataTypes.STRING().notNull()),
+                        entry("system-transaction", DataTypes.BOOLEAN().notNull()),
+                        entry("mod-number", DataTypes.INT().notNull()));
+
+        DynamicTableSource beforeAbilities = dynamic.copy();
+        metadata.applyReadableMetadata(
+                Arrays.asList("mod-number", "commit-timestamp"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                        DataTypes.FIELD("name", DataTypes.STRING()),
+                        DataTypes.FIELD("mod_number", DataTypes.INT().notNull()),
+                        DataTypes.FIELD("commit_timestamp", DataTypes.TIMESTAMP_LTZ(9).notNull())));
+        ((SupportsSourceWatermark) dynamic).applySourceWatermark();
+
+        assertThat(dynamic).isNotEqualTo(beforeAbilities);
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+        assertThat(
+                        ((SourceProvider)
+                                        dynamic.getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                                .createSource())
+                .isInstanceOf(SpannerChangeStreamSource.class);
     }
 
     @Test

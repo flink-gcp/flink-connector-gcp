@@ -27,6 +27,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SpannerTablePlanTest {
 
     @Test
+    void changeStreamMetadataAndSourceWatermarkReachThePlanner() {
+        TableEnvironment table =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        table.executeSql(
+                "CREATE TABLE changes ("
+                        + "id BIGINT, name STRING, "
+                        + "commit_time TIMESTAMP_LTZ(3) METADATA FROM 'commit-timestamp', "
+                        + "record_sequence STRING METADATA FROM 'sequence', "
+                        + "mod_number INT METADATA FROM 'mod-number', "
+                        + "WATERMARK FOR commit_time AS SOURCE_WATERMARK()) WITH ("
+                        + "'connector'='spanner', 'project'='p', 'instance'='i', "
+                        + "'database'='d', 'table'='people', 'scan.mode'='change-stream', "
+                        + "'scan.change-stream.name'='people_changes', "
+                        + "'scan.change-stream.changelog-mode'='full')");
+
+        assertThat(
+                        table.explainSql(
+                                "SELECT id, commit_time, record_sequence, mod_number FROM changes"))
+                .contains("commit_time", "record_sequence", "mod_number")
+                .containsIgnoringCase("watermark");
+    }
+
+    @Test
     void plannerPushesTopLevelProjectionIntoTheSource() {
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());

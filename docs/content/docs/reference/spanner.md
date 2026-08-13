@@ -37,6 +37,29 @@ The `spanner` factory requires `project`, `instance`, `database`, and `table`.
 Unset sink options inherit the corresponding `SpannerWriterOptions` default documented below.
 The complete DDL option table, native UUID and other schema mappings, and primary-key behavior are on the [Spanner SQL page]({{< relref "docs/connectors/table/spanner" >}}).
 
+### Table Change Stream readable metadata
+
+These keys are available only when `scan.mode = 'change-stream'`.
+Every native metadata type is non-null because every emitted `DataChangeRecord` supplies the field.
+
+| Metadata key | Native type | What it contains |
+|---|---|---|
+| `commit-timestamp` | `TIMESTAMP_LTZ(9) NOT NULL` | Spanner commit timestamp, preserving nanosecond precision |
+| `sequence` | `STRING NOT NULL` | Record sequence within its partition, commit timestamp, and transaction |
+| `server-transaction-id` | `STRING NOT NULL` | Spanner server transaction identifier |
+| `is-last-record-in-transaction-in-partition` | `BOOLEAN NOT NULL` | Whether this is the transaction's final record in the originating partition |
+| `table` | `STRING NOT NULL` | Dialect-aware native table name reported by Spanner |
+| `mod-type` | `STRING NOT NULL` | `INSERT`, `UPDATE`, or `DELETE` from the original data-change record |
+| `value-capture-type` | `STRING NOT NULL` | Value-capture type carried by the original data-change record |
+| `number-of-records-in-transaction` | `BIGINT NOT NULL` | Number of data-change records in the transaction |
+| `number-of-partitions-in-transaction` | `BIGINT NOT NULL` | Number of Change Stream partitions containing the transaction |
+| `transaction-tag` | `STRING NOT NULL` | Transaction tag, or an empty string when no tag was supplied |
+| `system-transaction` | `BOOLEAN NOT NULL` | Whether Spanner identifies the transaction as a system transaction |
+| `mod-number` | `INT NOT NULL` | Zero-based position of the mod in the original data-change record; a full-mode update's before and after rows share it |
+
+Use `TIMESTAMP_LTZ(3) METADATA FROM 'commit-timestamp'` with `WATERMARK FOR ... AS SOURCE_WATERMARK()` because Flink rowtime attributes support precision 0 through 3.
+Use the native `TIMESTAMP_LTZ(9)` declaration without a watermark when nanosecond precision is required.
+
 ## `SpannerSink.builder()`
 
 | Option | Default | What it does |

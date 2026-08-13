@@ -18,8 +18,11 @@ package io.github.flink.gcp.connector.spanner.table.source;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
@@ -28,6 +31,8 @@ import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /** Collects the atomic row batch produced from one Spanner data-change record. */
 @Internal
@@ -36,6 +41,7 @@ final class SpannerChangeStreamRowDataDeserializationSchema
     private static final long serialVersionUID = 1L;
 
     private final DataChangeRecordToRowDataConverter converter;
+    private final ReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedType;
 
     SpannerChangeStreamRowDataDeserializationSchema(
@@ -43,13 +49,48 @@ final class SpannerChangeStreamRowDataDeserializationSchema
             SpannerTableName table,
             ChangeStreamChangelogMode changelogMode,
             TypeInformation<RowData> producedType) {
+        this(schema, table, changelogMode, new ReadableMetadata[0], producedType);
+    }
+
+    SpannerChangeStreamRowDataDeserializationSchema(
+            SpannerTableSchemaConverter schema,
+            SpannerTableName table,
+            ChangeStreamChangelogMode changelogMode,
+            ReadableMetadata[] metadata,
+            TypeInformation<RowData> producedType) {
         this.converter = new DataChangeRecordToRowDataConverter(schema, table, changelogMode);
-        this.producedType = producedType;
+        this.metadata = Preconditions.checkNotNull(metadata, "metadata must not be null").clone();
+        this.producedType =
+                Preconditions.checkNotNull(producedType, "producedType must not be null");
     }
 
     @Override
     public void deserialize(DataChangeRecord record, Collector<RowData> out) throws IOException {
-        for (RowData row : converter.convert(record)) {
+        List<DataChangeRecordToRowDataConverter.ConvertedRow> convertedRows =
+                converter.convert(record);
+        if (metadata.length == 0) {
+            for (DataChangeRecordToRowDataConverter.ConvertedRow converted : convertedRows) {
+                out.collect(converted.getRow());
+            }
+            return;
+        }
+
+        List<RowData> staged = new ArrayList<>(convertedRows.size());
+        for (DataChangeRecordToRowDataConverter.ConvertedRow converted : convertedRows) {
+            RowData physical = converted.getRow();
+            try {
+                GenericRowData metadataRow = new GenericRowData(metadata.length);
+                for (int index = 0; index < metadata.length; index++) {
+                    metadataRow.setField(
+                            index,
+                            metadata[index].getConverter().read(record, converted.getModNumber()));
+                }
+                staged.add(new JoinedRowData(physical.getRowKind(), physical, metadataRow));
+            } catch (RuntimeException ignored) {
+                throw DataChangeRecordToRowDataConverter.failure(record, converted.getModNumber());
+            }
+        }
+        for (RowData row : staged) {
             out.collect(row);
         }
     }
