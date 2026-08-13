@@ -379,14 +379,6 @@ public class BigQuerySinkBuilder<T> {
                 "defaultStreamOptions(...) is only valid for"
                         + " WriteMethod.STORAGE_API_AT_LEAST_ONCE (write method is %s).",
                 writeMethod.name());
-        Preconditions.checkState(
-                writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
-                        || !schemaUpdateOptions.isEnabled(),
-                "schemaUpdateOptions(...) is not supported for"
-                        + " WriteMethod.STORAGE_API_EXACTLY_ONCE: a buffered stream's schema is"
-                        + " pinned when the stream is created, so the sink cannot evolve the"
-                        + " table schema mid-run. Update the table schema out of band and"
-                        + " restart the job, or use another write method.");
         // FILE_LOADS stages to Cloud Storage and submits load jobs; no emulator here stands in for
         // GCS, so an endpoint would be honored by the metadata half of that write method and
         // silently ignored by the half that actually moves the rows.

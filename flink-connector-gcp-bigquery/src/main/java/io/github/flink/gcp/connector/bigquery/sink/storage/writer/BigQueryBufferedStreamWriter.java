@@ -58,6 +58,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.function.LongSupplier;
 
@@ -101,9 +102,11 @@ import java.util.function.LongSupplier;
  * plus every batch appended behind the rejected one, are replayed with recomputed offsets (an
  * append request is rejected atomically, so the offset never advanced). During such a replay {@code
  * OFFSET_ALREADY_EXISTS} is terminal — offsets have shifted, and rows already present there would
- * silently diverge from what the writer believes was appended. Schema mismatches are terminal: a
- * buffered stream's schema is pinned at creation, and mid-stream schema evolution is out of scope
- * for this write method.
+ * silently diverge from what the writer believes was appended. A serializer-fingerprint change
+ * drains old-schema rows, reconciles the table when enabled, and reconnects the same remote stream
+ * with the new descriptor. A schema-mismatch response performs the same reconciliation and
+ * same-offset retry; without enabled schema updates it remains terminal with configuration
+ * guidance.
  *
  * <p><b>A missing table is {@link #createStream}'s business alone.</b> Every append-side recovery
  * decision here is transient-only on purpose: the propagation window after this writer creates a
@@ -134,8 +137,10 @@ public class BigQueryBufferedStreamWriter<T>
     private final long maxAppendRequestBytes;
     private final long destinationIdleTimeoutNanos;
     private final RetrySchedule retrySchedule;
+    private final RetrySchedule schemaWaitSchedule;
     private final BufferedStreamOptions options;
     private final BufferedStreamWriterMetrics metrics;
+    private final StorageWriteSchemaReconciler<T> schemaReconciler;
     private final LongSupplier nanoClock;
 
     /** Active destinations in first-seen order; accessed only by the task thread. */
@@ -173,6 +178,7 @@ public class BigQueryBufferedStreamWriter<T>
                 metricGroup,
                 subtaskId,
                 restoredStates,
+                StorageWriteSchemaReconciler.DEFAULT_SCHEMA_WAIT_SCHEDULE,
                 System::nanoTime);
     }
 
@@ -186,6 +192,29 @@ public class BigQueryBufferedStreamWriter<T>
             int subtaskId,
             Collection<BufferedStreamWriterState> restoredStates,
             LongSupplier nanoClock) {
+        this(
+                config,
+                options,
+                serviceFactory,
+                tableAdmin,
+                metricGroup,
+                subtaskId,
+                restoredStates,
+                StorageWriteSchemaReconciler.DEFAULT_SCHEMA_WAIT_SCHEDULE,
+                nanoClock);
+    }
+
+    @VisibleForTesting
+    BigQueryBufferedStreamWriter(
+            BigQuerySinkConfig<T> config,
+            BufferedStreamOptions options,
+            BufferedStreamServiceFactory serviceFactory,
+            TableAdmin tableAdmin,
+            SinkWriterMetricGroup metricGroup,
+            int subtaskId,
+            Collection<BufferedStreamWriterState> restoredStates,
+            RetrySchedule schemaWaitSchedule,
+            LongSupplier nanoClock) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         Preconditions.checkNotNull(options, "options must not be null");
         this.serviceFactory =
@@ -196,11 +225,15 @@ public class BigQueryBufferedStreamWriter<T>
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
         this.destinationIdleTimeoutNanos = options.getDestinationIdleTimeout().toNanos();
         this.retrySchedule = options.toRecoverySchedule();
+        this.schemaWaitSchedule =
+                Preconditions.checkNotNull(
+                        schemaWaitSchedule, "schemaWaitSchedule must not be null");
         this.options = options;
         this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
         this.metrics =
                 new BufferedStreamWriterMetrics(
                         Preconditions.checkNotNull(metricGroup, "metricGroup must not be null"));
+        this.schemaReconciler = new StorageWriteSchemaReconciler<>(config, tableAdmin);
         this.metrics.bindWriterState((Gauge<Integer>) () -> inFlightCount);
 
         Map<TableDestination, BufferedStreamWriterState> adoptedByDestination =
@@ -219,7 +252,11 @@ public class BigQueryBufferedStreamWriter<T>
         }
         long now = nanoClock.getAsLong();
         for (BufferedStreamWriterState adopted : adoptedByDestination.values()) {
-            destinations.put(adopted.getDestination(), DestinationState.restored(adopted, now));
+            TableDestination destination = adopted.getDestination();
+            Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+            Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(destination);
+            destinations.put(
+                    destination, DestinationState.restored(adopted, fingerprint, descriptor, now));
             LOG.info(
                     "Restored subtask {} destination {} with stream {} at offset {}",
                     subtaskId,
@@ -285,10 +322,11 @@ public class BigQueryBufferedStreamWriter<T>
             return;
         }
         if (state == null) {
-            state = DestinationState.fresh(destination, nanoClock.getAsLong());
+            state = createState(destination, nanoClock.getAsLong());
             destinations.put(destination, state);
         } else {
             state.lastAccessNanos = nanoClock.getAsLong();
+            refreshOnFingerprintChange(state);
         }
         if (state.pending.getSerializedRowsCount() > 0
                 && state.pendingBytes + row.size() > maxAppendRequestBytes) {
@@ -396,7 +434,8 @@ public class BigQueryBufferedStreamWriter<T>
     private static final class DestinationState {
         final TableDestination destination;
         @Nullable OffsetRowAppender appender;
-        @Nullable Descriptors.Descriptor descriptor;
+        @Nullable Object schemaFingerprint;
+        Descriptors.Descriptor descriptor;
         String streamName;
         long nextOffset;
         String lastSnapshotStreamName;
@@ -412,6 +451,8 @@ public class BigQueryBufferedStreamWriter<T>
                 String streamName,
                 long nextOffset,
                 boolean probePending,
+                @Nullable Object schemaFingerprint,
+                Descriptors.Descriptor descriptor,
                 long lastAccessNanos) {
             this.destination = destination;
             this.streamName = streamName;
@@ -419,21 +460,82 @@ public class BigQueryBufferedStreamWriter<T>
             this.lastSnapshotStreamName = streamName;
             this.lastSnapshotOffset = nextOffset;
             this.probePending = probePending;
+            this.schemaFingerprint = schemaFingerprint;
+            this.descriptor = descriptor;
             this.lastAccessNanos = lastAccessNanos;
         }
 
-        static DestinationState fresh(TableDestination destination, long now) {
+        static DestinationState fresh(
+                TableDestination destination,
+                @Nullable Object schemaFingerprint,
+                Descriptors.Descriptor descriptor,
+                long now) {
             return new DestinationState(
-                    destination, BufferedStreamWriterState.NO_STREAM, 0, false, now);
+                    destination,
+                    BufferedStreamWriterState.NO_STREAM,
+                    0,
+                    false,
+                    schemaFingerprint,
+                    descriptor,
+                    now);
         }
 
-        static DestinationState restored(BufferedStreamWriterState restored, long now) {
+        static DestinationState restored(
+                BufferedStreamWriterState restored,
+                @Nullable Object schemaFingerprint,
+                Descriptors.Descriptor descriptor,
+                long now) {
             return new DestinationState(
                     restored.getDestination(),
                     restored.getStreamName(),
                     restored.getNextOffset(),
                     true,
+                    schemaFingerprint,
+                    descriptor,
                     now);
+        }
+    }
+
+    private DestinationState createState(TableDestination destination, long now) {
+        // Capture the fingerprint first: if the serializer evolves between these calls, the next
+        // record observes the stale fingerprint and performs a redundant-but-safe refresh. The
+        // reverse order could miss a change and append rows under the wrong descriptor.
+        Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+        Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(destination);
+        return DestinationState.fresh(destination, fingerprint, descriptor, now);
+    }
+
+    /** Refreshes one destination's connection before a row encoded under a new schema is queued. */
+    private void refreshOnFingerprintChange(DestinationState state) throws IOException {
+        if (state.schemaFingerprint == null) {
+            return;
+        }
+        Object fingerprint = config.getSerializer().getSchemaFingerprint(state.destination);
+        if (Objects.equals(fingerprint, state.schemaFingerprint)) {
+            return;
+        }
+
+        // Rows already serialized under the old descriptor must reach the stream before the local
+        // connection changes schema. This also fixes nextOffset before any retry under the new
+        // descriptor begins.
+        sendAppend(state);
+        drainInFlight(state, false);
+
+        if (config.getSchemaUpdateOptions().isEnabled()) {
+            reconcileSchema(state.destination);
+        }
+
+        Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(state.destination);
+        LOG.info(
+                "The serializer schema for {} changed, reopening buffered stream {} at offset {}",
+                state.destination,
+                state.streamName,
+                state.nextOffset);
+        closeAppender(state);
+        state.schemaFingerprint = fingerprint;
+        state.descriptor = descriptor;
+        if (!state.streamName.equals(BufferedStreamWriterState.NO_STREAM)) {
+            openAppender(state, "Failed to reopen BigQuery stream after a schema change");
         }
     }
 
@@ -497,12 +599,25 @@ public class BigQueryBufferedStreamWriter<T>
      */
     private void recover(DestinationState state, InFlightAppend failed, Throwable failure)
             throws IOException {
+        boolean schemaUpdated = false;
+        RetrySchedule schedule = retrySchedule;
+        if (AppendErrorClassifier.isSchemaMismatch(failure)
+                && config.getSchemaUpdateOptions().isEnabled()) {
+            LOG.info(
+                    "An append to {} failed with a schema mismatch, reconciling the table schema",
+                    state.destination);
+            reconcileSchema(state.destination);
+            refreshAppenderSchema(state);
+            schemaUpdated = true;
+            schedule = schemaWaitSchedule;
+        }
         Exceptions.AppendSerializtionError rowLevel =
                 AppendErrorClassifier.findRowLevel(failure).orElse(null);
-        if (rowLevel == null) {
+        if (rowLevel == null || schemaUpdated) {
             if (AppendErrorClassifier.classify(failure) != AppendErrorClassifier.Kind.TRANSIENT
                     && !AppendErrorClassifier.isOffsetOutOfRange(failure)
-                    && !AppendErrorClassifier.isWriterClosed(failure)) {
+                    && !AppendErrorClassifier.isWriterClosed(failure)
+                    && !schemaUpdated) {
                 throw wrapFailure(
                         "An append to BigQuery stream "
                                 + state.streamName
@@ -514,7 +629,14 @@ public class BigQueryBufferedStreamWriter<T>
             if (AppendErrorClassifier.isWriterClosed(failure)) {
                 reopenAppender(state);
             }
-            rowLevel = resendAtSameOffset(state, failed.rows, failed.expectedOffset, failure);
+            rowLevel =
+                    resendAtSameOffset(
+                            state,
+                            failed.rows,
+                            failed.expectedOffset,
+                            failure,
+                            schedule,
+                            schemaUpdated);
             if (rowLevel == null) {
                 return;
             }
@@ -529,7 +651,12 @@ public class BigQueryBufferedStreamWriter<T>
      */
     @Nullable
     private Exceptions.AppendSerializtionError resendAtSameOffset(
-            DestinationState state, ProtoRows rows, long offset, Throwable initialFailure)
+            DestinationState state,
+            ProtoRows rows,
+            long offset,
+            Throwable initialFailure,
+            RetrySchedule initialSchedule,
+            boolean schemaUpdated)
             throws IOException {
         LOG.info(
                 "Re-appending {} row(s) to {} at offset {} after: {}",
@@ -537,12 +664,29 @@ public class BigQueryBufferedStreamWriter<T>
                 state.streamName,
                 offset,
                 initialFailure.toString());
-        for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
+        RetrySchedule schedule = initialSchedule;
+        for (int attempt = 1; attempt <= schedule.maxAttempts(); attempt++) {
             Throwable failure = syncAppend(state, rows, offset, false);
             if (failure == null || AppendErrorClassifier.isOffsetAlreadyExists(failure)) {
                 return null;
             }
             metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
+            boolean schemaMismatch = AppendErrorClassifier.isSchemaMismatch(failure);
+            if (schemaMismatch && config.getSchemaUpdateOptions().isEnabled()) {
+                if (!schemaUpdated) {
+                    LOG.info(
+                            "A re-append to {} failed with a schema mismatch, reconciling the"
+                                    + " table schema",
+                            state.destination);
+                    reconcileSchema(state.destination);
+                    schemaUpdated = true;
+                    schedule = schemaWaitSchedule;
+                    attempt = 0;
+                    refreshAppenderSchema(state);
+                    continue;
+                }
+                refreshAppenderSchema(state);
+            }
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
             if (rowLevel != null) {
@@ -551,8 +695,9 @@ public class BigQueryBufferedStreamWriter<T>
             boolean retriable =
                     AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT
                             || AppendErrorClassifier.isOffsetOutOfRange(failure)
-                            || AppendErrorClassifier.isWriterClosed(failure);
-            if (!retriable || attempt >= retrySchedule.maxAttempts()) {
+                            || AppendErrorClassifier.isWriterClosed(failure)
+                            || (schemaUpdated && schemaMismatch);
+            if (!retriable || attempt >= schedule.maxAttempts()) {
                 throw wrapFailure(
                         "Re-appending to BigQuery stream "
                                 + state.streamName
@@ -568,7 +713,7 @@ public class BigQueryBufferedStreamWriter<T>
             if (AppendErrorClassifier.isWriterClosed(failure)) {
                 reopenAppender(state);
             }
-            sleep(retrySchedule.backoffMs(attempt));
+            sleep(schedule.backoffMs(attempt));
         }
         throw new IllegalStateException("unreachable");
     }
@@ -627,6 +772,8 @@ public class BigQueryBufferedStreamWriter<T>
     private void replayBatches(DestinationState state, ArrayDeque<ProtoRows> replay)
             throws IOException {
         int attempt = 0;
+        boolean schemaUpdated = false;
+        RetrySchedule schedule = retrySchedule;
         while (!replay.isEmpty()) {
             ProtoRows batch = replay.peekFirst();
             if (batch.getSerializedRowsCount() == 0) {
@@ -641,9 +788,25 @@ public class BigQueryBufferedStreamWriter<T>
                 continue;
             }
             metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
+            boolean schemaMismatch = AppendErrorClassifier.isSchemaMismatch(failure);
+            if (schemaMismatch && config.getSchemaUpdateOptions().isEnabled()) {
+                if (!schemaUpdated) {
+                    LOG.info(
+                            "A replayed append to {} failed with a schema mismatch, reconciling"
+                                    + " the table schema",
+                            state.destination);
+                    reconcileSchema(state.destination);
+                    schemaUpdated = true;
+                    schedule = schemaWaitSchedule;
+                    attempt = 0;
+                    refreshAppenderSchema(state);
+                    continue;
+                }
+                refreshAppenderSchema(state);
+            }
             Exceptions.AppendSerializtionError rowLevel =
                     AppendErrorClassifier.findRowLevel(failure).orElse(null);
-            if (rowLevel != null) {
+            if (rowLevel != null && !schemaMismatch) {
                 ProtoRows survivors = routeRowLevel(state, batch, rowLevel);
                 if (survivors.getSerializedRowsCount() >= batch.getSerializedRowsCount()) {
                     // No row matched the reported indices, so nothing was dropped; re-appending
@@ -666,8 +829,9 @@ public class BigQueryBufferedStreamWriter<T>
             attempt++;
             boolean retriable =
                     AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT
-                            || AppendErrorClassifier.isWriterClosed(failure);
-            if (!retriable || attempt >= retrySchedule.maxAttempts()) {
+                            || AppendErrorClassifier.isWriterClosed(failure)
+                            || (schemaUpdated && schemaMismatch);
+            if (!retriable || attempt >= schedule.maxAttempts()) {
                 throw wrapFailure(
                         "Replaying an append to BigQuery stream "
                                 + state.streamName
@@ -683,7 +847,7 @@ public class BigQueryBufferedStreamWriter<T>
             if (AppendErrorClassifier.isWriterClosed(failure)) {
                 reopenAppender(state);
             }
-            sleep(retrySchedule.backoffMs(attempt));
+            sleep(schedule.backoffMs(attempt));
         }
     }
 
@@ -695,15 +859,44 @@ public class BigQueryBufferedStreamWriter<T>
      */
     private void reopenAppender(DestinationState state) throws IOException {
         LOG.info("Reopening the writer of stream {} after a client-side close", state.streamName);
-        if (state.appender != null) {
-            state.appender.close();
-            state.appender = null;
+        closeAppender(state);
+        openAppender(state, "Failed to reopen BigQuery stream");
+    }
+
+    /** Reopens the same remote stream with the serializer's current descriptor. */
+    private void refreshAppenderSchema(DestinationState state) throws IOException {
+        Object fingerprint = config.getSerializer().getSchemaFingerprint(state.destination);
+        Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(state.destination);
+        closeAppender(state);
+        state.schemaFingerprint = fingerprint;
+        state.descriptor = descriptor;
+        openAppender(state, "Failed to reopen BigQuery stream after reconciling its schema");
+    }
+
+    private void closeAppender(DestinationState state) {
+        if (state.appender == null) {
+            return;
         }
+        state.appender.close();
+        state.appender = null;
+    }
+
+    private void openAppender(DestinationState state, String failureMessage) throws IOException {
+        ensureService();
         try {
-            state.appender = service.openAppender(state.streamName, descriptor(state));
+            state.appender = service.openAppender(state.streamName, state.descriptor);
         } catch (IOException | RuntimeException e) {
-            throw wrapFailure("Failed to reopen BigQuery stream " + state.streamName, e);
+            throw wrapFailure(failureMessage + " " + state.streamName, e);
         }
+    }
+
+    private StorageWriteSchemaReconciler.Outcome reconcileSchema(TableDestination destination)
+            throws IOException {
+        StorageWriteSchemaReconciler.Outcome outcome = schemaReconciler.reconcile(destination);
+        if (outcome == StorageWriteSchemaReconciler.Outcome.UPDATED) {
+            metrics.schemaReconciled();
+        }
+        return outcome;
     }
 
     /**
@@ -744,10 +937,12 @@ public class BigQueryBufferedStreamWriter<T>
      */
     private void probeRestoredStream(DestinationState state, ProtoRows batch) throws IOException {
         ensureService();
-        for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
+        RetrySchedule schedule = retrySchedule;
+        boolean schemaUpdated = false;
+        for (int attempt = 1; attempt <= schedule.maxAttempts(); attempt++) {
             if (state.appender == null) {
                 try {
-                    state.appender = service.openAppender(state.streamName, descriptor(state));
+                    state.appender = service.openAppender(state.streamName, state.descriptor);
                 } catch (IOException | RuntimeException e) {
                     LOG.warn(
                             "Failed to reopen restored stream {}, abandoning it",
@@ -771,8 +966,39 @@ public class BigQueryBufferedStreamWriter<T>
                 return;
             }
             metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
+            boolean schemaMismatch = AppendErrorClassifier.isSchemaMismatch(failure);
+            if (schemaMismatch && config.getSchemaUpdateOptions().isEnabled()) {
+                if (!schemaUpdated) {
+                    LOG.info(
+                            "The restored stream {} rejected the current serializer schema,"
+                                    + " reconciling {}",
+                            state.streamName,
+                            state.destination);
+                    reconcileSchema(state.destination);
+                    schemaUpdated = true;
+                    schedule = schemaWaitSchedule;
+                    attempt = 0;
+                    refreshAppenderSchema(state);
+                    continue;
+                }
+                if (attempt >= schedule.maxAttempts()) {
+                    throw wrapFailure(
+                            "Probing restored BigQuery stream "
+                                    + state.streamName
+                                    + " at offset "
+                                    + state.nextOffset
+                                    + " failed after reconciling the table schema; the retry"
+                                    + " budget is exhausted ("
+                                    + attempt
+                                    + " attempt(s))",
+                            failure);
+                }
+                refreshAppenderSchema(state);
+                sleep(schedule.backoffMs(attempt));
+                continue;
+            }
             if (AppendErrorClassifier.isWriterClosed(failure)) {
-                if (attempt >= retrySchedule.maxAttempts()) {
+                if (attempt >= schedule.maxAttempts()) {
                     throw wrapFailure(
                             "Probing restored BigQuery stream "
                                     + state.streamName
@@ -784,7 +1010,7 @@ public class BigQueryBufferedStreamWriter<T>
                             failure);
                 }
                 reopenAppender(state);
-                sleep(retrySchedule.backoffMs(attempt));
+                sleep(schedule.backoffMs(attempt));
                 continue;
             }
             if (AppendErrorClassifier.isOffsetAlreadyExists(failure)
@@ -808,7 +1034,7 @@ public class BigQueryBufferedStreamWriter<T>
                 return;
             }
             if (AppendErrorClassifier.classify(failure) != AppendErrorClassifier.Kind.TRANSIENT
-                    || attempt >= retrySchedule.maxAttempts()) {
+                    || attempt >= schedule.maxAttempts()) {
                 throw wrapFailure(
                         "Probing restored BigQuery stream "
                                 + state.streamName
@@ -819,7 +1045,7 @@ public class BigQueryBufferedStreamWriter<T>
                                 + " attempt(s))",
                         failure);
             }
-            sleep(retrySchedule.backoffMs(attempt));
+            sleep(schedule.backoffMs(attempt));
         }
     }
 
@@ -830,10 +1056,7 @@ public class BigQueryBufferedStreamWriter<T>
      * restored offset is never named by a committable, so it stays invisible without cleanup.
      */
     private void abandonRestoredStream(DestinationState state, ProtoRows batch) throws IOException {
-        if (state.appender != null) {
-            state.appender.close();
-            state.appender = null;
-        }
+        closeAppender(state);
         state.streamName = BufferedStreamWriterState.NO_STREAM;
         state.nextOffset = 0;
         state.probePending = false;
@@ -858,11 +1081,7 @@ public class BigQueryBufferedStreamWriter<T>
                     state.destination,
                     subtaskId);
         }
-        try {
-            state.appender = service.openAppender(state.streamName, descriptor(state));
-        } catch (IOException | RuntimeException e) {
-            throw wrapFailure("Failed to open BigQuery stream " + state.streamName, e);
-        }
+        openAppender(state, "Failed to open BigQuery stream");
     }
 
     /**
@@ -966,13 +1185,6 @@ public class BigQueryBufferedStreamWriter<T>
         if (service == null) {
             service = serviceFactory.create(config.getLocation(), options);
         }
-    }
-
-    private Descriptors.Descriptor descriptor(DestinationState state) {
-        if (state.descriptor == null) {
-            state.descriptor = config.getSerializer().getDescriptor(state.destination);
-        }
-        return state.descriptor;
     }
 
     // ------------------------------------------------------------------
@@ -1084,10 +1296,17 @@ public class BigQueryBufferedStreamWriter<T>
     /** Wraps unconditionally: the call-site context (stream, offset, attempts) must survive. */
     private IOException wrapFailure(String message, Throwable cause) {
         if (AppendErrorClassifier.isSchemaMismatch(cause)) {
-            message +=
-                    " because the rows carry fields the table does not have; schema evolution is"
-                            + " not supported by WriteMethod.STORAGE_API_EXACTLY_ONCE — update the"
-                            + " table schema and restart the job";
+            if (config.getSchemaUpdateOptions().isEnabled()) {
+                message +=
+                        " because the rows remain incompatible after reconciling the table schema";
+            } else {
+                message +=
+                        " because the rows carry fields the table does not have; update the table"
+                                + " schema before changing the serializer and wait for Storage"
+                                + " Write API propagation, or enable schemaUpdateOptions(...)"
+                                + " (Table API: set 'sink.schema-update.allow-new-fields' ="
+                                + " 'true')";
+            }
         }
         return new IOException(message, cause);
     }

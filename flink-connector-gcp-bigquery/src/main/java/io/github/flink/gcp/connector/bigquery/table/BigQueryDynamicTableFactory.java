@@ -66,9 +66,8 @@ import java.util.Set;
  * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
  * are the checks whose message has to name <em>option keys</em>, which a builder's cannot. Most are
  * cross-checks against the selected write method, decided from the {@code WITH} clause alone: a
- * tuning family belonging to another one, schema evolution under {@code storage-api-exactly-once},
- * an emulator endpoint under {@code file-loads}, and — in {@code FileLoadsOptionsMapper} — a
- * missing staging path.
+ * tuning family belonging to another one, an emulator endpoint under {@code file-loads}, and — in
+ * {@code FileLoadsOptionsMapper} — a missing staging path.
  *
  * <p>{@code checkFileLoadsStreamingRules} is the exception, and the only place this class reads the
  * <em>session</em> configuration rather than the table's own options: a non-append write
@@ -199,7 +198,6 @@ public class BigQueryDynamicTableFactory
         // and evaluating them inside the builder chain would let those messages arrive first.
         SchemaUpdateOptions schemaUpdateOptions = schemaUpdateOptions(config);
         checkFamiliesMatchTheWriteMethod(config, writeMethod);
-        checkSchemaUpdatesAreSupported(config, writeMethod, schemaUpdateOptions);
         checkEmulatorEndpointsAreSupported(config, writeMethod);
         checkCredentials(config);
         TableDestination destination = destination(config, "sink");
@@ -432,49 +430,6 @@ public class BigQueryDynamicTableFactory
                         selected,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
                         owner));
-    }
-
-    /**
-     * Rejects schema evolution under the write method that cannot do it.
-     *
-     * <p>A buffered stream's schema is pinned when the stream is created, so the builder refuses
-     * the pair — naming {@code schemaUpdateOptions(...)}, which is the DataStream API's vocabulary.
-     * This says the same thing in keys. It fires on the same condition the builder uses, an
-     * <em>enabled</em> options object, so {@code allow-new-fields = false} passes here exactly as
-     * it passes there.
-     */
-    private static void checkSchemaUpdatesAreSupported(
-            ReadableConfig config,
-            WriteMethod writeMethod,
-            @Nullable SchemaUpdateOptions schemaUpdateOptions) {
-        if (writeMethod != WriteMethod.STORAGE_API_EXACTLY_ONCE
-                || schemaUpdateOptions == null
-                || !schemaUpdateOptions.isEnabled()) {
-            return;
-        }
-        throw new ValidationException(
-                String.format(
-                        "Options %s ask the sink to evolve the table schema, which '%s' = '%s'"
-                                + " cannot do: a buffered stream's schema is pinned when the stream"
-                                + " is created. Update the table schema out of band and restart the"
-                                + " job, or choose another write method.",
-                        enabledKeysOf(config),
-                        BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
-                        WriteMethod.STORAGE_API_EXACTLY_ONCE));
-    }
-
-    /** The schema-update keys the configuration sets to {@code true}, in declaration order. */
-    private static List<String> enabledKeysOf(ReadableConfig config) {
-        List<String> enabled = new ArrayList<>();
-        for (ConfigOption<Boolean> option :
-                Arrays.asList(
-                        BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS,
-                        BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_FIELD_RELAXATION)) {
-            if (config.getOptional(option).orElse(false)) {
-                enabled.add(option.key());
-            }
-        }
-        return enabled;
     }
 
     /**

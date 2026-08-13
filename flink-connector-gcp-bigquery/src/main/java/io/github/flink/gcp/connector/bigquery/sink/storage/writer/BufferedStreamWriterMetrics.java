@@ -42,9 +42,9 @@ import javax.annotation.Nullable;
  * as {@code appendRetries} instead, so a job working through an outage does not report itself as a
  * busier one.
  *
- * <p>There are deliberately no per-destination counters here, and no {@code openDestinations},
- * {@code tablesCreated} or {@code schemaReconciliations}: this write method takes a fixed
- * destination whose schema is pinned when the stream is created, so each would be a constant.
+ * <p>There are deliberately no per-destination counters here, and no {@code openDestinations} or
+ * {@code tablesCreated}. Schema updates are reported by the aggregate {@code schemaReconciliations}
+ * counter, like the default-stream writer.
  *
  * <p>{@code currentSendTime} is deliberately left unset, for the reason the default-stream writer's
  * metrics record.
@@ -58,6 +58,7 @@ final class BufferedStreamWriterMetrics {
     private final Counter numRecordsSendErrors;
     private final Counter recordsSkipped;
     private final Counter appendRetries;
+    private final Counter schemaReconciliations;
     private final ErrorClassCounters errorClasses;
 
     /**
@@ -72,6 +73,8 @@ final class BufferedStreamWriterMetrics {
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
         this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
         this.appendRetries = metricGroup.counter(BigQueryMetricNames.APPEND_RETRIES);
+        this.schemaReconciliations =
+                metricGroup.counter(BigQueryMetricNames.SCHEMA_RECONCILIATIONS);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
 
@@ -118,6 +121,11 @@ final class BufferedStreamWriterMetrics {
     /** Counts one append re-issued while recovering. */
     void appendRetried() {
         appendRetries.inc();
+    }
+
+    /** Counts one table schema update applied by this writer. */
+    void schemaReconciled() {
+        schemaReconciliations.inc();
     }
 
     /**

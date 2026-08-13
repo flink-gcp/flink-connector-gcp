@@ -146,10 +146,11 @@ them.
 
 Why the policy runs this way:
 
-- **`REQUIRED` is the mode BigQuery cannot walk back.** It cannot be added to an existing table, so a
-  `REQUIRED` column only ever appears at creation time, and relaxing one afterwards is a schema update
-  rather than an edit — needing `allowFieldRelaxation`, which is off by default. Defaulting to the
-  irreversible choice is the wrong way round.
+- **`REQUIRED` is the mode additive schema evolution cannot introduce.** It cannot be added to an
+  existing schema, so a reconciled `REQUIRED` column only appears when the connector creates the
+  table. Relaxing one afterwards needs `allowFieldRelaxation`, which is off by default. The exception
+  is `FILE_LOADS` with `WRITE_TRUNCATE`, which replaces the schema instead of evolving it. Defaulting
+  to the irreversible choice is the wrong way round.
 - **The protobuf mapping is the normative one**, which is why Avro follows it rather than the other
   way round: every write path goes through a protobuf row — `STORAGE_API_*` writes protobuf
   directly, the Avro and JSON serializers convert into one, and File loads converts that same row
@@ -750,9 +751,10 @@ parallel subtasks (HTTP 409 is treated as success); the credentials need
 `bigquery.tables.create` on the destination dataset. Options apply only at creation time —
 existing tables are never modified.
 
-Creation is also the **only** moment a `REQUIRED` column can appear: BigQuery cannot add one to an
-existing table. So the serializer's [column modes](#column-modes) are decided here, durably, and
-relaxing a column afterwards is a schema update rather than an edit.
+For additive writes, creation is the **only** moment a `REQUIRED` column can appear: BigQuery cannot
+add one to an existing schema. So the serializer's [column modes](#column-modes) are decided here,
+durably, and relaxing a column afterwards is a schema update rather than an edit. `FILE_LOADS` with
+`WRITE_TRUNCATE` is different because it replaces the schema wholesale.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 
@@ -854,21 +856,59 @@ auto-creation had never once fired against the real service.
 
 ## Schema evolution
 
-Schema changes are handled without a job restart. Reactive handling is always on:
+All three sink write methods support schema evolution, but they do not use one update protocol.
+`SchemaUpdateOptions` defines the common widening policy: new fields require `allowNewFields()`, and `REQUIRED` to `NULLABLE` changes require `allowFieldRelaxation()`.
+Each write method applies that policy at a boundary that preserves its delivery contract:
 
-- **Server-pushed schema updates** — when an append response reports `updated_schema` (the
+| Write method | Reconciliation boundary | Write-path behavior |
+|---|---|---|
+| `STORAGE_API_AT_LEAST_ONCE` | When the serializer fingerprint changes or an append reports a schema mismatch | Reconcile the live table through the REST API, rebuild the default-stream writer with the current descriptor and re-append; a lost append response can produce a duplicate, as allowed by at-least-once delivery |
+| `STORAGE_API_EXACTLY_ONCE` | When the serializer fingerprint changes or an append reports a schema mismatch | Drain rows encoded with the old descriptor, reconcile the live table, then reopen the local appender on the same buffered stream at the same next offset; the remote stream and checkpoint state do not change |
+| `FILE_LOADS` | Once per destination before the first load of each batch run or streaming checkpoint | Reconcile the live table and put that schema on every load job; `WRITE_APPEND` also carries BigQuery's native `ALLOW_FIELD_*` options, `WRITE_EMPTY` uses the connector's pre-load reconciliation, and `WRITE_TRUNCATE` replaces the schema wholesale |
+
+With schema updates disabled, the Storage Write API methods fail a schema-mismatch append.
+`FILE_LOADS` instead makes the live table schema win and warns once per destination; a staged field absent from that schema is ignored by BigQuery.
+
+### Nullability and reconciliation
+
+Column-mode derivation and schema reconciliation are separate decisions.
+The serializer first produces the desired schema: every non-repeated column is `NULLABLE` by default, while `ProtoSchemaOptions.builder().deriveRequiredColumns()` and `AvroSchemaOptions.builder().deriveRequiredColumns()` opt into the rules under [Column modes](#column-modes).
+For Table API sinks, `sink.derive-required-columns = true` similarly maps a `NOT NULL` column to `REQUIRED`.
+JSON serializers use the mode written in their supplied schema.
+
+Reconciliation then compares that desired schema with the live table.
+`SchemaUpdateOptions.allowFieldRelaxation()` controls only an existing `REQUIRED` to `NULLABLE` change; it does not derive column modes, and disabling `deriveRequiredColumns()` does not by itself alter an existing table.
+
+| Situation | Result |
+|---|---|
+| The connector creates a missing table | The desired modes are used unchanged, so an opted-in derived column can be created as `REQUIRED` |
+| A new desired field is `REQUIRED` but the table already exists | `allowNewFields()` adds it as `NULLABLE`; BigQuery cannot add a `REQUIRED` field to an existing schema |
+| The table field is `REQUIRED` and the desired field is `NULLABLE` | It stays `REQUIRED` unless `allowFieldRelaxation()` is enabled; after relaxation it is `NULLABLE` |
+| The table field is `NULLABLE` and the desired field is `REQUIRED` | It stays `NULLABLE`; additive reconciliation never tightens modes |
+| `FILE_LOADS` uses `WRITE_TRUNCATE` | Reconciliation is bypassed and the desired schema replaces the table schema, including its modes |
+
+The row-level consequence is independent of how the mismatch arose.
+A row that omits a field while the live table still declares it `REQUIRED` is rejected by the Storage Write API, or fails the whole `FILE_LOADS` load job.
+
+### Storage Write API connections
+
+Schema changes are handled without a job restart on both Storage Write API methods:
+
+- **Server-pushed schema updates on the default stream** — when an append response reports `updated_schema` (the
   table's schema changed, e.g. through DDL), the destination's stream writer is rebuilt with a
   fresh serializer descriptor. A raw Storage Write API `StreamWriter` never refreshes its schema
   by itself, also not under connection-pool multiplexing.
 - **Serializer schema changes** — a serializer with an evolving schema overrides
   `getSchemaFingerprint(destination)` to return a cheap token that changes with its schema. The
-  writer compares it per record and refreshes the destination's stream *before* appending rows
-  serialized under the changed schema, so the first append after an evolution does not have to
-  fail.
+  writer compares it per record and refreshes the destination's connection *before* appending rows
+  serialized under the changed schema.
+  The buffered writer first drains rows serialized under the old descriptor, then reopens the same
+  remote stream at its unchanged next offset.
 - **Stale-stream-writer failures** (`STREAM_FINALIZED`, `STREAM_NOT_FOUND`,
-  `INVALID_STREAM_STATE`, writer-closed, the SDK's callback-wait watchdog timeout) are repaired
-  by rebuilding the writer and re-appending within the transient retry budget instead of failing
-  the job.
+  `INVALID_STREAM_STATE`, writer-closed, the SDK's callback-wait watchdog timeout) rebuild the
+  default-stream writer and re-append within the transient retry budget.
+  The buffered path repairs only client-side closed-writer failures in place; remote stream-state
+  failures remain terminal until restart and restore.
 
 **Connector-driven table schema updates** are opt-in via `schemaUpdateOptions(...)`:
 
@@ -911,12 +951,14 @@ Caveats:
   harmless: the union only ever relaxes, so it reports no change and never tries to tighten. The
   reverse does bite — a table created with `REQUIRED` columns whose schema later relaxes needs
   `allowFieldRelaxation`, which is off by default.
-- A schema update typically propagates to the Storage Write API backend in well under a minute —
+- A schema update typically propagates to the default-stream backend in well under a minute —
   measured against the real service, six instrumented probe runs each had the widened rows
   accepted ~35 s after the instant REST update. The writer keeps re-appending affected batches
   for up to ~15 minutes (flat 30 s waits, ±25 % jitter, 30 attempts) — a schema repair can
   therefore block a checkpoint longer than Flink's default checkpoint timeout of 10 minutes,
-  which may need raising on jobs that enable schema updates.
+  which may need raising on jobs that enable schema updates. The buffered writer uses the same
+  schedule; its connector-driven propagation test remains manual until enough service timings are
+  available to establish its tail.
 - One measured run sat far outside that envelope (a rare tail — one of seven runs to date):
   appends carrying the new column hung ~35 and ~79 minutes before resolving, ~2 h end to end,
   and the hung append that was finally reported as failed had been applied server-side anyway,
@@ -931,7 +973,8 @@ Caveats:
 - Schema unionization stays opt-in because BigQuery columns can never be dropped again: one
   malformed record shipping an unexpected field could otherwise poison a table permanently. With
   updates disabled, schema-mismatch appends fail the job (with a hint), and externally driven
-  schema changes are still picked up reactively.
+  schema changes are still picked up when the serializer fingerprint changes or the service
+  rejects the changed descriptor.
 
 ## Delivery guarantees and state
 
@@ -1100,11 +1143,14 @@ call per checkpoint, unlike FILE_LOADS' per-table daily load-job limit.
 
 **Scope.** Fixed `destination(...)` and per-record `destinationResolver(...)` are both supported.
 Each destination has independent batching, offsets, recovery, checkpoint state and committables.
-The table schema is pinned when each stream is created: **mid-stream schema evolution is not
-supported** — no fingerprint refresh and no connector-driven schema updates, so the builder
-rejects an enabled `schemaUpdateOptions(...)` rather than accepting a setting this write method
-would silently ignore, and a schema mismatch fails the job with a hint (update the table out of
-band and restart). Table auto-creation under `CREATE_IF_NEEDED` *is* supported: it runs at
+Mid-stream schema evolution drains rows encoded under the old descriptor before reconnecting that
+destination's local appender with the current descriptor.
+The remote buffered stream, next offset, writer-state format and committable format do not change.
+If `schemaUpdateOptions(...)` is enabled, the same additive table reconciliation used by the
+default-stream writer runs before the reconnect; otherwise the table must already accept the new
+schema, and a schema-mismatch response is terminal with guidance to update the table or enable the
+option.
+Table auto-creation under `CREATE_IF_NEEDED` is supported: it runs at
 stream-creation time — schema from the serializer, partitioning and clustering from
 `tableCreateOptions(...)` — with retries while table metadata propagates, and `CREATE_NEVER`
 fails immediately. The propagation window also reaches the commit, so the same allowance applies
@@ -1132,6 +1178,9 @@ Stream-state errors mid-run
 restore protocol is the repair. Consistency guards (an acknowledged append behind a rejected one,
 an offset-echo mismatch, `OFFSET_ALREADY_EXISTS` during an offset-shifting replay) fail the job
 rather than risk silent divergence.
+With schema updates enabled, a schema mismatch instead reconciles the table, reconnects the same
+remote stream with the current descriptor and re-appends the batch at its original offset.
+The propagation wait uses the schema schedule rather than the general recovery schedule.
 
 ## File loads
 
@@ -1939,14 +1988,15 @@ same thing in each.
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 **`STORAGE_API_EXACTLY_ONCE`** (buffered stream) reports `numRecordsSend`, `numBytesSend`,
-`numRecordsSendErrors`, `recordsSkipped`, `appendRetries` and `errorClass.CODE.errors` with the
+`numRecordsSendErrors`, `recordsSkipped`, `appendRetries`, `schemaReconciliations` and
+`errorClass.CODE.errors` with the
 same meanings, plus one of its own:
 
 | Metric | Type | Meaning |
 |---|---|---|
 | `inFlightAppends` | gauge | appends the service has not acknowledged |
 
-It has no `openDestinations`, `tablesCreated`, `schemaReconciliations` or per-destination counters.
+It has no `openDestinations`, `tablesCreated` or per-destination counters.
 Its aggregate counters and in-flight gauge cover all destinations, while checkpoint state records
 the exact active set and `destinationIdleTimeout` bounds it; cardinality-bearing metrics are not
 part of this write method's surface.
@@ -2103,8 +2153,8 @@ is not configurable: the jitter is mean-preserving (a factor in `[0.75, 1.25]`, 
 delay is the configured one) and all it has to do is stop parallel subtasks from retrying against
 the same table in lockstep. Two other waits are shaped differently on purpose — the SDK's
 in-stream retries below, which the SDK spreads uniformly over `[0, delay)` so that those knobs
-are upper bounds rather than means, and the default-stream writer's sleep before re-reading a lost
-etag race, uniform over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
+are upper bounds rather than means, and the Storage Write API writers' sleep before re-reading a
+lost etag race, uniform over 0–500 ms to spread subtasks across BigQuery's per-table metadata-update quota (see
 [Schema evolution](#schema-evolution)).
 
 The 512 KiB default favors bounded memory and per-record latency; throughput-oriented jobs have
@@ -2214,8 +2264,7 @@ destinations (`BigQueryDynamicDestinationsITCase`), table auto-creation with cre
 (`BigQueryTableAutoCreationITCase` — note the emulator answers `NOT_FOUND` for a missing table where
 the real service answers a masked `PERMISSION_DENIED`, so this class cannot see whether auto-creation
 would fire at all; the gated `BigQueryTableCreationFidelityITCase` below is what measures that),
-schema evolution
-(`BigQuerySchemaEvolutionITCase`), Avro records written through the facade into a table created
+default-stream schema evolution (`BigQuerySchemaEvolutionITCase`), Avro records written through the facade into a table created
 from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — run under
 `deriveRequiredColumns()` and asserting the created table's modes, so the option is verified rather
 than merely exercised: `REQUIRED`/`NULLABLE`
@@ -2280,6 +2329,12 @@ credential-less CI:
   polled over time, a non-pooled canary writer); the hang's record and open hypotheses are in
   [#174]({{< param BookRepo >}}/issues/174), closed as wait-and-see — a captured reproduction
   gets a new issue referencing it
+- buffered-stream schema evolution has two real-service tests: the normal gated
+  `BigQueryBufferedStreamSchemaEvolutionITCase` pre-creates the widened table, changes descriptors
+  mid-writer and verifies both values while retaining the stream name and offsets; the connector-
+  driven propagation variant is the manual `BigQueryBufferedStreamSchemaPropagationITCase`, gated
+  separately on `BQ_IT_BUFFERED_SCHEMA_EVOLUTION` so the service-controlled tail cannot consume the
+  weekly suite's budget
 - **table creation itself** (`BigQueryTableCreationFidelityITCase`): does BigQuery *accept* the
   create request the connector builds? The emulator stores partitioning and clustering verbatim and
   validates nothing, so it answers a different question — and until this class existed, nothing

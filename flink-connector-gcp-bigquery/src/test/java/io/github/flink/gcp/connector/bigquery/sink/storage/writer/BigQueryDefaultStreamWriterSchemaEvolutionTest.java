@@ -437,7 +437,8 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
 
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("schemaUpdateOptions");
+                .hasMessageContaining("schemaUpdateOptions")
+                .hasMessageContaining("sink.schema-update.allow-new-fields");
         assertThat(admin.updates).isEmpty();
     }
 
@@ -469,7 +470,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(schemaMismatch());
         RecordingTableAdmin admin = new RecordingTableAdmin(V1);
-        for (int i = 0; i < BigQueryDefaultStreamWriter.SCHEMA_UPDATE_MAX_ATTEMPTS; i++) {
+        for (int i = 0; i < StorageWriteSchemaReconciler.MAX_UPDATE_ATTEMPTS; i++) {
             admin.scriptedUpdateResults.add(false);
         }
         BigQueryDefaultStreamWriter<String> writer =

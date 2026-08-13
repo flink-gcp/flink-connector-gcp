@@ -30,7 +30,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
  * what lets the writer detect the evolution mid-stream.
  *
  * <p>Shared by the emulator schema-evolution ITCase ({@link BigQuerySchemaEvolutionITCase}) and the
- * real-GCP one ({@link BigQueryDefaultStreamSchemaEvolutionITCase}).
+ * default- and buffered-stream real-GCP cases.
  */
 final class EvolvingSerializer extends BigQueryProtoSerializer<String> {
     private static final long serialVersionUID = 1L;

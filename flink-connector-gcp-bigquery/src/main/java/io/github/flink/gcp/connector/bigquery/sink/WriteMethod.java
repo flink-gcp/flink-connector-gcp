@@ -42,7 +42,8 @@ public enum WriteMethod {
      * bufferedStreamOptions(...)}. Each subtask reuses one buffered stream per active destination
      * across checkpoints (tracked in writer state). Streaming execution requires exactly-once
      * checkpointing with checkpoints-after-tasks-finish; batch execution commits at end of input.
-     * The table schema is pinned at stream creation — mid-stream schema evolution is not supported.
+     * Mid-stream schema changes reconnect the same remote stream with the current serializer
+     * descriptor, preserving its name and append offset.
      */
     STORAGE_API_EXACTLY_ONCE,
 

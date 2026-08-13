@@ -30,7 +30,6 @@ import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
-import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
@@ -42,9 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
-import io.github.flink.gcp.connector.bigquery.sink.tables.SchemaUnifier;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
-import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -65,7 +62,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
@@ -173,24 +169,8 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * propagation. Flat 30 s waits, jittered (de-synchronizing parallel subtasks), 30 attempts: a
      * ceiling of roughly fifteen minutes.
      */
-    static final RetrySchedule DEFAULT_SCHEMA_WAIT_SCHEDULE =
-            new RetrySchedule(30_000, 30_000, 30, RetrySchedule.DEFAULT_JITTER_RATIO);
-
-    /**
-     * Attempts at applying a schema update before giving up; each attempt is a fresh read, union
-     * and etag-conditioned update, so only concurrent updates (or the per-table metadata quota)
-     * consume attempts. Concurrent unions converge, so a handful suffices.
-     */
-    static final int SCHEMA_UPDATE_MAX_ATTEMPTS = 5;
-
-    /**
-     * Upper bound of the random sleep before reading and updating a table's schema, spreading
-     * parallel subtasks that discovered the same schema change at the same time across the
-     * per-table metadata-update quota (about five updates per ten seconds).
-     */
-    static final long SCHEMA_UPDATE_MAX_JITTER_MS = 500;
-
     private final BigQuerySinkConfig<T> config;
+
     private final RowAppenderFactory appenderFactory;
     private final TableAdmin tableAdmin;
     private final FailureHandler<? super FailedRow> failedRowHandler;
@@ -202,6 +182,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     @Nullable private final ProcessingTimeService timerService;
     private final LongSupplier nanoClock;
     private final DefaultStreamWriterMetrics metrics;
+    private final StorageWriteSchemaReconciler<T> schemaReconciler;
 
     /**
      * Stops the periodic-flush timer from re-arming (and from flushing closed appenders) once the
@@ -315,7 +296,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 new DefaultStreamWriterMetrics(metricGroup, options.isPerDestinationMetrics()),
                 options.getMaxAppendRequestBytes(),
                 options.toRecoverySchedule(),
-                DEFAULT_SCHEMA_WAIT_SCHEDULE,
+                StorageWriteSchemaReconciler.DEFAULT_SCHEMA_WAIT_SCHEDULE,
                 options.getDestinationIdleTimeout(),
                 options.getFlushInterval(),
                 timerService,
@@ -375,6 +356,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         this.timerService = timerService;
         this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
+        this.schemaReconciler = new StorageWriteSchemaReconciler<>(config, tableAdmin);
         // Both gauges read collections the task thread owns; a reporter thread sampling them can
         // see a size mid-update, which is what "best-effort" means for a gauge over a live map.
         this.metrics.bindWriterState(
@@ -1012,49 +994,13 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * @return whether the table was changed (schema updated, or created after disappearing)
      */
     private boolean reconcileSchema(TableDestination destination) throws IOException {
-        TableSchema desired = config.getSerializer().getTableSchema(destination);
-        for (int attempt = 1; attempt <= SCHEMA_UPDATE_MAX_ATTEMPTS; attempt++) {
-            TableSchemaSnapshot live = tableAdmin.getSchema(destination);
-            if (live == null) {
-                // Degenerate: the table has meanwhile disappeared. Creation applies the full
-                // serializer schema, so there is nothing left to reconcile — but it stays gated
-                // by the disposition like every other create path.
-                if (config.getCreateDisposition() != CreateDisposition.CREATE_IF_NEEDED) {
-                    throw new IOException(
-                            "Cannot update the schema of BigQuery table "
-                                    + destination
-                                    + " because the table does not exist and createDisposition"
-                                    + " is CREATE_NEVER");
-                }
-                LOG.info(
-                        "The table behind {} does not exist, creating it instead of updating its"
-                                + " schema (CREATE_IF_NEEDED)",
-                        destination);
-                createTable(destination);
-                return true;
-            }
-            SchemaUnifier.UnionResult union =
-                    SchemaUnifier.union(live.getSchema(), desired, config.getSchemaUpdateOptions());
-            if (!union.isChanged()) {
-                // The table already covers the serializer schema (possibly thanks to a
-                // concurrent subtask).
-                return false;
-            }
-            if (tableAdmin.updateSchema(destination, live, union.getSchema())) {
-                LOG.info("Updated the schema of {} to cover the serializer schema", destination);
-                // Only the update counts as a reconciliation: the branch above, where the table
-                // had meanwhile disappeared, is a creation and is counted as one.
-                metrics.schemaReconciled();
-                return true;
-            }
-            sleepJitter();
+        StorageWriteSchemaReconciler.Outcome outcome = schemaReconciler.reconcile(destination);
+        if (outcome == StorageWriteSchemaReconciler.Outcome.CREATED) {
+            metrics.tableCreated();
+        } else if (outcome == StorageWriteSchemaReconciler.Outcome.UPDATED) {
+            metrics.schemaReconciled();
         }
-        throw new IOException(
-                "Failed to update the schema of BigQuery table "
-                        + destination
-                        + ": lost a concurrent-update race "
-                        + SCHEMA_UPDATE_MAX_ATTEMPTS
-                        + " times");
+        return outcome != StorageWriteSchemaReconciler.Outcome.UNCHANGED;
     }
 
     /**
@@ -1369,15 +1315,11 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 && !config.getSchemaUpdateOptions().isEnabled()) {
             message +=
                     " because the rows carry fields the table does not have; update the table"
-                            + " schema, or enable schemaUpdateOptions(...) to let the sink update"
-                            + " it";
+                            + " schema and wait for Storage Write API propagation, or enable"
+                            + " schemaUpdateOptions(...) to let the sink update it (Table API:"
+                            + " set 'sink.schema-update.allow-new-fields' = 'true')";
         }
         return new IOException(message, cause);
-    }
-
-    /** Sleeps a random duration up to {@link #SCHEMA_UPDATE_MAX_JITTER_MS}. */
-    private static void sleepJitter() throws IOException {
-        sleep(ThreadLocalRandom.current().nextLong(SCHEMA_UPDATE_MAX_JITTER_MS + 1));
     }
 
     private static void sleep(long millis) throws IOException {

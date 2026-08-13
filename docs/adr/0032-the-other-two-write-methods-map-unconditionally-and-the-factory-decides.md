@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0032: The other two write methods' mappers build unconditionally; the factory decides
 
 - Status: Accepted
-- Date: 2026-08-06, revised by [#332] (2026-08-09)
-- Issues: [#288] (under [#57]), [#332]
+- Date: 2026-08-06, revised by [#332] (2026-08-09) and [#77] (2026-08-13)
+- Issues: [#288] (under [#57]), [#332], [#77]
 - Modules: bigquery (`table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -40,11 +40,14 @@ that message names `WriteDisposition.WRITE_APPEND` &c. in prose, so the value be
   buffered knob is defaulted, so `builder().build()` is exactly what that DDL means; FILE_LOADS
   needs its staging path, which is why that one rejection lives in `FileLoadsOptionsMapper`.
   `presentKeys` survives on all three for the wrong-family check alone.
-- **Two of the four family-era factory rejections are not about families**, and both became
+- **Two of the four family-era factory rejections were not about families**, and both became
   reachable from SQL for the first time here: `sink.schema-update.*` under exactly-once, and
-  `emulator-*` under FILE_LOADS. The schema-update one fires on the *enabled* options object, the
-  same condition the builder uses, so `allow-new-fields = false` passes here exactly as it passes
-  there — pinned by a success-side test, the [#289] lesson.
+  `emulator-*` under FILE_LOADS.
+  [#77] superseded the schema-update rejection when ADR-0022 added exactly-once schema evolution;
+  `emulator-*` under FILE_LOADS remains rejected.
+  Before that supersession, the schema-update check fired on the *enabled* options object, the same
+  condition the builder used, so `allow-new-fields = false` passed here exactly as it passed there
+  — pinned by a success-side test, the [#289] lesson.
 - **The factory may read the *session* configuration, and the two FILE_LOADS streaming rules are
   where it does** ([#332]). A non-append `sink.file-loads.write-disposition` and a checkpoint
   interval below `sink.file-loads.min-checkpoint-interval` are `BigQueryFileLoadsSink`'s rules,
@@ -174,3 +177,4 @@ which is the layer that reads it.
 [#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
 [#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
 [#332]: https://github.com/laughingman7743/flink-connector-gcp/issues/332
+[#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77

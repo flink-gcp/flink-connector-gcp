@@ -348,7 +348,8 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
                             writer.flush(false);
                         })
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("schema evolution is not supported");
+                .hasMessageContaining("enable schemaUpdateOptions")
+                .hasMessageContaining("sink.schema-update.allow-new-fields");
     }
 
     @Test

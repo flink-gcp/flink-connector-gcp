@@ -8,7 +8,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 | Write method | Status |
 |---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: [#15](https://github.com/laughingman7743/flink-connector-gcp/issues/15)); tuning knobs, cold-destination eviction and `flushInterval` ([#54](https://github.com/laughingman7743/flink-connector-gcp/issues/54)) |
-| `STORAGE_API_EXACTLY_ONCE` | Implemented ([#30](https://github.com/laughingman7743/flink-connector-gcp/issues/30)) |
+| `STORAGE_API_EXACTLY_ONCE` | Implemented, including dynamic destinations and mid-stream schema evolution ([#30](https://github.com/laughingman7743/flink-connector-gcp/issues/30), [#76](https://github.com/laughingman7743/flink-connector-gcp/issues/76), [#77](https://github.com/laughingman7743/flink-connector-gcp/issues/77)) |
 | `FILE_LOADS` | Implemented ([#14](https://github.com/laughingman7743/flink-connector-gcp/issues/14) batch, [#69](https://github.com/laughingman7743/flink-connector-gcp/issues/69) streaming) |
 
 ```java
@@ -127,7 +127,7 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   reference for the schema-evolution mechanics: the schema union rules and their gating flags,
   the update-on-error flow with a bounded jittered wait for schema propagation, and the
   coordinator-free concurrent-update retry pattern (`SchemaUnifier`,
-  `BigQueryDefaultStreamWriter`'s reconciliation and `BigQueryTableAdmin`'s lost-race handling
-  are independent reimplementations; the full design research is recorded on issue [#12](https://github.com/laughingman7743/flink-connector-gcp/issues/12))
+  `StorageWriteSchemaReconciler` and `BigQueryTableAdmin`'s lost-race handling are independent
+  reimplementations; the full design research is recorded on issue [#12](https://github.com/laughingman7743/flink-connector-gcp/issues/12))
 
 No source code has been copied into this module so far.
