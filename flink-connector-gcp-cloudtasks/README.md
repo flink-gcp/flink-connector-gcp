@@ -10,7 +10,9 @@ later, paced by the queue's rate limit.
 | Opt-in named-task deduplication | Implemented ([#24](https://github.com/laughingman7743/flink-connector-gcp/issues/24)) |
 | Emulator integration tests | Implemented ([#25](https://github.com/laughingman7743/flink-connector-gcp/issues/25)) |
 | Per-task failure policy (fail, drop or dead-letter) | Implemented ([#207](https://github.com/laughingman7743/flink-connector-gcp/issues/207)) |
-| Table API / SQL support | Planned ([#99](https://github.com/laughingman7743/flink-connector-gcp/issues/99)) |
+| Table API / SQL sink, generic body formats and writable request metadata | Implemented ([#605](https://github.com/laughingman7743/flink-connector-gcp/issues/605)) |
+| Form-encoded SQL body format | Planned ([#606](https://github.com/laughingman7743/flink-connector-gcp/issues/606)) |
+| Shaded SQL connector jar | Planned ([#607](https://github.com/laughingman7743/flink-connector-gcp/issues/607)) |
 
 ```java
 Sink<OrderEvent> sink =
@@ -31,6 +33,9 @@ deduplication, delivery guarantees, why retries are the sink's responsibility he
 tuned, and how queue rate limits relate to sink concurrency — is in
 [docs/content/docs/connectors/datastream/cloudtasks.md](../docs/content/docs/connectors/datastream/cloudtasks.md)
 (rendered on the documentation site once it is published).
+
+The SQL request model, writable metadata and `WITH` options are in the
+[Table API connector page](../docs/content/docs/connectors/table/cloudtasks.md).
 
 A complete runnable job is in
 [Quickstart](../docs/content/docs/quickstart/cloudtasks.md); sharding across queues and

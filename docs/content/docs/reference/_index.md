@@ -40,7 +40,8 @@ section below links to it.
 
 **Two surfaces are documented elsewhere, deliberately.** The SQL connector pages —
 [BigQuery]({{< relref "docs/connectors/table/bigquery" >}}),
-[Pub/Sub]({{< relref "docs/connectors/table/pubsub" >}}) and
+[Pub/Sub]({{< relref "docs/connectors/table/pubsub" >}}),
+[Cloud Tasks]({{< relref "docs/connectors/table/cloudtasks" >}}) and
 [Bigtable]({{< relref "docs/connectors/table/bigtable" >}}) — carry the full `WITH` option surface,
 because a SQL option exists only where a builder setter does and the mapping between them is the
 thing worth reading. And every type named here — including the enums, the destination types and the

@@ -86,6 +86,10 @@ source = "flink-connector-gcp-pubsub/src/main/java/io/github/flink/gcp/connector
 page = "docs/content/docs/connectors/table/pubsub.md"
 
 [[config_options]]
+source = "flink-connector-gcp-cloudtasks/src/main/java/io/github/flink/gcp/connector/cloudtasks/table/CloudTasksConnectorOptions.java"
+page = "docs/content/docs/connectors/table/cloudtasks.md"
+
+[[config_options]]
 source = "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connector/bigquery/table/BigQueryConnectorOptions.java"
 page = "docs/content/docs/connectors/table/bigquery.md"
 

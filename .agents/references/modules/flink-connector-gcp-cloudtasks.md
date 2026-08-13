@@ -30,3 +30,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   every attempt (the sum over transient codes *is* the retry volume — no separate retries
   counter); `ALREADY_EXISTS` is `tasksDeduplicated`, never an error; per-queue counters are
   looked up per record (no per-destination state exists to cache a handle on).
+
+## Table sink (`docs/adr/0107`)
+
+- `cloud-tasks` is insert-only and maps one table to one fixed queue. A generic Flink format sees
+  physical columns only; writable `url`, `http-method`, `headers`, `schedule-time` and `task-id`
+  metadata configure the task around the body.
+- Only POST/PUT/PATCH invoke the body format. Fixed request options are defaults and non-null row
+  metadata overrides them; header names compare case-insensitively. With no `http.url`, writable
+  `url` metadata must be declared `STRING NOT NULL` in the catalog schema.
+- Selecting `task-id` installs the existing sink-builder extractor — never name a task in the table
+  serializer. API credentials, OIDC/OAuth dispatch tokens and network reachability remain three
+  separate concerns; App Engine targets and form encoding are separate follow-ups.
