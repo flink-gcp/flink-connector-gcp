@@ -26,9 +26,11 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.source.abilities.SupportsSourceWatermark;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -188,8 +190,61 @@ class BigtableTablePlanTest {
     @Test
     void changeStreamMetadataAndOrderedEntryExpansionArePlanned() {
         TableEnvironment tEnv = tableEnvironment();
+        createEnvelopeChangeStreamTable(tEnv, "mutations", "");
+
+        String metadataPlan =
+                tEnv.explainSql(
+                        "SELECT low_watermark, mutation_type, committed_at, tie FROM mutations");
+        String entriesPlan =
+                tEnv.explainSql(
+                        "SELECT row_key, entry_index, kind, mutation_type "
+                                + "FROM mutations CROSS JOIN UNNEST(entries) AS entry_table("
+                                + "entry_index, kind, family, qualifier, entry_timestamp,"
+                                + " entry_value, delete_range)");
+
+        assertThat(metadataPlan)
+                .contains("low_watermark", "mutation_type", "committed_at", "tie")
+                .contains("CAST");
+        assertThat(entriesPlan)
+                .contains("entry_index", "kind", "mutation_type")
+                .contains("Uncollect");
+    }
+
+    @Test
+    void changeStreamDoesNotPushDownNativeSourceWatermarks() {
+        TableEnvironment tEnv = tableEnvironment();
+        createEnvelopeChangeStreamTable(
+                tEnv, "native_watermark", ",\n  WATERMARK FOR committed_at AS SOURCE_WATERMARK()");
+
+        assertThat(
+                        SupportsSourceWatermark.class.isAssignableFrom(
+                                BigtableChangeStreamDynamicSource.class))
+                .isFalse();
+        assertThat(tEnv.explainSql("SELECT * FROM native_watermark"))
+                .contains(
+                        "WatermarkAssigner(rowtime=[committed_at],"
+                                + " watermark=[SOURCE_WATERMARK()])");
+    }
+
+    @Test
+    void changeStreamAcceptsAJobOwnedWatermarkExpression() {
+        TableEnvironment tEnv = tableEnvironment();
+        createEnvelopeChangeStreamTable(
+                tEnv,
+                "job_watermark",
+                ",\n  WATERMARK FOR committed_at AS committed_at - INTERVAL '5' MINUTE");
+
+        assertThat(tEnv.explainSql("SELECT * FROM job_watermark"))
+                .contains("WatermarkAssigner", "300000:INTERVAL MINUTE")
+                .doesNotContain("SOURCE_WATERMARK()");
+    }
+
+    private static void createEnvelopeChangeStreamTable(
+            TableEnvironment tEnv, String tableName, String watermarkDefinition) {
         tEnv.executeSql(
-                "CREATE TABLE mutations (\n"
+                "CREATE TABLE "
+                        + tableName
+                        + " (\n"
                         + "  row_key BYTES,\n"
                         + "  entries ARRAY<ROW<\n"
                         + "    entry_index INT,\n"
@@ -211,26 +266,11 @@ class BigtableTablePlanTest {
                         + " 'commit-timestamp' VIRTUAL,\n"
                         + "  tie BIGINT NOT NULL METADATA FROM 'tie-breaker' VIRTUAL,\n"
                         + "  low_watermark TIMESTAMP_LTZ(9) NOT NULL METADATA FROM"
-                        + " 'estimated-low-watermark' VIRTUAL\n"
+                        + " 'estimated-low-watermark' VIRTUAL"
+                        + watermarkDefinition
+                        + "\n"
                         + ") "
                         + CHANGE_STREAM_WITH_CLAUSE);
-
-        String metadataPlan =
-                tEnv.explainSql(
-                        "SELECT low_watermark, mutation_type, committed_at, tie FROM mutations");
-        String entriesPlan =
-                tEnv.explainSql(
-                        "SELECT row_key, entry_index, kind, mutation_type "
-                                + "FROM mutations CROSS JOIN UNNEST(entries) AS entry_table("
-                                + "entry_index, kind, family, qualifier, entry_timestamp,"
-                                + " entry_value, delete_range)");
-
-        assertThat(metadataPlan)
-                .contains("low_watermark", "mutation_type", "committed_at", "tie")
-                .contains("CAST");
-        assertThat(entriesPlan)
-                .contains("entry_index", "kind", "mutation_type")
-                .contains("Uncollect");
     }
 
     @Test
