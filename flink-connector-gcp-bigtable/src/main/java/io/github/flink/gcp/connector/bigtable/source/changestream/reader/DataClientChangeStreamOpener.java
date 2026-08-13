@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.CredentialsProvider;
-import com.google.api.gax.rpc.ServerStream;
+import com.google.api.gax.rpc.ResponseObserver;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
@@ -33,14 +33,15 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPa
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Iterator;
 
 /** Opens change streams through a lazily created Bigtable data client. */
 @Internal
 public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
 
     private static final long serialVersionUID = 1L;
+    static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
@@ -59,17 +60,21 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     }
 
     @Override
-    public ChangeStream open(
-            TableDestination table, ChangeStreamPartitionSplit split, @Nullable Instant endTime)
+    public void open(
+            TableDestination table,
+            ChangeStreamPartitionSplit split,
+            @Nullable Instant endTime,
+            ResponseObserver<ChangeStreamRecord> observer)
             throws IOException {
-        return new ServerChangeStream(client(table).readChangeStream(query(table, split, endTime)));
+        client(table).readChangeStreamAsync(query(table, split, endTime), observer);
     }
 
     static ReadChangeStreamQuery query(
             TableDestination table, ChangeStreamPartitionSplit split, @Nullable Instant endTime) {
         ReadChangeStreamQuery query =
                 ReadChangeStreamQuery.create(table.getTable())
-                        .streamPartition(ChangeStreamPartitions.sdkRange(split.getPartition()));
+                        .streamPartition(ChangeStreamPartitions.sdkRange(split.getPartition()))
+                        .heartbeatDuration(HEARTBEAT_INTERVAL);
         if (split.getContinuationTokens().isEmpty()) {
             query.startTime(split.getLowWatermark());
         } else {
@@ -127,38 +132,5 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
             credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
         }
         return credentialsOverride;
-    }
-
-    private static final class ServerChangeStream implements ChangeStream {
-        private final ServerStream<ChangeStreamRecord> stream;
-        private final Iterator<ChangeStreamRecord> iterator;
-        private boolean ended;
-
-        private ServerChangeStream(ServerStream<ChangeStreamRecord> stream) {
-            this.stream = stream;
-            this.iterator = stream.iterator();
-        }
-
-        @Override
-        @Nullable
-        public ChangeStreamRecord next() {
-            if (!iterator.hasNext()) {
-                ended = true;
-                return null;
-            }
-            return iterator.next();
-        }
-
-        @Override
-        public void cancel() {
-            stream.cancel();
-        }
-
-        @Override
-        public void close() {
-            if (!ended) {
-                stream.cancel();
-            }
-        }
     }
 }

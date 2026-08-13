@@ -20,6 +20,7 @@ import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
@@ -31,6 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -40,11 +42,16 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
+import static io.github.flink.gcp.connector.testutils.Awaits.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Gated production-service coverage for the API the emulator cannot implement. */
@@ -57,18 +64,33 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
     private static final AtomicBoolean CHECKPOINTED_AFTER_RECORDS = new AtomicBoolean();
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
     private static final AtomicInteger SEEN = new AtomicInteger();
+    private static final Map<Integer, Set<Integer>> TABLET_RANGES_BY_SUBTASK =
+            new ConcurrentHashMap<>();
 
     @Test
     void readsMutationsAndCompletesAtEndTime() throws Exception {
-        TableDestination table = createChangeStreamTable("change-stream-source");
+        CHECKPOINTED_AFTER_RECORDS.set(false);
+        FAILED_ONCE.set(false);
+        SEEN.set(0);
+        TABLET_RANGES_BY_SUBTASK.clear();
+        ObserveConcurrencyAndFailAfterCheckpoint.SEEN_AT_BARRIER.clear();
+
+        TableDestination table =
+                createChangeStreamTableWithSplits(
+                        "change-stream-source", "row-0025", "row-0050", "row-0075");
         createSingleClusterAppProfile(APP_PROFILE);
+        try (DefaultChangeStreamCoordinatorClient coordinator =
+                new DefaultChangeStreamCoordinatorClient(table, APP_PROFILE)) {
+            coordinator.loadCredentials();
+            assertThat(coordinator.generateInitialPartitions()).hasSizeGreaterThanOrEqualTo(4);
+        }
         Instant start = Instant.now();
         String[] expected =
                 IntStream.range(0, ROWS)
                         .mapToObj(index -> String.format("row-%04d", index))
                         .toArray(String[]::new);
         seedRows(table, expected);
-        Instant end = Instant.now().plusSeconds(30);
+        Instant end = Instant.now().plusSeconds(120);
         ChangeStreamMutationDeserializationSchema deserializer =
                 new ChangeStreamMutationDeserializationSchema();
         BigtableChangeStreamSource<ChangeStreamMutation> source =
@@ -80,6 +102,13 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                         .endTime(end)
                         .build();
         Configuration configuration = new Configuration();
+        ActiveChangeStreamReadsReporter.reset();
+        configuration.set(MetricOptions.REPORTERS_LIST, "active-reads");
+        Configuration reporter = MetricOptions.forReporter(configuration, "active-reads");
+        reporter.set(
+                MetricOptions.REPORTER_FACTORY_CLASS,
+                ActiveChangeStreamReadsReporter.class.getName());
+        reporter.set(MetricOptions.REPORTER_INTERVAL, java.time.Duration.ofMillis(10));
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 1);
         configuration.set(
@@ -89,24 +118,47 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         environment.setParallelism(2);
         environment.enableCheckpointing(500L);
         List<String> keys = new ArrayList<>();
+        ExecutorService triggerExecutor = Executors.newSingleThreadExecutor();
+        Future<?> restartTrigger =
+                triggerExecutor.submit(
+                        () -> {
+                            await(
+                                    "a completed checkpoint after Change Streams records",
+                                    java.time.Duration.ofMinutes(3),
+                                    CHECKPOINTED_AFTER_RECORDS::get);
+                            seedRows(table, "row-0100");
+                            return null;
+                        });
 
-        try (CloseableIterator<ChangeStreamMutation> mutations =
-                environment
-                        .fromSource(source, WatermarkStrategy.noWatermarks(), "change-stream")
-                        .map(new FailAfterACompletedCheckpoint())
-                        .returns(deserializer.getProducedType())
-                        .executeAndCollect()) {
-            mutations.forEachRemaining(mutation -> keys.add(mutation.getRowKey().toStringUtf8()));
+        try {
+            try (CloseableIterator<ChangeStreamMutation> mutations =
+                    environment
+                            .fromSource(source, WatermarkStrategy.noWatermarks(), "change-stream")
+                            .map(new ObserveConcurrencyAndFailAfterCheckpoint())
+                            .returns(deserializer.getProducedType())
+                            .executeAndCollect()) {
+                mutations.forEachRemaining(
+                        mutation -> keys.add(mutation.getRowKey().toStringUtf8()));
+            }
+            restartTrigger.get();
+        } finally {
+            triggerExecutor.shutdownNow();
         }
 
         assertThat(FAILED_ONCE).as("the gated job restarted from a completed checkpoint").isTrue();
         assertThat(keys).contains(expected);
+        assertThat(TABLET_RANGES_BY_SUBTASK)
+                .as("each source subtask processed mutations from at least two tablet ranges")
+                .hasSize(2)
+                .allSatisfy((subtask, ranges) -> assertThat(ranges).hasSizeGreaterThanOrEqualTo(2));
+        assertThat(ActiveChangeStreamReadsReporter.peaks())
+                .as("the default opened at least two concurrent partition reads in each subtask")
+                .containsEntry(0, 2)
+                .containsEntry(1, 2);
     }
 
-    /**
-     * Slows the live feed enough for a barrier, then fails once after that checkpoint completes.
-     */
-    private static final class FailAfterACompletedCheckpoint
+    /** Fails on the first mutation written after a checkpoint that included earlier mutations. */
+    private static final class ObserveConcurrencyAndFailAfterCheckpoint
             extends RichMapFunction<ChangeStreamMutation, ChangeStreamMutation>
             implements CheckpointedFunction, CheckpointListener {
 
@@ -115,7 +167,13 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
 
         @Override
         public ChangeStreamMutation map(ChangeStreamMutation mutation) throws Exception {
-            Thread.sleep(20L);
+            int row = Integer.parseInt(mutation.getRowKey().toStringUtf8().substring(4));
+            int tabletRange = Math.min(row / 25, 3);
+            TABLET_RANGES_BY_SUBTASK
+                    .computeIfAbsent(
+                            getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
+                            ignored -> ConcurrentHashMap.newKeySet())
+                    .add(tabletRange);
             SEEN.incrementAndGet();
             if (CHECKPOINTED_AFTER_RECORDS.get() && FAILED_ONCE.compareAndSet(false, true)) {
                 throw new IllegalStateException("Failing the gated Change Streams job once.");

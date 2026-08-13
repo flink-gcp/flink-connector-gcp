@@ -236,6 +236,20 @@ public abstract class AbstractBigtableRealGcpITCase {
         return TableDestination.of(PROJECT, instanceId, tableId);
     }
 
+    /** Creates a Change Streams table already split at the given row keys. */
+    protected static TableDestination createChangeStreamTableWithSplits(
+            String tableId, String... splitKeys) {
+        CreateTableRequest request =
+                CreateTableRequest.of(tableId)
+                        .addFamily(FAMILY)
+                        .addChangeStreamRetention(org.threeten.bp.Duration.ofHours(24));
+        for (String splitKey : splitKeys) {
+            request.addSplit(ByteString.copyFromUtf8(splitKey));
+        }
+        tableAdmin.createTable(request);
+        return TableDestination.of(PROJECT, instanceId, tableId);
+    }
+
     /** Returns a destination in the ephemeral instance without creating the table. */
     protected static TableDestination tableDestination(String tableId) {
         return TableDestination.of(PROJECT, instanceId, tableId);

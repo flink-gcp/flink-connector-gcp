@@ -80,7 +80,7 @@ public final class BigtableChangeStreamRecordEmitter<T>
                             ChangeStreamPartitions.sdkRange(state.toSplit().getPartition()),
                             mutation.getToken()),
                     mutation.getEstimatedLowWatermarkTime());
-            metrics.mutation(mutation.getEstimatedLowWatermarkTime());
+            metrics.mutation(mutation);
             return;
         }
         if (record instanceof Heartbeat) {
@@ -93,7 +93,7 @@ public final class BigtableChangeStreamRecordEmitter<T>
                             state.toSplit().splitId(),
                             heartbeat.getChangeStreamContinuationToken(),
                             heartbeat.getEstimatedLowWatermarkTime()));
-            metrics.heartbeat(heartbeat.getEstimatedLowWatermarkTime());
+            metrics.heartbeat();
             return;
         }
         if (record instanceof CloseStream) {

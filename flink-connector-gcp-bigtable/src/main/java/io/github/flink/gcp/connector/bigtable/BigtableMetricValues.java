@@ -14,22 +14,24 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
+package io.github.flink.gcp.connector.bigtable;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
-
-import javax.annotation.Nullable;
-
-/** One cancellable change-stream RPC. */
+/** Overflow-safe values shared by Bigtable lag and health metrics. */
 @Internal
-public interface ChangeStream extends AutoCloseable {
-    @Nullable
-    ChangeStreamRecord next();
+public final class BigtableMetricValues {
 
-    void cancel();
+    public static long elapsedMillis(long now, long then) {
+        if (now <= then) {
+            return 0;
+        }
+        try {
+            return Math.subtractExact(now, then);
+        } catch (ArithmeticException ignored) {
+            return Long.MAX_VALUE;
+        }
+    }
 
-    @Override
-    void close();
+    private BigtableMetricValues() {}
 }

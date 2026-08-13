@@ -673,14 +673,28 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 partition topology and continuation-token checkpoints rather than the bounded scan's row ranges.
 
 ```java
-Source<ChangeStreamMutation, ?, ?> source =
+BigtableChangeStreamSource<ChangeStreamMutation> source =
         BigtableChangeStreamSource.<ChangeStreamMutation>builder()
                 .table(TableDestination.of("my-project", "my-instance", "orders"))
                 .appProfileId("orders-change-stream")
                 .deserializer(new ChangeStreamMutationDeserializationSchema())
                 .startPosition(StartPosition.latest())
+                .maxConcurrentStreamsPerSubtask(4)
                 .build();
+
+DataStream<ChangeStreamMutation> changes =
+        env.fromSource(source, WatermarkStrategy.noWatermarks(), "bigtable-change-stream")
+                .setParallelism(3);
 ```
+
+The example permits at most four open `ReadChangeStream` RPCs in each of three source subtasks.
+Its configured job-wide read capacity is therefore `3 * 4 = 12`.
+This number bounds connector activity; it is not a Bigtable quota or a statement about how many service partitions a table has.
+
+Source parallelism distributes the service partition set across Flink subtasks, while `maxConcurrentStreamsPerSubtask` bounds open RPCs and their callback state in each subtask.
+Increasing source parallelism can reduce the reads and resource use in one subtask, provided the Flink deployment has enough task slots and TaskManagers to run that parallelism.
+Adding slots or TaskManagers alone does not change partition concurrency when source parallelism stays fixed.
+A parallelism change takes effect through a checkpoint or savepoint restart, when Flink redistributes the checkpointed partition splits.
 
 The built-in schema supplies a serializer for the SDK's immutable mutation model. A transformation
 that still emits `ChangeStreamMutation` can make Flink infer the SDK class as a generic type and
@@ -713,6 +727,11 @@ Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may p
 records. Every produced record carries the mutation's commit time as its Flink timestamp. A
 heartbeat produces no record but advances the checkpointed continuation token and low watermark.
 `CloseStream` transfers successor partitions and their tokens to the coordinator.
+
+Each subtask uses asynchronous `ReadChangeStream` calls with manual inbound flow control and one shared bounded handover budget.
+Callbacks may receive a continuation token before the task thread consumes its record, but checkpoints retain only the position the task thread has emitted.
+When assigned partitions outnumber the subtask limit, the reader queues the excess and rotates stable streams at service heartbeats so every queued partition can open or reopen from its checkpointed position.
+Connector-initiated rotation and shutdown cancellation do not complete or fail a partition.
 
 The coordinator also compares the live service keyspace with its checkpointed assigned,
 unassigned, and pending-merge ledger every 10 seconds. A missing partition is checkpointed with
@@ -816,11 +835,23 @@ Registered on the source reader's and the split enumerator's metric groups:
 | `rowsRead` | counter | rows this subtask pulled off a stream |
 | `changeStreamMutationsRead` | counter | change-stream mutations this subtask received |
 | `changeStreamHeartbeatsRead` | counter | heartbeats this subtask received; they advance state without producing a record |
-| `partitionLowWatermarkMillis` | gauge | latest estimated low watermark observed for this subtask's current partition, as epoch milliseconds |
+| `changeStreamReadsStarted` | counter | `ReadChangeStream` RPCs this subtask opened, including token-based reopens and fair rotations |
+| `activeChangeStreamReads` | gauge | `ReadChangeStream` RPCs currently open in this subtask |
+| `queuedChangeStreamPartitions` | gauge | assigned partition splits waiting for a read slot in this subtask |
+| `queuedChangeStreamPartitionLagMillis` | gauge | wall-clock lag of the oldest checkpointed position among this subtask's queued partitions, or zero when none are queued |
+| `missedHeartbeatIntervals` | gauge | maximum whole five-second heartbeat intervals since any active read last returned a mutation or heartbeat |
+| `changeStreamCloseStreamsRead` | counter | `CloseStream` records this subtask received |
+| `changeStreamUserMutationsRead` | counter | user-initiated mutations this subtask received |
+| `changeStreamGarbageCollectionMutationsRead` | counter | garbage-collection mutations this subtask received |
+| `partitionLowWatermarkMillis` | gauge | minimum checkpointed low watermark across every active and queued partition assigned to this subtask, as epoch milliseconds |
 | `recordsSkipped` | counter | rows the deserializer emitted no record for |
 | `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |
 | `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
 | `splitsReturned` | counter | splits a failed reader gave back. On the enumerator |
+| `changeStreamPartitionsDiscovered` | counter | initial and successor service partitions first accepted into the coordinator ledger. On the enumerator |
+| `changeStreamPartitionSplits` | counter | successor partitions released from one parent, including a one-to-one move. On the enumerator |
+| `changeStreamPartitionMerges` | counter | successor partitions released after tokens from multiple parents cover their target. On the enumerator |
+| `unassignedChangeStreamPartitionLagMillis` | gauge | wall-clock lag of the oldest coordinator-held unassigned partition, or zero when none are unassigned. On the enumerator |
 | `changeStreamPartitionsReconciled` | counter | missing service partitions reconstructed from tokens or a tracked low watermark. On the enumerator |
 | `changeStreamTokenlessRestarts` | counter | reconciliations that had to restart without a continuation token after the long grace period. On the enumerator |
 | `rowKeySamplesTaken` | counter | `SampleRowKeys` calls, on the enumerator: `1` on a fresh start, `0` after a restore. Anything else means the plan was recomputed, which would renumber the splits the readers hold |
@@ -830,6 +861,24 @@ There is deliberately **no bytes-read counter**. A row does not report its seria
 number summed from its keys, qualifiers and values would look exactly like the quantity Bigtable
 bills for while not being it. There is no records-remaining gauge either: the samples estimate bytes
 for a table's sections and say nothing about how many rows are left inside a range.
+
+### Operating Change Streams capacity
+
+Read `activeChangeStreamReads`, both queued metrics, `unassignedSplits`, and `unassignedChangeStreamPartitionLagMillis` together.
+If aggregate active reads reach `source parallelism * maxConcurrentStreamsPerSubtask` while queued or unassigned lag grows, increase source parallelism or raise the per-subtask bound after checking subtask and Bigtable cluster resources.
+If the goal is fewer reads and less callback work in each subtask without reducing aggregate capacity, increase source parallelism before lowering the per-subtask bound.
+
+Persistently queued partitions beside free read slots indicate a reader scheduling, rotation, or handover problem; infer free slots in a subtask from its configured bound minus its active and queued counts.
+Persistently unassigned partitions while readers have inferred free slots indicate an assignment-protocol problem.
+Alert before the minimum active or queued low watermark, or the oldest unassigned position, approaches the table's configured Change Streams retention boundary.
+
+The connector metrics cannot reproduce Bigtable cluster load or retained log volume.
+Monitor `bigtable.googleapis.com/cluster/cpu_load_by_app_profile_by_method_by_table`, filtered to the Change Streams application profile, table, and `ReadChangeStream` method, together with `bigtable.googleapis.com/table/change_stream_log_used_bytes`.
+The Bigtable `server/latencies` metric measures the lifetime of the streaming request, so it is not a change-processing latency signal.
+
+The counters follow Beam's initial-partition, split, merge, reconciliation, heartbeat, `CloseStream`, user-mutation, garbage-collection-mutation, and active-stream signals where the runtimes have equivalent lifecycle points.
+Flink keeps the partition ledger in checkpoint state, so Beam's orphaned metadata-table counter has no counterpart.
+Flink's `currentEmitEventTimeLag` describes the latest emitted record rather than Beam's lifetime processing-delay distribution, and the connector does not duplicate Flink's `numRecordsIn`, `watermarkLag`, split `currentWatermark`, or `sourceIdleTime` metrics.
 
 ## Scope
 

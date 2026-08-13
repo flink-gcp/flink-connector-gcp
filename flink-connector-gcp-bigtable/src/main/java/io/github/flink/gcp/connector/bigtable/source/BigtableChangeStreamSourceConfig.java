@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
@@ -43,8 +44,10 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     final StartPosition startPosition;
     @Nullable final StartPosition resumeFallback;
     @Nullable final Instant endTime;
+    final int maxConcurrentStreamsPerSubtask;
     final ChangeStreamOpener opener;
     final ChangeStreamRestoreResolver restoreResolver;
+    @Nullable final ChangeStreamCoordinatorClient coordinatorClient;
 
     BigtableChangeStreamSourceConfig(
             TableDestination table,
@@ -54,8 +57,10 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             StartPosition startPosition,
             Optional<StartPosition> resumeFallback,
             @Nullable Instant endTime,
+            int maxConcurrentStreamsPerSubtask,
             ChangeStreamOpener opener,
-            ChangeStreamRestoreResolver restoreResolver) {
+            ChangeStreamRestoreResolver restoreResolver,
+            @Nullable ChangeStreamCoordinatorClient coordinatorClient) {
         this.table = table;
         this.deserializer = deserializer;
         this.appProfileId = appProfileId;
@@ -63,8 +68,10 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.startPosition = startPosition;
         this.resumeFallback = resumeFallback.orElse(null);
         this.endTime = endTime;
+        this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
         this.opener = opener;
         this.restoreResolver = restoreResolver;
+        this.coordinatorClient = coordinatorClient;
     }
 
     public TableDestination getTable() {
@@ -84,6 +91,10 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     @Nullable
     public Instant getEndTime() {
         return endTime;
+    }
+
+    public int getMaxConcurrentStreamsPerSubtask() {
+        return maxConcurrentStreamsPerSubtask;
     }
 
     public ChangeStreamOpener getOpener() {
