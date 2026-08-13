@@ -32,7 +32,7 @@ is implemented and what is planned is in the
 
 ## Credentials
 
-The bounded source and sink use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
+The bounded source, Change Streams source, and sink use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
 Set it only when the job must select a service-account JSON key that the runtime environment cannot supply through ADC.
 
 ```java
@@ -46,6 +46,7 @@ SpannerSink.<OrderEvent>builder()
 The connector serializes only the path into the job graph and reads the file in each process that creates a client.
 The sink reads it on each TaskManager when a writer starts.
 The bounded source reads it on the JobManager when a fresh or restored enumerator starts and on each TaskManager when a reader starts.
+The Change Streams source reads it on the JobManager when its coordinator initializes and on each TaskManager when a reader opens.
 Table lookup functions read it on their TaskManager when the synchronous or asynchronous lookup function opens, including lookup providers with a partial cache.
 A deployment must therefore mount the same configured path in every applicable JobManager and TaskManager container.
 Restart and restore load the mounted file again instead of retaining credential material in checkpointed state.
@@ -53,7 +54,6 @@ Restart and restore load the mounted file again instead of retaining credential 
 `serviceAccountKeyFile(...)` and `emulatorEndpoint(...)` are mutually exclusive because the emulator channel deliberately uses no credentials.
 Prefer an attached service account or Workload Identity over a long-lived key where the deployment supports one.
 The option accepts service-account JSON only, and a loading failure is sanitized so neither the path nor credential contents enter the exception.
-The Change Streams builder does not expose this option and continues to use ADC or its emulator endpoint.
 
 ## The destination is a database, not a table
 
@@ -457,6 +457,7 @@ SpannerChangeStreamSource<OrderChange> source =
                 .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
                 .changeStreamName("order_changes")
                 .deserializer(new OrderChangeDeserializer())
+                .serviceAccountKeyFile("/var/run/secrets/spanner/key.json")
                 .startPosition(StartPosition.latest())
                 .maxConcurrentQueriesPerSubtask(8)
                 .build();
@@ -577,9 +578,14 @@ The default two-second heartbeat can be configured from one second through five 
 `WatermarkStrategy.noWatermarks()` in the example prevents downstream timestamp assignment from replacing these source watermarks.
 A job that supplies another strategy is choosing that strategy's timestamp and watermark behavior instead.
 
+### Table API CDC
+
+The Table API can map one physical DDL to this source and emit either a full retract changelog or a keyed upsert changelog.
+Its value-capture constraints, row reconstruction, and DDL options are documented under [Change Streams scan behavior]({{< relref "docs/connectors/table/spanner" >}}#change-streams-scan-behavior).
+
 ### Not here yet
 
-- Table API and SQL, which is [#223]({{< param BookRepo >}}/issues/223).
+- Readable Table API metadata columns, source-watermark declaration, and real-service Table API acceptance remain in [#225]({{< param BookRepo >}}/issues/225).
 - `MUTABLE_KEY_RANGE` partition-event records; the source supports `IMMUTABLE_KEY_RANGE` and rejects another mode at startup.
 
 ## Metrics

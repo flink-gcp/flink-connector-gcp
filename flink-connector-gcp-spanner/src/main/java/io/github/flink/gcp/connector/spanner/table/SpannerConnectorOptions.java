@@ -23,6 +23,7 @@ import org.apache.flink.configuration.MemorySize;
 
 import com.google.cloud.spanner.Dialect;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 
 import java.time.Duration;
 import java.util.List;
@@ -104,6 +105,67 @@ public final class SpannerConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription("The secondary index used by bounded table scans.");
+    public static final ConfigOption<ScanMode> SCAN_MODE =
+            ConfigOptions.key("scan.mode")
+                    .enumType(ScanMode.class)
+                    .defaultValue(ScanMode.BOUNDED)
+                    .withDescription(
+                            "The source mode: bounded reads the current table, while change-stream reads its CDC records.");
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_NAME =
+            ConfigOptions.key("scan.change-stream.name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The Spanner change stream read in change-stream mode.");
+    public static final ConfigOption<ChangeStreamChangelogMode> SCAN_CHANGE_STREAM_CHANGELOG_MODE =
+            ConfigOptions.key("scan.change-stream.changelog-mode")
+                    .enumType(ChangeStreamChangelogMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "The emitted changelog: full includes UPDATE_BEFORE rows, while upsert emits insert, update-after, and key-only delete rows.");
+    public static final ConfigOption<ChangeStreamStartMode> SCAN_STARTUP_MODE =
+            ConfigOptions.key("scan.startup.mode")
+                    .enumType(ChangeStreamStartMode.class)
+                    .defaultValue(ChangeStreamStartMode.LATEST)
+                    .withDescription(
+                            "Where a new change-stream source starts: earliest, latest, or timestamp.");
+    public static final ConfigOption<Long> SCAN_STARTUP_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.startup.timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Unix epoch timestamp in milliseconds used with scan.startup.mode=timestamp.");
+    public static final ConfigOption<ChangeStreamStartMode> SCAN_RESUME_FALLBACK_MODE =
+            ConfigOptions.key("scan.resume-fallback.mode")
+                    .enumType(ChangeStreamStartMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Where to resume when restored state has expired; unset fails the source instead.");
+    public static final ConfigOption<Long> SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.resume-fallback.timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Unix epoch timestamp in milliseconds used with scan.resume-fallback.mode=timestamp.");
+    public static final ConfigOption<Duration> SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK =
+            ConfigOptions.key("scan.change-stream.absent-retention-fallback")
+                    .durationType()
+                    .defaultValue(
+                            SpannerChangeStreamSourceBuilder.DEFAULT_ABSENT_RETENTION_FALLBACK)
+                    .withDescription(
+                            "The retention assumed when the change stream has no explicit retention option.");
+    public static final ConfigOption<Duration> SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL =
+            ConfigOptions.key("scan.change-stream.heartbeat-interval")
+                    .durationType()
+                    .defaultValue(SpannerChangeStreamSourceBuilder.DEFAULT_HEARTBEAT_INTERVAL)
+                    .withDescription("The service heartbeat interval for change-stream queries.");
+    public static final ConfigOption<Integer> SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK =
+            ConfigOptions.key("scan.max-concurrent-queries-per-subtask")
+                    .intType()
+                    .defaultValue(
+                            SpannerChangeStreamSourceBuilder
+                                    .DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK)
+                    .withDescription(
+                            "The maximum concurrent change-stream partition queries opened by one source subtask.");
     public static final ConfigOption<Long> SCAN_PARTITION_MAX_PARTITIONS =
             ConfigOptions.key("scan.partition.max-partitions")
                     .longType()

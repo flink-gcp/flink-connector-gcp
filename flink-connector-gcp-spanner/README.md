@@ -14,11 +14,11 @@ Both dialects, GoogleSQL and PostgreSQL.
 | DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/laughingman7743/flink-connector-gcp/issues/221)) |
 | DataStream Change Streams source, both dialects, including real-GCP recovery acceptance | Implemented ([#534](https://github.com/laughingman7743/flink-connector-gcp/issues/534), [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536), [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535)) |
 | Table API / SQL sink, native type mapping, and DDL factory | Implemented ([#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502)) |
-| Table API / SQL bounded scan and projection | Planned ([#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503)) |
-| Table API / SQL lookup source | Planned ([#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504)) |
-| Relocated SQL uber-jar | Planned ([#505](https://github.com/laughingman7743/flink-connector-gcp/issues/505)) |
+| Table API / SQL bounded scan and projection | Implemented ([#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503)) |
+| Table API / SQL lookup source | Implemented ([#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504)) |
+| Relocated SQL uber-jar | Implemented ([#505](https://github.com/laughingman7743/flink-connector-gcp/issues/505)) |
 | Gated real-GCP integration tests | Implemented ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
-| Change-stream CDC in SQL | Planned ([#225](https://github.com/laughingman7743/flink-connector-gcp/issues/225)) |
+| Change-stream CDC changelog scan in the Table API and SQL | Implemented ([#582](https://github.com/laughingman7743/flink-connector-gcp/issues/582)); metadata columns, source watermarks, and real-service acceptance remain in [#225](https://github.com/laughingman7743/flink-connector-gcp/issues/225) |
 
 ```java
 Sink<OrderEvent> sink =

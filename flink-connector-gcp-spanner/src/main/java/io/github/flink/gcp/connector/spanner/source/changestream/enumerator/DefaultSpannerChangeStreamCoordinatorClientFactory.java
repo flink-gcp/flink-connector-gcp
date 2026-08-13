@@ -26,6 +26,7 @@ import com.google.cloud.spanner.Spanner;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 
 import javax.annotation.Nullable;
@@ -44,12 +45,13 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
     private final String changeStreamName;
     private final Duration absentRetentionFallback;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     public DefaultSpannerChangeStreamCoordinatorClientFactory(
             SpannerDatabase database,
             String changeStreamName,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this(database, changeStreamName, DEFAULT_ABSENT_RETENTION_FALLBACK, emulatorEndpoint);
+        this(database, changeStreamName, DEFAULT_ABSENT_RETENTION_FALLBACK, emulatorEndpoint, null);
     }
 
     public DefaultSpannerChangeStreamCoordinatorClientFactory(
@@ -57,6 +59,15 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
             String changeStreamName,
             Duration absentRetentionFallback,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(database, changeStreamName, absentRetentionFallback, emulatorEndpoint, null);
+    }
+
+    public DefaultSpannerChangeStreamCoordinatorClientFactory(
+            SpannerDatabase database,
+            String changeStreamName,
+            Duration absentRetentionFallback,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.changeStreamName =
                 Preconditions.checkNotNull(changeStreamName, "changeStreamName must not be null");
@@ -70,11 +81,16 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
                 "absentRetentionFallback must be positive, but was %s",
                 absentRetentionFallback);
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
     public SpannerChangeStreamCoordinatorClient create() throws Exception {
-        return create(SpannerClients.open(database, emulatorEndpoint));
+        return create(
+                SpannerClients.open(
+                        database,
+                        emulatorEndpoint,
+                        SpannerCredentials.load(serviceAccountKeyFile)));
     }
 
     @VisibleForTesting

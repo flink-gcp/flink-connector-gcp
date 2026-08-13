@@ -35,6 +35,7 @@ import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
@@ -66,6 +67,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
     private final SpannerRpcPriority rpcPriority;
     private final int maxConcurrentQueries;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     public DefaultSpannerChangeStreamQueryClientFactory(
             SpannerDatabase database,
@@ -73,6 +75,16 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
             SpannerRpcPriority rpcPriority,
             int maxConcurrentQueries,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(database, changeStreamName, rpcPriority, maxConcurrentQueries, emulatorEndpoint, null);
+    }
+
+    public DefaultSpannerChangeStreamQueryClientFactory(
+            SpannerDatabase database,
+            String changeStreamName,
+            SpannerRpcPriority rpcPriority,
+            int maxConcurrentQueries,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.changeStreamName =
                 Preconditions.checkNotNull(changeStreamName, "changeStreamName must not be null");
@@ -81,11 +93,14 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
                 maxConcurrentQueries > 0, "maxConcurrentQueries must be positive");
         this.maxConcurrentQueries = maxConcurrentQueries;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
     public SpannerChangeStreamQueryClient create() throws Exception {
-        Spanner spanner = SpannerClients.open(database, emulatorEndpoint);
+        Spanner spanner =
+                SpannerClients.open(
+                        database, emulatorEndpoint, SpannerCredentials.load(serviceAccountKeyFile));
         try {
             DatabaseClient client =
                     spanner.getDatabaseClient(

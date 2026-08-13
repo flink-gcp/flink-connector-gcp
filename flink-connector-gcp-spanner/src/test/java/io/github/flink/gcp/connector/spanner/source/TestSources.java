@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.spanner.source;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.connector.source.Source;
 
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
@@ -63,6 +64,16 @@ public final class TestSources {
     public static SpannerSourceConfig<Long> config(
             UnaryOperator<SpannerSourceBuilder<Long>> customizer) {
         return source(customizer).getConfig();
+    }
+
+    /**
+     * Returns the configuration of a Change Streams source through its test-only accessor.
+     *
+     * @param source the source
+     * @return the configuration
+     */
+    public static SpannerChangeStreamSourceConfig<?> changeStreamConfig(Source<?, ?, ?> source) {
+        return ((SpannerChangeStreamSource<?>) source).getConfig();
     }
 
     /**

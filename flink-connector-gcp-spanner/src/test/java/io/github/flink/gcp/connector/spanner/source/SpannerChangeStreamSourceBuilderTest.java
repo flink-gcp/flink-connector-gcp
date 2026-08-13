@@ -60,6 +60,7 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(defaults.getHeartbeatMillis()).isEqualTo(2_000);
         assertThat(defaults.getRpcPriority()).isEqualTo(SpannerRpcPriority.HIGH);
         assertThat(defaults.getMaxConcurrentQueriesPerSubtask()).isEqualTo(8);
+        assertThat(defaults.getServiceAccountKeyFile()).isEmpty();
         DataChangeRecord unfiltered = record("orders");
         assertThat(defaults.getRecordFilter().filter(unfiltered).getRecord()).isSameAs(unfiltered);
         assertThat(defaults.getQueryClientFactory())
@@ -117,6 +118,29 @@ class SpannerChangeStreamSourceBuilderTest {
                         SpannerChangeStreamRecordFilter.Result.Disposition.SKIPPED_WITHOUT_CHANGE);
         assertThat(copy.getConfig().getRecordFilter().filter(record("audit")).getDisposition())
                 .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.TABLE_FILTERED);
+    }
+
+    @Test
+    void carriesOnlyTheCredentialPathAndRejectsEmulatorConflicts() throws Exception {
+        SpannerChangeStreamSource<Long> source =
+                builderWithoutEndpoint()
+                        .serviceAccountKeyFile("/var/run/secrets/spanner.json")
+                        .build();
+        SpannerChangeStreamSource<Long> copy = InstantiationUtil.clone(source);
+
+        assertThat(copy.getConfig().getServiceAccountKeyFile())
+                .contains("/var/run/secrets/spanner.json");
+        assertThatThrownBy(() -> builderWithoutEndpoint().serviceAccountKeyFile("  "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not be blank");
+        assertThatThrownBy(
+                        () ->
+                                builderWithoutEndpoint()
+                                        .serviceAccountKeyFile("key.json")
+                                        .emulatorEndpoint("localhost:1")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cannot be combined");
     }
 
     @Test
@@ -233,11 +257,14 @@ class SpannerChangeStreamSourceBuilderTest {
     }
 
     private static SpannerChangeStreamSourceBuilder<Long> builder() {
+        return builderWithoutEndpoint().emulatorEndpoint("localhost:1");
+    }
+
+    private static SpannerChangeStreamSourceBuilder<Long> builderWithoutEndpoint() {
         return SpannerChangeStreamSource.<Long>builder()
                 .database(DATABASE)
                 .changeStreamName("changes")
-                .deserializer(new CommitSecondDeserializer())
-                .emulatorEndpoint("localhost:1");
+                .deserializer(new CommitSecondDeserializer());
     }
 
     private static SpannerChangeStreamSourceConfig<Long> config(

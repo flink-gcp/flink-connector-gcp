@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.spanner.table;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
@@ -34,17 +36,23 @@ import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContex
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
+import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
+import io.github.flink.gcp.connector.spanner.source.TestSources;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.table.sink.RowDataSerializationSchema;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
+import io.github.flink.gcp.connector.spanner.table.source.SpannerChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -267,6 +275,165 @@ class SpannerDynamicTableFactoryTest {
                 .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
         assertThat(config.getReadOperation().getColumns()).containsExactly("id", "name");
         assertThat(config.getTimestampBound().getMode().name()).isEqualTo("STRONG");
+    }
+
+    @Test
+    void buildsAnUnboundedChangeStreamSourceAndKeepsItsCopyState() {
+        Map<String, String> options = options();
+        options.put("scan.mode", "change-stream");
+        options.put("scan.change-stream.name", "people_changes");
+        options.put("scan.change-stream.changelog-mode", "full");
+        options.put("scan.startup.mode", "earliest");
+        options.put("scan.resume-fallback.mode", "timestamp");
+        options.put("scan.resume-fallback.timestamp-millis", "1000");
+        options.put("scan.change-stream.absent-retention-fallback", "3 d");
+        options.put("scan.change-stream.heartbeat-interval", "1500 ms");
+        options.put("scan.max-concurrent-queries-per-subtask", "4");
+        options.put("scan.rpc-priority", "low");
+        options.put("scan.parallelism", "3");
+        ScanTableSource dynamic = (ScanTableSource) source(SCHEMA, options);
+        SourceProvider provider =
+                (SourceProvider)
+                        dynamic.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        Source<?, ?, ?> runtime = provider.createSource();
+        SpannerChangeStreamSourceConfig<?> config = TestSources.changeStreamConfig(runtime);
+
+        assertThat(dynamic).isInstanceOf(SpannerChangeStreamDynamicSource.class);
+        assertThat(runtime).isInstanceOf(SpannerChangeStreamSource.class);
+        assertThat(runtime.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
+        assertThat(provider.getParallelism()).contains(3);
+        assertThat(config.getStartPosition()).isEqualTo(StartPosition.earliest());
+        assertThat(config.getResumeFallback())
+                .contains(StartPosition.at(Instant.ofEpochMilli(1000)));
+        assertThat(config.getAbsentRetentionFallback()).isEqualTo(Duration.ofDays(3));
+        assertThat(config.getHeartbeatMillis()).isEqualTo(1500L);
+        assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
+        assertThat(config.getMaxConcurrentQueriesPerSubtask()).isEqualTo(4);
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+        assertThat(dynamic.getChangelogMode().getContainedKinds())
+                .containsExactlyInAnyOrder(
+                        org.apache.flink.types.RowKind.INSERT,
+                        org.apache.flink.types.RowKind.UPDATE_BEFORE,
+                        org.apache.flink.types.RowKind.UPDATE_AFTER,
+                        org.apache.flink.types.RowKind.DELETE);
+    }
+
+    @Test
+    void validatesChangeStreamModeOptionsAndUpsertKeys() throws Exception {
+        Map<String, String> missingName = options();
+        missingName.put("scan.mode", "change-stream");
+        missingName.put("scan.change-stream.changelog-mode", "full");
+        assertThatThrownBy(() -> source(SCHEMA, missingName))
+                .hasStackTraceContaining("scan.change-stream.name is required");
+
+        Map<String, String> missingMode = options();
+        missingMode.put("scan.mode", "change-stream");
+        missingMode.put("scan.change-stream.name", "people_changes");
+        assertThatThrownBy(() -> source(SCHEMA, missingMode))
+                .hasStackTraceContaining("scan.change-stream.changelog-mode is required");
+
+        Map<String, String> upsert = changeStreamOptions("upsert");
+        assertThatThrownBy(() -> source(SCHEMA, upsert))
+                .hasStackTraceContaining("upsert requires a PRIMARY KEY");
+        org.apache.flink.table.connector.ChangelogMode upsertMode =
+                ((ScanTableSource) source(withPrimaryKey(), upsert)).getChangelogMode();
+        assertThat(upsertMode.getContainedKinds())
+                .contains(
+                        org.apache.flink.types.RowKind.INSERT,
+                        org.apache.flink.types.RowKind.UPDATE_AFTER,
+                        org.apache.flink.types.RowKind.DELETE)
+                .doesNotContain(org.apache.flink.types.RowKind.UPDATE_BEFORE);
+        try {
+            assertThat(
+                            org.apache.flink.table.connector.ChangelogMode.class
+                                    .getMethod("keyOnlyDeletes")
+                                    .invoke(upsertMode))
+                    .isEqualTo(true);
+        } catch (NoSuchMethodException ignored) {
+            // Flink 1.20 does not expose the Flink 2 key-only-delete declaration bit.
+        }
+
+        Map<String, String> bounded = options();
+        bounded.put("scan.change-stream.name", "people_changes");
+        assertThatThrownBy(() -> source(SCHEMA, bounded))
+                .hasStackTraceContaining("incompatible with scan.mode=bounded");
+
+        Map<String, String> incompatible = changeStreamOptions("full");
+        incompatible.put("scan.index", "by_name");
+        assertThatThrownBy(() -> source(SCHEMA, incompatible))
+                .hasStackTraceContaining("scan.index is incompatible with scan.mode=change-stream");
+    }
+
+    @Test
+    void rejectsEveryOptionOwnedByTheOtherScanMode() {
+        Map<String, String> changeStreamOnly =
+                Map.ofEntries(
+                        Map.entry("scan.change-stream.name", "people_changes"),
+                        Map.entry("scan.change-stream.changelog-mode", "full"),
+                        Map.entry("scan.startup.mode", "latest"),
+                        Map.entry("scan.startup.timestamp-millis", "1000"),
+                        Map.entry("scan.resume-fallback.mode", "earliest"),
+                        Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
+                        Map.entry("scan.change-stream.absent-retention-fallback", "3 d"),
+                        Map.entry("scan.change-stream.heartbeat-interval", "2 s"),
+                        Map.entry("scan.max-concurrent-queries-per-subtask", "4"));
+        for (Map.Entry<String, String> entry : changeStreamOnly.entrySet()) {
+            Map<String, String> bounded = options();
+            bounded.put(entry.getKey(), entry.getValue());
+            assertThatThrownBy(() -> source(SCHEMA, bounded))
+                    .as(entry.getKey())
+                    .hasStackTraceContaining(
+                            entry.getKey() + " is incompatible with scan.mode=bounded");
+        }
+
+        Map<String, String> boundedOnly =
+                Map.ofEntries(
+                        Map.entry("scan.index", "by_name"),
+                        Map.entry("scan.partition.max-partitions", "12"),
+                        Map.entry("scan.partition.size", "2 mb"),
+                        Map.entry("scan.data-boost-enabled", "true"),
+                        Map.entry("scan.timestamp-bound.read-timestamp", "2026-08-13T00:00:00Z"),
+                        Map.entry("scan.timestamp-bound.exact-staleness", "15 s"),
+                        Map.entry("lookup.async", "false"),
+                        Map.entry("lookup.cache", "NONE"),
+                        Map.entry("lookup.max-retries", "3"),
+                        Map.entry("lookup.partial-cache.expire-after-access", "1 min"),
+                        Map.entry("lookup.partial-cache.expire-after-write", "1 min"),
+                        Map.entry("lookup.partial-cache.cache-missing-key", "true"),
+                        Map.entry("lookup.partial-cache.max-rows", "100"));
+        for (Map.Entry<String, String> entry : boundedOnly.entrySet()) {
+            Map<String, String> changeStream = changeStreamOptions("full");
+            changeStream.put(entry.getKey(), entry.getValue());
+            assertThatThrownBy(() -> source(SCHEMA, changeStream))
+                    .as(entry.getKey())
+                    .hasStackTraceContaining(
+                            entry.getKey() + " is incompatible with scan.mode=change-stream");
+        }
+    }
+
+    @Test
+    void validatesChangeStreamTimestampOptionPairs() {
+        Map<String, String> missing = changeStreamOptions("full");
+        missing.put("scan.startup.mode", "timestamp");
+        assertThatThrownBy(() -> source(SCHEMA, missing))
+                .hasStackTraceContaining("scan.startup.timestamp-millis is required");
+
+        Map<String, String> stray = changeStreamOptions("full");
+        stray.put("scan.startup.timestamp-millis", "1000");
+        assertThatThrownBy(() -> source(SCHEMA, stray)).hasStackTraceContaining("may be set only");
+
+        Map<String, String> fallback = changeStreamOptions("full");
+        fallback.put("scan.resume-fallback.timestamp-millis", "1000");
+        assertThatThrownBy(() -> source(SCHEMA, fallback))
+                .hasStackTraceContaining("requires scan.resume-fallback.mode=timestamp");
+    }
+
+    private static Map<String, String> changeStreamOptions(String changelogMode) {
+        Map<String, String> options = options();
+        options.put("scan.mode", "change-stream");
+        options.put("scan.change-stream.name", "people_changes");
+        options.put("scan.change-stream.changelog-mode", changelogMode);
+        return options;
     }
 
     @Test

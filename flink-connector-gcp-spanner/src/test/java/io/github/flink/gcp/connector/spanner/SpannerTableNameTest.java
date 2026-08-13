@@ -89,6 +89,34 @@ class SpannerTableNameTest {
     }
 
     @Test
+    void matchesLegacyMultipartNativeNamesWithoutReinterpretingTheConfiguredTable() {
+        SpannerTableName google =
+                SpannerTableName.of(null, "analytics.people", Dialect.GOOGLE_STANDARD_SQL);
+        SpannerTableName postgres =
+                SpannerTableName.of(null, "Analytics.People", Dialect.POSTGRESQL);
+
+        assertThat(google.matchesNativeApiName("analytics.people")).isTrue();
+        assertThat(google.matchesNativeApiName("other.people")).isFalse();
+        assertThat(postgres.matchesNativeApiName("Analytics.People")).isTrue();
+        assertThat(postgres.matchesNativeApiName("analytics.people")).isFalse();
+    }
+
+    @Test
+    void matchesExplicitNamesByDialectAwareSchemaAndTableComponents() {
+        SpannerTableName google =
+                SpannerTableName.of("Analytics", "People", Dialect.GOOGLE_STANDARD_SQL);
+        SpannerTableName postgres =
+                SpannerTableName.of("\"Analytics\"", "\"People\"", Dialect.POSTGRESQL);
+
+        assertThat(google.matchesNativeApiName("analytics.people")).isTrue();
+        assertThat(google.matchesNativeApiName("other.people")).isFalse();
+        assertThat(google.matchesNativeApiName("analytics.other")).isFalse();
+        assertThat(postgres.matchesNativeApiName("Analytics.People")).isTrue();
+        assertThat(postgres.matchesNativeApiName("analytics.people")).isFalse();
+        assertThat(postgres.matchesNativeApiName("Other.People")).isFalse();
+    }
+
+    @Test
     void rejectsBlankMultipartAndDialectMismatchedIdentifiers() {
         assertThatThrownBy(() -> SpannerTableName.of(" ", "orders", Dialect.GOOGLE_STANDARD_SQL))
                 .isInstanceOf(ValidationException.class)

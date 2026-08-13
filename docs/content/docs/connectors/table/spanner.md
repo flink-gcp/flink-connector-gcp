@@ -22,7 +22,7 @@ limitations under the License.
 
 # Spanner SQL connector
 
-The `spanner` connector reads bounded Table API and SQL scans, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
+The `spanner` connector reads bounded Table API and SQL scans, emits unbounded Change Streams changelogs, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
 It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/spanner" >}}), so partitioning, snapshot, batching, retry, delivery, metrics, and failure behavior remain the same.
 
 ```sql
@@ -60,10 +60,10 @@ with application dependencies. DataStream applications should depend on
 
 ## Credentials
 
-`service-account-key-file` selects one service-account JSON key for the sink, bounded scan, and synchronous or asynchronous lookup paths.
+`service-account-key-file` selects one service-account JSON key for the sink, bounded scan, Change Streams scan, and synchronous or asynchronous lookup paths.
 When it and `emulator-endpoint` are absent, every path uses Application Default Credentials.
 The option stores only the path in the job graph and reads the file in each runtime process that creates a Spanner client.
-Sink and lookup jobs need the path on applicable TaskManagers, while a bounded scan needs it on the JobManager and applicable TaskManagers.
+Sink and lookup jobs need the path on applicable TaskManagers, while bounded and Change Streams scans need it on the JobManager and applicable TaskManagers.
 Mount the same configured path in all of those containers, including after a restart or restore.
 The option is mutually exclusive with `emulator-endpoint`; prefer an attached service account or Workload Identity when available.
 See the [DataStream credential deployment contract]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) for the exact process boundaries and failure behavior.
@@ -172,6 +172,46 @@ Partition count and size are service hints, not exact split controls.
 The default timestamp bound is strong; set either a read timestamp or exact staleness, never both.
 There are deliberately no column-range partition options because Spanner chooses partition boundaries from physical storage.
 
+## Change Streams scan behavior
+
+Set `scan.mode = 'change-stream'` to replace the bounded scan with an unbounded CDC source over one Spanner Change Stream.
+The default remains `bounded`, so existing DDL keeps its snapshot behavior.
+Change-stream mode maps the declared `schema` and `table` to the exact dialect-aware native table name and silently advances past records for other watched tables.
+It does not support lookup joins, projection or filter pushdown, bounded-scan partition and timestamp options, or lookup options.
+
+`scan.change-stream.changelog-mode` is required.
+`full` accepts only records captured with `NEW_ROW_AND_OLD_VALUES` and emits `INSERT`, adjacent `UPDATE_BEFORE` and `UPDATE_AFTER`, and full `DELETE` rows.
+For an update, the complete new row is copied and each reported old value replaces its new value to reconstruct the before row.
+`upsert` accepts `NEW_ROW` and `NEW_ROW_AND_OLD_VALUES`, requires a declared primary key, and emits `INSERT`, `UPDATE_AFTER`, and key-only `DELETE` rows.
+
+```sql
+CREATE TABLE order_changes (
+  order_id BIGINT,
+  customer STRING,
+  status STRING,
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'orders',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.name' = 'order_changes',
+  'scan.change-stream.changelog-mode' = 'upsert',
+  'scan.startup.mode' = 'latest'
+);
+```
+
+Each data-change record is validated against the DDL's physical names, native Spanner types, and, in upsert mode, primary-key column membership before any row from that record is emitted.
+Extra watched columns are ignored, while a missing declared column, a type mismatch, an incompatible value-capture mode, or an absent required row value fails deserialization.
+Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
+A conversion failure identifies the table, commit timestamp, transaction, record sequence, and mod index without including row JSON or credential paths.
+
+Startup, expired-restore fallback, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
+The checkpoint, retention, delivery, and capacity contracts therefore remain those of the [DataStream Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
+Readable metadata columns, source watermarks, and real-service Table API acceptance remain outside this slice.
+
 ## Lookup behavior
 
 The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
@@ -219,17 +259,27 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `schema` | *unset ⇒ empty GoogleSQL schema or PostgreSQL `public`* | Named schema containing the table; one canonical quoted or unquoted identifier component |
 | `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `schema` is set |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery |
-| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, and lookup paths; rejected with `emulator-endpoint` |
+| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, Change Streams scan, and lookup paths; rejected with `emulator-endpoint` |
 | `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
 | `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
+| `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits an unbounded CDC changelog |
+| `scan.change-stream.name` | **required in change-stream mode** | Change Stream whose generated read function supplies records |
+| `scan.change-stream.changelog-mode` | **required in change-stream mode** | `full` emits retract rows from `NEW_ROW_AND_OLD_VALUES`; `upsert` emits keyed upserts from `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` |
+| `scan.startup.mode` | `latest` | Fresh Change Streams start: `earliest`, `latest`, or `timestamp` |
+| `scan.startup.timestamp-millis` | *unset* | Unix epoch milliseconds required only when startup mode is `timestamp` |
+| `scan.resume-fallback.mode` | *unset ⇒ fail an expired restore* | Position used after discarding an expired restored ledger: `earliest`, `latest`, or `timestamp` |
+| `scan.resume-fallback.timestamp-millis` | *unset* | Unix epoch milliseconds required only when resume-fallback mode is `timestamp` |
+| `scan.change-stream.absent-retention-fallback` | `7 d` | Retention assumed when the Change Stream has no explicit retention row |
+| `scan.change-stream.heartbeat-interval` | `2 s` | Change Streams service heartbeat interval, from one second through five minutes |
+| `scan.max-concurrent-queries-per-subtask` | `8` | Maximum Change Streams partition queries opened concurrently by one source subtask |
 | `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; one canonical quoted or unquoted component in the configured schema, validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
 | `scan.partition.size` | *unset* | Desired partition size passed to Spanner as a hint |
 | `scan.data-boost-enabled` | `false` | Whether scans use Data Boost compute |
-| `scan.rpc-priority` | *unset ⇒ Spanner default* | Priority of scan RPCs |
+| `scan.rpc-priority` | *unset ⇒ bounded Spanner default; Change Streams `HIGH`* | Priority of scan or Change Streams partition-query RPCs |
 | `scan.timestamp-bound.read-timestamp` | *unset* | RFC 3339 snapshot timestamp; mutually exclusive with exact staleness |
 | `scan.timestamp-bound.exact-staleness` | *unset ⇒ strong read* | Exact age of the snapshot; mutually exclusive with read timestamp |
 | `scan.parallelism` | *unset ⇒ operator parallelism* | Flink's standard source parallelism override |

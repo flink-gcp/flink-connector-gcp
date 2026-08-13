@@ -78,6 +78,15 @@ public final class SpannerTableName implements Serializable {
         return table;
     }
 
+    /** Returns whether a native API table name identifies this table. */
+    public boolean matchesNativeApiName(String nativeApiName) {
+        String expected =
+                explicitlyQualified
+                        ? catalogKey(schema, table, dialect)
+                        : nativeApiKey(apiName, dialect);
+        return expected.equals(nativeApiKey(nativeApiName, dialect));
+    }
+
     /** Resolves an unqualified access-path option in this table's schema. */
     public AccessPathName accessPath(String value, String option) {
         if (!explicitlyQualified) {
