@@ -184,9 +184,10 @@ in the cause.
 
 ## Reading
 
-A `SELECT` is a **bounded scan** over the DataStream source — the same split planning, resumption
-and metrics that [page]({{< relref "docs/connectors/datastream/bigtable" >}}) describes — and it
-works in both batch and streaming jobs. The design record is
+With the default `scan.mode = bounded`, a `SELECT` is a **bounded scan** over the DataStream source
+— the same split planning, resumption and metrics that
+[page]({{< relref "docs/connectors/datastream/bigtable" >}}) describes — and it works in both batch
+and streaming jobs. The design record is
 [ADR-0092](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md).
 
 **Projection is pushed to the server as a family filter.** The query's retained column families
@@ -222,6 +223,96 @@ row.
 **The latest version of each cell is read.** Bigtable stores timestamped versions; the scan takes
 the newest per qualifier. A qualifier the declared family holds but the DDL does not name is
 ignored.
+
+### Change Streams
+
+Set `scan.mode = change-stream` to read the table's mutation log through the DataStream Change
+Streams source.
+The default remains `bounded`, so existing DDL keeps its current row-scan behavior.
+
+A Change Streams table is source-only and uses this exact physical schema:
+
+```sql
+CREATE TABLE profile_mutations (
+  row_key BYTES,
+  entries ARRAY<ROW<
+    entry_index INT,
+    kind STRING,
+    family STRING,
+    qualifier ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
+    `timestamp` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
+    `value` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
+    delete_range ROW<
+      start_bound STRING,
+      start_micros BIGINT,
+      end_bound STRING,
+      end_micros BIGINT
+    >
+  >>
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.changelog-mode' = 'envelope',
+  'scan.app-profile-id' = 'single-cluster-profile'
+);
+```
+
+The source emits one `INSERT` row per Bigtable mutation.
+`entries` retains the service order, and `entry_index` is its zero-based position in that list.
+The source rejects a primary key because two mutations for the same `row_key` are distinct log
+records rather than updates to one Flink row.
+
+| `kind` | `qualifier` | `timestamp` | `value` | `delete_range` |
+|---|---|---|---|---|
+| `SET_CELL` | `RAW_VALUE` | `RAW_TIMESTAMP` | `RAW_VALUE` | null |
+| `DELETE_CELLS` | `RAW_VALUE` | null | null | timestamp bounds |
+| `DELETE_FAMILY` | null | null | null | null |
+| `ADD_TO_CELL` | generic value | generic value | generic value | null |
+| `MERGE_TO_CELL` | generic value | generic value | generic value | null |
+
+A generic value sets `value_type` to `RAW_VALUE`, `RAW_TIMESTAMP`, or `INT64`.
+`RAW_VALUE` populates `bytes_value`; the other two populate `long_value`, with raw timestamps in
+microseconds.
+Delete bounds use `OPEN`, `CLOSED`, or `UNBOUNDED`, and an unbounded endpoint has a null micros
+field.
+Fields that do not apply to an entry kind are null.
+If a later client library introduces an entry or value subtype the converter does not know, the
+job fails with that subtype's class name instead of emitting an incomplete row.
+
+The envelope is a mutation record, not a reconstructed Bigtable row.
+Bigtable does not supply before or complete after images, so a cell or family deletion remains an
+inserted envelope row rather than a Flink `DELETE` or `UPDATE`.
+A table-shaped upsert interpretation is tracked separately in
+[#603]({{< param BookRepo >}}/issues/603).
+
+The application profile is required and must route to one cluster, as on the DataStream source.
+The emulator is rejected because it does not implement Change Streams.
+Row ranges, the HBase-compatible cell codec, lookup options, projection pushdown, and filter
+pushdown belong to the bounded source and are not Change Streams settings.
+The factory rejects those options in Change Streams mode and rejects Change Streams options in
+bounded mode.
+
+An absent `scan.startup.mode` retains the DataStream builder's latest-position default.
+Choose `earliest` or `timestamp`; the timestamp mode also requires
+`scan.startup.timestamp-millis`.
+Restored checkpoint state wins over that fresh-start setting.
+If a restored continuation has expired, the job fails unless
+`scan.resume-fallback.mode` explicitly opts into `earliest`, `latest`, or a timestamp
+with `scan.resume-fallback.timestamp-millis`.
+This restore contract is [ADR-0094](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
+
+Set `scan.end-timestamp-millis` to make the source bounded; without it the source is continuous.
+`scan.max-concurrent-streams-per-subtask` bounds open partition reads in each source subtask and
+keeps the DataStream builder's default of two when absent.
+Source parallelism multiplied by that value is configured job capacity, not a Bigtable quota.
+
+This first envelope surface carries mutation contents only.
+Commit-time and stream-position metadata are staged in
+[#601]({{< param BookRepo >}}/issues/601), and safe stream-wide source watermarks require the
+separate frontier design in [#604]({{< param BookRepo >}}/issues/604).
 
 ### Filter pushdown
 
@@ -360,7 +451,7 @@ source of truth. Lookup options are table-layer or Flink-owned instead. An optio
 DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
 the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 
-`null-string-literal`, `scan.row-key-encoding`, `lookup.async`,
+`scan.mode`, `null-string-literal`, `scan.row-key-encoding`, `lookup.async`,
 `sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to the table layer
 because they configure its codec, runtime shape or planner contract rather than a DataStream
 builder.
@@ -380,12 +471,20 @@ builder.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `scan.app-profile-id` | String | `BigtableSource.builder()`'s `appProfileId(...)`. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
+| `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter |
+| `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
 | `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
 | `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with every range |
 | `scan.row-range.start-closed` | String | The inclusive decoded start key of the legacy single `rowRange(...)`. Either bound may be given alone |
 | `scan.row-range.end-open` | String | The exclusive decoded end key of that range |
 | `scan.row-ranges` | String | Additional `[start,end)` ranges separated by unescaped `;`. Either endpoint may be omitted. Backslash escapes grammar characters inside UTF-8 endpoints |
+| `scan.change-stream.changelog-mode` | Enum | Required as `envelope` in Change Streams mode; selects the fixed insert-only generic mutation envelope |
+| `scan.startup.mode` | Enum | `startPosition(...)`: `earliest`, `latest`, or `timestamp`. Unset retains the builder's latest default |
+| `scan.startup.timestamp-millis` | Long | Epoch-millisecond instant paired with startup mode `timestamp` |
+| `scan.resume-fallback.mode` | Enum | `resumeFallback(...)`: explicit fallback for an expired restored continuation; uses the same three modes |
+| `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
+| `scan.end-timestamp-millis` | Long | `endTime(...)`; makes Change Streams bounded at the epoch-millisecond instant |
+| `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Lookup

@@ -48,6 +48,7 @@ class BigtableConnectorOptionsTest {
             new HashSet<>(
                     Arrays.asList(
                             BigtableConnectorOptions.NULL_STRING_LITERAL.key(),
+                            BigtableConnectorOptions.SCAN_MODE.key(),
                             BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING.key(),
                             BigtableConnectorOptions.LOOKUP_ASYNC.key(),
                             BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE.key(),
@@ -137,6 +138,17 @@ class BigtableConnectorOptionsTest {
                 .isEqualTo(InsertOnlyInputMode.UPSERT);
         assertThat(InsertOnlyInputMode.UPSERT).hasToString("upsert");
         assertThat(InsertOnlyInputMode.INSERT_ONLY).hasToString("insert-only");
+    }
+
+    @Test
+    void scanModeDefaultsToTheExistingBoundedSource() {
+        assertThat(BigtableConnectorOptions.SCAN_MODE.defaultValue()).isEqualTo(ScanMode.BOUNDED);
+        assertThat(ScanMode.BOUNDED).hasToString("bounded");
+        assertThat(ScanMode.CHANGE_STREAM).hasToString("change-stream");
+        assertThat(ChangeStreamChangelogMode.ENVELOPE).hasToString("envelope");
+        assertThat(ChangeStreamStartMode.EARLIEST).hasToString("earliest");
+        assertThat(ChangeStreamStartMode.LATEST).hasToString("latest");
+        assertThat(ChangeStreamStartMode.TIMESTAMP).hasToString("timestamp");
     }
 
     @Test

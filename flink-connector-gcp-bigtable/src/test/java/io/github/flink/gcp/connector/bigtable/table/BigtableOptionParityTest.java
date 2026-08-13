@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
 import org.junit.jupiter.api.Test;
 
@@ -55,11 +56,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * carrying an exemption set, and each entry states why the setter has no DDL form; because the
  * assertion is a set equality against the union, an exemption that stops being true fails too.
  *
- * <p>Four surfaces: the writer options, the sink builder, the table-creation options, and — since
- * the {@code scan.*} options arrived with the table source — {@code BigtableSourceBuilder}. The
- * destination and the emulator endpoint legitimately feed both directions' builders, so the
- * no-two-setters rule holds within each direction and the cross-direction overlap is pinned to
- * exactly those keys.
+ * <p>Five surfaces: the writer options, the sink builder, the table-creation options, the bounded
+ * {@code BigtableSourceBuilder}, and the {@code BigtableChangeStreamSourceBuilder}. The two source
+ * builders are alternative scan modes, so their shared destination/profile/credential keys are
+ * pinned explicitly rather than treated as two setters in one runtime path.
  */
 class BigtableOptionParityTest {
 
@@ -153,6 +153,30 @@ class BigtableOptionParityTest {
         return Collections.unmodifiableMap(map);
     }
 
+    /** {@code BigtableChangeStreamSourceBuilder}: setters a Change Streams DDL can reach. */
+    private static final Map<String, ConfigOption<?>> CHANGE_STREAM_SOURCE_BUILDER =
+            changeStreamSourceBuilder();
+
+    private static Map<String, ConfigOption<?>> changeStreamSourceBuilder() {
+        Map<String, ConfigOption<?>> map = new LinkedHashMap<>();
+        map.put("table", BigtableConnectorOptions.TABLE);
+        map.put("appProfileId", BigtableConnectorOptions.SCAN_APP_PROFILE_ID);
+        map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
+        map.put("startPosition", BigtableConnectorOptions.SCAN_STARTUP_MODE);
+        map.put("resumeFallback", BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE);
+        map.put("endTime", BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS);
+        map.put(
+                "maxConcurrentStreamsPerSubtask",
+                BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK);
+        return Collections.unmodifiableMap(map);
+    }
+
+    /** Change Streams builder setters supplied structurally rather than by one option. */
+    private static final Map<String, String> CHANGE_STREAM_SOURCE_BUILDER_NO_DDL =
+            Collections.singletonMap(
+                    "deserializer",
+                    "the table layer supplies the generic mutation-envelope RowData converter");
+
     /** {@code TableCreateOptions.Builder}: the one setter, which the DDL feeds structurally. */
     private static final Map<String, String> TABLE_CREATE_NO_DDL =
             Collections.singletonMap(
@@ -184,6 +208,18 @@ class BigtableOptionParityTest {
                 BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING.key(),
                 "selects how the table factory decodes scan bounds before it calls the source"
                         + " builder");
+        map.put(
+                BigtableConnectorOptions.SCAN_MODE.key(),
+                "selects the bounded or Change Streams source builder");
+        map.put(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE.key(),
+                "selects and makes explicit the generic mutation envelope's planner contract");
+        map.put(
+                BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS.key(),
+                "is the instant component of the StartPosition passed to startPosition(...)");
+        map.put(
+                BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS.key(),
+                "is the instant component of the StartPosition passed to resumeFallback(...)");
         map.put(
                 BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS.key(),
                 "builds the GcRule every created family takes");
@@ -258,6 +294,14 @@ class BigtableOptionParityTest {
     }
 
     @Test
+    void everyChangeStreamSourceBuilderKnobIsMappedOrExempt() {
+        Set<String> expected = new LinkedHashSet<>(CHANGE_STREAM_SOURCE_BUILDER.keySet());
+        expected.addAll(CHANGE_STREAM_SOURCE_BUILDER_NO_DDL.keySet());
+
+        assertThat(publicSettersOf(BigtableChangeStreamSourceBuilder.class)).isEqualTo(expected);
+    }
+
+    @Test
     void noOptionFeedsTwoSettersOfOneDirection() {
         List<String> sinkKeys =
                 java.util.stream.Stream.concat(
@@ -271,6 +315,28 @@ class BigtableOptionParityTest {
 
         assertThat(sinkKeys).doesNotHaveDuplicates();
         assertThat(sourceKeys).doesNotHaveDuplicates();
+        assertThat(
+                        CHANGE_STREAM_SOURCE_BUILDER.values().stream()
+                                .map(ConfigOption::key)
+                                .collect(Collectors.toList()))
+                .doesNotHaveDuplicates();
+    }
+
+    @Test
+    void sourceModesShareExactlyTableProfileAndCredentials() {
+        Set<String> bounded =
+                SOURCE_BUILDER.values().stream().map(ConfigOption::key).collect(Collectors.toSet());
+        Set<String> shared =
+                CHANGE_STREAM_SOURCE_BUILDER.values().stream()
+                        .map(ConfigOption::key)
+                        .filter(bounded::contains)
+                        .collect(Collectors.toSet());
+
+        assertThat(shared)
+                .containsExactlyInAnyOrder(
+                        BigtableConnectorOptions.TABLE.key(),
+                        BigtableConnectorOptions.SCAN_APP_PROFILE_ID.key(),
+                        BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key());
     }
 
     @Test
@@ -299,6 +365,7 @@ class BigtableOptionParityTest {
         WRITER_OPTIONS.values().forEach(o -> mapped.add(o.key()));
         SINK_BUILDER.values().forEach(o -> mapped.add(o.key()));
         SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
+        CHANGE_STREAM_SOURCE_BUILDER.values().forEach(o -> mapped.add(o.key()));
         mapped.addAll(NOT_A_SETTER.keySet());
 
         Set<String> declared = declaredKeys();

@@ -35,8 +35,12 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.TableCreateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
+import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamEnvelopeSchema;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
+import io.github.flink.gcp.connector.bigtable.table.source.ChangeStreamStartPositionMapper;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -59,7 +63,9 @@ import java.util.Set;
  *
  * <p>Nothing here reads the session configuration. The Bigtable sink is at-least-once in both
  * execution modes, the source is a bounded scan, and neither has a rule that depends on the runtime
- * mode or the checkpoint interval.
+ * mode or the checkpoint interval. A source selects either the bounded HBase-compatible row shape
+ * or the exact generic Change Streams mutation envelope; options for the other mode are rejected
+ * instead of ignored.
  */
 @Internal
 public class BigtableDynamicTableFactory
@@ -89,12 +95,20 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.EMULATOR_ENDPOINT,
                         BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         BigtableConnectorOptions.NULL_STRING_LITERAL,
+                        BigtableConnectorOptions.SCAN_MODE,
                         BigtableConnectorOptions.SCAN_APP_PROFILE_ID,
                         BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
                         BigtableConnectorOptions.SCAN_ROW_PREFIX,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
                         BigtableConnectorOptions.SCAN_ROW_RANGES,
+                        BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                        BigtableConnectorOptions.SCAN_STARTUP_MODE,
+                        BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
+                        BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK,
                         FactoryUtil.SOURCE_PARALLELISM,
                         BigtableConnectorOptions.LOOKUP_ASYNC,
                         LookupOptions.CACHE_TYPE,
@@ -172,6 +186,143 @@ public class BigtableDynamicTableFactory
                 .build();
     }
 
+    private static DynamicTableSource createChangeStreamSource(
+            Context context, ReadableConfig config, DataType physicalDataType) {
+        BigtableChangeStreamEnvelopeSchema.validate(physicalDataType);
+        if (context.getPrimaryKeyIndexes().length > 0) {
+            throw new ValidationException(
+                    "A 'bigtable' Change Streams envelope is an insert-only mutation log and"
+                            + " must not declare a primary key.");
+        }
+        ChangeStreamChangelogMode changelogMode =
+                config.getOptional(BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                String.format(
+                                                        "Option '%s' is required when '%s' ="
+                                                                + " '%s'. Set it to '%s'.",
+                                                        BigtableConnectorOptions
+                                                                .SCAN_CHANGE_STREAM_CHANGELOG_MODE
+                                                                .key(),
+                                                        BigtableConnectorOptions.SCAN_MODE.key(),
+                                                        ScanMode.CHANGE_STREAM,
+                                                        ChangeStreamChangelogMode.ENVELOPE)));
+        if (changelogMode != ChangeStreamChangelogMode.ENVELOPE) {
+            throw new ValidationException(
+                    "Unsupported Bigtable Change Streams changelog mode " + changelogMode + ".");
+        }
+        String appProfileId =
+                config.getOptional(BigtableConnectorOptions.SCAN_APP_PROFILE_ID)
+                        .orElseThrow(
+                                () ->
+                                        new ValidationException(
+                                                String.format(
+                                                        "Option '%s' is required when '%s' ="
+                                                                + " '%s' because Bigtable Change"
+                                                                + " Streams require a single-cluster"
+                                                                + " application profile.",
+                                                        BigtableConnectorOptions.SCAN_APP_PROFILE_ID
+                                                                .key(),
+                                                        BigtableConnectorOptions.SCAN_MODE.key(),
+                                                        ScanMode.CHANGE_STREAM)));
+        if (appProfileId.isBlank()) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' must not be blank.",
+                            BigtableConnectorOptions.SCAN_APP_PROFILE_ID.key()));
+        }
+        Integer maxConcurrentStreams =
+                config.getOptional(BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK)
+                        .orElse(null);
+        if (maxConcurrentStreams != null && maxConcurrentStreams <= 0) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' must be positive, but was %d.",
+                            BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK.key(),
+                            maxConcurrentStreams));
+        }
+
+        return new BigtableChangeStreamDynamicSource(
+                TableDestination.of(
+                        config.get(BigtableConnectorOptions.PROJECT),
+                        config.get(BigtableConnectorOptions.INSTANCE),
+                        config.get(BigtableConnectorOptions.TABLE)),
+                appProfileId,
+                config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
+                ChangeStreamStartPositionMapper.map(
+                        config,
+                        BigtableConnectorOptions.SCAN_STARTUP_MODE,
+                        BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS),
+                ChangeStreamStartPositionMapper.map(
+                        config,
+                        BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
+                        BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS),
+                config.getOptional(BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS)
+                        .map(millis -> Instant.ofEpochMilli(millis.longValue()))
+                        .orElse(null),
+                maxConcurrentStreams,
+                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
+                physicalDataType);
+    }
+
+    private static void validateSourceModeOptions(Context context, ScanMode scanMode) {
+        Set<String> configured = context.getCatalogTable().getOptions().keySet();
+        List<ConfigOption<?>> incompatible =
+                scanMode == ScanMode.CHANGE_STREAM
+                        ? boundedSourceOptions()
+                        : changeStreamSourceOptions();
+        List<String> present = new ArrayList<>();
+        for (ConfigOption<?> option : incompatible) {
+            if (configured.contains(option.key())) {
+                present.add("'" + option.key() + "'");
+            }
+        }
+        if (!present.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Options %s are not valid when '%s' = '%s'. Remove them or select the"
+                                    + " matching scan mode.",
+                            String.join(", ", present),
+                            BigtableConnectorOptions.SCAN_MODE.key(),
+                            scanMode));
+        }
+    }
+
+    private static List<ConfigOption<?>> changeStreamSourceOptions() {
+        return Arrays.asList(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                BigtableConnectorOptions.SCAN_STARTUP_MODE,
+                BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
+                BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
+                BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS,
+                BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK);
+    }
+
+    private static List<ConfigOption<?>> boundedSourceOptions() {
+        return Arrays.asList(
+                BigtableConnectorOptions.EMULATOR_ENDPOINT,
+                BigtableConnectorOptions.NULL_STRING_LITERAL,
+                BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
+                BigtableConnectorOptions.SCAN_ROW_PREFIX,
+                BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
+                BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
+                BigtableConnectorOptions.SCAN_ROW_RANGES,
+                BigtableConnectorOptions.LOOKUP_ASYNC,
+                LookupOptions.CACHE_TYPE,
+                LookupOptions.MAX_RETRIES,
+                LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
+                LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
+                LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
+                LookupOptions.PARTIAL_CACHE_MAX_ROWS,
+                LookupOptions.FULL_CACHE_RELOAD_STRATEGY,
+                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
+                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE,
+                LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
+                LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS);
+    }
+
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
@@ -180,6 +331,11 @@ public class BigtableDynamicTableFactory
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
+        ScanMode scanMode = config.get(BigtableConnectorOptions.SCAN_MODE);
+        validateSourceModeOptions(context, scanMode);
+        if (scanMode == ScanMode.CHANGE_STREAM) {
+            return createChangeStreamSource(context, config, physicalDataType);
+        }
         BigtableTableSchema schema =
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
         checkPrimaryKeyIsTheRowKey(context, schema);
