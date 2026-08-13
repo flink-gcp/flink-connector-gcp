@@ -46,6 +46,13 @@ limitations under the License.
             <artifactId>flink-connector-base</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <!-- The Table API factory SPI, DynamicTableSink, format interfaces and RowData
+                 structures used by the SQL sink. Flink distributions provide these classes. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
 
         <!-- Shared connector infrastructure: the retry schedule and status-code
              extraction (#61). -->
@@ -136,6 +143,36 @@ limitations under the License.
             <!-- Rate-limited source spanning checkpoints in the job integration tests. -->
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-connector-datagen</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- FactoryMocks, for driving the table factory without a planner. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-common</artifactId>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Planner used by the Table API integration tests. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-planner-loader</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- RowData runtime types used by planner-generated test code. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-table-runtime</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- Formats used to prove generic SerializationFormatFactory discovery. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-json</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-csv</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
