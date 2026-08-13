@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
@@ -37,6 +38,9 @@ import java.util.Optional;
 @PublicEvolving
 public final class BigtableChangeStreamSourceBuilder<T> {
 
+    /** Default maximum number of open partition streams in one source subtask. */
+    public static final int DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK = 2;
+
     @Nullable private TableDestination table;
     @Nullable private BigtableChangeStreamDeserializationSchema<T> deserializer;
     @Nullable private String appProfileId;
@@ -44,8 +48,10 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     private StartPosition startPosition = StartPosition.latest();
     private Optional<StartPosition> resumeFallback = Optional.empty();
     @Nullable private Instant endTime;
+    private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
     @Nullable private ChangeStreamOpener opener;
     @Nullable private ChangeStreamRestoreResolver restoreResolver;
+    @Nullable private ChangeStreamCoordinatorClient coordinatorClient;
 
     BigtableChangeStreamSourceBuilder() {}
 
@@ -110,6 +116,20 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Bounds the open {@code ReadChangeStream} RPCs in each source subtask. Source parallelism
+     * multiplied by this value is the job's configured read capacity, not a Bigtable quota. The
+     * default is {@value #DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK}.
+     *
+     * @param maximum positive per-subtask stream limit
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> maxConcurrentStreamsPerSubtask(int maximum) {
+        Preconditions.checkArgument(maximum > 0, "maximum must be positive");
+        this.maxConcurrentStreamsPerSubtask = maximum;
+        return this;
+    }
+
     @VisibleForTesting
     BigtableChangeStreamSourceBuilder<T> opener(ChangeStreamOpener opener) {
         this.opener = opener;
@@ -120,6 +140,13 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     BigtableChangeStreamSourceBuilder<T> restoreResolver(
             ChangeStreamRestoreResolver restoreResolver) {
         this.restoreResolver = restoreResolver;
+        return this;
+    }
+
+    @VisibleForTesting
+    BigtableChangeStreamSourceBuilder<T> coordinatorClient(
+            ChangeStreamCoordinatorClient coordinatorClient) {
+        this.coordinatorClient = coordinatorClient;
         return this;
     }
 
@@ -138,6 +165,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         startPosition,
                         resumeFallback,
                         endTime,
+                        maxConcurrentStreamsPerSubtask,
                         opener != null
                                 ? opener
                                 : new DataClientChangeStreamOpener(
@@ -145,6 +173,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         restoreResolver != null
                                 ? restoreResolver
                                 : new DefaultChangeStreamRestoreResolver(
-                                        table, appProfileId, serviceAccountKeyFile)));
+                                        table, appProfileId, serviceAccountKeyFile),
+                        coordinatorClient));
     }
 }

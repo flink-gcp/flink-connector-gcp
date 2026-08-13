@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.api.gax.rpc.ResponseObserver;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 
@@ -27,12 +29,15 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.time.Instant;
 
-/** Serializable seam that opens one {@code ReadChangeStream} RPC. */
+/** Serializable seam that opens asynchronous {@code ReadChangeStream} RPCs. */
 @Internal
 public interface ChangeStreamOpener extends Serializable, AutoCloseable {
 
-    ChangeStream open(
-            TableDestination table, ChangeStreamPartitionSplit split, @Nullable Instant endTime)
+    void open(
+            TableDestination table,
+            ChangeStreamPartitionSplit split,
+            @Nullable Instant endTime,
+            ResponseObserver<ChangeStreamRecord> observer)
             throws IOException;
 
     @Override

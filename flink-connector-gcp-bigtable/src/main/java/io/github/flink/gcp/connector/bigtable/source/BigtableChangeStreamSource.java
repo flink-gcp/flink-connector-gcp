@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChange
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.BigtableChangeStreamSplitEnumerator;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.BigtableChangeStreamReader;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
@@ -107,10 +108,14 @@ public final class BigtableChangeStreamSource<T>
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             BigtableChangeStreamEnumeratorState restored)
             throws Exception {
-        DefaultChangeStreamCoordinatorClient client =
-                new DefaultChangeStreamCoordinatorClient(
-                        config.table, config.appProfileId, config.serviceAccountKeyFile);
-        client.loadCredentials();
+        ChangeStreamCoordinatorClient client = config.coordinatorClient;
+        if (client == null) {
+            DefaultChangeStreamCoordinatorClient defaultClient =
+                    new DefaultChangeStreamCoordinatorClient(
+                            config.table, config.appProfileId, config.serviceAccountKeyFile);
+            defaultClient.loadCredentials();
+            client = defaultClient;
+        }
         return new BigtableChangeStreamSplitEnumerator(
                 context,
                 client,

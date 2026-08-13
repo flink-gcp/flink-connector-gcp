@@ -177,5 +177,6 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |
 | `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position after clearing its stale token. Without it, an expired restore fails |
 | `endTime` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
+| `maxConcurrentStreamsPerSubtask` | `2` | Bounds open `ReadChangeStream` RPCs in each source subtask. Source parallelism multiplied by this value is configured job-wide read capacity, not a Bigtable quota |
 
 There is no emulator option because the Bigtable emulator implements neither change-stream RPC.

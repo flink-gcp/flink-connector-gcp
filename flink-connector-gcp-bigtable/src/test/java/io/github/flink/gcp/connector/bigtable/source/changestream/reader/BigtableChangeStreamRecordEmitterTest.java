@@ -24,7 +24,6 @@ import org.apache.flink.util.Collector;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
@@ -61,6 +60,7 @@ class BigtableChangeStreamRecordEmitterTest {
                 TestChangeStreamRecords.mutation(commit, watermark, "mutation-token"),
                 output,
                 state);
+        metrics.assigned(Collections.singletonList(state.toSplit()), Collections.emptyList());
 
         assertThat(output.records()).containsExactly("row");
         assertThat(output.timestamps()).containsExactly(commit.toEpochMilli());
@@ -74,9 +74,8 @@ class BigtableChangeStreamRecordEmitterTest {
                                     .isEqualTo(BoundType.OPEN);
                         });
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
-        assertThat(counter(BigtableMetricNames.CHANGE_STREAM_MUTATIONS_READ)).isEqualTo(1);
-        assertThat(gauge(BigtableMetricNames.PARTITION_LOW_WATERMARK_MILLIS))
-                .isEqualTo(watermark.toEpochMilli());
+        assertThat(counter("changeStreamMutationsRead")).isEqualTo(1);
+        assertThat(gauge("partitionLowWatermarkMillis")).isEqualTo(watermark.toEpochMilli());
     }
 
     @Test
@@ -90,6 +89,7 @@ class BigtableChangeStreamRecordEmitterTest {
         emitter.emitRecord(
                 TestChangeStreamRecords.heartbeat(watermark, "heartbeat"), output, state);
         emitter.emitRecord(TestChangeStreamRecords.close("successor"), output, state);
+        metrics.assigned(Collections.singletonList(state.toSplit()), Collections.emptyList());
 
         assertThat(output.records()).isEmpty();
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
@@ -102,9 +102,8 @@ class BigtableChangeStreamRecordEmitterTest {
         assertThat(event.getSuccessors()).hasSize(1);
         assertThat(event.getSuccessors().get(0).getContinuationToken().getToken())
                 .isEqualTo("successor");
-        assertThat(counter(BigtableMetricNames.CHANGE_STREAM_HEARTBEATS_READ)).isEqualTo(1);
-        assertThat(gauge(BigtableMetricNames.PARTITION_LOW_WATERMARK_MILLIS))
-                .isEqualTo(watermark.toEpochMilli());
+        assertThat(counter("changeStreamHeartbeatsRead")).isEqualTo(1);
+        assertThat(gauge("partitionLowWatermarkMillis")).isEqualTo(watermark.toEpochMilli());
     }
 
     @Test
@@ -142,7 +141,7 @@ class BigtableChangeStreamRecordEmitterTest {
                 new CollectingSourceOutput<>(),
                 state());
 
-        assertThat(counter(BigtableMetricNames.RECORDS_SKIPPED)).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isEqualTo(1);
     }
 
     private long counter(String name) {

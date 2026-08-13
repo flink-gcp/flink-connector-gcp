@@ -49,11 +49,30 @@ public final class BigtableMetricNames {
     public static final String TABLES_CREATED = "tablesCreated";
     public static final String COLUMN_FAMILIES_ADDED = "columnFamiliesAdded";
 
-    // Registered by the scan source's reader (BigtableSourceReaderMetrics).
+    // Registered by the scan source's reader (BigtableSourceReaderMetrics) or the Change Streams
+    // reader (BigtableChangeStreamReaderMetrics), as named below.
     public static final String ROWS_READ = "rowsRead";
     public static final String CHANGE_STREAM_MUTATIONS_READ = "changeStreamMutationsRead";
     public static final String CHANGE_STREAM_HEARTBEATS_READ = "changeStreamHeartbeatsRead";
+    public static final String CHANGE_STREAM_READS_STARTED = "changeStreamReadsStarted";
+    public static final String ACTIVE_CHANGE_STREAM_READS = "activeChangeStreamReads";
+    public static final String QUEUED_CHANGE_STREAM_PARTITIONS = "queuedChangeStreamPartitions";
+    public static final String QUEUED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
+            "queuedChangeStreamPartitionLagMillis";
+    public static final String MISSED_HEARTBEAT_INTERVALS = "missedHeartbeatIntervals";
+    public static final String CHANGE_STREAM_CLOSE_STREAMS_READ = "changeStreamCloseStreamsRead";
+    public static final String CHANGE_STREAM_USER_MUTATIONS_READ = "changeStreamUserMutationsRead";
+    public static final String CHANGE_STREAM_GARBAGE_COLLECTION_MUTATIONS_READ =
+            "changeStreamGarbageCollectionMutationsRead";
     public static final String PARTITION_LOW_WATERMARK_MILLIS = "partitionLowWatermarkMillis";
+
+    // Registered by the Change Streams split enumerator.
+    public static final String CHANGE_STREAM_PARTITIONS_DISCOVERED =
+            "changeStreamPartitionsDiscovered";
+    public static final String CHANGE_STREAM_PARTITION_SPLITS = "changeStreamPartitionSplits";
+    public static final String CHANGE_STREAM_PARTITION_MERGES = "changeStreamPartitionMerges";
+    public static final String UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
+            "unassignedChangeStreamPartitionLagMillis";
     public static final String CHANGE_STREAM_PARTITIONS_RECONCILED =
             "changeStreamPartitionsReconciled";
     public static final String CHANGE_STREAM_TOKENLESS_RESTARTS = "changeStreamTokenlessRestarts";

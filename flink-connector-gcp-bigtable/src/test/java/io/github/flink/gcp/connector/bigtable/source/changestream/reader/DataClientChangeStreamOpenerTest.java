@@ -65,5 +65,7 @@ class DataClientChangeStreamOpenerTest {
         assertThat(partition.getStartKeyClosed()).isEqualTo(ByteString.EMPTY);
         assertThat(partition.getEndKeyCase()).isEqualTo(RowRange.EndKeyCase.END_KEY_OPEN);
         assertThat(partition.getEndKeyOpen()).isEqualTo(ByteString.EMPTY);
+        assertThat(request.getHeartbeatDuration().getSeconds()).isEqualTo(5);
+        assertThat(request.getHeartbeatDuration().getNanos()).isZero();
     }
 }

@@ -241,6 +241,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   immutable collection implementations that Flink's reflective Kryo path cannot copy. The
   `ChangeStreamMutationDeserializationSchema` therefore treats the immutable model as copy-safe and
   uses its Java-serialization contract for network boundaries (#533).
+- **Concurrency is a reader-subtask bound, not a service quota** (`docs/adr/0103`). The enumerator
+  assigns the absolute free-slot count a reader advertises; the reader keeps excess restored or
+  successor splits in FIFO order and rotates at emitted heartbeats. Each active read has at most
+  one outstanding response, and the shared handover queue has the same bound as active reads.
+  Remove a response before requesting the next one, and keep the physical read slot occupied until
+  a cancelled RPC actually terminates.
+- **Delivered and emitted positions remain separate for every active Change Streams partition.**
+  Only the task thread advances checkpointed state. An RPC failure retains the emitted split and
+  fails the task without reporting a transition; connector cancellation can rotate or close a read
+  but never completes it. Reader lag gauges use the minimum checkpointed assigned position, and
+  enumerator lag uses the oldest unassigned position; both clamp clock skew and overflow.
 
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`; shared rules `docs/adr/0014`)
 

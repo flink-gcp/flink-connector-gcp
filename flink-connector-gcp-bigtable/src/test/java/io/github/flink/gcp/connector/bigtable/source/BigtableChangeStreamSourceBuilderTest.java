@@ -22,11 +22,12 @@ import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.gax.rpc.ResponseObserver;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStream;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
@@ -35,7 +36,6 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Collections;
-import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -103,7 +103,10 @@ class BigtableChangeStreamSourceBuilderTest {
     @Test
     void sourceConfigurationSurvivesJobSubmissionSerialization() throws Exception {
         BigtableChangeStreamSource<ChangeStreamMutation> source =
-                minimal().serviceAccountKeyFile("/var/run/secrets/bigtable.json").build();
+                minimal()
+                        .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
+                        .maxConcurrentStreamsPerSubtask(3)
+                        .build();
 
         byte[] serialized = InstantiationUtil.serializeObject(source);
         Object restored =
@@ -114,6 +117,18 @@ class BigtableChangeStreamSourceBuilderTest {
         assertThat(restoredSource.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
         assertThat(restoredSource.getConfig().getServiceAccountKeyFile())
                 .isEqualTo("/var/run/secrets/bigtable.json");
+        assertThat(restoredSource.getConfig().getMaxConcurrentStreamsPerSubtask()).isEqualTo(3);
+    }
+
+    @Test
+    void usesTwoConcurrentStreamsByDefaultAndRejectsNonPositiveLimits() {
+        assertThat(minimal().build().getConfig().getMaxConcurrentStreamsPerSubtask()).isEqualTo(2);
+        assertThatThrownBy(() -> minimal().maxConcurrentStreamsPerSubtask(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maximum must be positive");
+        assertThatThrownBy(() -> minimal().maxConcurrentStreamsPerSubtask(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maximum must be positive");
     }
 
     @Test
@@ -141,32 +156,11 @@ class BigtableChangeStreamSourceBuilderTest {
 
     private static final class NoOpChangeStreamOpener implements ChangeStreamOpener {
         @Override
-        public ChangeStream open(
-                TableDestination table, ChangeStreamPartitionSplit split, Instant endTime) {
-            return new ChangeStream() {
-                private final CountDownLatch cancelled = new CountDownLatch(1);
-
-                @Override
-                public com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord next() {
-                    try {
-                        cancelled.await();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                    return null;
-                }
-
-                @Override
-                public void cancel() {
-                    cancelled.countDown();
-                }
-
-                @Override
-                public void close() {
-                    cancel();
-                }
-            };
-        }
+        public void open(
+                TableDestination table,
+                ChangeStreamPartitionSplit split,
+                Instant endTime,
+                ResponseObserver<ChangeStreamRecord> observer) {}
 
         @Override
         public void close() throws IOException {}

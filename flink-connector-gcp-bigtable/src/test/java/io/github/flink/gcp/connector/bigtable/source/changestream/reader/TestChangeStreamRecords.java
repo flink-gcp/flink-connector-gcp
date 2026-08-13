@@ -26,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.Change
 import com.google.cloud.bigtable.data.v2.models.CloseStream;
 import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Heartbeat;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
 
@@ -43,13 +44,26 @@ final class TestChangeStreamRecords {
         return (ChangeStreamMutation) builder.finishChangeStreamMutation(token, watermark);
     }
 
+    static ChangeStreamMutation garbageCollectionMutation(
+            Instant commit, Instant watermark, String token) {
+        ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
+                new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
+        builder.startGcMutation(ByteString.copyFromUtf8("row"), commit, 0);
+        builder.deleteFamily("family");
+        return (ChangeStreamMutation) builder.finishChangeStreamMutation(token, watermark);
+    }
+
     static Heartbeat heartbeat(Instant watermark, String token) {
+        return heartbeat(watermark, token, ByteStringRange.create("a", "z"));
+    }
+
+    static Heartbeat heartbeat(Instant watermark, String token, ByteStringRange partition) {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
                 new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
         return (Heartbeat)
                 builder.onHeartbeat(
                         ReadChangeStreamResponse.Heartbeat.newBuilder()
-                                .setContinuationToken(token("a", "z", token))
+                                .setContinuationToken(token(partition, token))
                                 .setEstimatedLowWatermark(timestamp(watermark))
                                 .build());
     }
@@ -84,8 +98,31 @@ final class TestChangeStreamRecords {
     }
 
     private static StreamContinuationToken token(String start, String end, String token) {
+        return token(ByteStringRange.create(start, end), token);
+    }
+
+    private static StreamContinuationToken token(ByteStringRange partition, String token) {
+        RowRange.Builder range = RowRange.newBuilder();
+        if (partition.getStartBound()
+                != com.google.cloud.bigtable.data.v2.models.Range.BoundType.UNBOUNDED) {
+            if (partition.getStartBound()
+                    == com.google.cloud.bigtable.data.v2.models.Range.BoundType.OPEN) {
+                range.setStartKeyOpen(partition.getStart());
+            } else {
+                range.setStartKeyClosed(partition.getStart());
+            }
+        }
+        if (partition.getEndBound()
+                != com.google.cloud.bigtable.data.v2.models.Range.BoundType.UNBOUNDED) {
+            if (partition.getEndBound()
+                    == com.google.cloud.bigtable.data.v2.models.Range.BoundType.CLOSED) {
+                range.setEndKeyClosed(partition.getEnd());
+            } else {
+                range.setEndKeyOpen(partition.getEnd());
+            }
+        }
         return StreamContinuationToken.newBuilder()
-                .setPartition(partition(start, end))
+                .setPartition(StreamPartition.newBuilder().setRowRange(range))
                 .setToken(token)
                 .build();
     }
