@@ -20,7 +20,6 @@ import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.OpenContext;
-import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
@@ -28,6 +27,8 @@ import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
+import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.util.Collector;
 
@@ -70,24 +71,29 @@ class SpannerChangeStreamSourceRescalingITCase {
     void rescalingRedistributesQueriesAndPreservesQueuedPartitionProgress() throws Exception {
         String firstRun = UUID.randomUUID().toString();
         JobClient firstJob = run(firstRun, 1, 6, null);
-        String firstSavepoint = savepointAfter(firstJob, firstRun, PARTITIONS);
+        String firstSavepoint = savepointAfter(firstJob, firstRun, PARTITIONS, true);
         Map<String, Long> firstPositions = RecordingMap.positions(firstRun);
+        long firstFrontier = assertAdvancedSourceWatermark(firstRun, firstPositions);
 
         String scaleOutRun = UUID.randomUUID().toString();
         JobClient scaleOutJob = run(scaleOutRun, 3, 2, firstSavepoint);
-        String scaleOutSavepoint = savepointAfter(scaleOutJob, scaleOutRun, PARTITIONS);
+        String scaleOutSavepoint = savepointAfter(scaleOutJob, scaleOutRun, PARTITIONS, true);
         Map<String, Long> scaleOutPositions = RecordingMap.positions(scaleOutRun);
-        assertAdvancedByOne(firstPositions, scaleOutPositions);
+        assertAdvancedBy(firstPositions, scaleOutPositions, 2);
+        assertRestoredWatermarksAtLeast(scaleOutRun, firstFrontier);
+        long scaleOutFrontier = assertAdvancedSourceWatermark(scaleOutRun, scaleOutPositions);
+        assertThat(scaleOutFrontier).isGreaterThan(firstFrontier);
         assertThat(RecordingMap.subtaskCounts(scaleOutRun))
                 .containsExactlyInAnyOrderEntriesOf(Map.of(0, 2L, 1, 2L, 2, 2L));
 
         String constrainedRun = UUID.randomUUID().toString();
         JobClient constrainedJob = run(constrainedRun, 1, 2, scaleOutSavepoint);
-        String constrainedSavepoint = savepointAfter(constrainedJob, constrainedRun, 2);
+        String constrainedSavepoint = savepointAfter(constrainedJob, constrainedRun, 2, false);
         Map<String, Long> constrainedPositions = RecordingMap.positions(constrainedRun);
+        assertRestoredWatermarksAtLeast(constrainedRun, scaleOutFrontier);
         assertThat(constrainedPositions).hasSize(2);
         for (Map.Entry<String, Long> entry : constrainedPositions.entrySet()) {
-            assertThat(entry.getValue()).isEqualTo(scaleOutPositions.get(entry.getKey()) + 1);
+            assertThat(entry.getValue()).isEqualTo(scaleOutPositions.get(entry.getKey()) + 2);
         }
 
         String expandedRun = UUID.randomUUID().toString();
@@ -95,9 +101,10 @@ class SpannerChangeStreamSourceRescalingITCase {
         try {
             awaitRecords(expandedJob, expandedRun, PARTITIONS);
             Map<String, Long> expandedPositions = RecordingMap.positions(expandedRun);
+            assertRestoredWatermarksAtLeast(expandedRun, scaleOutFrontier);
             assertThat(expandedPositions).hasSize(PARTITIONS);
             for (Map.Entry<String, Long> entry : expandedPositions.entrySet()) {
-                long expectedAdvance = constrainedPositions.containsKey(entry.getKey()) ? 2 : 1;
+                long expectedAdvance = constrainedPositions.containsKey(entry.getKey()) ? 4 : 2;
                 assertThat(entry.getValue())
                         .as("restored position for %s", entry.getKey())
                         .isEqualTo(scaleOutPositions.get(entry.getKey()) + expectedAdvance);
@@ -129,8 +136,11 @@ class SpannerChangeStreamSourceRescalingITCase {
                         WatermarkStrategy.noWatermarks(),
                         "spanner-change-stream")
                 .uid("spanner-change-stream")
-                .map(new RecordingMap(runId))
+                .process(new RecordingMap(runId))
                 .uid("recording-map")
+                .keyBy(SpannerChangeStreamSourceRescalingITCase::partitionId)
+                .process(new WatermarkTimer(runId))
+                .uid("watermark-timer")
                 .sinkTo(new DiscardingSink<>())
                 .uid("discarding-sink");
         return env.executeAsync();
@@ -148,11 +158,15 @@ class SpannerChangeStreamSourceRescalingITCase {
                 .build();
     }
 
-    private static String savepointAfter(JobClient job, String runId, int expected)
+    private static String savepointAfter(
+            JobClient job, String runId, int expected, boolean requireAdvancedWatermarks)
             throws Exception {
         boolean saved = false;
         try {
             awaitRecords(job, runId, expected);
+            if (requireAdvancedWatermarks) {
+                awaitAdvancedWatermarks(job, runId, expected);
+            }
             String path =
                     job.stopWithSavepoint(
                                     false,
@@ -181,6 +195,23 @@ class SpannerChangeStreamSourceRescalingITCase {
                                 + RecordingMap.observations(runId));
     }
 
+    private static void awaitAdvancedWatermarks(JobClient job, String runId, int expected)
+            throws InterruptedException {
+        await(
+                expected + " event-time timers in run " + runId,
+                WAIT,
+                () ->
+                        RecordingMap.advancedWatermarks(runId).size() == expected
+                                || recordsArrivedOrJobHealthy(job, runId, expected + 1),
+                () ->
+                        "job status: "
+                                + jobStatus(job)
+                                + "; observations: "
+                                + RecordingMap.observations(runId)
+                                + "; advanced watermarks: "
+                                + RecordingMap.advancedWatermarks(runId));
+    }
+
     private static boolean recordsArrivedOrJobHealthy(JobClient job, String runId, int expected) {
         if (RecordingMap.positions(runId).size() == expected) {
             return true;
@@ -204,13 +235,35 @@ class SpannerChangeStreamSourceRescalingITCase {
         throw new AssertionError("Job terminated with " + status + " before all records arrived.");
     }
 
-    private static void assertAdvancedByOne(Map<String, Long> earlier, Map<String, Long> later) {
+    private static void assertAdvancedBy(
+            Map<String, Long> earlier, Map<String, Long> later, long expectedAdvance) {
         assertThat(later).hasSameSizeAs(earlier);
         for (Map.Entry<String, Long> entry : later.entrySet()) {
             assertThat(entry.getValue())
                     .as("restored position for %s", entry.getKey())
-                    .isEqualTo(earlier.get(entry.getKey()) + 1);
+                    .isEqualTo(earlier.get(entry.getKey()) + expectedAdvance);
         }
+    }
+
+    private static long assertAdvancedSourceWatermark(String runId, Map<String, Long> positions) {
+        assertThat(RecordingMap.advancedWatermarks(runId)).hasSize(PARTITIONS);
+        long frontier =
+                RecordingMap.advancedWatermarks(runId).stream()
+                        .mapToLong(Long::longValue)
+                        .max()
+                        .orElseThrow();
+        assertThat(frontier).isGreaterThanOrEqualTo(Collections.max(positions.values()));
+        return frontier;
+    }
+
+    private static void assertRestoredWatermarksAtLeast(String runId, long restoredFrontier) {
+        assertThat(RecordingMap.watermarks(runId))
+                .isNotEmpty()
+                .allMatch(watermark -> watermark >= restoredFrontier);
+    }
+
+    private static String partitionId(String value) {
+        return value.substring(0, value.indexOf('|'));
     }
 
     private static String jobStatus(JobClient job) {
@@ -262,11 +315,13 @@ class SpannerChangeStreamSourceRescalingITCase {
         }
     }
 
-    private static final class RecordingMap extends RichMapFunction<String, String> {
+    private static final class RecordingMap extends ProcessFunction<String, String> {
 
         private static final long serialVersionUID = 1L;
 
         private static final Map<String, List<Observation>> OBSERVATIONS =
+                new ConcurrentHashMap<>();
+        private static final Map<String, List<Long>> ADVANCED_WATERMARKS =
                 new ConcurrentHashMap<>();
 
         private final String runId;
@@ -282,9 +337,12 @@ class SpannerChangeStreamSourceRescalingITCase {
         }
 
         @Override
-        public String map(String value) {
-            observations(runId).add(new Observation(value, subtask));
-            return value;
+        public void processElement(String value, Context context, Collector<String> out) {
+            observations(runId)
+                    .add(
+                            new Observation(
+                                    value, subtask, context.timerService().currentWatermark()));
+            out.collect(value);
         }
 
         private static List<Observation> observations(String runId) {
@@ -312,8 +370,44 @@ class SpannerChangeStreamSourceRescalingITCase {
             }
         }
 
+        private static List<Long> watermarks(String runId) {
+            synchronized (observations(runId)) {
+                return observations(runId).stream()
+                        .map(observation -> observation.watermark)
+                        .collect(Collectors.toList());
+            }
+        }
+
+        private static List<Long> advancedWatermarks(String runId) {
+            return ADVANCED_WATERMARKS.computeIfAbsent(
+                    runId, unused -> Collections.synchronizedList(new ArrayList<>()));
+        }
+
         private static void forget(String runId) {
             OBSERVATIONS.remove(runId);
+            ADVANCED_WATERMARKS.remove(runId);
+        }
+    }
+
+    private static final class WatermarkTimer extends KeyedProcessFunction<String, String, String> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final String runId;
+
+        private WatermarkTimer(String runId) {
+            this.runId = runId;
+        }
+
+        @Override
+        public void processElement(String value, Context context, Collector<String> out) {
+            context.timerService().registerEventTimeTimer(context.timestamp());
+            out.collect(value);
+        }
+
+        @Override
+        public void onTimer(long timestamp, OnTimerContext context, Collector<String> out) {
+            RecordingMap.advancedWatermarks(runId).add(context.timerService().currentWatermark());
         }
     }
 
@@ -321,15 +415,17 @@ class SpannerChangeStreamSourceRescalingITCase {
 
         private final String value;
         private final int subtask;
+        private final long watermark;
 
-        private Observation(String value, int subtask) {
+        private Observation(String value, int subtask, long watermark) {
             this.value = value;
             this.subtask = subtask;
+            this.watermark = watermark;
         }
 
         @Override
         public String toString() {
-            return value + "@" + subtask;
+            return value + "@" + subtask + "#" + watermark;
         }
     }
 }

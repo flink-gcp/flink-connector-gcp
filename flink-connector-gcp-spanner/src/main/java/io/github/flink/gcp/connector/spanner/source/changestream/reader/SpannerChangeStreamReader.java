@@ -39,6 +39,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgre
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 
 import java.io.IOException;
@@ -73,6 +74,9 @@ public final class SpannerChangeStreamReader<T>
     private boolean coordinatorInitialized;
     private boolean requestOutstanding;
     private boolean noMoreSplits;
+    private long pendingSourceWatermark = Long.MIN_VALUE;
+    private long emittedSourceWatermark = Long.MIN_VALUE;
+    private boolean sourceWatermarkPending;
     private volatile boolean closed;
 
     public SpannerChangeStreamReader(
@@ -131,21 +135,31 @@ public final class SpannerChangeStreamReader<T>
 
     @Override
     public void handleSourceEvents(SourceEvent sourceEvent) {
-        Preconditions.checkArgument(
-                sourceEvent instanceof SpannerChangeStreamInitializationEvent,
-                "Unsupported Spanner Change Streams reader event %s.",
-                sourceEvent);
-        SpannerChangeStreamInitializationEvent initialization =
-                (SpannerChangeStreamInitializationEvent) sourceEvent;
-        Preconditions.checkState(
-                !coordinatorInitialized,
-                "Spanner Change Streams reader received initialization more than once.");
-        if (initialization.shouldDiscardRestoredSplits()) {
-            queued.clear();
-            metrics.queued(queued);
+        if (sourceEvent instanceof SpannerChangeStreamInitializationEvent) {
+            SpannerChangeStreamInitializationEvent initialization =
+                    (SpannerChangeStreamInitializationEvent) sourceEvent;
+            Preconditions.checkState(
+                    !coordinatorInitialized,
+                    "Spanner Change Streams reader received initialization more than once.");
+            if (initialization.shouldDiscardRestoredSplits()) {
+                queued.clear();
+                metrics.queued(queued);
+            }
+            acceptSourceWatermark(initialization.getSourceWatermark());
+            coordinatorInitialized = true;
+            startAfterCoordinatorInitialization();
+            return;
         }
-        coordinatorInitialized = true;
-        startAfterCoordinatorInitialization();
+        if (sourceEvent instanceof SpannerChangeStreamWatermarkEvent) {
+            Preconditions.checkState(
+                    coordinatorInitialized,
+                    "Spanner Change Streams reader received a watermark before initialization.");
+            acceptSourceWatermark(
+                    ((SpannerChangeStreamWatermarkEvent) sourceEvent).getSourceWatermark());
+            return;
+        }
+        throw new IllegalArgumentException(
+                "Unsupported Spanner Change Streams reader event " + sourceEvent + ".");
     }
 
     private void startAfterCoordinatorInitialization() {
@@ -158,6 +172,16 @@ public final class SpannerChangeStreamReader<T>
 
     @Override
     public InputStatus pollNext(ReaderOutput<T> output) throws Exception {
+        if (sourceWatermarkPending) {
+            output.emitWatermark(new Watermark(pendingSourceWatermark));
+            emittedSourceWatermark = pendingSourceWatermark;
+            sourceWatermarkPending = false;
+            resetAvailability();
+            if (sourceWatermarkPending || firstAvailable() != null) {
+                return InputStatus.MORE_AVAILABLE;
+            }
+            return finished() ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
+        }
         ActiveQuery query = firstAvailable();
         if (query == null) {
             resetAvailability();
@@ -212,8 +236,6 @@ public final class SpannerChangeStreamReader<T>
             }
         } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
             watermark = later(watermark, record.position());
-            SourceOutput<T> splitOutput = output.createOutputForSplit(query.split.splitId());
-            splitOutput.emitWatermark(new Watermark(watermark.toEpochMilli()));
         } else if (record instanceof SpannerChangeStreamRecord.Children) {
             SpannerChangeStreamRecord.Children children =
                     (SpannerChangeStreamRecord.Children) record;
@@ -271,7 +293,7 @@ public final class SpannerChangeStreamReader<T>
     @Override
     public CompletableFuture<Void> isAvailable() {
         synchronized (availabilityLock) {
-            if (firstAvailable() != null || finished()) {
+            if (sourceWatermarkPending || firstAvailable() != null || finished()) {
                 return CompletableFuture.completedFuture(null);
             }
             return availability;
@@ -348,10 +370,28 @@ public final class SpannerChangeStreamReader<T>
 
     private void resetAvailability() {
         synchronized (availabilityLock) {
-            if (firstAvailable() == null && !finished() && availability.isDone()) {
+            if (!sourceWatermarkPending
+                    && firstAvailable() == null
+                    && !finished()
+                    && availability.isDone()) {
                 availability = new CompletableFuture<>();
             }
         }
+    }
+
+    private void acceptSourceWatermark(long sourceWatermark) {
+        Preconditions.checkArgument(
+                sourceWatermark >= pendingSourceWatermark,
+                "Spanner Change Streams source watermark moved backwards from %s to %s.",
+                pendingSourceWatermark,
+                sourceWatermark);
+        if (sourceWatermark <= emittedSourceWatermark
+                || sourceWatermark == pendingSourceWatermark) {
+            return;
+        }
+        pendingSourceWatermark = sourceWatermark;
+        sourceWatermarkPending = true;
+        signalAvailable();
     }
 
     private static Instant later(Instant left, Instant right) {

@@ -145,7 +145,7 @@ Its partition lifecycle, checkpoint recovery, and delivery semantics are under [
 | `startPosition` | `StartPosition.latest()` | Where a fresh ledger begins. Absolute, latest, and relative start positions resolve once on the coordinator |
 | `resumeFallback` | *unset ⇒ fail an expired restore* | Where to restart after restored partition positions fall outside retention. Setting it permits discarding the whole stale partition ledger and can lose the unavailable interval |
 | `absentRetentionFallback` | `7 days` | Retention to assume when `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` has no explicit retention row. It must be longer than the one-minute safety margin used at the moving retention boundary |
-| `heartbeatInterval` | `2 s` | Service heartbeat interval, from 1 second through 5 minutes. Heartbeats advance per-partition watermarks |
+| `heartbeatInterval` | `2 s` | Service heartbeat interval, from 1 second through 5 minutes. Heartbeats advance the coordinator's complete-ledger source watermark |
 | `rpcPriority` | `HIGH` | `LOW`, `MEDIUM`, or `HIGH`, applied to every partition query |
 | `maxConcurrentQueriesPerSubtask` | `8` | Maximum partition queries one source subtask opens concurrently. Source parallelism multiplied by this value is the job's configured capacity, not a published Spanner quota |
 | `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by the JobManager coordinator and every TaskManager reader when they open. The job graph contains the path, not credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) |

@@ -17,13 +17,14 @@ limitations under the License.
 # ADR-0101: The Spanner Change Streams reader bounds asynchronous partition queries
 
 - Status: Accepted
-- Date: 2026-08-12
+- Date: 2026-08-12; revised 2026-08-13
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
   [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
   [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551),
   [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554),
-  [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581)
+  [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581),
+  [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -60,7 +61,12 @@ The GoogleSQL and PostgreSQL decoders map their physical results into the same i
 Data records that pass the output filters go through the user deserializer, which may emit zero or more outputs through a Flink `Collector`.
 Every output from one data record carries that record's commit timestamp as its Flink event timestamp, and returning successfully without emitting increments `recordsSkipped` once.
 The reader advances split progress only after deserialization returns successfully, so a failure retains the record for at-least-once replay.
-Heartbeat records advance a per-split watermark.
+Heartbeat records advance the partition watermark reported to the coordinator.
+The coordinator computes the complete-ledger minimum described by ADR-0099 and broadcasts that source-wide frontier to every reader.
+Readers emit it through the main source output instead of a split output, so a scheduled or queued partition cannot disappear from Flink's watermark minimum merely because no query is running for it.
+Spanner guarantees that records after heartbeat instant `H` have timestamps greater than `H`, but Flink timestamps have millisecond precision and treat events at or below watermark `W` as late.
+The connector therefore emits `H.toEpochMilli() - 1`, with saturation at `Long.MIN_VALUE`, because a later nanosecond instant can truncate to the same millisecond as `H`.
+It does not mark quiet partitions idle.
 Child-partitions records become coordinator events, and successful query completion becomes a separate partition-finished event.
 A query error fails the task without reporting completion or dropping the split.
 
@@ -86,16 +92,16 @@ The enumerator counts child partitions when it first accepts them and reports bo
 Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and the wait for the latest non-heartbeat result.
 It also counts table-filtered records, records skipped without a projected change, and column metadata or value occurrences removed from records passed to the deserializer.
 The gauges aggregate partition state within their coordinator or reader-subtask scope and never use partition tokens as labels.
-The source emits commit timestamps and split watermarks through Flink's source output so the runtime supplies `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, and `sourceIdleTime` on both supported lines, plus per-split `currentWatermark` on Flink 2.2; the connector does not duplicate those names.
+The source emits commit timestamps and the coordinator frontier through Flink's source output so the runtime supplies `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, and `sourceIdleTime`; the connector does not duplicate those names.
 
 ## Evidence
 
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
-Reader tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, watermarks, child-before-finish ordering, query failure, and bounded completion.
+Reader and coordinator tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, complete-ledger watermarks, child-before-finish ordering, query failure, and bounded completion.
 Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
 Serializer tests obtain the type through `TypeInformation.of`, round-trip every record field and projected collections, and reject an unknown serializer snapshot version without opening JDK modules.
 Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
-The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, and proves a later scale-in preserves the positions of four queued splits.
+The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, proves a later scale-in preserves the positions of four queued splits, and observes a non-regressing source watermark after each restore.
 Emulator MiniCluster tests run the production source for both dialects across a schema and value-capture change.
 They also project a non-key column before deserialization in both dialects.
 A separate failover test restarts each dialect and requires every record plus a repeated inclusive boundary.

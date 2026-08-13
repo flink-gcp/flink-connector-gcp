@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
 
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -27,6 +28,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgre
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarks;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
@@ -62,7 +65,15 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .singleElement()
                 .isInstanceOfSatisfying(
                         SpannerChangeStreamInitializationEvent.class,
-                        event -> assertThat(event.shouldDiscardRestoredSplits()).isFalse());
+                        event -> {
+                            assertThat(event.shouldDiscardRestoredSplits()).isFalse();
+                            assertThat(event.getSourceWatermark())
+                                    .isEqualTo(
+                                            SpannerChangeStreamWatermarks.beforeInstant(
+                                                    context.assignedSplits(0)
+                                                            .get(0)
+                                                            .getStartTimestamp()));
+                        });
         assertThat(context.assignedSplits(0))
                 .singleElement()
                 .satisfies(
@@ -143,7 +154,181 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(returned.getLifecycleState()).isEqualTo(PartitionLifecycleState.SCHEDULED);
         assertThat(returned.getCurrentPosition()).isEqualTo(coordinatorProgress);
         assertThat(returned.getWatermark()).isEqualTo(returnedWatermark);
+        assertThat(enumerator.snapshotState(2).getSourceWatermark())
+                .isEqualTo(returnedWatermark.toEpochMilli() - 1);
         assertThat(context.counter(SpannerMetricNames.SPLITS_RETURNED)).isEqualTo(1);
+        enumerator.close();
+    }
+
+    @Test
+    void scheduledPartitionHoldsBackAnActivePartitionUntilItIsRead() throws Exception {
+        Instant recent = Instant.now().minus(Duration.ofHours(1));
+        SpannerChangeStreamPartitionSplit initial = finishedInitial(recent.minusSeconds(1));
+        SpannerChangeStreamPartitionSplit scheduled =
+                child("scheduled", recent, initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.SCHEDULED);
+        SpannerChangeStreamPartitionSplit active =
+                child("active", recent.plusSeconds(5), initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        SpannerChangeStreamEnumeratorState restored =
+                new SpannerChangeStreamEnumeratorState(Arrays.asList(initial, scheduled, active));
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, new ScriptedClient(), restored);
+
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionProgressEvent(
+                        active.splitId(), recent.plusSeconds(20), recent.plusSeconds(20)));
+
+        assertThat(watermarkEvents(context, 0)).isEmpty();
+
+        enumerator.handleSplitRequest(0, "localhost");
+        SpannerChangeStreamPartitionSplit assigned = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionProgressEvent(
+                        assigned.splitId(), recent.plusSeconds(30), recent.plusSeconds(30)));
+
+        assertThat(watermarkEvents(context, 0))
+                .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
+                .containsExactly(recent.plusSeconds(20).toEpochMilli() - 1);
+        enumerator.close();
+    }
+
+    @Test
+    void readerQueuedRunningPartitionParticipatesInTheCompleteLedgerMinimum() throws Exception {
+        Instant recent = Instant.now().minus(Duration.ofHours(1));
+        SpannerChangeStreamPartitionSplit initial = finishedInitial(recent.minusSeconds(1));
+        SpannerChangeStreamPartitionSplit queued =
+                child("queued", recent, initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        SpannerChangeStreamPartitionSplit active =
+                child("active", recent.plusSeconds(5), initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        SpannerChangeStreamEnumeratorState restored =
+                new SpannerChangeStreamEnumeratorState(Arrays.asList(initial, queued, active));
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, new ScriptedClient(), restored);
+
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionProgressEvent(
+                        active.splitId(), recent.plusSeconds(20), recent.plusSeconds(20)));
+
+        assertThat(watermarkEvents(context, 0)).isEmpty();
+
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionProgressEvent(
+                        queued.splitId(), recent.plusSeconds(30), recent.plusSeconds(30)));
+
+        assertThat(watermarkEvents(context, 0))
+                .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
+                .containsExactly(recent.plusSeconds(20).toEpochMilli() - 1);
+        enumerator.close();
+    }
+
+    @Test
+    void duplicateMinimumAdvancesOnlyAfterEveryPartitionLeavesIt() throws Exception {
+        Instant recent = Instant.now().minus(Duration.ofHours(1));
+        SpannerChangeStreamPartitionSplit initial = finishedInitial(recent.minusSeconds(1));
+        SpannerChangeStreamPartitionSplit first =
+                child("first", recent, initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        SpannerChangeStreamPartitionSplit second =
+                child("second", recent, initial.splitId())
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        SpannerChangeStreamEnumeratorState restored =
+                new SpannerChangeStreamEnumeratorState(Arrays.asList(initial, first, second));
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, new ScriptedClient(), restored);
+
+        enumerator.start();
+        context.runAsyncCalls();
+        Instant firstProgress = recent.plusSeconds(10);
+        enumerator.handleSourceEvent(
+                0, new PartitionProgressEvent(first.splitId(), firstProgress, firstProgress));
+
+        assertThat(watermarkEvents(context, 0)).isEmpty();
+
+        Instant secondProgress = recent.plusSeconds(20);
+        enumerator.handleSourceEvent(
+                0, new PartitionProgressEvent(second.splitId(), secondProgress, secondProgress));
+
+        assertThat(watermarkEvents(context, 0))
+                .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
+                .containsExactly(firstProgress.toEpochMilli() - 1);
+        enumerator.close();
+    }
+
+    @Test
+    void childStartingBehindTheEmittedFrontierFailsThePartitionProtocol() throws Exception {
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, new ScriptedClient(), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        SpannerChangeStreamPartitionSplit initial = context.assignedSplits(0).get(0);
+        Instant advanced = initial.getStartTimestamp().plusSeconds(10);
+        enumerator.handleSourceEvent(
+                0, new PartitionProgressEvent(initial.splitId(), advanced, advanced));
+
+        assertThatThrownBy(
+                        () ->
+                                enumerator.handleSourceEvent(
+                                        0,
+                                        children(
+                                                initial,
+                                                initial.getStartTimestamp().plusSeconds(5),
+                                                "late-child")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("moved backwards");
+        enumerator.close();
+    }
+
+    @Test
+    void broadcastsTheFrontierToSplitlessAndLateRegisteredReaders() throws Exception {
+        FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context =
+                new FakeSplitEnumeratorContext<>(3);
+        context.registerReader(0);
+        context.registerReader(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                enumerator(context, new ScriptedClient(), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        SpannerChangeStreamPartitionSplit running = context.assignedSplits(0).get(0);
+        Instant advanced = running.getStartTimestamp().plusSeconds(5);
+
+        enumerator.handleSourceEvent(
+                0, new PartitionProgressEvent(running.splitId(), advanced, advanced));
+
+        assertThat(watermarkEvents(context, 0))
+                .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
+                .containsExactly(advanced.toEpochMilli() - 1);
+        assertThat(watermarkEvents(context, 1))
+                .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
+                .containsExactly(advanced.toEpochMilli() - 1);
+        assertThat(context.assignedSplits(1)).isEmpty();
+
+        context.registerReader(2);
+        enumerator.addReader(2);
+
+        assertThat(context.sourceEvents(2))
+                .singleElement()
+                .isInstanceOfSatisfying(
+                        SpannerChangeStreamInitializationEvent.class,
+                        event ->
+                                assertThat(event.getSourceWatermark())
+                                        .isEqualTo(advanced.toEpochMilli() - 1));
         enumerator.close();
     }
 
@@ -448,7 +633,11 @@ class SpannerChangeStreamSplitEnumeratorTest {
                     .singleElement()
                     .isInstanceOfSatisfying(
                             SpannerChangeStreamInitializationEvent.class,
-                            event -> assertThat(event.shouldDiscardRestoredSplits()).isTrue());
+                            event -> {
+                                assertThat(event.shouldDiscardRestoredSplits()).isTrue();
+                                assertThat(event.getSourceWatermark())
+                                        .isEqualTo(fallback.toEpochMilli() - 1);
+                            });
             assertThat(capture.getMessages())
                     .singleElement()
                     .satisfies(
@@ -681,6 +870,17 @@ class SpannerChangeStreamSplitEnumeratorTest {
     private static SpannerChangeStreamPartitionSplit finishedInitial(Instant start) {
         return SpannerChangeStreamPartitionSplit.initial(start, null, 2_000)
                 .withLifecycleState(PartitionLifecycleState.FINISHED);
+    }
+
+    private static List<SpannerChangeStreamWatermarkEvent> watermarkEvents(
+            FakeSplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context, int subtaskId) {
+        List<SpannerChangeStreamWatermarkEvent> watermarks = new java.util.ArrayList<>();
+        for (SourceEvent event : context.sourceEvents(subtaskId)) {
+            if (event instanceof SpannerChangeStreamWatermarkEvent) {
+                watermarks.add((SpannerChangeStreamWatermarkEvent) event);
+            }
+        }
+        return watermarks;
     }
 
     private static final class ScriptedClient implements SpannerChangeStreamCoordinatorClient {

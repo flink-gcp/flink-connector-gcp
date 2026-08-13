@@ -30,7 +30,7 @@ import java.util.List;
 public final class SpannerChangeStreamEnumeratorStateSerializer
         implements SimpleVersionedSerializer<SpannerChangeStreamEnumeratorState> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
     private static final int INITIAL_BUFFER_SIZE = 4096;
 
     @Override
@@ -45,13 +45,14 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
         for (SpannerChangeStreamPartitionSplit partition : state.getPartitions()) {
             SpannerChangeStreamPartitionSplitSerializer.writeSplit(out, partition);
         }
+        out.writeLong(state.getSourceWatermark());
         return out.getCopyOfBuffer();
     }
 
     @Override
     public SpannerChangeStreamEnumeratorState deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != VERSION) {
+        if (version != 1 && version != VERSION) {
             throw new IOException(
                     "Unsupported Spanner change-stream enumerator state serialization version "
                             + version
@@ -66,7 +67,9 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
             partitions.add(SpannerChangeStreamPartitionSplitSerializer.readSplit(in));
         }
         try {
-            return new SpannerChangeStreamEnumeratorState(partitions);
+            return version == 1
+                    ? new SpannerChangeStreamEnumeratorState(partitions)
+                    : new SpannerChangeStreamEnumeratorState(partitions, in.readLong());
         } catch (RuntimeException e) {
             throw new IOException("Corrupt Spanner change-stream enumerator state.", e);
         }

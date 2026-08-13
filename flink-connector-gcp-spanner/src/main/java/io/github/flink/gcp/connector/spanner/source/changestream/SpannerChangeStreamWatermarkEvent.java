@@ -19,23 +19,16 @@ package io.github.flink.gcp.connector.spanner.source.changestream;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceEvent;
 
-/** Releases readers after the coordinator has validated Change Stream metadata and restore age. */
+/** Advances every reader subtask to the coordinator's complete-ledger watermark. */
 @Internal
-public final class SpannerChangeStreamInitializationEvent implements SourceEvent {
+public final class SpannerChangeStreamWatermarkEvent implements SourceEvent {
 
     private static final long serialVersionUID = 1L;
 
-    private final boolean discardRestoredSplits;
     private final long sourceWatermark;
 
-    public SpannerChangeStreamInitializationEvent(
-            boolean discardRestoredSplits, long sourceWatermark) {
-        this.discardRestoredSplits = discardRestoredSplits;
+    public SpannerChangeStreamWatermarkEvent(long sourceWatermark) {
         this.sourceWatermark = sourceWatermark;
-    }
-
-    public boolean shouldDiscardRestoredSplits() {
-        return discardRestoredSplits;
     }
 
     public long getSourceWatermark() {

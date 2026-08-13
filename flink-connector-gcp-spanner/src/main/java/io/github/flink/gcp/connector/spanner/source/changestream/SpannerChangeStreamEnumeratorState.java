@@ -28,30 +28,57 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
 
 /** Checkpointed Spanner Change Streams partition ledger. */
 @Internal
 public final class SpannerChangeStreamEnumeratorState {
 
     private final List<SpannerChangeStreamPartitionSplit> partitions;
+    private final long sourceWatermark;
 
     public SpannerChangeStreamEnumeratorState(List<SpannerChangeStreamPartitionSplit> partitions) {
-        this(partitions, true);
+        this(partitions, inferredSourceWatermark(partitions), true);
+    }
+
+    SpannerChangeStreamEnumeratorState(
+            List<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+        this(partitions, sourceWatermark, true);
     }
 
     /** Copies a ledger whose invariants were already enforced by the coordinator mutation paths. */
     public static SpannerChangeStreamEnumeratorState snapshotOfCoordinatorLedger(
-            Collection<SpannerChangeStreamPartitionSplit> partitions) {
-        return new SpannerChangeStreamEnumeratorState(partitions, false);
+            Collection<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+        return new SpannerChangeStreamEnumeratorState(partitions, sourceWatermark, false);
     }
 
     private SpannerChangeStreamEnumeratorState(
-            Collection<SpannerChangeStreamPartitionSplit> partitions, boolean validate) {
+            Collection<SpannerChangeStreamPartitionSplit> partitions,
+            long sourceWatermark,
+            boolean validate) {
         Preconditions.checkNotNull(partitions, "partitions must not be null");
         if (validate) {
             validate(partitions);
+            validateSourceWatermark(partitions, sourceWatermark);
         }
         this.partitions = Collections.unmodifiableList(new ArrayList<>(partitions));
+        this.sourceWatermark = sourceWatermark;
+    }
+
+    private static long inferredSourceWatermark(
+            Collection<SpannerChangeStreamPartitionSplit> partitions) {
+        OptionalLong inferred = SpannerChangeStreamWatermarks.sourceWatermark(partitions);
+        return inferred.isPresent() ? inferred.getAsLong() : Long.MIN_VALUE;
+    }
+
+    private static void validateSourceWatermark(
+            Collection<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+        OptionalLong current = SpannerChangeStreamWatermarks.sourceWatermark(partitions);
+        Preconditions.checkArgument(
+                !current.isPresent() || sourceWatermark <= current.getAsLong(),
+                "source watermark %s is ahead of complete-ledger frontier %s",
+                sourceWatermark,
+                current.isPresent() ? current.getAsLong() : "<finished>");
     }
 
     private static void validate(Collection<SpannerChangeStreamPartitionSplit> partitions) {
@@ -136,6 +163,10 @@ public final class SpannerChangeStreamEnumeratorState {
         return partitions;
     }
 
+    public long getSourceWatermark() {
+        return sourceWatermark;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -145,11 +176,11 @@ public final class SpannerChangeStreamEnumeratorState {
             return false;
         }
         SpannerChangeStreamEnumeratorState other = (SpannerChangeStreamEnumeratorState) o;
-        return partitions.equals(other.partitions);
+        return sourceWatermark == other.sourceWatermark && partitions.equals(other.partitions);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(partitions);
+        return Objects.hash(partitions, sourceWatermark);
     }
 }
