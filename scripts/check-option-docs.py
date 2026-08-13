@@ -90,12 +90,14 @@ CONFIG = Path(__file__).resolve().parent / "option-docs.toml"
 # entry. Naming the one class costs one config line and no false demands.
 SOURCE_GLOBS = ("*Options.java", "*SinkBuilder.java", "*SourceBuilder.java")
 
-# `public Builder maxInFlightBytes(long ...)` on a nested options builder, and
-# `public PubSubSinkBuilder<T> topic(TopicDestination ...)` on a sink/source
-# builder. Anchored at line start with leading whitespace so a match inside an
-# expression cannot count.
+# `public Builder maxInFlightBytes(long ...)` or `public Builder<T>
+# sequenceNumberProvider(...)` on a nested options builder, and `public
+# PubSubSinkBuilder<T> topic(TopicDestination ...)` on a sink/source builder.
+# Anchored at line start with leading whitespace so a match inside an expression
+# cannot count.
 SETTER = re.compile(
-    r"^[ \t]+public\s+(?:Builder|\w+Builder<\w*>)\s+(\w+)\s*\(", re.MULTILINE
+    r"^[ \t]+public\s+(?:Builder(?:<\w*>)?|\w+Builder<\w*>)\s+(\w+)\s*\(",
+    re.MULTILINE,
 )
 
 CONFIG_OPTION_KEY = re.compile(r'ConfigOptions\.key\(\s*"([^"]+)"\s*\)')

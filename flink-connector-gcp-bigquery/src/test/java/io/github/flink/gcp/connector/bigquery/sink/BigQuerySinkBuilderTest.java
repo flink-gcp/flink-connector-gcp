@@ -26,6 +26,8 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
@@ -90,6 +92,66 @@ class BigQuerySinkBuilderTest {
                         .build();
 
         assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+
+    @Test
+    void cdcOptionsReachTheDefaultStreamAndSurviveSerialization() throws Exception {
+        CdcOptions<String> options =
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(element -> "A")
+                        .build();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .cdcOptions(options)
+                                .build();
+
+        BigQueryDefaultStreamSink<String> copy = InstantiationUtil.clone(sink);
+
+        assertThat(copy.getConfig().getCdcOptions()).isNotNull();
+        assertThat(copy.getConfig().getCdcOptions().hasSequenceNumberProvider()).isTrue();
+    }
+
+    @Test
+    void cdcOptionsRejectNullAndNonDefaultStreamWriteMethods() {
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().cdcOptions(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("cdcOptions must not be null");
+
+        CdcOptions<String> options =
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .bufferedStreamOptions(
+                                                BufferedStreamOptions.builder().build())
+                                        .cdcOptions(options)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "cdcOptions(...) is only valid for"
+                                + " WriteMethod.STORAGE_API_AT_LEAST_ONCE");
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://staging-bucket")
+                                                        .build())
+                                        .cdcOptions(options)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "cdcOptions(...) is only valid for"
+                                + " WriteMethod.STORAGE_API_AT_LEAST_ONCE");
     }
 
     @Test

@@ -398,13 +398,17 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             checkAsyncError();
         }
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        // CDC schema conflicts are configuration failures, not poison rows. Derive the augmented
+        // descriptor before entering the row-failure boundary so log-and-drop or dead-letter
+        // policies cannot hide a destination whose physical schema declares a pseudocolumn.
+        config.prepareCdcWriteDescriptor(destination);
         ByteString row;
         try {
             // Serialized before any per-destination state exists: a poison record must reach the
             // handler no matter how the serializer fails, without opening a write stream (or
             // auto-creating a table) for a destination that may never receive a row. Resolver
             // failures, by contrast, are configuration errors and propagate.
-            row = config.getSerializer().serialize(element);
+            row = config.serialize(element, destination);
         } catch (IOException | RuntimeException e) {
             metrics.rowFailed(metrics.forTable(destination));
             failedRowHandler.handle(
@@ -590,9 +594,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
         RowAppender appender =
                 appenderFactory.create(
-                        destination,
-                        config.getSerializer().getDescriptor(destination),
-                        config.getLocation());
+                        destination, config.getWriteDescriptor(destination), config.getLocation());
         return new DestinationState(appender, fingerprint, nanoClock.getAsLong());
     }
 

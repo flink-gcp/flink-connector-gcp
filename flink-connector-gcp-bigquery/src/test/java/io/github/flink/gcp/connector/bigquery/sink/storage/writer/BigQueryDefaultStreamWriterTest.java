@@ -24,11 +24,13 @@ import com.google.api.core.SettableApiFuture;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
+import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Empty;
 import com.google.rpc.Status;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
@@ -36,6 +38,8 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
@@ -52,6 +56,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -162,10 +167,93 @@ class BigQueryDefaultStreamWriterTest {
         }
     }
 
+    private static class CdcStringSerializer extends BigQueryProtoSerializer<String> {
+        private static final long serialVersionUID = 1L;
+
+        private static final TableSchema SCHEMA =
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("value")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .build();
+        private static final Descriptors.Descriptor DESCRIPTOR = descriptor();
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return SCHEMA;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return DESCRIPTOR;
+        }
+
+        @Override
+        public ByteString serialize(String element) {
+            return DynamicMessage.newBuilder(DESCRIPTOR)
+                    .setField(DESCRIPTOR.findFieldByName("value"), element)
+                    .build()
+                    .toByteString();
+        }
+
+        private static Descriptors.Descriptor descriptor() {
+            try {
+                return BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(SCHEMA);
+            } catch (Descriptors.DescriptorValidationException e) {
+                throw new AssertionError(e);
+            }
+        }
+    }
+
+    /** Serializer whose physical field collides case-insensitively with a CDC pseudocolumn. */
+    private static class ConflictingCdcSerializer extends BigQueryProtoSerializer<String> {
+        private static final long serialVersionUID = 1L;
+
+        private static final TableSchema SCHEMA =
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("_CHANGE_TYPE")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .build();
+        private static final Descriptors.Descriptor DESCRIPTOR = descriptor();
+
+        private final AtomicInteger serializations = new AtomicInteger();
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return SCHEMA;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return DESCRIPTOR;
+        }
+
+        @Override
+        public ByteString serialize(String element) {
+            serializations.incrementAndGet();
+            return ByteString.EMPTY;
+        }
+
+        private static Descriptors.Descriptor descriptor() {
+            try {
+                return BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(SCHEMA);
+            } catch (Descriptors.DescriptorValidationException e) {
+                throw new AssertionError(e);
+            }
+        }
+    }
+
     private static class FakeAppenderFactory implements RowAppenderFactory {
         private static final long serialVersionUID = 1L;
 
         private final Map<TableDestination, FakeAppender> appenders = new LinkedHashMap<>();
+        private final Map<TableDestination, Descriptors.Descriptor> descriptors =
+                new LinkedHashMap<>();
 
         /** Shared script: consumed globally in append order across all appenders. */
         private final List<ApiFuture<AppendRowsResponse>> scriptedResults = new ArrayList<>();
@@ -177,6 +265,7 @@ class BigQueryDefaultStreamWriterTest {
                 String location) {
             FakeAppender appender = new FakeAppender();
             appenders.put(destination, appender);
+            descriptors.put(destination, rowDescriptor);
             return appender;
         }
 
@@ -247,6 +336,72 @@ class BigQueryDefaultStreamWriterTest {
         assertThat(rowsOf(a.appends.get(0))).containsExactly("a1", "a2");
         assertThat(b.appends).hasSize(1);
         assertThat(rowsOf(b.appends.get(0))).containsExactly("b1");
+    }
+
+    @Test
+    void appendsCdcMetadataWithTheAugmentedDescriptorForDynamicDestinations() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) ->
+                                                TableDestination.of(
+                                                        "p", "d", element.substring(0, 1)))
+                                .serializer(new CdcStringSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(
+                                                        element ->
+                                                                Integer.toHexString(
+                                                                        element.length()))
+                                                .build())
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(factory, NOOP_ADMIN, TestSinkWriterMetricGroup.create());
+
+        writer.write("abcdefghij", CONTEXT);
+        writer.write("beta", CONTEXT);
+        writer.flush(false);
+
+        for (Map.Entry<TableDestination, FakeAppenderFactory.FakeAppender> entry :
+                factory.appenders.entrySet()) {
+            Descriptors.Descriptor descriptor = factory.descriptors.get(entry.getKey());
+            DynamicMessage row =
+                    DynamicMessage.parseFrom(
+                            descriptor, entry.getValue().appends.get(0).getSerializedRows(0));
+            assertThat(row.getField(descriptor.findFieldByName("_change_type")))
+                    .isEqualTo("UPSERT");
+            String value = (String) row.getField(descriptor.findFieldByName("value"));
+            assertThat(row.getField(descriptor.findFieldByName("_change_sequence_number")))
+                    .isEqualTo(value.length() == 10 ? "A" : "4");
+        }
+        assertThat(factory.descriptors).hasSize(2);
+    }
+
+    @Test
+    void rejectsCdcDescriptorConflictsBeforeRowFailureHandling() {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        ConflictingCdcSerializer serializer = new ConflictingCdcSerializer();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(TableDestination.of("p", "d", "t"))
+                                .serializer(serializer)
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(factory, NOOP_ADMIN, TestSinkWriterMetricGroup.create());
+
+        assertThatThrownBy(() -> writer.write("value", CONTEXT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("pseudocolumn");
+        assertThat(serializer.serializations).hasValue(0);
+        assertThat(factory.appenders).isEmpty();
     }
 
     @Test

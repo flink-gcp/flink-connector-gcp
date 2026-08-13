@@ -42,6 +42,7 @@ section; the three forms of the Default column are explained
 | `failedRowHandler` | `FailureHandler.failJob()` | What happens to a row that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `location` | — | The BigQuery location shared by the destination tables. Setting it avoids a per-table metadata lookup when a write connection is opened; under `FILE_LOADS` it is the location every load job runs in and is recovered under, derived from each job's destination dataset when unset — which is what a sink routing to datasets in several regions should rely on |
 | `serviceAccountKeyFile` | *unset → ADC* | Uses the service account in this JSON key file for every BigQuery client and for GCS staging under `FILE_LOADS`. The file is loaded at runtime and must exist on each TaskManager; rejected with either emulator endpoint |
+| `cdcOptions` | CDC disabled | Adds [CDC metadata]({{< relref "docs/connectors/datastream/bigquery" >}}#change-data-capture) to non-skipped rows. `STORAGE_API_AT_LEAST_ONCE` only |
 | `defaultStreamOptions` | [defaults](#defaultstreamoptions) | Tuning for `STORAGE_API_AT_LEAST_ONCE`; rejected for the other two |
 | `bufferedStreamOptions` | **required** for `STORAGE_API_EXACTLY_ONCE` | [Tuning](#bufferedstreamoptions) for that method; rejected for the other two |
 | `fileLoadsOptions` | **required** for `FILE_LOADS` | [Settings](#fileloadsoptions) for that method; rejected for the other two |
@@ -59,6 +60,17 @@ a misplaced one fails when the job graph is built rather than being ignored. See
 for how the three methods differ, and
 [Error handling]({{< relref "docs/connectors/datastream/bigquery" >}}#error-handling) for the
 failed-row policies.
+
+## `CdcOptions`
+
+CDC metadata for `STORAGE_API_AT_LEAST_ONCE`, set through `cdcOptions(...)`.
+The destination table prerequisites, pseudocolumn behavior and configuration example are under
+[Change data capture]({{< relref "docs/connectors/datastream/bigquery" >}}#change-data-capture).
+
+| Option | Default | What it does |
+|---|---|---|
+| `changeTypeProvider` | **required** by `builder(...)` | Returns `UPSERT` or `DELETE` for each non-skipped record |
+| `sequenceNumberProvider` | no sequence pseudocolumn | Returns one to four slash-separated hexadecimal sections, each at most 16 digits, for every non-skipped record |
 
 ## `DefaultStreamOptions`
 

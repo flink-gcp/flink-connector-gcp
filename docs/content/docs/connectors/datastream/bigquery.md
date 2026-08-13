@@ -128,6 +128,71 @@ API notes:
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
 
+## Change data capture
+
+The default-stream write method can apply **change data capture (CDC)** mutations to a table that
+has a BigQuery primary key.
+The sink adds BigQuery's `_CHANGE_TYPE` pseudocolumn and, when configured, the
+`_CHANGE_SEQUENCE_NUMBER` pseudocolumn to each non-skipped row.
+
+```java
+Sink<MyMutation> sink =
+        BigQuerySink.<MyMutation>builder()
+                .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
+                .destination(
+                        TableDestination.of("my-project", "my_dataset", "accounts"))
+                .serializer(new AccountMutationSerializer())
+                .createDisposition(CreateDisposition.CREATE_NEVER)
+                .cdcOptions(
+                        CdcOptions.<MyMutation>builder(
+                                        mutation ->
+                                                mutation.deleted()
+                                                        ? CdcChangeType.DELETE
+                                                        : CdcChangeType.UPSERT)
+                                .sequenceNumberProvider(MyMutation::sequenceNumber)
+                                .build())
+                .build();
+```
+
+CDC has the following table and write-path requirements:
+
+- The destination table must already declare a `PRIMARY KEY ... NOT ENFORCED` constraint.
+  The connector cannot add a primary key to an existing table.
+- This release does not add primary keys or `max_staleness` when it auto-creates a table.
+  Pre-create each CDC destination and select `CREATE_NEVER`, as in the example.
+  Connector-managed CDC table creation is tracked by
+  [#627]({{< param BookRepo >}}/issues/627).
+- CDC is valid only with `STORAGE_API_AT_LEAST_ONCE`, which writes through the Storage Write API
+  default stream.
+  The builder rejects it with buffered exactly-once streams and file loads.
+
+The configured serializer remains the source of the physical `TableSchema`.
+The sink augments only the protobuf descriptor sent to the default stream, so the two CDC
+pseudocolumns never become ordinary table columns or participate in schema reconciliation.
+A physical field whose name matches either pseudocolumn case-insensitively is a configuration
+error raised before a row reaches the failed-row handler.
+
+The change-type provider must return `UPSERT` or `DELETE` for every row the serializer emits.
+The sequence provider is optional for the whole sink; when present, it must return a non-null value
+for every emitted row.
+Each value contains one to four slash-separated hexadecimal sections of at most 16 digits each,
+and the connector canonicalizes hexadecimal letters to uppercase.
+BigQuery uses the sequence to order mutations for the same primary key; without one, BigQuery uses
+the system time at which it ingests each mutation.
+
+The serializer runs before either CDC provider.
+Its `null` result therefore keeps the ordinary skip contract and invokes neither provider.
+A provider failure, null metadata or invalid sequence is a serialization failure routed through
+the configured failed-row handler.
+The providers receive the original element, so this API also works with dynamic destinations and
+with serializers that derive different descriptors per destination.
+
+The connector-neutral Flink SQL changelog mapping and Debezium metadata profiles are separate
+layers built on this API.
+They are tracked by [#626]({{< param BookRepo >}}/issues/626),
+[#629]({{< param BookRepo >}}/issues/629), [#631]({{< param BookRepo >}}/issues/631) and
+[#633]({{< param BookRepo >}}/issues/633).
+
 ## Column modes
 
 **A derived column is `NULLABLE`. A constraint is something you ask for.** `REPEATED` is the one mode
