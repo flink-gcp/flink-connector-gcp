@@ -35,6 +35,14 @@ class CloudTasksTablePlanTest {
                     + "  'queue' = 'orders',\n"
                     + "  'format' = 'json'";
 
+    private static final String FORM_OPTIONS =
+            "  'connector' = 'cloud-tasks',\n"
+                    + "  'project' = 'my-project',\n"
+                    + "  'location' = 'asia-northeast1',\n"
+                    + "  'queue' = 'forms',\n"
+                    + "  'http.url' = 'https://api.example.com/orders',\n"
+                    + "  'format' = 'form-urlencoded'";
+
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inStreamingMode());
     }
@@ -114,6 +122,95 @@ class CloudTasksTablePlanTest {
                                         "INSERT INTO tasks VALUES ('o-1', 12.34, MAP['X-Trace',"
                                                 + " 'abc'], CAST('2026-08-13 01:02:03.123456' AS"
                                                 + " TIMESTAMP_LTZ(6)), 'o-1')"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void documentedFormTransformationsParse() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE form_tasks (\n"
+                        + "  order_id STRING,\n"
+                        + "  note STRING,\n"
+                        + "  tags ARRAY<STRING>,\n"
+                        + "  categories STRING\n"
+                        + ") WITH (\n"
+                        + FORM_OPTIONS
+                        + "\n)");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO form_tasks VALUES ("
+                                                + "'42', '東京 + pickup', ARRAY['urgent', 'gift'], "
+                                                + "ARRAY_JOIN(ARRAY['books', 'sale'], ','))"))
+                .doesNotThrowAnyException();
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO form_tasks VALUES ("
+                                                + "'43', '', CAST(NULL AS ARRAY<STRING>), "
+                                                + "CAST(NULL AS STRING))"))
+                .doesNotThrowAnyException();
+
+        tEnv.executeSql(
+                "CREATE TEMPORARY VIEW incoming_orders AS\n"
+                        + "SELECT ARRAY['book', 'pen'] AS items,\n"
+                        + "       CAST(ROW('Alice', '100-0001') AS "
+                        + "ROW<name STRING, postal_code STRING>) AS customer,\n"
+                        + "       MAP['priority', 'high'] AS attributes");
+        tEnv.executeSql(
+                "CREATE TABLE nested_form_tasks (\n"
+                        + "  `items[]` ARRAY<STRING>,\n"
+                        + "  `customer.name` STRING,\n"
+                        + "  `customer[postalCode]` STRING,\n"
+                        + "  `attributes[priority]` STRING\n"
+                        + ") WITH (\n"
+                        + FORM_OPTIONS
+                        + "\n)");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO nested_form_tasks "
+                                                + "SELECT items, customer.name, "
+                                                + "customer.postal_code, attributes['priority'] "
+                                                + "FROM incoming_orders"))
+                .doesNotThrowAnyException();
+
+        tEnv.executeSql(
+                "CREATE TABLE json_parameter_tasks (payload STRING) WITH (\n"
+                        + FORM_OPTIONS
+                        + "\n)");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO json_parameter_tasks "
+                                                + "SELECT JSON_OBJECT("
+                                                + "KEY 'name' VALUE customer.name, "
+                                                + "KEY 'postalCode' VALUE customer.postal_code, "
+                                                + "KEY 'items' VALUE items) "
+                                                + "FROM incoming_orders"))
+                .doesNotThrowAnyException();
+
+        tEnv.executeSql(
+                "CREATE TABLE custom_form_tasks (body STRING) WITH (\n"
+                        + "  'connector' = 'cloud-tasks',\n"
+                        + "  'project' = 'my-project',\n"
+                        + "  'location' = 'asia-northeast1',\n"
+                        + "  'queue' = 'forms',\n"
+                        + "  'http.url' = 'https://api.example.com/orders',\n"
+                        + "  'http.headers.Content-Type' = "
+                        + "'application/x-www-form-urlencoded',\n"
+                        + "  'format' = 'raw'\n"
+                        + ")");
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO custom_form_tasks VALUES ("
+                                                + "'items%5B0%5D=book&items%5B1%5D=pen"
+                                                + "&attributes=priority%3Ahigh%2Ccolor%3Ablue')"))
                 .doesNotThrowAnyException();
     }
 }

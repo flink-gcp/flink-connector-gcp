@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-13
 - Issues: [#99](https://github.com/laughingman7743/flink-connector-gcp/issues/99),
-  [#605](https://github.com/laughingman7743/flink-connector-gcp/issues/605)
+  [#605](https://github.com/laughingman7743/flink-connector-gcp/issues/605),
+  [#606](https://github.com/laughingman7743/flink-connector-gcp/issues/606)
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/table/cloudtasks.md`
 
@@ -45,8 +46,17 @@ Dynamic queues remain a DataStream API feature because a SQL table represents on
 Writable metadata is appended to the runtime row but projected away before the format runs.
 `POST`, `PUT` and `PATCH` invoke the format and carry its bytes.
 `GET`, `HEAD`, `DELETE` and `OPTIONS` do not invoke it and carry no body.
-Form encoding is a separate format decision in #606, while multipart remains outside the Table API
-contract.
+The built-in `form-urlencoded` format accepts physical `STRING` and `ARRAY<STRING>` columns and
+encodes their names and values as a UTF-8 HTTP form in physical schema and array order.
+It omits null fields, preserves empty strings, repeats array fields and rejects null array elements.
+Other SQL types must be cast to `STRING`, while multipart remains outside the Table API contract.
+
+**A format may own the Content-Type of the body it creates.**
+`form-urlencoded` owns `application/x-www-form-urlencoded` for POST, PUT and PATCH and adds it only
+when it creates a body.
+A fixed or metadata header with the same trimmed, case-insensitive value is canonicalized, while a
+different value or a parameterized value is rejected.
+Generic formats retain the existing caller-owned header behavior.
 
 **Request properties are fixed options with non-null metadata overrides.**
 The writable keys are `url`, `http-method`, `headers`, `schedule-time` and `task-id`.
@@ -76,22 +86,26 @@ deferred to #608.
 ## Evidence
 
 - Factory and option-inventory tests cover generic JSON and CSV discovery, required and unknown
-  options, credentials, token exclusivity, writer tuning and sink parallelism.
+  options, credentials, token exclusivity, writer tuning, sink parallelism, form discovery,
+  physical-type validation and Content-Type conflicts.
 - Planner tests prove that a `STRING NOT NULL` URL metadata declaration is accepted, a nullable one
   is rejected when the insert is planned, and the documented authenticated request DDL parses.
 - Serializer tests cover physical-column projection, fixed and row request precedence,
   case-insensitive header replacement, bodyless methods, schedule precision, OIDC, OAuth and
-  malformed metadata.
+  malformed metadata. Form tests cover UTF-8 escaping, scalar and repeated fields, null and empty
+  values, schema order and null array elements.
 - Emulator integration tests execute SQL jobs through the production factory and writer.
   They verify JSON POST dispatch, bodyless GET creation, metadata overrides and named-task
-  deduplication across separate completed jobs.
+  deduplication across separate completed jobs, plus the exact form bytes and Content-Type received
+  by an HTTP handler.
 
 ## Alternatives declined
 
 - **One column for a complete serialized `Task`** would make SQL users construct protobuf bytes,
   bypass task-id hashing and lose typed validation.
-- **A fixed set of body encodings inside the connector** would duplicate Flink's format discovery
-  and still fail whenever an external API chose another media type.
+- **Selecting body encodings inside the connector factory** would duplicate Flink's format
+  discovery and still fail whenever an external API chose another media type. The built-in form
+  encoder remains a `SerializationFormatFactory`, so it composes with the existing format contract.
 - **Put request metadata into the body format** would make ordinary JSON contain URL, method and
   scheduling fields that belong to Cloud Tasks rather than the called API.
 - **Require a fixed URL for every table** would prevent a table from expressing record-specific
@@ -105,6 +119,8 @@ deferred to #608.
 
 SQL can express the request shapes shared across external HTTP APIs while the target API remains
 responsible for its media type and query semantics.
+Form targets need no duplicate Content-Type option, and conflicting fixed or row headers cannot
+silently describe the bytes as another representation.
 A table using a bodyless method still declares a format because the factory has one stable contract
 and a per-row method can switch back to a body-carrying method.
 SQL Client users need the plain connector and its dependency tree until #607 supplies the shaded

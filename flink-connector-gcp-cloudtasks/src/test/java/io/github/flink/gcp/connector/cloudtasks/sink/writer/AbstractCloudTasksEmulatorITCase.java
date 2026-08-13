@@ -311,7 +311,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
                     new RecordedRequest(
                             exchange.getRequestMethod(),
                             exchange.getRequestURI().getPath(),
-                            new String(body, StandardCharsets.UTF_8),
+                            body,
                             headers));
             // Anything but a 2xx makes the queue retry the task, which these tests have no use for.
             exchange.sendResponseHeaders(200, -1);
@@ -323,6 +323,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
 
         final String method;
         final String body;
+        final byte[] bodyBytes;
 
         private final String path;
 
@@ -330,10 +331,11 @@ abstract class AbstractCloudTasksEmulatorITCase {
         private final Map<String, String> headers;
 
         private RecordedRequest(
-                String method, String path, String body, Map<String, String> headers) {
+                String method, String path, byte[] bodyBytes, Map<String, String> headers) {
             this.method = method;
             this.path = path;
-            this.body = body;
+            this.bodyBytes = bodyBytes.clone();
+            this.body = new String(bodyBytes, StandardCharsets.UTF_8);
             this.headers = headers;
         }
 

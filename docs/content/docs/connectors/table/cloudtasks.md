@@ -81,8 +81,233 @@ tree rather than expecting one self-contained jar.
 
 `format` is any `SerializationFormatFactory` available on the job classpath, such as `json`, `csv`,
 Avro or `raw` where its schema requirements are met.
-The connector does not interpret the encoded bytes.
-Set the matching `Content-Type` header for the target API.
+The connector does not interpret bytes from those generic formats, so set the matching
+`Content-Type` header for the target API.
+
+The module also provides the `form-urlencoded` format for
+`application/x-www-form-urlencoded` POST, PUT and PATCH bodies.
+It accepts only these physical SQL column types:
+
+| Physical SQL type | Form representation |
+|-------------------|---------------------|
+| `STRING` | One field using the column name |
+| `ARRAY<STRING>` | One field per element, each using the column name |
+
+All other physical types are rejected when Flink creates the sink.
+This includes `CHAR`, numeric, Boolean, binary and temporal types, nested `ROW` and `MAP` types,
+and every array type other than one-dimensional `ARRAY<STRING>`.
+Cast scalar values to `STRING` so the SQL states their wire representation explicitly.
+For structured values, flatten the required members into `STRING` columns or serialize the value
+to a chosen string representation before inserting it into the sink.
+The format does not choose a bracket, dotted-name or JSON convention for nested values because
+`application/x-www-form-urlencoded` does not define one.
+
+Fields follow physical schema order, repeated values follow array order, and both names and values
+use UTF-8 form encoding.
+A null field or array is omitted, an empty string is preserved as `name=`, an empty array adds no
+field, and a null array element fails the row because a form cannot represent it.
+Writable metadata columns are projected out before encoding and never become form fields.
+
+The form format adds `Content-Type: application/x-www-form-urlencoded` automatically.
+You do not need to set that header in `http.headers` or metadata.
+An equivalent value is canonicalized, while a different value or a value with media-type parameters
+is rejected as a conflict.
+
+### Form request examples
+
+The examples below show the HTTP request definition created from one `INSERT` row.
+Cloud Tasks may dispatch that request more than once under the queue retry policy.
+
+#### Repeated and joined array values
+
+An `ARRAY<STRING>` column repeats its column name, while `ARRAY_JOIN` converts an array to one
+scalar form value when the receiving API expects a delimiter.
+
+```sql
+CREATE TABLE form_tasks (
+  order_id   STRING,
+  note       STRING,
+  tags       ARRAY<STRING>,
+  categories STRING
+) WITH (
+  'connector' = 'cloud-tasks',
+  'project' = 'my-project',
+  'location' = 'asia-northeast1',
+  'queue' = 'forms',
+  'http.url' = 'https://api.example.com/orders',
+  'http.method' = 'POST',
+  'format' = 'form-urlencoded'
+);
+
+INSERT INTO form_tasks
+VALUES (
+  '42',
+  '東京 + pickup',
+  ARRAY['urgent', 'gift'],
+  ARRAY_JOIN(ARRAY['books', 'sale'], ',')
+);
+```
+
+The inserted row produces this request body.
+
+```http
+POST /orders HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+order_id=42&note=%E6%9D%B1%E4%BA%AC+%2B+pickup&tags=urgent&tags=gift&categories=books%2Csale
+```
+
+The comma is part of the `categories` value and is therefore percent-encoded as `%2C`.
+The receiving form parser recovers the value `books,sale`.
+
+#### Null and empty values
+
+The same table can distinguish an empty string from an omitted value.
+
+```sql
+INSERT INTO form_tasks
+VALUES (
+  '43',
+  '',
+  CAST(NULL AS ARRAY<STRING>),
+  CAST(NULL AS STRING)
+);
+```
+
+The empty `note` remains present, while the null `tags` array and null `categories` value add no
+fields.
+An empty array supplied by an upstream table also adds no fields.
+
+```http
+POST /orders HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+order_id=43&note=
+```
+
+#### Bracket and dotted-name conventions
+
+Some servers interpret brackets or dots in field names as a nested structure.
+The connector does not assign those meanings, but quoted SQL column names can produce the names a
+specific server expects.
+
+```sql
+CREATE TABLE nested_form_tasks (
+  `items[]`              ARRAY<STRING>,
+  `customer.name`        STRING,
+  `customer[postalCode]` STRING,
+  `attributes[priority]` STRING
+) WITH (
+  'connector' = 'cloud-tasks',
+  'project' = 'my-project',
+  'location' = 'asia-northeast1',
+  'queue' = 'forms',
+  'http.url' = 'https://api.example.com/orders',
+  'http.method' = 'POST',
+  'format' = 'form-urlencoded'
+);
+
+INSERT INTO nested_form_tasks
+SELECT items,
+       customer.name,
+       customer.postal_code,
+       attributes['priority']
+FROM incoming_orders;
+```
+
+For an input containing items `['book', 'pen']`, customer `('Alice', '100-0001')` and priority
+`high`, the request body is:
+
+```http
+items%5B%5D=book&items%5B%5D=pen&customer.name=Alice&customer%5BpostalCode%5D=100-0001&attributes%5Bpriority%5D=high
+```
+
+This projection works when the nested members and map keys are known in the sink schema.
+It cannot turn arbitrary map keys or an arbitrary number of array indexes into field names because
+physical column names are fixed when Flink plans the job.
+
+#### JSON in one form field
+
+`JSON_OBJECT` can convert selected structured values to one `STRING` column before the form format
+encodes it.
+
+```sql
+CREATE TABLE json_parameter_tasks (
+  payload STRING
+) WITH (
+  'connector' = 'cloud-tasks',
+  'project' = 'my-project',
+  'location' = 'asia-northeast1',
+  'queue' = 'forms',
+  'http.url' = 'https://api.example.com/orders',
+  'http.method' = 'POST',
+  'format' = 'form-urlencoded'
+);
+
+INSERT INTO json_parameter_tasks
+SELECT JSON_OBJECT(
+         KEY 'name' VALUE customer.name,
+         KEY 'postalCode' VALUE customer.postal_code,
+         KEY 'items' VALUE items
+       )
+FROM incoming_orders;
+```
+
+For the preceding customer and items, the JSON value can produce the following URL-encoded
+`payload` field.
+
+```http
+payload=%7B%22items%22%3A%5B%22book%22%2C%22pen%22%5D%2C%22name%22%3A%22Alice%22%2C%22postalCode%22%3A%22100-0001%22%7D
+```
+
+JSON object member order is not part of the form format contract and may differ across Flink
+versions.
+The receiving API must interpret the decoded value as JSON rather than depend on its member order.
+
+#### Fully custom form bodies
+
+Dynamic field names such as `items[0]`, `items[1]` and every key from an arbitrary map require a
+serializer that owns the complete form body.
+One SQL approach is an application-provided scalar function combined with Flink's `raw` format.
+
+```sql
+CREATE TABLE custom_form_tasks (
+  body STRING
+) WITH (
+  'connector' = 'cloud-tasks',
+  'project' = 'my-project',
+  'location' = 'asia-northeast1',
+  'queue' = 'forms',
+  'http.url' = 'https://api.example.com/orders',
+  'http.method' = 'POST',
+  'http.headers.Content-Type' = 'application/x-www-form-urlencoded',
+  'format' = 'raw'
+);
+
+-- TO_API_FORM is a scalar function supplied and registered by the job.
+INSERT INTO custom_form_tasks
+SELECT TO_API_FORM(items, attributes)
+FROM incoming_orders;
+```
+
+The function must return a complete UTF-8 form body with every name and value form-encoded.
+For example, it could return:
+
+```text
+items%5B0%5D=book&items%5B1%5D=pen&attributes=priority%3Ahigh%2Ccolor%3Ablue
+```
+
+This example uses indexed array names and joins the map as `priority:high,color:blue` inside one
+form value.
+The function owns the map entry order, delimiters, escaping and null behavior because those rules
+come from the receiving API rather than from the media type.
+
+Do not send a pre-encoded body through `form-urlencoded`.
+That format treats `&`, `=` and percent signs as data inside one field and encodes them again.
+The DataStream API is another option when the custom transformation is easier to express as a
+`CloudTasksSerializationSchema` than as a SQL function.
+
+### Methods without a body
 
 Only `POST`, `PUT` and `PATCH` carry the encoded body because those are the only methods for which
 Cloud Tasks accepts an `HttpRequest.body`.
@@ -111,11 +336,11 @@ SELECT '',
 FROM pending_searches;
 ```
 
-`URL_ENCODE` above represents whichever escaping function or UDF the job standardizes on.
+`URL_ENCODE` is a built-in Flink SQL function on the supported Flink 2.x line.
+Flink 1.20 jobs must register an equivalent UTF-8 URL-encoding scalar UDF or construct the complete
+URL before the row reaches SQL.
 Concatenating an unescaped value changes the query syntax and is not made safe by Cloud Tasks.
 
-`application/x-www-form-urlencoded` needs field-name, ordering and escaping semantics beyond a
-generic byte format and is tracked in [#606]({{< param BookRepo >}}/issues/606).
 Multipart bodies are not part of this connector contract.
 A job that needs multipart can implement `CloudTasksSerializationSchema` through the DataStream API,
 where the boundary and part encodings can be controlled explicitly.
@@ -190,7 +415,7 @@ except `http.method`, whose SQL default is explicitly `POST`.
 | `project` | String | **required** | the project component of `QueueDestination.of(...)` |
 | `location` | String | **required** | the location component of `QueueDestination.of(...)` |
 | `queue` | String | **required** | the queue component of `QueueDestination.of(...)` |
-| `format` | String | **required** | generic serialization format discovery for the physical columns |
+| `format` | String | **required** | serialization format discovery for physical columns; `form-urlencoded` provides the built-in form encoding described above |
 | `service-account-key-file` | String | application-default credentials | `CloudTasksSinkBuilder.serviceAccountKeyFile(...)` |
 | `emulator-endpoint` | String | production Cloud Tasks | `CloudTasksSinkBuilder.emulatorEndpoint(...)`; plaintext and no credentials |
 

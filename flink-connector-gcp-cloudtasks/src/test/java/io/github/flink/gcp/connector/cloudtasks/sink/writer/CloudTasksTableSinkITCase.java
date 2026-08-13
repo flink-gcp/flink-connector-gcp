@@ -37,6 +37,10 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
     }
 
     private static String queueOptions(QueueDestination queue) {
+        return queueOptions(queue, "json");
+    }
+
+    private static String queueOptions(QueueDestination queue, String format) {
         return "  'connector' = 'cloud-tasks',\n"
                 + "  'project' = '"
                 + queue.getProject()
@@ -47,7 +51,9 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
                 + "  'queue' = '"
                 + queue.getQueue()
                 + "',\n"
-                + "  'format' = 'json',\n"
+                + "  'format' = '"
+                + format
+                + "',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'";
@@ -132,5 +138,39 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
         assertThat(request.header("content-type")).isEqualTo("application/json");
         assertThat(request.header("x-fixed")).isEqualTo("row");
         assertThat(request.header("x-trace")).isEqualTo("trace-1");
+    }
+
+    @Test
+    void sqlPostDispatchesTheFormFormatsHeaderAndExactUtf8Bytes() throws Exception {
+        QueueDestination queue = createQueue("table-form-post");
+        String path = "/table-form-post";
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE tasks (\n"
+                        + "  customer_name STRING,\n"
+                        + "  tags ARRAY<STRING>,\n"
+                        + "  empty_value STRING,\n"
+                        + "  omitted_value STRING\n"
+                        + ") WITH (\n"
+                        + queueOptions(queue, "form-urlencoded")
+                        + ",\n"
+                        + "  'http.url' = '"
+                        + targetUrl(path)
+                        + "'\n"
+                        + ")");
+
+        tEnv.executeSql(
+                        "INSERT INTO tasks VALUES ('東京 +&=', ARRAY['one two', 'a+b'], '',"
+                                + " CAST(NULL AS STRING))")
+                .await();
+
+        RecordedRequest request = awaitRequests(path, 1).get(0);
+        String expected =
+                "customer_name=%E6%9D%B1%E4%BA%AC+%2B%26%3D"
+                        + "&tags=one+two&tags=a%2Bb&empty_value=";
+        assertThat(request.method).isEqualTo("POST");
+        assertThat(request.bodyBytes)
+                .containsExactly(expected.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        assertThat(request.header("content-type")).isEqualTo("application/x-www-form-urlencoded");
     }
 }
