@@ -23,23 +23,23 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 import java.util.List;
 
-/**
- * Everything one BigQuery copy job (temporary tables into the final table) needs, decoupled from
- * the client for testability.
- */
+/** Everything one BigQuery copy job needs, decoupled from the client for testability. */
 @Internal
 public final class CopyJobSpec {
 
     private final List<TableDestination> sourceTables;
     private final TableDestination destination;
+    private final JobInfo.CreateDisposition createDisposition;
     private final JobInfo.WriteDisposition writeDisposition;
 
     CopyJobSpec(
             List<TableDestination> sourceTables,
             TableDestination destination,
+            JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition) {
         this.sourceTables = List.copyOf(sourceTables);
         this.destination = destination;
+        this.createDisposition = createDisposition;
         this.writeDisposition = writeDisposition;
     }
 
@@ -48,16 +48,17 @@ public final class CopyJobSpec {
         return sourceTables;
     }
 
-    /** Returns the final destination table. */
+    /** Returns the destination table. */
     public TableDestination getDestination() {
         return destination;
     }
 
-    /**
-     * Returns the write disposition. The create disposition is always {@code CREATE_NEVER}: the
-     * orchestrator ensures the final table exists before submitting the copy (copy jobs cannot
-     * apply partitioning, clustering or schema update options themselves).
-     */
+    /** Returns the create disposition. */
+    public JobInfo.CreateDisposition getCreateDisposition() {
+        return createDisposition;
+    }
+
+    /** Returns the write disposition. */
     public JobInfo.WriteDisposition getWriteDisposition() {
         return writeDisposition;
     }
@@ -68,6 +69,8 @@ public final class CopyJobSpec {
                 + sourceTables
                 + ", destination="
                 + destination
+                + ", createDisposition="
+                + createDisposition
                 + ", writeDisposition="
                 + writeDisposition
                 + "}";

@@ -383,9 +383,10 @@ public final class FileLoadsOptions implements Serializable {
 
         /**
          * Sets the dataset holding temporary tables when a table's staged files exceed the
-         * per-load-job limits and rows go through temporary tables plus a copy job. Optional;
-         * defaults to each destination table's own dataset. A dedicated dataset with a default
-         * table expiration is recommended so temporary tables orphaned by hard failures are
+         * per-load-job limits and rows go through leaf tables, optional intermediate copy levels,
+         * and one final copy. Optional; defaults to each destination table's own dataset. The
+         * temporary and final datasets must share a BigQuery location. A dedicated dataset with a
+         * default table expiration is recommended so temporary tables orphaned by hard failures are
          * garbage-collected.
          *
          * @param tempDataset the dataset id, in the same project as the destination table
@@ -419,7 +420,7 @@ public final class FileLoadsOptions implements Serializable {
          * FileLoadsOptions#DEFAULT_MIN_CHECKPOINT_INTERVAL}. Lowering it is an explicit opt-in for
          * jobs whose daily destination-table modification count stays safe despite fast checkpoints
          * (e.g. short-lived streaming jobs): each checkpoint issues a direct load or, on overflow,
-         * one copy per destination. Ignored in batch execution.
+         * one final copy per destination. Ignored in batch execution.
          *
          * @param minCheckpointInterval the smallest accepted checkpoint interval
          * @return this builder

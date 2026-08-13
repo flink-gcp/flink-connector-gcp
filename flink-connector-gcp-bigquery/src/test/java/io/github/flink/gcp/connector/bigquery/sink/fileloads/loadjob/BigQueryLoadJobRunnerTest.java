@@ -743,6 +743,7 @@ class BigQueryLoadJobRunnerTest {
                 new CopyJobSpec(
                         List.of(TableDestination.of("p", "d_tmp", "t_tmp")),
                         DESTINATION,
+                        JobInfo.CreateDisposition.CREATE_NEVER,
                         JobInfo.WriteDisposition.WRITE_TRUNCATE);
         client.locatedDataset(DATASET, "europe-west1");
         client.answering(JobAnswer.absent());
@@ -839,6 +840,24 @@ class BigQueryLoadJobRunnerTest {
     }
 
     @Test
+    void anIntermediateCopyCanCreateAndTruncateItsDestination() throws Exception {
+        client.answering(JobAnswer.absent());
+
+        runner().submitCopy(
+                        JOB_ID,
+                        new CopyJobSpec(
+                                List.of(TEMP),
+                                TableDestination.of("p", "d", "t_intermediate"),
+                                JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                JobInfo.WriteDisposition.WRITE_TRUNCATE));
+
+        CopyJobConfiguration copy = client.created.get(0).getConfiguration();
+        assertThat(copy.getCreateDisposition())
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(copy.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+    }
+
+    @Test
     void avroLoadsCarryTheAvroFormatAndLogicalTypes() throws Exception {
         client.answering(JobAnswer.absent());
 
@@ -897,6 +916,7 @@ class BigQueryLoadJobRunnerTest {
         return new CopyJobSpec(
                 List.of(TEMP, TableDestination.of("p", "d", "t_tmp2")),
                 DESTINATION,
+                JobInfo.CreateDisposition.CREATE_NEVER,
                 JobInfo.WriteDisposition.WRITE_TRUNCATE);
     }
 

@@ -172,7 +172,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                                 spec.getSourceTables().stream()
                                         .map(BigQueryTableAdmin::toTableId)
                                         .collect(Collectors.toList()))
-                        .setCreateDisposition(JobInfo.CreateDisposition.CREATE_NEVER)
+                        .setCreateDisposition(spec.getCreateDisposition())
                         .setWriteDisposition(spec.getWriteDisposition())
                         .build();
         submitOrAttach(jobId, copy, spec.getDestination(), spec.toString());
