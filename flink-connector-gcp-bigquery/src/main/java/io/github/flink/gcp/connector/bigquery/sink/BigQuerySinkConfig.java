@@ -18,13 +18,18 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.protobuf.ByteString;
+import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.io.Serializable;
 
 /**
@@ -40,6 +45,8 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     private final DestinationResolver<? super T> destinationResolver;
     private final BigQueryProtoSerializer<? super T> serializer;
+    @Nullable private final CdcOptions<? super T> cdcOptions;
+    @Nullable private final CdcProtoRowSerializer<T> cdcRowSerializer;
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
     private final SchemaUpdateOptions schemaUpdateOptions;
@@ -52,6 +59,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     BigQuerySinkConfig(
             DestinationResolver<? super T> destinationResolver,
             BigQueryProtoSerializer<? super T> serializer,
+            @Nullable CdcOptions<? super T> cdcOptions,
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
             SchemaUpdateOptions schemaUpdateOptions,
@@ -62,6 +70,9 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             @Nullable EmulatorEndpoint emulatorRestEndpoint) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
+        this.cdcOptions = cdcOptions;
+        this.cdcRowSerializer =
+                cdcOptions == null ? null : new CdcProtoRowSerializer<>(serializer, cdcOptions);
         this.createDisposition = createDisposition;
         this.tableCreateOptionsProvider = tableCreateOptionsProvider;
         this.schemaUpdateOptions = schemaUpdateOptions;
@@ -80,6 +91,40 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     /** Returns the record serializer. */
     public BigQueryProtoSerializer<? super T> getSerializer() {
         return serializer;
+    }
+
+    /** Returns the configured CDC options, or {@code null} when ordinary appends are used. */
+    @Nullable
+    public CdcOptions<? super T> getCdcOptions() {
+        return cdcOptions;
+    }
+
+    /** Returns the descriptor sent to the write stream, including CDC metadata when enabled. */
+    public Descriptors.Descriptor getWriteDescriptor(TableDestination destination) {
+        return cdcRowSerializer == null
+                ? serializer.getDescriptor(destination)
+                : cdcRowSerializer.getDescriptor(destination);
+    }
+
+    /**
+     * Validates and caches the CDC write descriptor for a destination, when CDC is enabled.
+     *
+     * <p>The default-stream writer calls this before entering row-failure handling so a physical
+     * schema that conflicts with the CDC pseudocolumns remains a configuration failure instead of
+     * being dropped or dead-lettered once per record.
+     */
+    public void prepareCdcWriteDescriptor(TableDestination destination) {
+        if (cdcRowSerializer != null) {
+            cdcRowSerializer.getDescriptor(destination);
+        }
+    }
+
+    /** Serializes a row for its destination, including CDC metadata when enabled. */
+    @Nullable
+    public ByteString serialize(T element, TableDestination destination) throws IOException {
+        return cdcRowSerializer == null
+                ? serializer.serialize(element)
+                : cdcRowSerializer.serialize(element, destination);
     }
 
     /** Returns the table create disposition. */

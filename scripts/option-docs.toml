@@ -126,6 +126,7 @@ page = "docs/content/docs/connectors/table/spanner.md"
 # belong in its tables all the same: a reader writing DDL needs every key the
 # connector accepts, not only the ones this project happens to declare.
 [extra]
+"changeTypeProvider" = "Required by CdcOptions.builder(...), not declared as a setter."
 "format" = "Declared by Flink's FactoryUtil; the connector requires it but does not define it."
 "scan.parallelism" = "As format above."
 "sink.parallelism" = "As format above."

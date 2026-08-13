@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -47,6 +48,7 @@ public class BigQuerySinkBuilder<T> {
     private WriteMethod writeMethod = WriteMethod.STORAGE_API_AT_LEAST_ONCE;
     private DestinationResolver<? super T> destinationResolver;
     private BigQueryProtoSerializer<? super T> serializer;
+    private CdcOptions<? super T> cdcOptions;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             destination -> TableCreateOptions.defaults();
@@ -110,6 +112,23 @@ public class BigQuerySinkBuilder<T> {
      */
     public BigQuerySinkBuilder<T> serializer(BigQueryProtoSerializer<? super T> serializer) {
         this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
+        return this;
+    }
+
+    /**
+     * Enables BigQuery change data capture for records appended through the Storage Write API
+     * default stream.
+     *
+     * <p>The destination table must already have a BigQuery primary key. The sink adds CDC
+     * pseudocolumns to the write descriptor and row bytes only; they are not added to the physical
+     * table schema used for auto-creation. Rejected for {@link
+     * WriteMethod#STORAGE_API_EXACTLY_ONCE} and {@link WriteMethod#FILE_LOADS}.
+     *
+     * @param cdcOptions the per-record CDC providers
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> cdcOptions(CdcOptions<? super T> cdcOptions) {
+        this.cdcOptions = Preconditions.checkNotNull(cdcOptions, "cdcOptions must not be null");
         return this;
     }
 
@@ -342,6 +361,7 @@ public class BigQuerySinkBuilder<T> {
                 new BigQuerySinkConfig<>(
                         destinationResolver,
                         serializer,
+                        cdcOptions,
                         createDisposition,
                         tableCreateOptionsProvider,
                         schemaUpdateOptions,
@@ -378,6 +398,11 @@ public class BigQuerySinkBuilder<T> {
                         || defaultStreamOptions == null,
                 "defaultStreamOptions(...) is only valid for"
                         + " WriteMethod.STORAGE_API_AT_LEAST_ONCE (write method is %s).",
+                writeMethod.name());
+        Preconditions.checkState(
+                writeMethod == WriteMethod.STORAGE_API_AT_LEAST_ONCE || cdcOptions == null,
+                "cdcOptions(...) is only valid for WriteMethod.STORAGE_API_AT_LEAST_ONCE"
+                        + " (write method is %s).",
                 writeMethod.name());
         // FILE_LOADS stages to Cloud Storage and submits load jobs; no emulator here stands in for
         // GCS, so an endpoint would be honored by the metadata half of that write method and

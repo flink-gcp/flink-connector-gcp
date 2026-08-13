@@ -181,10 +181,24 @@ def test_every_source_glob_and_builder_return_shape_is_found(root, check_option_
         "ASourceBuilder.java",
         options_class("ASourceBuilder", "source", ret="ASourceBuilder<T>"),
     )
+    write_source(
+        root,
+        "conn",
+        "GenericOptions.java",
+        """package io.github.x;
+
+public class GenericOptions<T> {
+  public static class Builder<T> {
+    public Builder<T> provider(Provider<? super T> value) { return this; }
+  }
+}
+""",
+    )
     assert check_option_docs.builder_setters("conn", set(), []) == {
         "AOptions": {"nested"},
         "ASinkBuilder": {"sink"},
         "ASourceBuilder": {"source"},
+        "GenericOptions": {"provider"},
     }
 
 
