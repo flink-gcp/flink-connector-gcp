@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0106: The Bigtable table change stream is an insert-only mutation envelope
+# ADR-0106: The Bigtable table change stream preserves mutations or decodes one complete cell
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600), [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601)
+- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600), [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601), [#603](https://github.com/laughingman7743/flink-connector-gcp/issues/603)
 - Modules: bigtable (`table`, `table.source`)
 - Current behavior: [Change Streams](../content/docs/connectors/table/bigtable.md#change-streams)
 
@@ -35,8 +35,9 @@ A table schema tied to only the first three would silently lose aggregate mutati
 
 ## Decision
 
-`scan.mode = change-stream` selects the existing DataStream Change Streams source and requires `scan.change-stream.changelog-mode = envelope`.
-The source emits one insert-only row per Bigtable mutation and preserves its row key plus the ordered entry list.
+`scan.mode = change-stream` selects the existing DataStream Change Streams source and requires an explicit `scan.change-stream.changelog-mode`.
+
+`envelope` emits one insert-only row per Bigtable mutation and preserves its row key plus the ordered entry list.
 It declares no primary key because repeated mutations for one row are distinct log records.
 
 The physical DDL is exact.
@@ -52,6 +53,22 @@ The source exposes five scalar mutation fields through Flink's readable-metadata
 The empty cluster identifier on a garbage-collection mutation becomes SQL null because that mutation has no source cluster.
 The timestamp conversion retains all nine fractional digits carried by the SDK's `java.time.Instant`.
 
+`selected-cell` is a separate, stateless interpretation for producers that store one complete logical row in one configured cell.
+The DDL declares exactly one physical primary-key column, in any position, and at least one non-key physical column.
+The mutation row key is decoded into that primary key with the HBase-compatible `CellValueCodec`; `value.format` decodes every non-key column from the selected cell.
+The format must be insert-only and must emit exactly one non-null row for an upsert.
+Format metadata is not exposed because a delete has no payload from which to obtain it.
+
+The selected cell is identified by its family and canonical padded RFC 4648 Base64 qualifier, including an empty qualifier.
+One configured source cluster is accepted so multi-cluster conflict resolution cannot reorder the keyed changelog.
+The source emits `UPDATE_AFTER` when an atomic user mutation contains exactly one full selected-column or selected-family delete followed by exactly one selected `SetCell`.
+It emits a key-only `DELETE` when that full delete has no following selected `SetCell`.
+Entries for other cells and families emit nothing.
+
+The source fails on a standalone, repeated, or out-of-order selected `SetCell`; a timestamp-bounded selected-column delete; a selected-cell garbage-collection mutation; an aggregate mutation that can affect the selected cell; a mutation from another cluster; or a value format that emits zero, multiple, or null rows.
+It does not invent `INSERT`, perform a lookup, reconstruct an old value, or bootstrap a snapshot before the configured Change Streams start position.
+This restriction is the state-and-bootstrap design: correctness comes from the producer replacing or deleting the complete logical value atomically, not from state hidden inside the source.
+
 Continuation tokens and partition ranges remain internal to the FLIP-27 source protocol.
 The estimated low watermark belongs to the partition that produced the mutation and is readable data, not a Flink source watermark.
 A stream-wide watermark requires a coordinated frontier across active, queued, and unassigned partitions.
@@ -60,14 +77,19 @@ Change Streams options map onto the DataStream builder.
 An absent startup mode retains the builder's latest-position default; a restored checkpoint position takes precedence under ADR-0094, and an expired restored position fails unless the DDL explicitly configures a resume fallback.
 An end timestamp makes the source bounded, and the per-subtask stream option retains ADR-0103's builder default when absent.
 
-Bounded-scan row ranges, cell codecs, lookup settings, and the emulator are rejected in Change Streams mode.
+Bounded-scan row ranges, lookup settings, and the emulator are rejected in Change Streams mode.
 Change Streams options are rejected in bounded mode.
+Selected-cell options and `value.format` are rejected in envelope mode.
 This prevents a valid-looking DDL from carrying options that no selected runtime consumes.
 
 ## Alternatives declined
 
-- **Emit row-level updates and deletes from the mutation alone.**
+- **Emit row-level updates and deletes from arbitrary mutations.**
   The service does not provide before or full after images, so those row kinds would describe state the source never observed.
+- **Look up the row after every mutation or retain row images in source state.**
+  A lookup is not ordered atomically with the Change Streams record, while retained state still needs a snapshot bootstrap and an ownership policy for records before the configured start position.
+- **Treat any selected `SetCell` as an upsert.**
+  A single cell version does not prove that older versions were removed, so a replay or timestamp choice could expose a different logical value to readers.
 - **Support only set and delete mutations.**
   Aggregate mutations are part of the pinned client surface and omitting them would make the same physical Bigtable table lose changes depending on its family type.
 - **Flatten qualifier, timestamp, and value to byte strings.**
@@ -87,6 +109,8 @@ This prevents a valid-looking DDL from carrying options that no selected runtime
 - Consumers derive their own stateful interpretation from the ordered mutation log.
 - SQL can select or cast the five readable metadata fields without changing the physical envelope.
 - The source remains insert-only even when an entry deletes a cell or family.
-- A table-shaped upsert mode needs a separate state and bootstrap design and is tracked by [#603](https://github.com/laughingman7743/flink-connector-gcp/issues/603).
+- Selected-cell mode is a keyed upsert stream only for the documented atomic producer protocol; existing arbitrary Bigtable writers do not satisfy that contract automatically.
+- A downstream keyed materialization interprets the first `UPDATE_AFTER` it sees as the current value; the source does not relabel it as `INSERT`.
+- The SQL uber-jar does not bundle Flink formats, so a selected-cell deployment supplies its chosen format jar separately.
 - Stream-wide source watermarks need a safe frontier across active, queued, and unassigned partitions and are tracked by [#604](https://github.com/laughingman7743/flink-connector-gcp/issues/604).
 - Real-GCP Table API acceptance remains in the staged follow-up [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602).

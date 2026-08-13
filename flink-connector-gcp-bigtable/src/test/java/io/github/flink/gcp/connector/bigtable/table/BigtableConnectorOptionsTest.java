@@ -146,6 +146,7 @@ class BigtableConnectorOptionsTest {
         assertThat(ScanMode.BOUNDED).hasToString("bounded");
         assertThat(ScanMode.CHANGE_STREAM).hasToString("change-stream");
         assertThat(ChangeStreamChangelogMode.ENVELOPE).hasToString("envelope");
+        assertThat(ChangeStreamChangelogMode.SELECTED_CELL).hasToString("selected-cell");
         assertThat(ChangeStreamStartMode.EARLIEST).hasToString("earliest");
         assertThat(ChangeStreamStartMode.LATEST).hasToString("latest");
         assertThat(ChangeStreamStartMode.TIMESTAMP).hasToString("timestamp");
@@ -166,15 +167,16 @@ class BigtableConnectorOptionsTest {
     }
 
     @Test
-    void thereIsNoFormatOption() {
-        // A Bigtable row is a schema this DDL describes, cell by cell, and the encoding is the
-        // HBase ecosystem's rather than a choice. There is nothing for a format factory to decide,
-        // so 'format' is not accepted and the factory discovers none.
+    void onlySelectedCellModeHasAValueFormatOption() {
+        // Bounded rows and sinks use the HBase-compatible cell codec. Selected-cell Change Streams
+        // is the one path whose configured cell contains a serialized logical row.
         BigtableDynamicTableFactory factory = new BigtableDynamicTableFactory();
         Set<String> accepted = new HashSet<>();
         factory.requiredOptions().forEach(o -> accepted.add(o.key()));
         factory.optionalOptions().forEach(o -> accepted.add(o.key()));
 
-        assertThat(accepted).doesNotContain("format", "key.format", "value.format");
+        assertThat(accepted)
+                .contains(BigtableConnectorOptions.VALUE_FORMAT.key())
+                .doesNotContain("format", "key.format");
     }
 }

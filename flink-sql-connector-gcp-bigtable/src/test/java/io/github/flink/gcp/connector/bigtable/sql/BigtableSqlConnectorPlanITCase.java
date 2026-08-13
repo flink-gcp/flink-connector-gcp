@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Plans the Change Streams SQL surface using only the existing shaded connector jar. */
+/** Plans the Change Streams SQL surface using the shaded connector jar. */
 class BigtableSqlConnectorPlanITCase extends AbstractSqlConnectorSmokeITCase {
 
     @Override
@@ -81,5 +81,34 @@ class BigtableSqlConnectorPlanITCase extends AbstractSqlConnectorSmokeITCase {
         assertThat(plan)
                 .contains("mutations", "entry_index", "kind", "mutation_type", "committed_at")
                 .contains("Uncollect");
+    }
+
+    @Test
+    void packagedConnectorPlansSelectedCellUpsertsWithASeparateFormatJar() {
+        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        tEnv.executeSql(
+                "CREATE TABLE profiles (\n"
+                        + "  name STRING,\n"
+                        + "  profile_id STRING NOT NULL,\n"
+                        + "  score INT,\n"
+                        + "  source_cluster STRING METADATA FROM 'source-cluster-id' VIRTUAL,\n"
+                        + "  PRIMARY KEY (profile_id) NOT ENFORCED\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'bigtable',\n"
+                        + "  'project' = 'my-project',\n"
+                        + "  'instance' = 'my-instance',\n"
+                        + "  'table' = 'my-table',\n"
+                        + "  'scan.mode' = 'change-stream',\n"
+                        + "  'scan.change-stream.changelog-mode' = 'selected-cell',\n"
+                        + "  'scan.app-profile-id' = 'single-cluster-profile',\n"
+                        + "  'scan.change-stream.selected-cell.family' = 'state',\n"
+                        + "  'scan.change-stream.selected-cell.qualifier-base64' = 'Y3VycmVudA==',\n"
+                        + "  'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-1',\n"
+                        + "  'value.format' = 'json'\n"
+                        + ")");
+
+        String plan = tEnv.explainSql("SELECT profile_id, name, score FROM profiles");
+
+        assertThat(plan).contains("profiles", "profile_id", "name", "score");
     }
 }

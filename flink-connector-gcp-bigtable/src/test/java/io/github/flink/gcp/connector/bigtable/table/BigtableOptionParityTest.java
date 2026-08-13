@@ -213,7 +213,19 @@ class BigtableOptionParityTest {
                 "selects the bounded or Change Streams source builder");
         map.put(
                 BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE.key(),
-                "selects and makes explicit the generic mutation envelope's planner contract");
+                "selects the envelope or selected-cell planner contract");
+        map.put(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_FAMILY.key(),
+                "identifies the complete-value cell interpreted by the table layer");
+        map.put(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64.key(),
+                "identifies the complete-value cell interpreted by the table layer");
+        map.put(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID.key(),
+                "bounds the selected-cell mutation protocol to one source cluster");
+        map.put(
+                BigtableConnectorOptions.VALUE_FORMAT.key(),
+                "is discovered by the table factory and decodes selected-cell non-key columns");
         map.put(
                 BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS.key(),
                 "is the instant component of the StartPosition passed to startPosition(...)");

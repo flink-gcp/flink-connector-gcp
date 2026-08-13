@@ -112,6 +112,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Supplied separately from the uber-jar for selected-cell plan acceptance. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-json</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-clients</artifactId>
             <scope>test</scope>

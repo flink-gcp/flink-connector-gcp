@@ -17,8 +17,10 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
@@ -26,10 +28,13 @@ import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.table.ChangeStreamChangelogMode;
+import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
 
 import javax.annotation.Nullable;
 
@@ -40,7 +45,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Insert-only generic mutation-envelope source backed by the DataStream Change Streams source. */
+/** Table changelog source backed by the DataStream Change Streams source. */
 @Internal
 public final class BigtableChangeStreamDynamicSource
         implements ScanTableSource, SupportsReadingMetadata {
@@ -54,6 +59,12 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final Integer maxConcurrentStreamsPerSubtask;
     @Nullable private final Integer parallelism;
     private final DataType physicalDataType;
+    private final ChangeStreamChangelogMode changelogMode;
+    @Nullable private final DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
+    @Nullable private final SelectedCellTableSchema selectedCellSchema;
+    @Nullable private final String selectedCellFamily;
+    @Nullable private final ByteString selectedCellQualifier;
+    @Nullable private final String selectedCellSourceClusterId;
 
     /** Metadata keys selected by the planner, in the order appended to produced rows. */
     private List<String> metadataKeys;
@@ -71,6 +82,72 @@ public final class BigtableChangeStreamDynamicSource
             @Nullable Integer maxConcurrentStreamsPerSubtask,
             @Nullable Integer parallelism,
             DataType producedDataType) {
+        this(
+                destination,
+                appProfileId,
+                serviceAccountKeyFile,
+                startPosition,
+                resumeFallback,
+                endTime,
+                maxConcurrentStreamsPerSubtask,
+                parallelism,
+                producedDataType,
+                ChangeStreamChangelogMode.ENVELOPE,
+                null,
+                null,
+                null,
+                null,
+                null);
+    }
+
+    public BigtableChangeStreamDynamicSource(
+            TableDestination destination,
+            String appProfileId,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable StartPosition startPosition,
+            @Nullable StartPosition resumeFallback,
+            @Nullable Instant endTime,
+            @Nullable Integer maxConcurrentStreamsPerSubtask,
+            @Nullable Integer parallelism,
+            SelectedCellTableSchema selectedCellSchema,
+            DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
+            String selectedCellFamily,
+            ByteString selectedCellQualifier,
+            String selectedCellSourceClusterId) {
+        this(
+                destination,
+                appProfileId,
+                serviceAccountKeyFile,
+                startPosition,
+                resumeFallback,
+                endTime,
+                maxConcurrentStreamsPerSubtask,
+                parallelism,
+                Objects.requireNonNull(selectedCellSchema).getPhysicalDataType(),
+                ChangeStreamChangelogMode.SELECTED_CELL,
+                Objects.requireNonNull(decodingFormat),
+                selectedCellSchema,
+                Objects.requireNonNull(selectedCellFamily),
+                Objects.requireNonNull(selectedCellQualifier),
+                Objects.requireNonNull(selectedCellSourceClusterId));
+    }
+
+    private BigtableChangeStreamDynamicSource(
+            TableDestination destination,
+            String appProfileId,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable StartPosition startPosition,
+            @Nullable StartPosition resumeFallback,
+            @Nullable Instant endTime,
+            @Nullable Integer maxConcurrentStreamsPerSubtask,
+            @Nullable Integer parallelism,
+            DataType physicalDataType,
+            ChangeStreamChangelogMode changelogMode,
+            @Nullable DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
+            @Nullable SelectedCellTableSchema selectedCellSchema,
+            @Nullable String selectedCellFamily,
+            @Nullable ByteString selectedCellQualifier,
+            @Nullable String selectedCellSourceClusterId) {
         this.destination = Objects.requireNonNull(destination);
         this.appProfileId = Objects.requireNonNull(appProfileId);
         this.serviceAccountKeyFile = serviceAccountKeyFile;
@@ -79,9 +156,15 @@ public final class BigtableChangeStreamDynamicSource
         this.endTime = endTime;
         this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
         this.parallelism = parallelism;
-        this.physicalDataType = Objects.requireNonNull(producedDataType);
+        this.physicalDataType = Objects.requireNonNull(physicalDataType);
+        this.changelogMode = Objects.requireNonNull(changelogMode);
+        this.decodingFormat = decodingFormat;
+        this.selectedCellSchema = selectedCellSchema;
+        this.selectedCellFamily = selectedCellFamily;
+        this.selectedCellQualifier = selectedCellQualifier;
+        this.selectedCellSourceClusterId = selectedCellSourceClusterId;
         this.metadataKeys = Collections.emptyList();
-        this.producedDataType = producedDataType;
+        this.producedDataType = physicalDataType;
     }
 
     @Override
@@ -100,7 +183,9 @@ public final class BigtableChangeStreamDynamicSource
 
     @Override
     public ChangelogMode getChangelogMode() {
-        return ChangelogMode.insertOnly();
+        return changelogMode == ChangeStreamChangelogMode.ENVELOPE
+                ? ChangelogMode.insertOnly()
+                : ChangelogMode.upsert();
     }
 
     @Override
@@ -113,10 +198,26 @@ public final class BigtableChangeStreamDynamicSource
         BigtableChangeStreamSourceBuilder<RowData> builder =
                 BigtableChangeStreamSource.<RowData>builder()
                         .table(destination)
-                        .appProfileId(appProfileId)
-                        .deserializer(
-                                new ChangeStreamMutationRowDataDeserializationSchema(
-                                        selectedMetadata, typeInformation));
+                        .appProfileId(appProfileId);
+        if (changelogMode == ChangeStreamChangelogMode.ENVELOPE) {
+            builder.deserializer(
+                    new ChangeStreamMutationRowDataDeserializationSchema(
+                            selectedMetadata, typeInformation));
+        } else {
+            DeserializationSchema<RowData> payloadDeserializer =
+                    decodingFormat.createRuntimeDecoder(
+                            context, selectedCellSchema.getPayloadDataType());
+            builder.deserializer(
+                    new SelectedCellRowDataDeserializationSchema(
+                            payloadDeserializer,
+                            new SelectedCellMutationClassifier(
+                                    selectedCellFamily,
+                                    selectedCellQualifier,
+                                    selectedCellSourceClusterId),
+                            selectedCellSchema,
+                            selectedMetadata,
+                            typeInformation));
+        }
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
@@ -137,17 +238,36 @@ public final class BigtableChangeStreamDynamicSource
 
     @Override
     public DynamicTableSource copy() {
-        BigtableChangeStreamDynamicSource copy =
-                new BigtableChangeStreamDynamicSource(
-                        destination,
-                        appProfileId,
-                        serviceAccountKeyFile,
-                        startPosition,
-                        resumeFallback,
-                        endTime,
-                        maxConcurrentStreamsPerSubtask,
-                        parallelism,
-                        physicalDataType);
+        BigtableChangeStreamDynamicSource copy;
+        if (changelogMode == ChangeStreamChangelogMode.ENVELOPE) {
+            copy =
+                    new BigtableChangeStreamDynamicSource(
+                            destination,
+                            appProfileId,
+                            serviceAccountKeyFile,
+                            startPosition,
+                            resumeFallback,
+                            endTime,
+                            maxConcurrentStreamsPerSubtask,
+                            parallelism,
+                            physicalDataType);
+        } else {
+            copy =
+                    new BigtableChangeStreamDynamicSource(
+                            destination,
+                            appProfileId,
+                            serviceAccountKeyFile,
+                            startPosition,
+                            resumeFallback,
+                            endTime,
+                            maxConcurrentStreamsPerSubtask,
+                            parallelism,
+                            selectedCellSchema,
+                            decodingFormat,
+                            selectedCellFamily,
+                            selectedCellQualifier,
+                            selectedCellSourceClusterId);
+        }
         copy.applyReadableMetadata(metadataKeys, producedDataType);
         return copy;
     }
@@ -176,6 +296,12 @@ public final class BigtableChangeStreamDynamicSource
                         maxConcurrentStreamsPerSubtask, that.maxConcurrentStreamsPerSubtask)
                 && Objects.equals(parallelism, that.parallelism)
                 && physicalDataType.equals(that.physicalDataType)
+                && changelogMode == that.changelogMode
+                && Objects.equals(decodingFormat, that.decodingFormat)
+                && Objects.equals(selectedCellSchema, that.selectedCellSchema)
+                && Objects.equals(selectedCellFamily, that.selectedCellFamily)
+                && Objects.equals(selectedCellQualifier, that.selectedCellQualifier)
+                && Objects.equals(selectedCellSourceClusterId, that.selectedCellSourceClusterId)
                 && metadataKeys.equals(that.metadataKeys)
                 && producedDataType.equals(that.producedDataType);
     }
@@ -192,6 +318,12 @@ public final class BigtableChangeStreamDynamicSource
                 maxConcurrentStreamsPerSubtask,
                 parallelism,
                 physicalDataType,
+                changelogMode,
+                decodingFormat,
+                selectedCellSchema,
+                selectedCellFamily,
+                selectedCellQualifier,
+                selectedCellSourceClusterId,
                 metadataKeys,
                 producedDataType);
     }

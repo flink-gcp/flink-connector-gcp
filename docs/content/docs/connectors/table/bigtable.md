@@ -29,9 +29,11 @@ the delivery guarantees and the error handling; this one carries the DDL surface
 status is in the module README.
 
 `sink.parallelism` and `scan.parallelism` come from Flink's own `FactoryUtil` rather than from this
-connector. There is no `format` option: a Bigtable row is a schema this DDL describes, cell by
-cell, and the cell encoding is the HBase ecosystem's rather than a choice, so there is nothing for
-a format factory to decide.
+connector.
+Bounded scans and sinks have no format option: a Bigtable row is a schema this DDL describes, cell
+by cell, and the cell encoding is the HBase ecosystem's rather than a choice.
+The selected-cell Change Streams mode is the exception because one cell holds a serialized logical
+row and `value.format` decodes it.
 
 A column family is a *column name*, so it has to be a legal SQL identifier — a reserved word such as
 `identity` needs backticks, or a different name.
@@ -68,6 +70,10 @@ anyone wants to assemble by hand.
 The plain `flink-connector-gcp-bigtable` jar works too, where the deployment already resolves
 transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle.
 For SQL it usually is not.
+
+The uber-jar does not bundle Flink format implementations.
+A selected-cell Change Streams job must also put the chosen format jar, such as `flink-json`, on
+the SQL client and cluster classpaths.
 
 ### Everything bundled is relocated
 
@@ -342,8 +348,66 @@ downstream keyed computation can reconstruct the order without relying on `UNNES
 The envelope is a mutation record, not a reconstructed Bigtable row.
 Bigtable does not supply before or complete after images, so a cell or family deletion remains an
 inserted envelope row rather than a Flink `DELETE` or `UPDATE`.
-A table-shaped upsert interpretation is tracked separately in
-[#603]({{< param BookRepo >}}/issues/603).
+
+#### Selected-cell upserts
+
+Set `scan.change-stream.changelog-mode = selected-cell` only when one Bigtable cell contains the
+complete serialized non-key part of a logical row.
+The mutation row key supplies exactly one declared physical primary key, which may appear anywhere
+in the DDL, and `value.format` decodes every other physical column.
+At least one non-key column is required.
+
+```sql
+CREATE TABLE current_profiles (
+  name STRING,
+  profile_id STRING NOT NULL,
+  score INT,
+  source_cluster_id STRING
+    METADATA FROM 'source-cluster-id' VIRTUAL,
+  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL
+    METADATA FROM 'commit-timestamp' VIRTUAL,
+  PRIMARY KEY (profile_id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.changelog-mode' = 'selected-cell',
+  'scan.app-profile-id' = 'single-cluster-profile',
+  'scan.change-stream.selected-cell.family' = 'state',
+  -- Base64 for the qualifier "current"; an empty qualifier is ''.
+  'scan.change-stream.selected-cell.qualifier-base64' = 'Y3VycmVudA==',
+  'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-a',
+  'value.format' = 'json'
+);
+```
+
+The source recognizes only this atomic producer protocol:
+
+- An upsert is one full delete of the selected column across all timestamps, or one delete of the
+  selected family, followed by exactly one selected `SetCell` in the same mutation.
+- A delete is that full selected-column or selected-family delete without a later selected
+  `SetCell` and produces a key-only `DELETE`.
+- Entries for other cells and families produce no row.
+
+The upsert is emitted as `UPDATE_AFTER`, not an invented `INSERT`.
+A downstream keyed table can materialize the first update it observes as the current value.
+The source performs no point lookup, stores no previous row image, and does not scan a snapshot
+before its configured Change Streams start position.
+
+The configured source cluster must match every mutation that affects the selected cell.
+This excludes cross-cluster conflict ordering from the changelog contract.
+The job fails on standalone, repeated, or out-of-order selected `SetCell` entries; partial
+timestamp deletes; garbage-collection or aggregate mutations affecting the selected cell; or a
+mutation from another cluster.
+The chosen format must be insert-only and emit exactly one non-null row for every upsert.
+Format metadata is not exposed because a key-only delete has no payload to decode.
+
+These are producer requirements, not inferences the connector can make from arbitrary Bigtable
+traffic.
+A writer that does not atomically replace the complete selected value with the sequence above must
+use the lossless `envelope` mode instead.
 
 The application profile is required and must route to one cluster, as on the DataStream source.
 The emulator is rejected because it does not implement Change Streams.
@@ -537,7 +601,11 @@ builder.
 | `scan.row-range.start-closed` | String | The inclusive decoded start key of the legacy single `rowRange(...)`. Either bound may be given alone |
 | `scan.row-range.end-open` | String | The exclusive decoded end key of that range |
 | `scan.row-ranges` | String | Additional `[start,end)` ranges separated by unescaped `;`. Either endpoint may be omitted. Backslash escapes grammar characters inside UTF-8 endpoints |
-| `scan.change-stream.changelog-mode` | Enum | Required as `envelope` in Change Streams mode; selects the fixed insert-only generic mutation envelope |
+| `scan.change-stream.changelog-mode` | Enum | Required in Change Streams mode. `envelope` selects the fixed insert-only generic mutation envelope; `selected-cell` emits keyed upserts and deletes under the documented atomic producer protocol |
+| `scan.change-stream.selected-cell.family` | String | Required only in selected-cell mode; family that holds the complete serialized logical value |
+| `scan.change-stream.selected-cell.qualifier-base64` | String | Required only in selected-cell mode; exact qualifier in canonical padded RFC 4648 standard Base64. An empty decoded qualifier is valid |
+| `scan.change-stream.selected-cell.source-cluster-id` | String | Required only in selected-cell mode; the one source cluster accepted for mutations affecting the selected cell |
+| `value.format` | String | Required only in selected-cell mode; insert-only Flink format that decodes the selected cell into all non-key physical columns. Its `value.<format>.*` options configure that format |
 | `scan.startup.mode` | Enum | `startPosition(...)`: `earliest`, `latest`, or `timestamp`. Unset retains the builder's latest default |
 | `scan.startup.timestamp-millis` | Long | Epoch-millisecond instant paired with startup mode `timestamp` |
 | `scan.resume-fallback.mode` | Enum | `resumeFallback(...)`: explicit fallback for an expired restored continuation; uses the same three modes |
@@ -843,5 +911,7 @@ Change Streams metadata and `UNNEST(entries)` are covered without a service: con
 SDK mutation models directly, planner tests select and cast metadata, and the existing
 `flink-sql-connector-gcp-bigtable` uber-jar plans the same DDL through its discovered `bigtable`
 factory.
+Selected-cell tests drive the strict mutation classifier and row assembly directly, while a
+MiniCluster job executes the canonical upsert, unrelated-mutation, and key-only-delete paths.
 The emulator implements no Change Streams RPC, so real-GCP Table API acceptance remains in
 [#602]({{< param BookRepo >}}/issues/602).

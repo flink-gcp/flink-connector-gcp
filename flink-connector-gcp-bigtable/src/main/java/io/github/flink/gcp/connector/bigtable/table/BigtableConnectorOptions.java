@@ -46,10 +46,10 @@ import java.util.List;
  *       than tolerating a default anywhere.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
- *   <li><b>There is no {@code format} option.</b> A Bigtable row is a schema this DDL describes —
- *       the rowkey column, one {@code ROW<...>} column per column family, a nested field per
- *       qualifier — and the cell bytes use the HBase ecosystem's encodings, so there is nothing for
- *       a format factory to decide.
+ *   <li><b>A bounded row has no {@code format} option.</b> Its rowkey, family, and qualifier schema
+ *       uses the HBase ecosystem's encodings. The selected-cell Change Streams mode is the narrow
+ *       exception: one opaque cell contains a complete row and therefore takes {@link
+ *       #VALUE_FORMAT}.
  * </ol>
  *
  * <p>An enum-valued option accepts the spelling its enum's {@code toString()} returns. Connector
@@ -206,7 +206,43 @@ public final class BigtableConnectorOptions {
                     .withDescription(
                             "The physical changelog representation for Change Streams."
                                     + " ENVELOPE emits one insert-only generic mutation"
-                                    + " envelope per Bigtable mutation.");
+                                    + " envelope per Bigtable mutation. SELECTED_CELL decodes a"
+                                    + " complete logical row from one configured cell and emits"
+                                    + " keyed upserts and deletes.");
+
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_SELECTED_CELL_FAMILY =
+            ConfigOptions.key("scan.change-stream.selected-cell.family")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The column family holding the selected-cell mode's complete"
+                                    + " serialized logical row.");
+
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64 =
+            ConfigOptions.key("scan.change-stream.selected-cell.qualifier-base64")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The selected cell's qualifier as canonical padded RFC 4648 standard"
+                                    + " Base64. An empty decoded qualifier is valid.");
+
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID =
+            ConfigOptions.key("scan.change-stream.selected-cell.source-cluster-id")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The only source cluster allowed to mutate the selected cell. A"
+                                    + " matching record is required so cross-cluster conflicts"
+                                    + " cannot reorder the keyed changelog.");
+
+    public static final ConfigOption<String> VALUE_FORMAT =
+            ConfigOptions.key("value.format")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Flink decoding format for the selected cell's complete logical"
+                                    + " row. The mutation row key supplies the declared primary"
+                                    + " key, so the format decodes every other physical column.");
 
     public static final ConfigOption<ChangeStreamStartMode> SCAN_STARTUP_MODE =
             ConfigOptions.key("scan.startup.mode")
