@@ -200,6 +200,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   object members sorted recursively. Do not flatten it to the pinned SDK's `Type.Code`:
   `TOKENLIST`, annotations, nested arrays, and future service codes have to survive. `Mod` also
   preserves absent values separately from explicit JSON `null`.
+- `DataChangeRecord` carries a `@TypeInfo` factory that selects the connector-owned field
+  serializer from `TypeInformation.of(DataChangeRecord.class)`. Keep that path independent of
+  reflective Kryo and JDK module openings. Its immutable copy contract, length-prefixed JSON and
+  versioned serializer snapshot are part of the raw-record network and state boundary.
 - Table and column filters run after dialect-specific decoding and before the user deserializer.
   Patterns fully match the Spanner-reported table name or `table.column`; do not case-fold,
   substring-match, or look up a historical schema. Primary-key metadata and keys always survive.

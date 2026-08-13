@@ -44,6 +44,8 @@ A restored query can therefore resume inclusively and repeat its timestamp bound
 `SpannerChangeStreamSource` is a continuous FLIP-27 source with a collector-based, zero-to-many deserialization SPI over the connector-owned `DataChangeRecord` model.
 The model carries every documented data-change field.
 It stores each recursive column type descriptor as normalized JSON with object members sorted recursively and keeps an absent mod value distinct from an explicit JSON `null`.
+`DataChangeRecord` supplies its own Flink type information and field serializer, so `TypeInformation.of(DataChangeRecord.class)` does not fall back to reflective Kryo.
+The serializer writes the connector-owned fields directly, treats the model as immutable for copies, and versions its snapshot independently of JDK implementation classes.
 
 Each reader subtask opens at most `maxConcurrentQueriesPerSubtask` partition queries, default eight.
 The reader starts assigned splits until it reaches that bound, keeps excess restored splits in a FIFO, and checkpoints both active and queued splits.
@@ -91,6 +93,7 @@ The source emits commit timestamps and split watermarks through Flink's source o
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
 Reader tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, watermarks, child-before-finish ordering, query failure, and bounded completion.
 Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
+Serializer tests obtain the type through `TypeInformation.of`, round-trip every record field and projected collections, and reject an unknown serializer snapshot version without opening JDK modules.
 Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
 The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, and proves a later scale-in preserves the positions of four queued splits.
 Emulator MiniCluster tests run the production source for both dialects across a schema and value-capture change.

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.typeinfo.TypeInfo;
 import org.apache.flink.util.Preconditions;
 
 import com.google.gson.JsonElement;
@@ -33,6 +34,7 @@ import java.util.Optional;
 
 /** One data-change record returned by a Spanner Change Streams read function. */
 @PublicEvolving
+@TypeInfo(DataChangeRecordTypeInfoFactory.class)
 public final class DataChangeRecord implements Serializable {
 
     private static final long serialVersionUID = 1L;
