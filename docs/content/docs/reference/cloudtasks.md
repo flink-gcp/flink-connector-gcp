@@ -22,7 +22,7 @@ limitations under the License.
 
 # Cloud Tasks options
 
-Every option the Cloud Tasks sink takes. What each one is *for* is on the
+Every option the Cloud Tasks sink and App Engine target builder take. What each one is *for* is on the
 [Cloud Tasks connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) page; the three
 forms of the Default column are explained
 [here]({{< relref "docs/reference" >}}#what-a-default-means).
@@ -39,19 +39,34 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 |---|---|---|
 | `queue` | **required**, unless `destinationResolver` is set | Writes every task to one fixed queue |
 | `destinationResolver` | — | Resolves the queue per record. Costs nothing here: one client serves every queue |
-| `serializer` | **required** | Builds the `Task` — URL, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
+| `serializer` | **required** | Builds the `Task` — HTTP URL or App Engine relative URI/routing, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
 | `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |
 | `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key on each TaskManager when the writer starts. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/cloudtasks" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
 
-**The task itself is configured on the serialization schema, not here.** `httpTarget(url)` starts a
-fluent chain — `withBody`, `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`, `withOAuthToken`
-— which composes the `Task` each record becomes, and the builder takes the result as the single
-`serializer` option above. The chain is described under
+**The task itself is configured outside the sink builder.** `httpTarget(url)` starts the immutable
+HTTP schema chain (`withBody`, `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`,
+`withOAuthToken`). `appEngineTarget(relativeUri)` starts `AppEngineTargetBuilder` (`withBody`,
+`withMethod`, `withRelativeUri`, `withHeaders`, `withRouting`, then `build`). Each API composes the
+`Task` a record becomes, and the sink builder takes the resulting schema as its single `serializer`
+option above. The APIs are described under
 [API notes]({{< relref "docs/connectors/datastream/cloudtasks" >}}#api-notes) and typed in the
 [Java API reference]({{< param ApiDocsURL >}}).
+
+## `AppEngineTargetBuilder`
+
+`appEngineTarget(relativeUri)` supplies the fixed relative URI, `withBody(...)` binds the record
+type and required body serializer, and `build()` snapshots the current settings into the immutable
+serialization schema.
+
+| Option | Default | What it does |
+|---|---|---|
+| `withMethod` | `POST` | Sets the App Engine request method. Only `POST` and `PUT` carry the serialized body |
+| `withRelativeUri` | fixed URI passed to `appEngineTarget(...)` | Resolves the relative URI per record instead |
+| `withHeaders` | — | Resolves request headers per record; reserved App Engine and transport headers are rejected |
+| `withRouting` | *unset ⇒ App Engine default service and version* | Sets fixed routing, or resolves service/version/instance routing per record. Queue-level `appEngineRoutingOverride` takes precedence |
 
 Naming is off by default because Google documents deduplication as costing *"significantly increased
 latency"*, and the id is hashed because sequential ids raise latency and error rates across the

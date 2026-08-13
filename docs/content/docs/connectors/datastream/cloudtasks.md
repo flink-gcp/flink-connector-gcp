@@ -24,9 +24,11 @@ limitations under the License.
 
 Cloud Tasks sink for Apache Flink, provided by the `flink-connector-gcp-cloudtasks` module.
 
-The sink ships in [#24]({{< param BookRepo >}}/issues/24); its emulator integration tests are [#25]({{< param BookRepo >}}/issues/25). This page doubles as the design
-record: it explains not only what the connector does but why each decision was taken, so the
-reasoning is settled once rather than re-argued per pull request.
+The sink ships in [#24]({{< param BookRepo >}}/issues/24), and App Engine targets join it in
+[#628]({{< param BookRepo >}}/issues/628).
+Its emulator integration tests are [#25]({{< param BookRepo >}}/issues/25).
+This page doubles as the design record: it explains what the connector does and why each decision
+was taken, so the reasoning is settled once rather than re-argued per pull request.
 
 ## What this connector is for
 
@@ -63,36 +65,37 @@ Sink<OrderEvent> sink =
 ## API notes
 
 - `CloudTasksSerializationSchema.serialize` returns a full `Task`, so every per-record field of a
-  task — URL, HTTP method, headers, body, schedule time, dispatch deadline, authorization — is
-  expressible. Two bounds worth knowing when using them: `schedule_time` may be at most 30 days
-  ahead, and an HTTP target's `dispatch_deadline` must be between 15 seconds and 30 minutes. The
-  task **name** is the exception: it is composed by the sink (see task naming below), so the
+  task — HTTP URL or App Engine relative URI/routing, method, headers, body, schedule time,
+  dispatch deadline, authorization — is expressible. Two bounds worth knowing when using them:
+  `schedule_time` may be at most 30 days ahead, and an HTTP target's `dispatch_deadline` must be
+  between 15 seconds and 30 minutes. The task **name** is the exception: it is composed by the sink
+  (see task naming below), so the
   returned `Task` must carry none — the writer rejects a named one rather than letting it through.
-  The `httpTarget(...)` entry point plus the `with*` layering above is a convenience over that
+  The `httpTarget(...)` and `appEngineTarget(...)` entry points are conveniences over that
   contract, the same relationship `PubSubSerializationSchema.dataOnly(...)` has to a full
-  `PubsubMessage`. Returning the proto rather than a narrow record type is also what keeps the
-  Table API layer ([#99]({{< param BookRepo >}}/issues/99)) cheap: a `RowData` implementation slots in without reworking the sink.
+  `PubsubMessage`. Returning the proto rather than a narrow record type is also what lets the Table
+  API layer use the same sink without reworking the writer.
 - Returning `null` **skips** the record — it is written nowhere, is not a failure, and never
   reaches the failed-task handler — which is how a filter that depends on the task being built
   belongs in the serializer rather than upstream of the sink. Every serializer in this connector
   family reads `null` that way. A skip is counted by [`recordsSkipped`](#metrics), the only
   thing that reports it: a serializer skipping every record would otherwise leave an empty queue
-  under a green job. The `httpTarget(...)` convenience cannot skip — Flink's `SerializationSchema`
-  contract has no `null` in it, so a `null` body is reported as a serialization failure instead.
+  under a green job. The `httpTarget(...)` and `appEngineTarget(...)` conveniences cannot skip —
+  Flink's `SerializationSchema` contract has no `null` in it, so a `null` body is reported as a
+  serialization failure instead.
   The destination is resolved *before* the serializer runs, so a record the serializer would skip
   still needs a resolvable queue: a resolver returning `null` for it fails the job.
-- `httpTarget(url)` returns a **non-generic stage** whose only method is
-  `withBody(SerializationSchema<T>)`. That is what binds the record type, so everything chained
-  after it — `withMethod`, `withUrl`, `withHeaders`, `withOidcToken`, `withOAuthToken` — infers `T`
-  from the body schema and needs no type witness. Each `with*` returns a new immutable schema and
-  the schema *is* what the builder takes, so there is no terminal `build()` call. `withUrl(...)`
-  resolves the target URL per record, which is the routing the queue-level `uriOverride` warning
-  below is about; the fixed URL the chain started from is the default.
-- Cloud Tasks accepts a request **body only on `POST`, `PUT` and `PATCH`** — "it is an error to set
-  body on a task with an incompatible `HttpMethod`". Since `withBody(...)` is what binds the record
-  type, it cannot be omitted, so under any other method the schema sends no body and leaves the
-  body schema unused. The alternative, rejecting those methods outright, would leave no way to
-  dispatch a `GET` task short of implementing the SPI by hand.
+- `httpTarget(url)` keeps its two-stage schema API: `withBody(SerializationSchema<T>)` binds the
+  record type, and each later `with*` returns a new immutable schema without a terminal `build()`.
+  `appEngineTarget(relativeUri)` instead returns a mutable `AppEngineTargetBuilder`. Its
+  `withBody(...)` binds `T`, its optional `with*` methods update that builder, and terminal
+  `build()` snapshots the settings into an immutable serializer. The serializer itself has no
+  configuration methods. `withUrl(...)` resolves an HTTP URL per record; `withRelativeUri(...)`
+  and `withRouting(...)` do the same for App Engine requests.
+- The allowed body methods differ between the target protos. HTTP requests carry a body under
+  `POST`, `PUT` and `PATCH`; App Engine requests carry one under `POST` and `PUT`. Since
+  `withBody(...)` binds the record type, it cannot be omitted, so a bodyless method leaves the
+  serializer unused. Rejecting those methods would leave no convenience path for `GET` tasks.
 - `QueueDestination` is pure queue identity (`equals`/`hashCode` over project, location and queue)
   and can be resolved per record through `destinationResolver(...)`, exactly as the BigQuery and
   Pub/Sub sinks resolve tables and topics. Unlike those two this costs nothing: Cloud Tasks has no
@@ -143,17 +146,61 @@ Tasks attaches when it later calls the task's HTTP target.
 
 ## Targets
 
-**Only HTTP targets are supported.** A task carries a `oneof` of `http_request` or
-`app_engine_http_request`; the App Engine form is deliberately out of scope. Google itself
-describes explicit App Engine targets as "less common", and they cannot be distributed across
-regions — a queue targeting App Engine must live in the region of the project's App Engine
-application, which cannot be changed once set. Their overload signalling also differs: App Engine
-returns `503` when instances are overloaded, and Cloud Tasks reads that as *slow down* rather than
-as a plain failure, so `503` is unusable as an ordinary retry signal from an App Engine handler.
-(Both target types throttle on backoff errors — for external targets those are `429` and `5xx` —
-so this is a difference in which code carries the signal, not an inversion.) Supporting a second
-target type would double the serializer surface for a shrinking audience; it can be added later
-without breaking the HTTP path.
+Cloud Tasks stores the request target as a `oneof`, and the serialization API exposes both arms:
+an external `HttpRequest` and an `AppEngineHttpRequest`.
+The two target schemas cannot produce both on one task because each constructs its own protobuf
+field directly.
+
+### App Engine targets
+
+An App Engine task is delivered to the application in the **same project as its queue**.
+The queue location must correspond to the application's permanent region, so the serializer does
+not accept a second project or location that could disagree with the queue destination.
+Transport is encrypted, stays inside Google's datacenters, and has no caller-selected protocol;
+the handler still observes an HTTP request.
+
+```java
+CloudTasksSerializationSchema<OrderEvent> serializer =
+        CloudTasksSerializationSchema
+                .appEngineTarget("/tasks/orders")
+                .withBody(new MyEventJsonSerializationSchema())
+                .withRelativeUri(event -> "/tasks/orders/" + event.orderId())
+                .withHeaders(event -> Map.of("Content-Type", "application/json"))
+                .withRouting(
+                        event ->
+                                AppEngineRouting.newBuilder()
+                                        .setService("worker")
+                                        .setVersion("v2")
+                                        .build())
+                .build();
+```
+
+The relative URI is empty for the root path, or begins with `/` and contains only a path and an
+optional query string.
+It contains no spaces or fragment and is at most 2083 characters.
+`Host`, `Content-Length`, `X-Google-*` and `X-AppEngine-*` headers are owned by Cloud Tasks and are
+rejected before task creation.
+
+`AppEngineRouting` selects a service, version and instance.
+Empty routing leaves all three choices to App Engine; routing extractors may return `null` for the
+same result.
+The proto's `host` is output-only and the typed schema rejects it.
+A specific instance is usable only with manual scaling in App Engine Standard, which the gated
+acceptance fixture in [#632]({{< param BookRepo >}}/issues/632) provides.
+
+Queue configuration wins over the record: if `appEngineRoutingOverride` is present, Cloud Tasks
+uses it for every task regardless of the task-level routing above.
+The v2 client can read this queue field, unlike the REST-only HTTP `uriOverride`, but the sink does
+not add a queue read before writes because the queue remains independently managed configuration.
+
+App Engine handlers may be secure, unsecure, or restricted to `login: admin`; tasks do not run as
+a user and therefore cannot reach `login: required` handlers.
+Dispatch does not follow redirects.
+Any 2xx response succeeds and other responses retry under the queue policy, with one congestion
+distinction: App Engine `503` responses throttle queue dispatch, while handler-produced `429`
+responses do not invoke congestion control.
+
+### HTTP targets
 
 The endpoint must be reachable from Cloud Tasks. Google's documentation opens with it: handlers
 "can be run on any HTTP endpoint with an **external IP address** such as GKE, Compute Engine, or
@@ -383,7 +430,7 @@ unclassifiable failure is not evidence that retrying would help.
 | Transient | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED` | Parked and re-dispatched within the retry budget; exhausting it fails the job |
 | Missing queue | `NOT_FOUND` | The same, on a [shorter budget of its own](#tuning); exhausting it fails the job |
 | Deduplicated | `ALREADY_EXISTS` on a named task | Success — this is what `taskIdExtractor(...)` asked for |
-| Task-level | `INVALID_ARGUMENT` (a malformed target URL, an oversized body, a header the service refuses) | Handed to the failed-task handler |
+| Task-level | `INVALID_ARGUMENT` (a malformed request target, an oversized body, a header the service refuses) | Handed to the failed-task handler |
 | Record-level | The serializer throws, or the task id extractor throws | Handed to the failed-task handler, before anything is sent |
 | Terminal | `PERMISSION_DENIED`, failures carrying no status at all | Fail the ongoing write or checkpoint |
 
@@ -423,7 +470,7 @@ Sink<OrderEvent> sink =
   serializer produced, or `null` when serialization itself failed; under the shared `FailedElement`
   contract it reports `getConnector()` (`"cloudtasks"`), `describeDestination()`
   (`projects/<p>/locations/<l>/queues/<q>`) and `getPayloadBytes()` — the **whole** serialized task,
-  so a consumer recovers the target URL, the method, the headers and the authorization with
+  so a consumer recovers the request target, the method, the headers and any authorization with
   `Task.parseFrom(bytes)`
 
 **Classification is a precedence over the whole cause chain, not the first status found.** A
@@ -449,7 +496,7 @@ leave an empty queue under a green job — an extractor that *throws*, by contra
 is routed.
 
 That reasoning does not extend to a serializer that produces an *invalid task* for every record — a
-bug that puts a malformed URL or an over-long header on all of them. Cloud Tasks rejects each one
+bug that puts a malformed request target or an over-long header on all of them. Cloud Tasks rejects each one
 individually, the sink cannot tell a systematic rejection from a per-record one (the classification
 is the response's status code, not a judgement about the whole stream), and a dropping policy
 discards the lot silently. Watch
@@ -467,7 +514,7 @@ sink's own commit protocol, which no external destination can be enrolled in.
 
 Note what a dropped task means here, and that it is not what Cloud Tasks calls a failure: this is a
 task the service never accepted, so it never entered the queue and the queue's own retry
-configuration never applies to it. A task that *is* created and whose HTTP target then fails is
+configuration never applies to it. A task that *is* created and whose request target then fails is
 retried by Cloud Tasks under the queue's `retryConfig`, entirely outside this sink's view.
 
 ### Dead-lettering to a Pub/Sub topic
@@ -507,8 +554,8 @@ note covers Kubernetes Secret mounts, session clusters and rotation.
 | `dlq-subtask` | the offering sink subtask's index |
 
 The message **data** is the whole serialized `Task` — empty when serialization itself failed, which
-is how a consumer tells the two apart — so a consumer recovers the target URL, the method, the
-headers and the authorization with `Task.parseFrom(data)`. The failure's cause chain is not in the
+is how a consumer tells the two apart — so a consumer recovers the request target, the method, the
+headers and any authorization with `Task.parseFrom(data)`. The failure's cause chain is not in the
 envelope (it has no bounded string form); enable `DEBUG` logging on `PubSubDeadLetterQueue` to see
 untruncated errors in the job logs.
 
@@ -589,17 +636,17 @@ committer metrics do not apply.
 
 ## Scope
 
-| | v1 ([#24]({{< param BookRepo >}}/issues/24)) |
+| | Current |
 |---|---|
-| Targets | HTTP only; App Engine targets deferred |
-| Authorization | OIDC and OAuth tokens, per-record |
+| Targets | HTTP and App Engine; fixed and per-record request routing |
+| Authorization | HTTP: OIDC and OAuth tokens; App Engine: internal dispatch identity |
 | Destinations | Fixed queue or per-record resolver |
 | Deduplication | Opt-in named tasks, id hashed by the sink |
 | Queue management | None — the queue must exist and be configured |
 | Pacing | None in the sink; owned by the queue |
 | Delivery | At-least-once, flush on checkpoint, stateless writer |
 | Failure policy | Job failure by default; pluggable per-task handler ([#207]({{< param BookRepo >}}/issues/207)) |
-| Table API / SQL | Deferred to [#99]({{< param BookRepo >}}/issues/99) |
+| Table API / SQL | HTTP implemented in [#605]({{< param BookRepo >}}/issues/605); App Engine tracked by [#634]({{< param BookRepo >}}/issues/634) |
 
 ## Testing
 
@@ -652,6 +699,9 @@ What the emulator leaves uncovered, for the real-GCP suite or for nothing at all
 - It does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
   silently redirect per-record URLs — is not testable there. (Nor is it reachable through the v2
   client at all, as the targets section explains.)
+- It does not implement App Engine dispatch. Deterministic tests therefore cover the request
+  protobuf, validation and routing precedence within the serializer; [#632]({{< param BookRepo
+  >}}/issues/632) owns queue-level override and handler behavior against the real service.
 - It authenticates **OIDC only** — its task dispatch has a single `GetOidcToken` branch — so the
   OAuth path in the v1 scope has no emulator coverage and needs real GCP or a hand-written fake.
 - It offers no failure injection, so the transient retry budget stays a unit test against the fake
@@ -662,9 +712,8 @@ What the emulator leaves uncovered, for the real-GCP suite or for nothing at all
   Tasks omits the body and headers under the default `BASIC` view. The tests ask for `FULL`
   explicitly, so their assertions describe the service and not the emulator's leniency.
 - It enforces no task-size limit, so a test of the limits above would assert the emulator's
-  leniency rather than the service's behaviour. Scheduling semantics (`scheduleTime`,
-  `dispatchDeadline`, which a custom serialization schema may set) and App Engine targets are
-  likewise left to real GCP.
+  leniency rather than the service's behaviour. Scheduling semantics (`scheduleTime` and
+  `dispatchDeadline`, which a custom serialization schema may set) are likewise left to real GCP.
 
 ## Provenance and attribution
 
