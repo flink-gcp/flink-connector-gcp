@@ -28,6 +28,7 @@ import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
@@ -1094,9 +1095,8 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         private static final long serialVersionUID = 1L;
 
         @Override
-        @Nullable
-        public Long deserialize(Struct row) {
-            return row.getLong("id");
+        public void deserialize(Struct row, Collector<Long> out) {
+            out.collect(row.getLong("id"));
         }
 
         @Override

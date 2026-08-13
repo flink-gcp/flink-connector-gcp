@@ -40,7 +40,7 @@ class BigQueryReadStreamSplitStateTest {
                 new BigQueryReadStreamSplitState(
                         new BigQueryReadStreamSplit(STREAM, 7, SCHEMA, EXPIRE_TIME));
 
-        state.recordEmitted();
+        state.recordConsumed();
 
         assertThat(state.toSplit())
                 .isEqualTo(new BigQueryReadStreamSplit(STREAM, 8, SCHEMA, EXPIRE_TIME));

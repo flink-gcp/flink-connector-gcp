@@ -19,14 +19,12 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.reader;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
-import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.Row;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplitState;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
-
-import javax.annotation.Nullable;
 
 /**
  * Deserializes each row and records that the split has passed it.
@@ -40,9 +38,6 @@ public class BigtableRecordEmitter<T> implements RecordEmitter<Row, T, RowRangeS
 
     private final BigtableRowDeserializationSchema<T> deserializer;
     private final BigtableSourceReaderMetrics metrics;
-
-    /** One instance, retargeted per row: a collector per row would allocate for every row read. */
-    private final CountingCollector collector = new CountingCollector();
 
     /**
      * Creates the emitter.
@@ -60,14 +55,11 @@ public class BigtableRecordEmitter<T> implements RecordEmitter<Row, T, RowRangeS
     @Override
     public void emitRecord(Row row, SourceOutput<T> output, RowRangeSplitState splitState)
             throws Exception {
-        collector.retarget(output);
-        try {
-            deserializer.deserialize(row, collector);
-            if (collector.emitted == 0) {
-                metrics.recordSkipped();
-            }
-        } finally {
-            collector.retarget(null);
+        long emittedCount =
+                SynchronousDeserializationCollector.<T, Exception>deserialize(
+                        output::collect, out -> deserializer.deserialize(row, out));
+        if (emittedCount == 0) {
+            metrics.recordSkipped();
         }
         // Outside the branch above, and outside any success condition: the split resumes at a row
         // key, so a row that produced no record has still been passed and must still move the
@@ -75,37 +67,5 @@ public class BigtableRecordEmitter<T> implements RecordEmitter<Row, T, RowRangeS
         // A deserializer that *threw* is the other case, and there the emitter never gets here —
         // the failure fails the job rather than advancing past a row nobody saw.
         splitState.recordEmitted(row.getKey());
-    }
-
-    /** A collector that counts what one row produced, so a row that produced nothing is visible. */
-    private final class CountingCollector implements Collector<T> {
-
-        @Nullable private SourceOutput<T> output;
-
-        private int emitted;
-
-        private void retarget(@Nullable SourceOutput<T> output) {
-            this.output = output;
-            this.emitted = 0;
-        }
-
-        @Override
-        public void collect(T record) {
-            Preconditions.checkState(
-                    output != null,
-                    "The collector handed to a Bigtable deserializer was used outside the"
-                            + " deserialize call it was handed to.");
-            emitted++;
-            // No timestamp: a Bigtable row has one per cell rather than one per row, so any
-            // row-level event time would be a choice this connector made for the job. A job that
-            // wants one assigns a watermark strategy over the records it produced.
-            output.collect(record);
-        }
-
-        @Override
-        public void close() {
-            // Nothing to release. Declared by Flink's Collector and deliberately inert: the output
-            // belongs to the reader, and a deserializer calling this must not detach it.
-        }
     }
 }

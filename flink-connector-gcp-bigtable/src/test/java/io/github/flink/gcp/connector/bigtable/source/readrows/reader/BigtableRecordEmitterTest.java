@@ -32,6 +32,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -172,9 +174,8 @@ class BigtableRecordEmitterTest {
 
     @Test
     void refusesACollectorUsedOutsideTheCallItWasHandedTo() throws Exception {
-        // The collector is one instance retargeted per row, so a deserializer that squirrelled it
-        // away would otherwise write into whichever row happened to be current.
-        Collector<String>[] escaped = new Collector[1];
+        AtomicReference<Collector<String>> retained = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
         CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
         BigtableRecordEmitter<String> emitter =
                 emitter(
@@ -183,7 +184,11 @@ class BigtableRecordEmitterTest {
 
                             @Override
                             public void deserialize(Row row, Collector<String> out) {
-                                escaped[0] = out;
+                                if (calls.getAndIncrement() == 0) {
+                                    retained.set(out);
+                                } else {
+                                    retained.get().collect("late");
+                                }
                             }
 
                             @Override
@@ -193,9 +198,41 @@ class BigtableRecordEmitterTest {
                         });
         emitter.emitRecord(TestRows.row("a"), output, state());
 
-        assertThatThrownBy(() -> escaped[0].collect("late"))
+        assertThatThrownBy(() -> emitter.emitRecord(TestRows.row("b"), output, state()))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("outside the deserialize call");
+                .hasMessageContaining("only during its synchronous deserialize call");
+        assertThat(output.records()).isEmpty();
+    }
+
+    @Test
+    void rejectsANullCollectedRecordWithoutAdvancingTheSplit() {
+        RowRangeSplitState state = state();
+
+        assertThatThrownBy(
+                        () ->
+                                emitter(
+                                                new BigtableRowDeserializationSchema<String>() {
+                                                    private static final long serialVersionUID = 1L;
+
+                                                    @Override
+                                                    public void deserialize(
+                                                            Row row, Collector<String> out) {
+                                                        out.collect(null);
+                                                    }
+
+                                                    @Override
+                                                    public TypeInformation<String>
+                                                            getProducedType() {
+                                                        return TypeInformation.of(String.class);
+                                                    }
+                                                })
+                                        .emitRecord(
+                                                TestRows.row("a"),
+                                                new CollectingSourceOutput<>(),
+                                                state))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source deserializer must not collect null");
+        assertThat(state.getLastEmittedKey()).isNull();
     }
 
     /** Returns a deserializer producing the given number of records per row. */

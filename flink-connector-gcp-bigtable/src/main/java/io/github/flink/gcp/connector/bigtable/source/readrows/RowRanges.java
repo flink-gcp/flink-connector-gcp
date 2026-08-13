@@ -238,17 +238,18 @@ public final class RowRanges {
     }
 
     /**
-     * Returns the work a split has left after emitting a row, as a range starting just past it.
+     * Returns the work a split has left after successfully deserializing a row, as a range starting
+     * just past it.
      *
      * <p>The end bound is carried over untouched and the original start bound is discarded, which
-     * is safe because it sits strictly below the emitted key and so constrains nothing. An
+     * is safe because it sits strictly below the processed key and so constrains nothing. An
      * <em>exclusive</em> start is what makes a restore resume rather than replay, and it is also
      * what the client's own resumption strategy uses when it reconnects a broken stream mid-range.
      *
-     * <p>The result may be empty — a range ending {@code endClosed(e)} whose row {@code e} has been
-     * emitted has nothing left — and that is a normal end-of-split state, not an error. The split
-     * reader finishes such a split without opening a stream, so an inverted range is never sent to
-     * the service.
+     * <p>The result may be empty — a range ending {@code endClosed(e)} whose row {@code e} was
+     * successfully deserialized has nothing left, even if it produced no output — and that is a
+     * normal end-of-split state, not an error. The split reader finishes such a split without
+     * opening a stream, so an inverted range is never sent to the service.
      *
      * <p>The empty-key case is not hypothetical enough to leave out: real Bigtable rejects an empty
      * row key, but the emulator accepts one, and {@code startOpen(EMPTY)} is silently turned into
@@ -257,7 +258,7 @@ public final class RowRanges {
      * successor instead.
      *
      * @param range the range the split was assigned
-     * @param lastEmittedKey the key of the last row handed downstream
+     * @param lastEmittedKey the key of the last successfully deserialized row
      * @return the remaining range
      */
     public static ByteStringRange truncateStartOpen(

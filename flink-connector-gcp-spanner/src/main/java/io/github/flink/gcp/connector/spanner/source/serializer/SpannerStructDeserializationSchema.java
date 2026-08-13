@@ -20,29 +20,27 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.Struct;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
 
 /**
- * Turns a Spanner row into a record.
+ * Turns a Spanner row into zero or more output records.
  *
  * <p>A row arrives as an immutable {@link Struct}, read through the column names or ordinals the
  * read operation asked for. The producing type is declared by {@link #getProducedType()}, so a job
  * needs no {@code returns(...)} call after the source.
  *
- * <p><b>Returning {@code null} skips the row.</b> The record is emitted nowhere, it is not a
- * failure, and {@code recordsSkipped} is the only thing that reports it — the same contract the
- * sink's serialization SPI carries in the other direction. Use it to filter rows a predicate cannot
- * express; do not use it to swallow a row you could not read, which is a failure and should be
- * thrown.
+ * <p>One row may produce zero, one, or several records. Returning successfully without collecting
+ * skips the row: nothing is emitted, it is not a failure, and {@code recordsSkipped} is the only
+ * thing that reports it. Use that contract to filter rows a predicate cannot express; throw when a
+ * row cannot be read.
  *
- * <p>One row becomes at most one record. A Spanner row is a relational row, so a fan-out is a
- * {@code flatMap} in the job rather than a shape this SPI takes.
+ * <p>Collected records must be non-null. The collector is valid only for the synchronous duration
+ * of the call; an implementation must not retain it.
  *
  * @param <T> the record type produced
  */
@@ -59,14 +57,14 @@ public interface SpannerStructDeserializationSchema<T>
     default void open(DeserializationSchema.InitializationContext context) throws Exception {}
 
     /**
-     * Turns one row into a record.
+     * Turns one row into zero or more records.
      *
      * @param row the row, valid only for the duration of this call
-     * @return the record, or {@code null} to skip the row
-     * @throws IOException if the row cannot be turned into a record
+     * @param out the collector for non-null output records; it is valid only for this synchronous
+     *     call and must not be retained
+     * @throws IOException if the row cannot be turned into output records
      */
-    @Nullable
-    T deserialize(Struct row) throws IOException;
+    void deserialize(Struct row, Collector<T> out) throws IOException;
 
     @Override
     TypeInformation<T> getProducedType();

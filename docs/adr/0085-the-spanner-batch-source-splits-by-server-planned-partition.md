@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0085: The Spanner batch source splits by server-planned partition, and a partition is the unit of progress
 
 - Status: Accepted
-- Date: 2026-08-10
-- Issues: [#221], [#36], [#224]
+- Date: 2026-08-10, revised by [#587] (2026-08-13)
+- Issues: [#221], [#36], [#224], [#587]
 - Modules: spanner (`source`, `source.batch`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Source
 
@@ -183,12 +183,14 @@ rejects them too. The client's refusal arrives when the enumerator plans, on the
 naming a transaction the user never asked for; the builder's arrives when the job is assembled,
 naming the knob they set.
 
-**The deserialization SPI is a nullable return**, not the collector shape Bigtable's source takes.
-ADR-0080's cross-connector rule asks two questions, and only one of them is about the resume unit:
-a whole-partition resume permits either shape, so the deciding question is whether a one-to-many
-mapping is meaningful — and for a relational row it is not, the way a Bigtable row's families,
-qualifiers and cell versions make it. `null` skips the row and `recordsSkipped` counts it, which
-is symmetric with this module's sink SPI.
+**The deserialization SPI emits zero or more non-null records synchronously through a collector.**
+Emitting nothing skips the input row and increments `recordsSkipped` once; retaining the collector
+or using it after the call returns is invalid.
+All source paths use the shared synchronous invocation collector in ADR-0108 before progress can
+advance.
+This does not add row-level recovery state: the source still checkpoints only completed partitions,
+so any interrupted partition is replayed from its start regardless of how many outputs each row
+produced.
 
 ## Consequences
 
@@ -253,3 +255,4 @@ against, and an SDK release that moves any of them fails a test at compile time.
 [#221]: https://github.com/laughingman7743/flink-connector-gcp/issues/221
 [#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
+[#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner.source;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
@@ -26,8 +27,6 @@ import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
-
-import javax.annotation.Nullable;
 
 import java.util.function.UnaryOperator;
 
@@ -139,9 +138,8 @@ public final class TestSources {
         private static final long serialVersionUID = 1L;
 
         @Override
-        @Nullable
-        public Long deserialize(Struct row) {
-            return row.getLong("id");
+        public void deserialize(Struct row, Collector<Long> out) {
+            out.collect(row.getLong("id"));
         }
 
         @Override

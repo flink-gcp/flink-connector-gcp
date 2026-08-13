@@ -28,9 +28,10 @@ import java.util.Objects;
  * One contiguous row-key range still to be read.
  *
  * <p>The range <em>is</em> the remaining work: a checkpoint truncates it to start just past the
- * last row the reader emitted, so a restored split resumes without re-reading and without skipping.
- * That is why no offset appears here — {@code ReadRows} has no row offset to resume at, only a
- * range to ask for — and it is what {@link RowRangeSplitState} maintains while a reader works.
+ * last row successfully deserialized, including one that produced no output, so a restored split
+ * resumes without re-reading and without skipping. That is why no offset appears here — {@code
+ * ReadRows} has no row offset to resume at, only a range to ask for — and it is what {@link
+ * RowRangeSplitState} maintains while a reader works.
  *
  * <p>Three things are deliberately absent. The table and the filter, because a reader has both from
  * the source's configuration and putting them here would write the same bytes into every checkpoint

@@ -947,6 +947,8 @@ API notes:
   `Collector`, so one message may produce any number of records. Emitting none drops the message
   (it is still acknowledged). `dataOnly(...)` wraps a plain Flink `DeserializationSchema` for
   payload-only messages.
+  Every collected record must be non-null and emitted synchronously during that call; do not retain
+  the collector or use it from another thread.
 - The Pub/Sub publish time becomes the record's event timestamp.
 - `serviceAccountKeyFile(path)` authenticates the subscription admin and every subscriber with the
   service-account JSON key at `path`.
@@ -1205,6 +1207,7 @@ Registered on the reader and enumerator metric groups:
 | `messagesAcked` | counter | acknowledgements **requested** (see below) |
 | `messagesNacked` | counter | messages returned for redelivery |
 | `messagesDropped` | counter | messages discarded by `DROP` |
+| `recordsSkipped` | counter | messages whose deserializer returned successfully without emitting output |
 | `pendingAcks` | gauge | messages received or emitted but not yet acknowledged |
 | `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
 | `bufferedMessages` | gauge | messages this subtask's subscribers hold that the fetch loop has not taken yet — see below |

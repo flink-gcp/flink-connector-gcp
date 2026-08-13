@@ -40,8 +40,14 @@ record — context, evidence, declined alternatives — is the named ADR under `
   counters name events, gauges name states, and **no name takes Flink's `num` prefix**
   (`docs/adr/0038`; the mechanical half is `just check-metric-docs`).
 
-## `base.source` (`docs/adr/0083`)
+## `base.source` (`docs/adr/0083`, `0108`)
 
+- `SynchronousDeserializationCollector.deserialize` is the one direct adapter for all collector-
+  shaped source deserializers. It creates one collector per input, forwards each record immediately,
+  returns the successful count, and clears its downstream function in `finally`. Do not add a record
+  buffer, monitor, owner-thread field, lifecycle flag or failure latch. Async transport callbacks
+  hand records to the task thread before this boundary; a genuinely async deserializer needs a
+  separate bounded and checkpoint-aware protocol (`docs/adr/0108`).
 - `StartPosition` applies only when no source state is restored; checkpointed per-partition state
   wins. `StartPositionResolver` captures the startup clock once, discovers retention lazily and at
   most once, and owns the one-minute safety margin, clamp-and-WARN behavior, future rejection and

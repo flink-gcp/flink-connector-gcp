@@ -91,7 +91,7 @@ public final class BigQuerySourceReaderMetrics {
         bytesRead.inc(bytes);
     }
 
-    /** Counts a row the deserializer skipped by returning {@code null}. */
+    /** Counts an input row whose deserializer call emitted no output and returned successfully. */
     void recordSkipped() {
         recordsSkipped.inc();
     }

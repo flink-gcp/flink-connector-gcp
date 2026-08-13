@@ -35,6 +35,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -95,6 +97,7 @@ class PubSubRecordEmitterTest {
 
         assertThat(output.records()).containsExactly("payload");
         assertThat(output.timestamps()).containsExactly(1_700_000_000_123L);
+        assertThat(testMetrics.counter("recordsSkipped")).isZero();
 
         // Staged, so the next checkpoint covers it.
         ackTracker.addCheckpoint(1L);
@@ -111,6 +114,35 @@ class PubSubRecordEmitterTest {
 
         assertThat(output.records()).containsExactly("payload");
         assertThat(output.timestamps()).containsExactly((Long) null);
+    }
+
+    @Test
+    void zeroOutputsCountOneSkipAndStageTheAcknowledgement() throws Exception {
+        RecordingAckHandle handle = receive("m1");
+        PubSubDeserializationSchema<String> filtering =
+                new PubSubDeserializationSchema<String>() {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public void deserialize(
+                            PubsubMessage message,
+                            SubscriptionDestination subscription,
+                            Collector<String> out) {}
+
+                    @Override
+                    public TypeInformation<String> getProducedType() {
+                        return Types.STRING;
+                    }
+                };
+
+        emitter(filtering).emitRecord(message("m1", "payload"), output, SPLIT);
+
+        assertThat(output.records()).isEmpty();
+        assertThat(testMetrics.counter("recordsSkipped")).isEqualTo(1);
+        assertThat(handle.isUnsettled()).isTrue();
+        ackTracker.addCheckpoint(1L);
+        ackTracker.notifyCheckpointComplete(1L);
+        assertThat(handle.isAcked()).isTrue();
     }
 
     @Test
@@ -132,6 +164,68 @@ class PubSubRecordEmitterTest {
         ackTracker.addCheckpoint(1L);
         ackTracker.notifyCheckpointComplete(1L);
         assertThat(consumer.isAcked()).isTrue();
+    }
+
+    @Test
+    void refusesACollectorUsedAfterItsDeserializeCall() throws Exception {
+        receive("m1");
+        receive("m2");
+        AtomicReference<Collector<String>> retained = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        PubSubDeserializationSchema<String> schema =
+                new PubSubDeserializationSchema<String>() {
+                    @Override
+                    public void deserialize(
+                            PubsubMessage message,
+                            SubscriptionDestination subscription,
+                            Collector<String> out) {
+                        if (calls.getAndIncrement() == 0) {
+                            retained.set(out);
+                        } else {
+                            retained.get().collect("late");
+                        }
+                    }
+
+                    @Override
+                    public TypeInformation<String> getProducedType() {
+                        return Types.STRING;
+                    }
+                };
+        PubSubRecordEmitter<String> emitter = emitter(schema);
+        emitter.emitRecord(message("m1", "payload"), output, SPLIT);
+
+        assertThatThrownBy(() -> emitter.emitRecord(message("m2", "payload"), output, SPLIT))
+                .isInstanceOf(IOException.class)
+                .hasStackTraceContaining("only during its synchronous deserialize call");
+        assertThat(output.records()).isEmpty();
+    }
+
+    @Test
+    void rejectsANullCollectedRecordAsADeserializerContractFailure() throws Exception {
+        RecordingAckHandle handle = receive("m1");
+        PubSubDeserializationSchema<String> schema =
+                new PubSubDeserializationSchema<String>() {
+                    @Override
+                    public void deserialize(
+                            PubsubMessage message,
+                            SubscriptionDestination subscription,
+                            Collector<String> out) {
+                        out.collect(null);
+                    }
+
+                    @Override
+                    public TypeInformation<String> getProducedType() {
+                        return Types.STRING;
+                    }
+                };
+
+        assertThatThrownBy(
+                        () -> emitter(schema).emitRecord(message("m1", "payload"), output, SPLIT))
+                .isInstanceOf(IOException.class)
+                .hasStackTraceContaining("source deserializer must not collect null");
+        assertThat(handle.isUnsettled()).isTrue();
+        assertThat(testMetrics.numRecordsInErrors()).isEqualTo(1);
+        assertThat(testMetrics.counter("recordsSkipped")).isZero();
     }
 
     @Test
@@ -158,6 +252,37 @@ class PubSubRecordEmitterTest {
         ackTracker.addCheckpoint(1L);
         ackTracker.notifyCheckpointComplete(1L);
         assertThat(handle.isAcked()).isFalse();
+    }
+
+    @Test
+    void aSchemaErrorLeavesTheMessagePending() throws Exception {
+        RecordingAckHandle handle = receive("m1");
+        AssertionError schemaFailure = new AssertionError("schema exploded");
+        PubSubDeserializationSchema<String> failing =
+                new PubSubDeserializationSchema<String>() {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public void deserialize(
+                            PubsubMessage message,
+                            SubscriptionDestination subscription,
+                            Collector<String> out) {
+                        throw schemaFailure;
+                    }
+
+                    @Override
+                    public TypeInformation<String> getProducedType() {
+                        return Types.STRING;
+                    }
+                };
+
+        assertThatThrownBy(
+                        () ->
+                                emitter(failing, DeserializationFailurePolicy.DROP)
+                                        .emitRecord(message("m1", "payload"), output, SPLIT))
+                .isSameAs(schemaFailure);
+        assertThat(handle.isUnsettled()).isTrue();
+        assertThat(testMetrics.counter("messagesDropped")).isZero();
     }
 
     @Test

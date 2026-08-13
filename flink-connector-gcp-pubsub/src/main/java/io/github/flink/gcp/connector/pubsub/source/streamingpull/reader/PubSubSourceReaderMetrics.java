@@ -64,6 +64,7 @@ public final class PubSubSourceReaderMetrics {
     private final Counter messagesAcked;
     private final Counter messagesNacked;
     private final Counter messagesDropped;
+    private final Counter recordsSkipped;
     private final Counter deserializationErrors;
     private final Counter splitsParked;
 
@@ -113,6 +114,9 @@ public final class PubSubSourceReaderMetrics {
         this.messagesDropped =
                 metricGroup.counter(
                         PubSubMetricNames.MESSAGES_DROPPED, new ThreadSafeSimpleCounter());
+        this.recordsSkipped =
+                metricGroup.counter(
+                        PubSubMetricNames.RECORDS_SKIPPED, new ThreadSafeSimpleCounter());
         this.splitsParked =
                 metricGroup.counter(PubSubMetricNames.SPLITS_PARKED, new ThreadSafeSimpleCounter());
         metricGroup.gauge(PubSubMetricNames.PARKED_SPLITS, (Gauge<Integer>) parkedSplits::get);
@@ -177,6 +181,11 @@ public final class PubSubSourceReaderMetrics {
     public void messageDropped() {
         messagesDropped.inc();
         deserializationErrors.inc();
+    }
+
+    /** Counts one successfully deserialized message that produced no output record. */
+    public void recordSkipped() {
+        recordsSkipped.inc();
     }
 
     /** Counts one deserialization failure that did not drop its message. */

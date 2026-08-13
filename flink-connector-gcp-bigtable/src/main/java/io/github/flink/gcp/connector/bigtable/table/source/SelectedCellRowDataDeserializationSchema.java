@@ -28,6 +28,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
@@ -48,8 +49,6 @@ final class SelectedCellRowDataDeserializationSchema
     private final RowData.FieldGetter[] payloadGetters;
     private final ChangeStreamReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedType;
-
-    private transient SingleRowCollector payloadCollector;
 
     SelectedCellRowDataDeserializationSchema(
             DeserializationSchema<RowData> payloadDeserializer,
@@ -94,28 +93,37 @@ final class SelectedCellRowDataDeserializationSchema
         physical.setField(
                 primaryKeyIndex, primaryKeyDecoder.decode(mutation.getRowKey().toByteArray()));
         if (result.getKind() == SelectedCellMutationClassifier.Kind.UPSERT) {
-            if (payloadCollector == null) {
-                payloadCollector = new SingleRowCollector();
+            RowData[] payload = new RowData[1];
+            long emittedCount =
+                    SynchronousDeserializationCollector.<RowData, IOException>deserialize(
+                            row -> payload[0] = row,
+                            collector ->
+                                    payloadDeserializer.deserialize(
+                                            Preconditions.checkNotNull(
+                                                            result.getValue(),
+                                                            "an upsert must carry a selected-cell"
+                                                                    + " value")
+                                                    .toByteArray(),
+                                            collector));
+            if (emittedCount != 1) {
+                throw new IOException(
+                        "The selected-cell value format must emit exactly one non-null row, but"
+                                + " emitted "
+                                + emittedCount
+                                + " rows.");
             }
-            payloadCollector.reset();
-            payloadDeserializer.deserialize(
-                    Preconditions.checkNotNull(
-                                    result.getValue(), "an upsert must carry a selected-cell value")
-                            .toByteArray(),
-                    payloadCollector);
-            RowData payload = payloadCollector.singleRow();
-            if (payload.getRowKind() != RowKind.INSERT) {
+            if (payload[0].getRowKind() != RowKind.INSERT) {
                 throw new IOException(
                         "The selected-cell value format declared an insert-only changelog but"
                                 + " emitted row kind "
-                                + payload.getRowKind()
+                                + payload[0].getRowKind()
                                 + ".");
             }
             for (int payloadIndex = 0; payloadIndex < payloadGetters.length; payloadIndex++) {
                 int physicalIndex =
                         payloadIndex < primaryKeyIndex ? payloadIndex : payloadIndex + 1;
                 physical.setField(
-                        physicalIndex, payloadGetters[payloadIndex].getFieldOrNull(payload));
+                        physicalIndex, payloadGetters[payloadIndex].getFieldOrNull(payload[0]));
             }
         }
 
@@ -133,37 +141,5 @@ final class SelectedCellRowDataDeserializationSchema
     @Override
     public TypeInformation<RowData> getProducedType() {
         return producedType;
-    }
-
-    /** Captures exactly one non-null format row and rejects every other cardinality. */
-    private static final class SingleRowCollector implements Collector<RowData> {
-        private RowData row;
-        private int count;
-
-        private void reset() {
-            row = null;
-            count = 0;
-        }
-
-        private RowData singleRow() throws IOException {
-            if (count != 1 || row == null) {
-                throw new IOException(
-                        "The selected-cell value format must emit exactly one non-null row, but"
-                                + " emitted "
-                                + count
-                                + (row == null && count == 1 ? " null row" : " rows")
-                                + ".");
-            }
-            return row;
-        }
-
-        @Override
-        public void collect(RowData record) {
-            count++;
-            row = record;
-        }
-
-        @Override
-        public void close() {}
     }
 }

@@ -51,6 +51,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -327,6 +329,98 @@ class SpannerChangeStreamReaderTest {
                 .isInstanceOf(IOException.class)
                 .hasMessage("broken deserializer");
         assertThat(output.records).containsExactly("partial-1");
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition()).isEqualTo(START);
+        assertThat(context.sourceEvents())
+                .noneMatch(event -> event instanceof PartitionProgressEvent);
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+    }
+
+    @Test
+    void downstreamFailureDoesNotAdvanceSplitProgress() throws Exception {
+        reader = reader(1, new SequenceDeserializer());
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+        output.failOnCollect(new IllegalStateException("downstream"));
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
+        assertThatThrownBy(() -> reader.pollNext(output))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("downstream");
+
+        assertThat(output.records).isEmpty();
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition()).isEqualTo(START);
+        assertThat(context.sourceEvents())
+                .noneMatch(event -> event instanceof PartitionProgressEvent);
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+    }
+
+    @Test
+    void refusesACollectorUsedAfterItsDeserializeCall() throws Exception {
+        AtomicReference<Collector<String>> retained = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        reader =
+                reader(
+                        1,
+                        new SpannerChangeStreamDeserializationSchema<String>() {
+                            @Override
+                            public void deserialize(
+                                    DataChangeRecord record, Collector<String> out) {
+                                if (calls.getAndIncrement() == 0) {
+                                    retained.set(out);
+                                } else {
+                                    retained.get().collect("late");
+                                }
+                            }
+
+                            @Override
+                            public TypeInformation<String> getProducedType() {
+                                return TypeInformation.of(String.class);
+                            }
+                        });
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
+        reader.pollNext(new TrackingOutput<>());
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(5))));
+        assertThatThrownBy(() -> reader.pollNext(new TrackingOutput<>()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only during its synchronous deserialize call");
+    }
+
+    @Test
+    void rejectsANullCollectedRecordWithoutAdvancingSplitProgress() throws Exception {
+        reader =
+                reader(
+                        1,
+                        new SpannerChangeStreamDeserializationSchema<String>() {
+                            @Override
+                            public void deserialize(
+                                    DataChangeRecord record, Collector<String> out) {
+                                out.collect(null);
+                            }
+
+                            @Override
+                            public TypeInformation<String> getProducedType() {
+                                return TypeInformation.of(String.class);
+                            }
+                        });
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
+
+        assertThatThrownBy(() -> reader.pollNext(new TrackingOutput<>()))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source deserializer must not collect null");
         assertThat(reader.snapshotState(1).get(0).getCurrentPosition()).isEqualTo(START);
         assertThat(context.sourceEvents())
                 .noneMatch(event -> event instanceof PartitionProgressEvent);
@@ -780,17 +874,30 @@ class SpannerChangeStreamReaderTest {
         private final List<Long> timestamps = new ArrayList<>();
         private final Map<String, Long> watermarks = new LinkedHashMap<>();
         private String currentSplit;
+        private RuntimeException collectFailure;
+
+        private void failOnCollect(RuntimeException failure) {
+            collectFailure = failure;
+        }
 
         @Override
         public void collect(T record) {
+            throwCollectFailure();
             records.add(record);
             timestamps.add(null);
         }
 
         @Override
         public void collect(T record, long timestamp) {
+            throwCollectFailure();
             records.add(record);
             timestamps.add(timestamp);
+        }
+
+        private void throwCollectFailure() {
+            if (collectFailure != null) {
+                throw collectFailure;
+            }
         }
 
         @Override

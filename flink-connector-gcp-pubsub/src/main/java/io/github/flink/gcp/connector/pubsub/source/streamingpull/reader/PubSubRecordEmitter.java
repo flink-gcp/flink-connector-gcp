@@ -19,10 +19,10 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
-import org.apache.flink.util.Collector;
 
 import com.google.protobuf.Timestamp;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
@@ -32,6 +32,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.function.Consumer;
 
 /**
  * Deserializes received messages and emits them, using the Pub/Sub publish time as the event
@@ -72,9 +73,6 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
     private final DeserializationFailurePolicy failurePolicy;
     private final PubSubSourceReaderMetrics metrics;
 
-    /** Reused across records; the emitter is confined to the task thread. */
-    private final SourceOutputCollector<T> collector = new SourceOutputCollector<>();
-
     /**
      * Drives the decreasing log rate of messages the failure policy handled; task-thread confined.
      */
@@ -103,9 +101,17 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
     public void emitRecord(
             PubsubMessage message, SourceOutput<T> sourceOutput, SubscriptionSplit split)
             throws Exception {
-        collector.bind(sourceOutput, message);
+        Consumer<T> timestampedOutput = timestampedOutput(sourceOutput, message);
         try {
-            deserializationSchema.deserialize(message, split.getSubscription(), collector);
+            long emittedCount =
+                    SynchronousDeserializationCollector.<T, Exception>deserialize(
+                            record -> collectOrMarkFailure(timestampedOutput, record),
+                            out ->
+                                    deserializationSchema.deserialize(
+                                            message, split.getSubscription(), out));
+            if (emittedCount == 0) {
+                metrics.recordSkipped();
+            }
         } catch (Exception e) {
             CollectFailure collectFailure = findCollectFailure(e);
             if (collectFailure == null) {
@@ -116,21 +122,11 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
             // Unwrap only our own marker; a schema that caught and re-wrapped it added context
             // worth keeping.
             throw e == collectFailure ? collectFailure.getCause() : e;
-        } finally {
-            collector.unbind();
         }
         ackTracker.stagePendingAck(split.splitId(), message.getMessageId());
     }
 
-    /**
-     * Finds the output failure inside a thrown exception, or returns {@code null} when the schema
-     * itself failed.
-     *
-     * <p>The chain is walked rather than the top-level type checked: a schema that follows the
-     * common {@code ignore-parse-errors} shape catches everything it throws and re-wraps it, which
-     * would otherwise make a downstream failure look like a bad message — and under {@code DROP}
-     * that would acknowledge a perfectly good message and swallow the downstream exception.
-     */
+    /** Finds a downstream-output marker in the exception chain. */
     @Nullable
     private static CollectFailure findCollectFailure(Throwable failure) {
         for (Throwable current = failure; current != null; current = current.getCause()) {
@@ -191,50 +187,27 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
         }
     }
 
-    /**
-     * Adapts a {@link SourceOutput} to the {@link Collector} the deserialization schema writes to,
-     * marking failures that came from the output rather than from the schema.
-     */
-    private static final class SourceOutputCollector<T> implements Collector<T> {
-
-        private SourceOutput<T> sourceOutput;
-        private boolean hasTimestamp;
-        private long timestamp;
-
-        private void bind(SourceOutput<T> sourceOutput, PubsubMessage message) {
-            this.sourceOutput = sourceOutput;
-            this.hasTimestamp = message.hasPublishTime();
-            this.timestamp = hasTimestamp ? toEpochMillis(message.getPublishTime()) : 0L;
+    private static <T> Consumer<T> timestampedOutput(
+            SourceOutput<T> output, PubsubMessage message) {
+        if (!message.hasPublishTime()) {
+            // Pub/Sub always stamps delivered messages, so this only happens for synthetic
+            // messages; emitting without a timestamp beats emitting the epoch.
+            return output::collect;
         }
+        long timestamp = toEpochMillis(message.getPublishTime());
+        return record -> output.collect(record, timestamp);
+    }
 
-        private void unbind() {
-            this.sourceOutput = null;
+    private static <T> void collectOrMarkFailure(Consumer<T> output, T record) {
+        try {
+            output.accept(record);
+        } catch (Exception failure) {
+            throw new CollectFailure(failure);
         }
+    }
 
-        @Override
-        public void collect(T record) {
-            try {
-                if (hasTimestamp) {
-                    sourceOutput.collect(record, timestamp);
-                } else {
-                    // Pub/Sub always stamps delivered messages, so this only happens for synthetic
-                    // messages; emitting without a timestamp beats emitting the epoch.
-                    sourceOutput.collect(record);
-                }
-            } catch (Exception e) {
-                // Wrapped so the emitter can tell an output failure from a schema failure. A schema
-                // that catches broadly would swallow it, but such a schema already swallows the
-                // downstream failure itself — the wrapper does not make that worse.
-                throw new CollectFailure(e);
-            }
-        }
-
-        @Override
-        public void close() {}
-
-        private static long toEpochMillis(Timestamp publishTime) {
-            return publishTime.getSeconds() * 1_000L + publishTime.getNanos() / 1_000_000L;
-        }
+    private static long toEpochMillis(Timestamp publishTime) {
+        return publishTime.getSeconds() * 1_000L + publishTime.getNanos() / 1_000_000L;
     }
 
     /** Marks an exception thrown by the source output rather than by the schema. */

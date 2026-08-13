@@ -43,11 +43,11 @@ import java.io.IOException;
  * streams and generated {@code SpecificRecord} streams; values are read in whichever representation
  * the record carries.
  *
- * <p>All destinations share the one schema; the schema's JSON text (not its non-serializable parsed
- * form or the derived descriptor) is stored, so instances survive Flink's job-graph serialization
- * and rebuild their conversion state on the task manager. The schema is nonetheless derived when
- * the serializer is created, so an unmappable schema fails where the pipeline is built rather than
- * on the first record.
+ * <p>All destinations share the one schema. Its JSON text is stored, while the derived conversion
+ * state remains transient and is rebuilt on the task manager. A parsed Avro {@link Schema} is also
+ * serializable, so the JSON field is not required by Flink's job-graph serialization. The schema is
+ * nonetheless derived when the serializer is created, so an unmappable schema fails where the
+ * pipeline is built rather than on the first record.
  *
  * <p>Conversion costs one pass over each record, unlike {@link
  * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer

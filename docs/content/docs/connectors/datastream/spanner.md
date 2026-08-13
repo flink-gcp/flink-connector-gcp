@@ -394,14 +394,14 @@ what to change. Reading a non-partitionable query on a single subtask is deliber
 
 ### Deserialization
 
-`SpannerStructDeserializationSchema` turns one `Struct` into at most one record, and declares its own
-`TypeInformation` so a job needs no `returns(...)` after the source. Returning `null` **skips** the
-row: it is emitted nowhere, is not a failure, and `recordsSkipped` is the only thing that reports it
-— the same contract the sink's serializer has in the other direction. A row you could not read is a
-failure and should be thrown, not skipped.
-
-One row becomes at most one record. A Spanner row is a relational row, so fanning one out is a
-`flatMap` in the job rather than a shape this SPI takes.
+`SpannerStructDeserializationSchema` turns one `Struct` into zero or more records through a Flink
+`Collector`, and declares its own `TypeInformation` so a job needs no `returns(...)` after the
+source.
+Emitting nothing **skips** the row: it is emitted nowhere, is not a failure, and `recordsSkipped`
+is the only thing that reports it.
+Every output must be non-null and emitted synchronously during the call; retaining the collector or
+using it after the method returns is invalid.
+A row you could not read is a failure and should be thrown, not skipped.
 
 ### Serverless reads with Data Boost
 
@@ -589,7 +589,6 @@ Its value-capture constraints, row reconstruction, and DDL options are documente
 
 ### Not here yet
 
-- Readable Table API metadata columns, source-watermark declaration, and real-service Table API acceptance remain in [#225]({{< param BookRepo >}}/issues/225).
 - `MUTABLE_KEY_RANGE` partition-event records; the source supports `IMMUTABLE_KEY_RANGE` and rejects another mode at startup.
 
 ## Metrics
@@ -634,11 +633,9 @@ each subtask.
 | `splitsReturned` | counter | Partition splits a failed reader gave back, to be handed out again |
 | `unassignedSplits` | gauge (Flink standard) | Partition splits nobody holds yet |
 | `numRecordsIn` | counter (Flink standard) | Records handed downstream |
-| `rowsRead` | counter | Rows pulled off a partition, including rows the deserializer skipped |
+| `rowsRead` | counter | Rows pulled off a partition, including rows whose deserializer emitted no output |
+| `recordsSkipped` | counter | Input rows whose deserializer call returned successfully without emitting output |
 | `partitionsReread` | counter | Partitions opened again from their start after a wake-up cancelled them part-way. Non-zero means some rows were delivered twice by a run that never failed |
-
-`recordsSkipped` is registered on this side too, and means the same thing it does above: rows the
-deserializer returned `null` for.
 
 There is no bytes-read counter and no rows-remaining gauge. The client hands over a decoded `Struct`
 and says nothing about what it cost on the wire, so any byte figure would be this connector's

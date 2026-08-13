@@ -568,9 +568,10 @@ boundary that falls strictly inside it, and hands the pieces out one per request
 for the next when it finishes one, so a dense range does not hold up a subtask that could be reading
 another.
 
-A checkpoint **truncates** the range to start just past the last row the reader emitted, so a
-restore resumes rather than replays. `ReadRows` has no row offset to resume at, only a range to ask
-for, which is what makes the range and not a count the unit of progress. Delivery is
+A checkpoint **truncates** the range to start just past the last row successfully deserialized,
+including one that produced no output, so a restore resumes rather than replays. `ReadRows` has no
+row offset to resume at, only a range to ask for, which is what makes the range and not a count the
+unit of progress. Delivery is
 **at-least-once**: rows emitted after the last completed checkpoint are read again after a restore.
 
 **Parallelism is the service's decision, not the job's.** The boundaries come from how Bigtable
@@ -612,12 +613,15 @@ cost every scan a metadata read to soften an error the service already reports p
 cell versions — so fanning one out into a record per qualifier or per cell is a mapping wide-table
 jobs want. Emitting nothing filters the row: it is not a failure, it reaches no handler, and
 `recordsSkipped` is the only thing that reports it.
+Every collected record must be non-null and emitted synchronously during the deserialization call.
+Do not retain the collector or use it from another thread.
 
-This differs from the [BigQuery source]({{< relref "docs/connectors/datastream/bigquery" >}}), whose
-deserializer returns at most one record, and the difference is in what a checkpoint resumes from
-rather than in taste: a BigQuery read stream resumes at a *count* of rows handed downstream, so a
-one-to-many mapping would move that count off the rows it counts, while this source resumes at a row
-*key* and a row producing none or five advances the resume point by exactly one row either way.
+The other row-oriented source SPIs use the same zero-to-many collector contract.
+A successfully deserialized row producing none or five advances input progress by exactly one row
+either way: this source resumes at a row *key*, BigQuery stores a consumed-input-row count, and
+Spanner replays an interrupted partition from its start.
+If deserialization or downstream collection fails, the row-key progress does not advance; a retry
+can therefore duplicate an output emitted earlier from that same row before a later output failed.
 
 Records are emitted **without a timestamp**. A Bigtable row has one per cell rather than one per
 row, so any row-level event time would be a choice the connector made on the job's behalf; assign a
@@ -727,6 +731,8 @@ Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may p
 records. Every produced record carries the mutation's commit time as its Flink timestamp. A
 heartbeat produces no record but advances the checkpointed continuation token and low watermark.
 `CloseStream` transfers successor partitions and their tokens to the coordinator.
+Every collected record must be non-null and emitted synchronously during the deserialization call;
+retaining the collector or using it from another thread is invalid.
 
 Each subtask uses asynchronous `ReadChangeStream` calls with manual inbound flow control and one shared bounded handover budget.
 Callbacks may receive a continuation token before the task thread consumes its record, but checkpoints retain only the position the task thread has emitted.
@@ -844,7 +850,7 @@ Registered on the source reader's and the split enumerator's metric groups:
 | `changeStreamUserMutationsRead` | counter | user-initiated mutations this subtask received |
 | `changeStreamGarbageCollectionMutationsRead` | counter | garbage-collection mutations this subtask received |
 | `partitionLowWatermarkMillis` | gauge | minimum checkpointed low watermark across every active and queued partition assigned to this subtask, as epoch milliseconds |
-| `recordsSkipped` | counter | rows the deserializer emitted no record for |
+| `recordsSkipped` | counter | rows or change-stream mutations the deserializer emitted no record for |
 | `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |
 | `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
 | `splitsReturned` | counter | splits a failed reader gave back. On the enumerator |

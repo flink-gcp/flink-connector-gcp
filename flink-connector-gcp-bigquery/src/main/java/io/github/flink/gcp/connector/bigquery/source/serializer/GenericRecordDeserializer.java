@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.source.serializer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.formats.avro.typeutils.GenericRecordAvroTypeInfo;
+import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.avro.Schema;
@@ -27,9 +28,9 @@ import org.apache.avro.generic.GenericRecord;
 /**
  * Hands decoded rows on unchanged.
  *
- * <p>The schema is held as JSON because an Avro {@link Schema} is not serializable, and parsed back
- * in the constructor as well as lazily after deserialization. Parsing in the constructor is what
- * makes a malformed schema fail where the job is built rather than on a TaskManager once rows flow.
+ * <p>The Avro {@link Schema} is serializable and is held directly. A JSON schema is parsed in the
+ * constructor, so a malformed schema fails where the job is built rather than on a TaskManager once
+ * rows flow.
  *
  * <p>{@link #getProducedType()} answers with {@link GenericRecordAvroTypeInfo}, which selects
  * Flink's Avro serializer. The alternative, {@code TypeInformation.of(GenericRecord.class)}, is a
@@ -38,45 +39,36 @@ import org.apache.avro.generic.GenericRecord;
  * this class exists rather than a documented one-liner for users to write.
  */
 @Internal
-final class GenericRecordDeserializer extends BigQueryRowDeserializer<GenericRecord> {
+final class GenericRecordDeserializer implements BigQueryRowDeserializer<GenericRecord> {
 
     private static final long serialVersionUID = 1L;
 
-    private final String schemaJson;
-
-    private transient Schema schema;
+    private final Schema schema;
 
     GenericRecordDeserializer(Schema readerSchema) {
-        this(Preconditions.checkNotNull(readerSchema, "readerSchema must not be null").toString());
+        this.schema = Preconditions.checkNotNull(readerSchema, "readerSchema must not be null");
     }
 
     GenericRecordDeserializer(String readerSchemaJson) {
-        Preconditions.checkNotNull(readerSchemaJson, "readerSchemaJson must not be null");
-        this.schema = new Schema.Parser().parse(readerSchemaJson);
-        this.schemaJson = readerSchemaJson;
+        this(
+                new Schema.Parser()
+                        .parse(
+                                Preconditions.checkNotNull(
+                                        readerSchemaJson, "readerSchemaJson must not be null")));
     }
 
     @Override
     public Schema getReaderSchema() {
-        return schema();
+        return schema;
     }
 
     @Override
-    public GenericRecord deserialize(GenericRecord row) {
-        return row;
+    public void deserialize(GenericRecord row, Collector<GenericRecord> out) {
+        out.collect(row);
     }
 
     @Override
     public TypeInformation<GenericRecord> getProducedType() {
-        return new GenericRecordAvroTypeInfo(schema());
-    }
-
-    private Schema schema() {
-        Schema parsed = schema;
-        if (parsed == null) {
-            parsed = new Schema.Parser().parse(schemaJson);
-            schema = parsed;
-        }
-        return parsed;
+        return new GenericRecordAvroTypeInfo(schema);
     }
 }

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.source.reader;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
+import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
@@ -28,10 +29,9 @@ import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
-import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -54,39 +54,45 @@ class BigQueryRecordEmitterTest {
     }
 
     @Test
-    void advancesTheOffsetOncePerRow() throws Exception {
-        BigQueryRecordEmitter<String> emitter = emitter(row -> String.valueOf(row.get("name")));
-        List<GenericRecord> rows = TestRows.rows(3);
+    void advancesTheOffsetOnceAfterOneOutput() throws Exception {
+        emitter((row, out) -> out.collect(String.valueOf(row.get("name"))))
+                .emitRecord(TestRows.rows(1).get(0), output, state);
 
-        for (GenericRecord row : rows) {
-            emitter.emitRecord(row, output, state);
-        }
-
-        assertThat(state.getOffset()).isEqualTo(3);
-        assertThat(output.records()).containsExactly("row-0", "row-1", "row-2");
+        assertThat(state.getOffset()).isEqualTo(1);
+        assertThat(output.records()).containsExactly("row-0");
+        assertThat(metrics.counter("recordsSkipped")).isZero();
     }
 
     @Test
-    void advancesTheOffsetForASkippedRowToo() throws Exception {
+    void advancesTheOffsetOnceAndCountsOneSkipAfterZeroOutputs() throws Exception {
         // The offset counts rows read from the stream, not records emitted. Were a skip to leave it
         // where it was, a restore would replay the skipped row and everything emitted after it.
-        BigQueryRecordEmitter<String> emitter =
-                emitter(row -> ((Long) row.get("id")) % 2 == 0 ? null : "kept");
-        List<GenericRecord> rows = TestRows.rows(4);
+        emitter((row, out) -> {}).emitRecord(TestRows.rows(1).get(0), output, state);
 
-        for (GenericRecord row : rows) {
-            emitter.emitRecord(row, output, state);
-        }
+        assertThat(state.getOffset()).isEqualTo(1);
+        assertThat(output.records()).isEmpty();
+        assertThat(metrics.counter("recordsSkipped")).isEqualTo(1);
+    }
 
-        assertThat(state.getOffset()).isEqualTo(4);
-        assertThat(output.records()).containsExactly("kept", "kept");
-        assertThat(metrics.counter("recordsSkipped")).isEqualTo(2);
+    @Test
+    void advancesTheOffsetOnceAndDoesNotCountASkipAfterSeveralOutputs() throws Exception {
+        emitter(
+                        (row, out) -> {
+                            out.collect("first");
+                            out.collect("second");
+                            out.collect("third");
+                        })
+                .emitRecord(TestRows.rows(1).get(0), output, state);
+
+        assertThat(state.getOffset()).isEqualTo(1);
+        assertThat(output.records()).containsExactly("first", "second", "third");
+        assertThat(metrics.counter("recordsSkipped")).isZero();
     }
 
     @Test
     void emitsWithoutATimestamp() throws Exception {
         // A BigQuery row carries no event time, so assigning one is the job's decision.
-        emitter(row -> "x").emitRecord(TestRows.rows(1).get(0), output, state);
+        emitter((row, out) -> out.collect("x")).emitRecord(TestRows.rows(1).get(0), output, state);
 
         // The null is the record's missing timestamp, not the absence of a record: an emptiness
         // assertion here would also pass if nothing had been emitted at all.
@@ -97,13 +103,67 @@ class BigQueryRecordEmitterTest {
     void leavesTheOffsetWhereItWasWhenTheDeserializerFails() {
         BigQueryRecordEmitter<String> emitter =
                 emitter(
-                        row -> {
+                        (row, out) -> {
                             throw new IOException("boom");
                         });
 
         assertThatThrownBy(() -> emitter.emitRecord(TestRows.rows(1).get(0), output, state))
                 .isInstanceOf(IOException.class);
         assertThat(state.getOffset()).isZero();
+        assertThat(metrics.counter("recordsSkipped")).isZero();
+    }
+
+    @Test
+    void leavesTheOffsetWhereItWasWhenDownstreamCollectionFails() {
+        output.failAfterCollects(1, new IllegalStateException("downstream exploded"));
+
+        assertThatThrownBy(
+                        () ->
+                                emitter(
+                                                (row, out) -> {
+                                                    out.collect("first");
+                                                    out.collect("second");
+                                                })
+                                        .emitRecord(TestRows.rows(1).get(0), output, state))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("downstream exploded");
+        assertThat(state.getOffset()).isZero();
+        assertThat(output.records()).containsExactly("first");
+        assertThat(metrics.counter("recordsSkipped")).isZero();
+    }
+
+    @Test
+    void refusesACollectorUsedAfterItsDeserializeCall() throws Exception {
+        AtomicReference<Collector<String>> retained = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        BigQueryRecordEmitter<String> emitter =
+                emitter(
+                        (row, out) -> {
+                            if (calls.getAndIncrement() == 0) {
+                                retained.set(out);
+                            } else {
+                                retained.get().collect("late");
+                            }
+                        });
+        emitter.emitRecord(TestRows.rows(2).get(0), output, state);
+
+        assertThatThrownBy(() -> emitter.emitRecord(TestRows.rows(2).get(1), output, state))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only during its synchronous deserialize call");
+        assertThat(state.getOffset()).isEqualTo(1);
+        assertThat(output.records()).isEmpty();
+    }
+
+    @Test
+    void rejectsANullCollectedRecordWithoutAdvancingTheOffset() {
+        assertThatThrownBy(
+                        () ->
+                                emitter((row, out) -> out.collect(null))
+                                        .emitRecord(TestRows.rows(1).get(0), output, state))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source deserializer must not collect null");
+        assertThat(state.getOffset()).isZero();
+        assertThat(metrics.counter("recordsSkipped")).isZero();
     }
 
     private BigQueryRecordEmitter<String> emitter(RowFunction function) {
@@ -111,10 +171,10 @@ class BigQueryRecordEmitterTest {
                 new BigQueryRowDeserializer<String>() {
                     private static final long serialVersionUID = 1L;
 
-                    @Nullable
                     @Override
-                    public String deserialize(GenericRecord row) throws IOException {
-                        return function.apply(row);
+                    public void deserialize(GenericRecord row, Collector<String> out)
+                            throws IOException {
+                        function.apply(row, out);
                     }
 
                     @Override
@@ -128,7 +188,6 @@ class BigQueryRecordEmitterTest {
     /** What a test's deserializer does with a row. */
     @FunctionalInterface
     private interface RowFunction {
-        @Nullable
-        String apply(GenericRecord row) throws IOException;
+        void apply(GenericRecord row, Collector<String> out) throws IOException;
     }
 }

@@ -48,7 +48,7 @@ public final class SpannerMetricNames {
     /** Estimated bytes of the mutations held in the writer's batch. */
     public static final String BUFFERED_BYTES = "bufferedBytes";
 
-    /** Records the serializer returned {@code null} for, which the sink wrote nowhere. */
+    /** Records the sink serializer skipped or source inputs whose deserializer emitted nothing. */
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
     /**

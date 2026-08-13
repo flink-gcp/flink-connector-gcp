@@ -33,11 +33,12 @@ import javax.annotation.Nullable;
  * thread writes inside an object the fetcher thread reads.
  *
  * <p>It is also a different clock from the one the split reader keeps. This state tracks the last
- * row <em>emitted downstream</em>, which is what a checkpoint must record; the split reader tracks
- * the last row it handed to the element queue, which is what a reopen must resume from. The rows
- * between the two are in flight at any instant, so neither key can serve the other's purpose:
- * reopening at this one would hand every in-flight row over twice inside a single successful run,
- * and checkpointing the reader's one would drop them on restore.
+ * row <em>successfully deserialized</em>, including one that produced no output, which is what a
+ * checkpoint must record; the split reader tracks the last row it handed to the element queue,
+ * which is what a reopen must resume from. The rows between the two are in flight at any instant,
+ * so neither key can serve the other's purpose: reopening at this one would hand every in-flight
+ * row over twice inside a single successful run, and checkpointing the reader's one would drop them
+ * on restore.
  *
  * <p>Not thread-safe, and does not need to be: every method here is called from the task thread.
  */
@@ -61,7 +62,7 @@ public final class RowRangeSplitState {
     }
 
     /**
-     * Records that a row has been handed downstream.
+     * Records that a row has been successfully deserialized.
      *
      * <p>Called once per row the split reader produced, whatever the deserializer made of it —
      * nothing, one record, or several. The unit of progress is the row, because the range is
@@ -74,7 +75,7 @@ public final class RowRangeSplitState {
         this.lastEmittedKey = Preconditions.checkNotNull(rowKey, "rowKey must not be null");
     }
 
-    /** Returns the key of the last row handed downstream, or null when none has been. */
+    /** Returns the key of the last successfully deserialized row, or null when none has been. */
     @VisibleForTesting
     @Nullable
     public ByteString getLastEmittedKey() {
@@ -84,8 +85,8 @@ public final class RowRangeSplitState {
     /**
      * Returns the split as it should be checkpointed: the work that is left.
      *
-     * @return the assigned split unchanged when nothing has been emitted, otherwise a split over
-     *     the range starting just past the last emitted row
+     * @return the assigned split unchanged when no row has been successfully deserialized,
+     *     otherwise a split over the range starting just past the last such row
      */
     public RowRangeSplit toSplit() {
         if (lastEmittedKey == null) {

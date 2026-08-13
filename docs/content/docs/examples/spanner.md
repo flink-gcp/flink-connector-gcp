@@ -214,15 +214,17 @@ only on a single-use transaction.
 
 ## Skipping rows on the way in
 
-Returning `null` from a source deserializer skips the row, exactly as returning `null` from the
-sink's serializer skips a record. `recordsSkipped` counts them.
+Emitting nothing from a source deserializer skips the row.
+`recordsSkipped` counts each such input row once.
 
 ```java
 new SpannerStructDeserializationSchema<Order>() {
     @Override
-    public Order deserialize(Struct row) {
+    public void deserialize(Struct row, Collector<Order> out) {
         // Rows the query could not exclude, filtered before they cost anything downstream.
-        return row.isNull("Total") ? null : new Order(row.getLong("OrderId"), row.getBigDecimal("Total"));
+        if (!row.isNull("Total")) {
+            out.collect(new Order(row.getLong("OrderId"), row.getBigDecimal("Total")));
+        }
     }
 
     @Override
@@ -233,6 +235,8 @@ new SpannerStructDeserializationSchema<Order>() {
 ```
 
 A row you could not read is a different thing: throw, and the job fails rather than losing it.
+Collector calls must be synchronous, must emit non-null records, and must not continue after
+`deserialize` returns.
 
 ## Grouping SQL changes by transaction and mod
 

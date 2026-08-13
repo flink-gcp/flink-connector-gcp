@@ -37,13 +37,9 @@ import java.io.Serializable;
  * failure, it never reaches any handler, and the {@code recordsSkipped} counter is the only thing
  * that reports it.
  *
- * <p><b>The Bigtable source can offer this and the BigQuery source cannot</b>, and the difference
- * is in what a checkpoint resumes from rather than in taste. A BigQuery read stream resumes at a
- * count of rows handed downstream, so a row producing several records would move that count off the
- * rows it counts; this source resumes at a <em>row key</em>, so a row producing none or five
- * advances the resume point by exactly one row either way. The rule the two connectors share is
- * therefore: the collector where a one-to-many mapping is meaningful and the resume unit permits
- * it, the nullable return where the resume unit forbids it.
+ * <p>Collected records must be non-null. The collector is valid only for the synchronous duration
+ * of the call; an implementation must not retain it. The source advances its row-key progress once
+ * after a successful call, independently of the number of outputs.
  *
  * <p>Configuration errors belong at job-build time, thrown unchecked from a builder or a
  * constructor, not per row. A schema this deserializer cannot work with is the same error for every
@@ -76,7 +72,8 @@ public interface BigtableRowDeserializationSchema<T> extends Serializable, Resul
      * Turns one row into zero or more records.
      *
      * @param row the row read from Bigtable, whose cells are ordered as the service returned them
-     * @param out the collector the records are handed to; emitting nothing skips the row
+     * @param out the collector for non-null output records; emitting nothing skips the row, and the
+     *     collector is valid only for this synchronous call and must not be retained
      * @throws IOException if the row cannot be deserialized, which fails the job
      */
     void deserialize(Row row, Collector<T> out) throws IOException;

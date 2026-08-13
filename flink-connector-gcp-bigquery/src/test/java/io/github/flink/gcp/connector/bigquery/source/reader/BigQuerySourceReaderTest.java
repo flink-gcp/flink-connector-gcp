@@ -20,6 +20,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
+import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
@@ -182,8 +183,8 @@ class BigQuerySourceReaderTest {
             private static final long serialVersionUID = 1L;
 
             @Override
-            public String deserialize(GenericRecord row) {
-                return String.valueOf(row.get("name"));
+            public void deserialize(GenericRecord row, Collector<String> out) {
+                out.collect(String.valueOf(row.get("name")));
             }
 
             @Override

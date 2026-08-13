@@ -39,8 +39,11 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link RowDataDeserializationSchema}. */
 class RowDataDeserializationSchemaTest {
@@ -52,7 +55,7 @@ class RowDataDeserializationSchemaTest {
             InternalTypeInfo.of(RowType.of(new VarCharType(VarCharType.MAX_LENGTH)));
 
     /** Splits the payload on ',' and emits one row per part, so a message can produce 0..n rows. */
-    private static final class SplittingDecoder implements DeserializationSchema<RowData> {
+    private static class SplittingDecoder implements DeserializationSchema<RowData> {
 
         private static final long serialVersionUID = 1L;
 
@@ -187,6 +190,58 @@ class RowDataDeserializationSchemaTest {
     }
 
     @Test
+    void rejectsANullRowFromAFormatBeforeAppendingMetadata() {
+        DeserializationSchema<RowData> physical =
+                new SplittingDecoder(RowKind.INSERT) {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public void deserialize(byte[] message, Collector<RowData> out) {
+                        out.collect(null);
+                    }
+                };
+        RowDataDeserializationSchema schema =
+                new RowDataDeserializationSchema(
+                        physical,
+                        new ReadableMetadata[] {ReadableMetadata.MESSAGE_ID},
+                        PRODUCED_TYPE);
+
+        assertThatThrownBy(() -> collect(schema, message("payload")))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source deserializer must not collect null")
+                .hasMessageContaining("collecting no records");
+    }
+
+    @Test
+    void refusesAMetadataCollectorRetainedIntoTheNextMessage() throws Exception {
+        AtomicReference<Collector<RowData>> retained = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        DeserializationSchema<RowData> physical =
+                new SplittingDecoder(RowKind.INSERT) {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public void deserialize(byte[] message, Collector<RowData> out) {
+                        if (calls.getAndIncrement() == 0) {
+                            retained.set(out);
+                        } else {
+                            retained.get().collect(new GenericRowData(1));
+                        }
+                    }
+                };
+        RowDataDeserializationSchema schema =
+                new RowDataDeserializationSchema(
+                        physical,
+                        new ReadableMetadata[] {ReadableMetadata.MESSAGE_ID},
+                        PRODUCED_TYPE);
+        collect(schema, message("first"));
+
+        assertThatThrownBy(() -> collect(schema, message("second")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only during its synchronous deserialize call");
+    }
+
+    @Test
     void theRowKindOfTheFormatSurvivesTheAppend() throws Exception {
         // The source delegates its changelog mode to the format, so a format emitting updates has
         // to keep emitting them through the metadata wrapper.
@@ -197,7 +252,8 @@ class RowDataDeserializationSchemaTest {
                         PRODUCED_TYPE);
 
         assertThat(collect(schema, message("a")))
-                .allSatisfy(row -> assertThat(row.getRowKind()).isEqualTo(RowKind.UPDATE_BEFORE));
+                .singleElement()
+                .satisfies(row -> assertThat(row.getRowKind()).isEqualTo(RowKind.UPDATE_BEFORE));
     }
 
     @Test

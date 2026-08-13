@@ -48,11 +48,35 @@ public final class CollectingSourceOutput<T> implements SourceOutput<T> {
     /** One entry per record; {@code null} means {@code collect(record)} was called without one. */
     private final List<Long> timestamps = new ArrayList<>();
 
-    @Nullable private RuntimeException failure;
+    @Nullable private Throwable failure;
+    private int successfulCollectsBeforeFailure;
 
     /** Makes every subsequent collect throw, standing in for a failing chained operator. */
     public void failOnCollect(RuntimeException failure) {
+        failAfterCollects(0, failure);
+    }
+
+    /** Makes every subsequent collect throw, standing in for a failing chained operator. */
+    public void failOnCollect(Error failure) {
+        failAfterCollects(0, failure);
+    }
+
+    /** Makes collect throw after the requested number of successful calls. */
+    public void failAfterCollects(int successfulCollects, RuntimeException failure) {
+        configureFailure(successfulCollects, failure);
+    }
+
+    /** Makes collect throw an error after the requested number of successful calls. */
+    public void failAfterCollects(int successfulCollects, Error failure) {
+        configureFailure(successfulCollects, failure);
+    }
+
+    private void configureFailure(int successfulCollects, Throwable failure) {
+        if (successfulCollects < 0) {
+            throw new IllegalArgumentException("successfulCollects must not be negative");
+        }
         this.failure = failure;
+        this.successfulCollectsBeforeFailure = successfulCollects;
     }
 
     public List<T> records() {
@@ -74,8 +98,14 @@ public final class CollectingSourceOutput<T> implements SourceOutput<T> {
     }
 
     private void add(T record, @Nullable Long timestamp) {
+        if (failure != null && successfulCollectsBeforeFailure == 0) {
+            if (failure instanceof RuntimeException) {
+                throw (RuntimeException) failure;
+            }
+            throw (Error) failure;
+        }
         if (failure != null) {
-            throw failure;
+            successfulCollectsBeforeFailure--;
         }
         records.add(record);
         timestamps.add(timestamp);

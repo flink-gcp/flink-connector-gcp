@@ -25,8 +25,9 @@ limitations under the License.
 ## Decision
 
 `AvroRecordSerializer` is `ProtoMessageSerializer`'s shape with an Avro front end — the schema
-is held as its **JSON text** (serializable, unlike a parsed `Schema`) and the
-`TableSchema`/descriptor/row-converter triple is rebuilt lazily. It accepts **`IndexedRecord`**,
+is held as its **JSON text**, and the `TableSchema`/descriptor/row-converter triple is rebuilt
+lazily. A parsed Avro `Schema` is also serializable, so the JSON field is not required by Flink's
+job-graph serialization. It accepts **`IndexedRecord`**,
 not `GenericRecord`, so `SpecificRecord` streams work; consequently each temporal and decimal
 conversion accepts **both** the raw Avro value and the converted one (`Instant`, `LocalDate`,
 `LocalTime`, `LocalDateTime`, `BigDecimal`, `UUID`), because a generated class with Avro's

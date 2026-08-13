@@ -22,6 +22,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.CloseableIterator;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Key;
@@ -41,8 +42,6 @@ import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDese
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
-
-import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -353,9 +352,8 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
         }
 
         @Override
-        @Nullable
-        public Long deserialize(Struct row) {
-            return readId.apply(row);
+        public void deserialize(Struct row, Collector<Long> out) {
+            out.collect(readId.apply(row));
         }
 
         @Override

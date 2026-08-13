@@ -40,11 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BigtableConnectorOptionsTest {
 
-    /**
-     * The options this layer owns rather than maps, which therefore may — and must — carry a
-     * default: there is no connector-side default for them to be a second copy of.
-     */
-    private static final Set<String> TABLE_OWNED =
+    /** The table-owned options that define a Table API default rather than require an opt-in. */
+    private static final Set<String> DEFAULTED_TABLE_OWNED =
             new HashSet<>(
                     Arrays.asList(
                             BigtableConnectorOptions.NULL_STRING_LITERAL.key(),
@@ -118,18 +115,18 @@ class BigtableConnectorOptionsTest {
     }
 
     @Test
-    void onlyATableOwnedOptionCarriesADefault() {
+    void onlyADefaultedTableOwnedOptionCarriesADefault() {
         // A mapped option's default lives on the connector's own builder and is applied by not
         // calling a setter, so one here would be a second copy that nothing keeps in step. An
-        // option this layer owns has no such original, so its default belongs here — and the
-        // assertion is an exact partition rather than an exemption list, so it also fails if one
-        // of those loses its default and starts reading as unset.
+        // option this layer owns has no such original, so any Table API default belongs here.
+        // scan.change-stream.changelog-mode is the required table-owned exception: users must
+        // explicitly select the generic mutation envelope.
         assertThat(declaredOptions())
                 .allSatisfy(
                         option ->
                                 assertThat(option.hasDefaultValue())
                                         .as("option '%s' carries a default", option.key())
-                                        .isEqualTo(TABLE_OWNED.contains(option.key())));
+                                        .isEqualTo(DEFAULTED_TABLE_OWNED.contains(option.key())));
     }
 
     @Test

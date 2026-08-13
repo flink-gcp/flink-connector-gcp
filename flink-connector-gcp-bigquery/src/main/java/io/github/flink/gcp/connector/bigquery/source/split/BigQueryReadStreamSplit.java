@@ -26,11 +26,12 @@ import java.time.Instant;
 import java.util.Objects;
 
 /**
- * One Storage Read API {@code ReadStream}, plus how far into it the source has already emitted.
+ * One Storage Read API {@code ReadStream}, plus how far into it the source has already consumed.
  *
- * <p>The offset counts rows handed downstream, which is what {@code ReadRowsRequest.offset} takes,
- * so a restored split resumes exactly where the last checkpoint left off. It is advanced by the
- * record emitter, one row at a time; this class is the immutable form that is checkpointed and
+ * <p>The offset counts input rows successfully processed, which is what {@code
+ * ReadRowsRequest.offset} takes, so a restored split resumes exactly where the last checkpoint left
+ * off. It is advanced by the record emitter once after each successful deserializer call and its
+ * synchronous downstream emissions. This class is the immutable form that is checkpointed and
  * assigned, while {@link BigQueryReadStreamSplitState} is the mutable form a reader works with.
  *
  * <p>The split carries the session's Avro schema because a reader is handed splits and nothing
@@ -64,7 +65,7 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
      * Creates a split.
      *
      * @param streamName the {@code projects/../locations/../sessions/../streams/..} stream name
-     * @param offset how many rows of this stream have already been emitted
+     * @param offset how many input rows of this stream have already been consumed
      * @param avroSchemaJson the read session's Avro schema, in its JSON form
      * @param sessionExpireTime when the read session expires, or {@code null} when it is not known
      */
@@ -86,7 +87,7 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
         return streamName;
     }
 
-    /** Returns how many rows of this stream have already been emitted downstream. */
+    /** Returns how many input rows of this stream have already been consumed. */
     public long getOffset() {
         return offset;
     }

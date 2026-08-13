@@ -144,7 +144,7 @@ Bigtable, whose rejection names what it refused.
 | Option | Default | What it does |
 |---|---|---|
 | `table` | **required** | The table to read |
-| `deserializer` | **required** | Turns a row into zero or more records. Emitting nothing skips the row |
+| `deserializer` | **required** | Turns a row into zero or more non-null records. Emit synchronously during the call; do not retain the collector. Emitting nothing skips the row |
 | `rowRange` | *unset ⇒ the whole table* | Adds a row-key range to read. Repeatable and additive; overlapping ranges are merged, and an empty one is rejected at `build()`. Takes a `ByteStringRange`, or an inclusive start and an exclusive end as `ByteString`s or as UTF-8 text |
 | `prefix` | *unset ⇒ the whole table* | Adds every row whose key starts with a prefix — sugar for the range that prefix describes. Repeatable, and combinable with `rowRange` |
 | `filter` | — | One server-side `Filters.Filter`, applied to every split. What it excludes never leaves the server. Last writer wins; a filter too large for the service is rejected at `build()` |
@@ -171,7 +171,7 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | Option | Default | What it does |
 |---|---|---|
 | `table` | **required** | The change-stream-enabled table to read |
-| `deserializer` | **required** | Turns each `ChangeStreamMutation` into zero or more records |
+| `deserializer` | **required** | Turns each `ChangeStreamMutation` into zero or more non-null records. Emit synchronously during the call; do not retain the collector |
 | `appProfileId` | **required** | A single-cluster-routing application profile used by every change-stream RPC |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's coordinator or a TaskManager's reader starts. Each component shares the provider among the data, table-admin and instance-admin clients that it owns, and every eligible process must see the same path. See the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |

@@ -175,9 +175,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and belongs in `flink-connector-gcp-base`.
 
 - **A split is one row-key range and the range is the remaining work**; a checkpoint truncates it
-  to start **exclusively** at the last emitted key. No offset exists to resume at — `ReadRows` takes
-  a range — so progress is measured in rows, never in records, which is what lets the deserializer
-  be collector-shaped where BigQuery's cannot be. A truncated range **may be empty** and the reader
+  to start **exclusively** at the last successfully deserialized row key. No offset exists to resume
+  at — `ReadRows` takes a range — so progress is measured in input rows, never in output records.
+  Like BigQuery and Spanner, the deserializer may collect zero, one, or many records while one
+  successful call advances input progress once. A truncated range **may be empty** and the reader
   finishes such a split **without opening a stream** — load-bearing, not tidy: the service refuses
   an inverted range with `INVALID_ARGUMENT` rather than answering it empty (#481), so a reader that
   opened one would fail the job. The builder rejects an empty *configured* range, and that
@@ -256,12 +257,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`, Change Streams `docs/adr/0106`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
-  setter, `getOptional(...).ifPresent(...)`, no default restated. The **six** table-owned options
-  are `scan.mode`, `null-string-literal`, `scan.row-key-encoding`, `lookup.async` and
-  `sink.cell-timestamp.truncate-to-millis`, plus `sink.insert-only-input-mode`, which have no
-  builder default behind them, and
-  `BigtableConnectorOptionsTest` asserts that partition **exactly** rather than exempting it — a
-  mapped option gaining a default and a table-owned one losing its own both fail.
+  setter, `getOptional(...).ifPresent(...)`, no default restated. Table-owned options have no
+  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The six
+  defaulted table-owned options are `scan.mode`, `null-string-literal`,
+  `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
+  `sink.insert-only-input-mode`; `scan.change-stream.changelog-mode` is deliberately required so
+  selecting either Change Streams interpretation remains explicit. A mapped option gaining a
+  default and a defaulted table-owned option losing its own both fail.
 - **Change Streams defaults to neither interpretation: its DDL explicitly selects the exact
   insert-only mutation envelope or the constrained selected-cell upsert contract** (#600, #603,
   ADR-0106).
