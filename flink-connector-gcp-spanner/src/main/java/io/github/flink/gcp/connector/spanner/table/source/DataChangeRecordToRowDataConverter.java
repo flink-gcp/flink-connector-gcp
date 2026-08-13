@@ -77,7 +77,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
         }
     }
 
-    List<RowData> convert(DataChangeRecord record) throws IOException {
+    List<ConvertedRow> convert(DataChangeRecord record) throws IOException {
         int modIndex = -1;
         try {
             if (!table.matchesNativeApiName(record.getTableName())) {
@@ -85,10 +85,10 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
             }
             validateCaptureType(record);
             validateSchema(record);
-            List<RowData> rows = new ArrayList<>();
+            List<ConvertedRow> rows = new ArrayList<>();
             for (int index = 0; index < record.getMods().size(); index++) {
                 modIndex = index;
-                appendRows(record, record.getMods().get(index), rows);
+                appendRows(record, record.getMods().get(index), index, rows);
             }
             return rows;
         } catch (RuntimeException ignored) {
@@ -163,35 +163,44 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
         }
     }
 
-    private void appendRows(DataChangeRecord record, Mod mod, List<RowData> rows) {
+    private void appendRows(
+            DataChangeRecord record, Mod mod, int modNumber, List<ConvertedRow> rows) {
         JsonObject keys = object(mod.getKeysJson(), "keys");
         if (changelogMode == ChangeStreamChangelogMode.UPSERT) {
             if (record.getModType() == ModType.DELETE) {
-                rows.add(row(keys, null, false, RowKind.DELETE));
+                rows.add(new ConvertedRow(row(keys, null, false, RowKind.DELETE), modNumber));
             } else {
                 rows.add(
-                        row(
-                                keys,
-                                object(
-                                        required(mod.getNewValuesJson().orElse(null), "new_values"),
-                                        "new_values"),
-                                true,
-                                record.getModType() == ModType.INSERT
-                                        ? RowKind.INSERT
-                                        : RowKind.UPDATE_AFTER));
+                        new ConvertedRow(
+                                row(
+                                        keys,
+                                        object(
+                                                required(
+                                                        mod.getNewValuesJson().orElse(null),
+                                                        "new_values"),
+                                                "new_values"),
+                                        true,
+                                        record.getModType() == ModType.INSERT
+                                                ? RowKind.INSERT
+                                                : RowKind.UPDATE_AFTER),
+                                modNumber));
             }
             return;
         }
         switch (record.getModType()) {
             case INSERT:
                 rows.add(
-                        row(
-                                keys,
-                                object(
-                                        required(mod.getNewValuesJson().orElse(null), "new_values"),
-                                        "new_values"),
-                                true,
-                                RowKind.INSERT));
+                        new ConvertedRow(
+                                row(
+                                        keys,
+                                        object(
+                                                required(
+                                                        mod.getNewValuesJson().orElse(null),
+                                                        "new_values"),
+                                                "new_values"),
+                                        true,
+                                        RowKind.INSERT),
+                                modNumber));
                 return;
             case UPDATE:
                 JsonObject afterValues =
@@ -206,21 +215,48 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
                 for (Map.Entry<String, JsonElement> old : oldValues.entrySet()) {
                     beforeValues.add(old.getKey(), old.getValue());
                 }
-                rows.add(row(keys, beforeValues, true, RowKind.UPDATE_BEFORE));
-                rows.add(row(keys, afterValues, true, RowKind.UPDATE_AFTER));
+                rows.add(
+                        new ConvertedRow(
+                                row(keys, beforeValues, true, RowKind.UPDATE_BEFORE), modNumber));
+                rows.add(
+                        new ConvertedRow(
+                                row(keys, afterValues, true, RowKind.UPDATE_AFTER), modNumber));
                 return;
             case DELETE:
                 rows.add(
-                        row(
-                                keys,
-                                object(
-                                        required(mod.getOldValuesJson().orElse(null), "old_values"),
-                                        "old_values"),
-                                true,
-                                RowKind.DELETE));
+                        new ConvertedRow(
+                                row(
+                                        keys,
+                                        object(
+                                                required(
+                                                        mod.getOldValuesJson().orElse(null),
+                                                        "old_values"),
+                                                "old_values"),
+                                        true,
+                                        RowKind.DELETE),
+                                modNumber));
                 return;
             default:
                 throw new IllegalStateException("Unhandled modification type.");
+        }
+    }
+
+    /** One staged changelog row and the position of the mod that produced it. */
+    static final class ConvertedRow {
+        private final RowData row;
+        private final int modNumber;
+
+        private ConvertedRow(RowData row, int modNumber) {
+            this.row = row;
+            this.modNumber = modNumber;
+        }
+
+        RowData getRow() {
+            return row;
+        }
+
+        int getModNumber() {
+            return modNumber;
         }
     }
 
@@ -502,7 +538,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
         }
     }
 
-    private static IOException failure(DataChangeRecord record, int modIndex) {
+    static IOException failure(DataChangeRecord record, int modIndex) {
         return new IOException(
                 "Could not convert Spanner change-stream record"
                         + " (table="

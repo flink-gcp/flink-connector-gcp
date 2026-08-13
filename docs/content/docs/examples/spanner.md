@@ -234,6 +234,42 @@ new SpannerStructDeserializationSchema<Order>() {
 
 A row you could not read is a different thing: throw, and the job fails rather than losing it.
 
+## Grouping SQL changes by transaction and mod
+
+Readable metadata keeps Spanner's transaction and record identity beside the relational changelog row.
+The names match Debezium's Spanner source vocabulary where it exposes the same Spanner fields, which makes an existing Debezium pipeline's grouping model reusable.
+
+```sql
+CREATE TABLE order_changes (
+  order_id BIGINT,
+  status STRING,
+  commit_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
+  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
+  server_transaction_id STRING METADATA FROM 'server-transaction-id' VIRTUAL,
+  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
+  records_in_transaction BIGINT
+    METADATA FROM 'number-of-records-in-transaction' VIRTUAL,
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'orders',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.name' = 'order_changes',
+  'scan.change-stream.changelog-mode' = 'upsert'
+);
+
+SELECT server_transaction_id, record_sequence, mod_number,
+       records_in_transaction, order_id, status
+FROM order_changes;
+```
+
+`mod_number` starts at zero for each original data-change record.
+In `full` mode, the before and after rows for one update deliberately carry the same value.
+Use `TIMESTAMP_LTZ(3)` plus `WATERMARK FOR commit_timestamp AS SOURCE_WATERMARK()` when event-time operations matter more than retaining nanoseconds.
+
 ## Filtering Change Streams records
 
 Table and column filters run after the connector decodes Spanner's record and before the user deserializer runs.

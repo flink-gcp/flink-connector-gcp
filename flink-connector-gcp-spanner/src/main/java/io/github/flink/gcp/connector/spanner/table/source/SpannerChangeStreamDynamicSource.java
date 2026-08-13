@@ -23,10 +23,13 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
+import org.apache.flink.table.connector.source.abilities.SupportsSourceWatermark;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
@@ -42,15 +45,19 @@ import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /** An unbounded Table API source for one table observed through a Spanner change stream. */
 @Internal
-public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
+public final class SpannerChangeStreamDynamicSource
+        implements ScanTableSource, SupportsReadingMetadata, SupportsSourceWatermark {
     private final SpannerTableSchemaConverter schema;
     private final SpannerDatabase database;
     private final SpannerTableName table;
-    private final DataType producedDataType;
     private final String changeStreamName;
     private final ChangeStreamChangelogMode changelogMode;
     private final StartPosition startPosition;
@@ -62,6 +69,9 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
+
+    private DataType producedDataType;
+    private List<String> metadataKeys;
 
     public static SpannerChangeStreamDynamicSource from(
             SpannerTableSchemaConverter schema,
@@ -76,6 +86,7 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
                         config.get(SpannerConnectorOptions.DATABASE)),
                 table,
                 producedDataType,
+                Collections.emptyList(),
                 config.get(SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME),
                 config.get(SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE),
                 ChangeStreamStartPositionMapper.startup(config),
@@ -94,6 +105,7 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
             SpannerDatabase database,
             SpannerTableName table,
             DataType producedDataType,
+            List<String> metadataKeys,
             String changeStreamName,
             ChangeStreamChangelogMode changelogMode,
             StartPosition startPosition,
@@ -109,6 +121,11 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
         this.database = database;
         this.table = table;
         this.producedDataType = producedDataType;
+        this.metadataKeys =
+                Collections.unmodifiableList(
+                        new ArrayList<>(
+                                Preconditions.checkNotNull(
+                                        metadataKeys, "metadataKeys must not be null")));
         this.changeStreamName = changeStreamName;
         this.changelogMode = changelogMode;
         this.startPosition = startPosition;
@@ -120,6 +137,30 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
+    }
+
+    @Override
+    public Map<String, DataType> listReadableMetadata() {
+        return ReadableMetadata.listAll();
+    }
+
+    @Override
+    public void applyReadableMetadata(List<String> metadataKeys, DataType producedDataType) {
+        List<String> selected =
+                new ArrayList<>(
+                        Preconditions.checkNotNull(metadataKeys, "metadataKeys must not be null"));
+        DataType selectedProducedType =
+                Preconditions.checkNotNull(producedDataType, "producedDataType must not be null");
+        for (String key : selected) {
+            ReadableMetadata.of(key);
+        }
+        this.metadataKeys = Collections.unmodifiableList(selected);
+        this.producedDataType = selectedProducedType;
+    }
+
+    @Override
+    public void applySourceWatermark() {
+        // The FLIP-27 source already emits commit timestamps and heartbeat watermarks.
     }
 
     @Override
@@ -138,13 +179,19 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         TypeInformation<RowData> producedType = context.createTypeInformation(producedDataType);
+        ReadableMetadata[] selectedMetadata =
+                metadataKeys.stream().map(ReadableMetadata::of).toArray(ReadableMetadata[]::new);
         SpannerChangeStreamSourceBuilder<RowData> builder =
                 SpannerChangeStreamSource.<RowData>builder()
                         .database(database)
                         .changeStreamName(changeStreamName)
                         .deserializer(
                                 new SpannerChangeStreamRowDataDeserializationSchema(
-                                        schema, table, changelogMode, producedType))
+                                        schema,
+                                        table,
+                                        changelogMode,
+                                        selectedMetadata,
+                                        producedType))
                         .startPosition(startPosition)
                         .absentRetentionFallback(absentRetentionFallback)
                         .heartbeatInterval(heartbeatInterval)
@@ -171,6 +218,7 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
                 database,
                 table,
                 producedDataType,
+                metadataKeys,
                 changeStreamName,
                 changelogMode,
                 startPosition,
@@ -203,6 +251,7 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
                 && database.equals(that.database)
                 && table.equals(that.table)
                 && producedDataType.equals(that.producedDataType)
+                && metadataKeys.equals(that.metadataKeys)
                 && changeStreamName.equals(that.changeStreamName)
                 && changelogMode == that.changelogMode
                 && startPosition.equals(that.startPosition)
@@ -222,6 +271,7 @@ public final class SpannerChangeStreamDynamicSource implements ScanTableSource {
                 database,
                 table,
                 producedDataType,
+                metadataKeys,
                 changeStreamName,
                 changelogMode,
                 startPosition,
