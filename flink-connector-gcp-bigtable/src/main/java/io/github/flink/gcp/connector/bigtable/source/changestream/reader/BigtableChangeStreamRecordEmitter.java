@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
-import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
@@ -29,12 +28,11 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.CloseStream;
 import com.google.cloud.bigtable.data.v2.models.Heartbeat;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
-
-import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -47,7 +45,6 @@ public final class BigtableChangeStreamRecordEmitter<T>
     private final BigtableChangeStreamDeserializationSchema<T> deserializer;
     private final SourceReaderContext context;
     private final BigtableChangeStreamReaderMetrics metrics;
-    private final TimestampCollector collector = new TimestampCollector();
 
     public BigtableChangeStreamRecordEmitter(
             BigtableChangeStreamDeserializationSchema<T> deserializer,
@@ -66,14 +63,13 @@ public final class BigtableChangeStreamRecordEmitter<T>
             throws Exception {
         if (record instanceof ChangeStreamMutation) {
             ChangeStreamMutation mutation = (ChangeStreamMutation) record;
-            collector.retarget(output, mutation.getCommitTime().toEpochMilli());
-            try {
-                deserializer.deserialize(mutation, collector);
-                if (collector.emitted == 0) {
-                    metrics.skipped();
-                }
-            } finally {
-                collector.retarget(null, 0);
+            long timestamp = mutation.getCommitTime().toEpochMilli();
+            long emittedCount =
+                    SynchronousDeserializationCollector.<T, Exception>deserialize(
+                            emitted -> output.collect(emitted, timestamp),
+                            out -> deserializer.deserialize(mutation, out));
+            if (emittedCount == 0) {
+                metrics.skipped();
             }
             state.advance(
                     ChangeStreamContinuationToken.create(
@@ -120,27 +116,5 @@ public final class BigtableChangeStreamRecordEmitter<T>
         }
         throw new IllegalArgumentException(
                 "Unsupported Bigtable change-stream record " + record + ".");
-    }
-
-    private final class TimestampCollector implements Collector<T> {
-        @Nullable private SourceOutput<T> output;
-        private long timestamp;
-        private int emitted;
-
-        private void retarget(@Nullable SourceOutput<T> output, long timestamp) {
-            this.output = output;
-            this.timestamp = timestamp;
-            this.emitted = 0;
-        }
-
-        @Override
-        public void collect(T record) {
-            Preconditions.checkState(output != null, "The change-stream collector is not active.");
-            output.collect(record, timestamp);
-            emitted++;
-        }
-
-        @Override
-        public void close() {}
     }
 }

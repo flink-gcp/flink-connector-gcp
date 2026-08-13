@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.spanner.table.source;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
@@ -37,8 +38,8 @@ final class RowDataDeserializationSchema implements SpannerStructDeserialization
     }
 
     @Override
-    public RowData deserialize(Struct row) {
-        return converter.convert(row);
+    public void deserialize(Struct row, Collector<RowData> out) {
+        out.collect(converter.convert(row));
     }
 
     @Override

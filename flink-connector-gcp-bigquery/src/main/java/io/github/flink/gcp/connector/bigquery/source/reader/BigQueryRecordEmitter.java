@@ -21,12 +21,14 @@ import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitState;
 import org.apache.avro.generic.GenericRecord;
 
 /**
- * Converts each row and advances the stream's offset by exactly one row.
+ * Converts each row and advances the stream's offset by exactly one row after successful
+ * deserialization and downstream collection.
  *
  * <p>The offset is what a restored split resumes at, and it counts rows <em>read from the
  * stream</em>, not records emitted downstream: a row the deserializer skips still advances it. Were
@@ -46,7 +48,7 @@ public class BigQueryRecordEmitter<T>
     /**
      * Creates the emitter.
      *
-     * @param deserializer converts a row into a record
+     * @param deserializer converts a row into zero or more records
      * @param metrics the reader's metrics
      */
     public BigQueryRecordEmitter(
@@ -60,12 +62,12 @@ public class BigQueryRecordEmitter<T>
     public void emitRecord(
             GenericRecord row, SourceOutput<T> output, BigQueryReadStreamSplitState state)
             throws Exception {
-        T record = deserializer.deserialize(row);
-        if (record == null) {
+        long emittedCount =
+                SynchronousDeserializationCollector.<T, Exception>deserialize(
+                        output::collect, out -> deserializer.deserialize(row, out));
+        if (emittedCount == 0) {
             metrics.recordSkipped();
-        } else {
-            output.collect(record);
         }
-        state.recordEmitted();
+        state.recordConsumed();
     }
 }

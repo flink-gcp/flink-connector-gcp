@@ -120,7 +120,7 @@ is under [Source]({{< relref "docs/connectors/datastream/spanner" >}}#source).
 |---|---|---|
 | `database` | **required** | The database to read |
 | `readOperation` | **required** | What to read: `SpannerReadOperation.query(...)`, `.read(...)` or `.readUsingIndex(...)`. A query has to be root-partitionable |
-| `deserializer` | **required** | Turns a `Struct` into a record, or into `null` to skip the row |
+| `deserializer` | **required** | Emits zero or more non-null output records from each `Struct` through a synchronous Flink `Collector`; do not retain the collector. Emitting nothing skips the row |
 | `timestampBound` | `TimestampBound.strong()` | The snapshot to read at. Only `strong()`, `ofReadTimestamp` and `ofExactStaleness` are accepted; the other two modes are single-use-only and are rejected here |
 | `maxPartitions` | *unset ⇒ the service decides* | How many partitions to ask for. A hint the service may ignore, and the emulator ignores outright |
 | `partitionSizeBytes` | *unset ⇒ the service decides* | How much data one partition should cover. A hint, like the one above |
@@ -141,7 +141,7 @@ Its partition lifecycle, checkpoint recovery, and delivery semantics are under [
 |---|---|---|
 | `database` | **required** | The database containing the change stream |
 | `changeStreamName` | **required** | The change stream whose generated read function each partition query calls |
-| `deserializer` | **required** | Emits zero or more output records from each `DataChangeRecord` through a Flink `Collector` |
+| `deserializer` | **required** | Emits zero or more non-null output records from each `DataChangeRecord` through a Flink `Collector`. Emit synchronously during the call; do not retain the collector |
 | `startPosition` | `StartPosition.latest()` | Where a fresh ledger begins. Absolute, latest, and relative start positions resolve once on the coordinator |
 | `resumeFallback` | *unset ⇒ fail an expired restore* | Where to restart after restored partition positions fall outside retention. Setting it permits discarding the whole stale partition ledger and can lose the unavailable interval |
 | `absentRetentionFallback` | `7 days` | Retention to assume when `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` has no explicit retention row. It must be longer than the one-minute safety margin used at the moving retention boundary |

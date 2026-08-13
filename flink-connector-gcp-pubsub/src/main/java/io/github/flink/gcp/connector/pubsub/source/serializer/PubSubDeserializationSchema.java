@@ -38,7 +38,8 @@ import java.io.Serializable;
  *
  * <p>Records are handed to a {@link Collector} rather than returned, so one message may produce any
  * number of records — including none, which drops the message (it is still acknowledged with the
- * checkpoint that covers it).
+ * checkpoint that covers it). Collected records must be non-null. The collector is valid only for
+ * the synchronous duration of the call; an implementation must not retain it.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),
@@ -64,7 +65,8 @@ public interface PubSubDeserializationSchema<T> extends Serializable, ResultType
      * @param message the received message
      * @param subscription the subscription the message arrived on, constant for the duration of a
      *     split but not for the schema, which serves every split the reader is assigned
-     * @param out collector for the produced records
+     * @param out collector for non-null produced records; it is valid only for this synchronous
+     *     call and must not be retained
      * @throws IOException if the message cannot be deserialized; handling is governed by the
      *     source's deserialization failure policy
      */

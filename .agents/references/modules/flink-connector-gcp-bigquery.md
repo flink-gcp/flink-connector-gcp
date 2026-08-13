@@ -237,10 +237,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Everything the bullets below say about assignment still holds; it is just no longer written
   here, so a change to it is a change to both sources and belongs in `flink-connector-gcp-base`.
 
-- **A split is one read stream plus the rows already emitted, and the offset advances once per row
-  read — including a skipped one.** Split and split state are two types because two threads touch
-  them. The read session is created once, guarded by a checkpointed flag; `readSessionsCreated`
-  above 1 means that guard failed.
+- **A split is one read stream plus the input rows already consumed, and the offset advances once
+  after each successful deserializer call and its synchronous downstream emissions.** Zero, one,
+  or many outputs advance it by one; a deserialization or downstream failure does not advance it.
+  Split and split state are two types because two threads touch them. The read session is created
+  once, guarded by a checkpointed flag; `readSessionsCreated` above 1 means that guard failed.
 - **The enumerator keeps no ledger** — no subtask-to-splits map. That absence is the design (the
   reference implementation's change log records a "critical data loss bug in reader split handling"
   *fixed by adding* per-reader no-more-splits signalling — so the protocol, not the ledger, is what
@@ -309,9 +310,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `BigQueryEmulatorReadDeviationITCase`, each with a `@Disabled` twin carrying the correct
   behaviour, and the emulator harness uses a **hyphen-free project id** because the emulator's Avro
   namespace is `<project>.<dataset>` and a hyphen is illegal in one.
-- The deserializer may declare a reader schema; rows are resolved into it. The shipped
-  `GenericRecord` implementation answers with `GenericRecordAvroTypeInfo`, which is why `flink-avro`
-  is a `provided` dependency — Kryo cannot serialize a `GenericData.Record` at all (measured).
+- The deserializer may declare a reader schema; rows are resolved into it. It emits zero or more
+  non-null records synchronously through the call's collector and must not retain that collector.
+  Emitting nothing increments `recordsSkipped` once for the input row. The shipped `GenericRecord`
+  implementation answers with `GenericRecordAvroTypeInfo`, which is why `flink-avro` is a
+  `provided` dependency — Kryo cannot serialize a `GenericData.Record` at all (measured).
 - **The client library's own `ReadRows` retry is the loop; the connector adds only a stop**
   (`docs/adr/0084`). It resumes a broken call at `originalOffset + rowsProcessed`, so a
   connector-level reopen would be the same thing less precisely — **do not add one**, and do not

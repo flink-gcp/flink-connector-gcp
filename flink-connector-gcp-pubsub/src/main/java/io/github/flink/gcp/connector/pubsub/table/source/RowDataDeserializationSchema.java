@@ -26,6 +26,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 
@@ -51,9 +52,6 @@ final class RowDataDeserializationSchema implements PubSubDeserializationSchema<
     private final ReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedTypeInfo;
 
-    /** Reused across messages; a deserialization schema is confined to the task thread. */
-    private transient MetadataAppendingCollector collector;
-
     RowDataDeserializationSchema(
             DeserializationSchema<RowData> physical,
             ReadableMetadata[] metadata,
@@ -78,62 +76,20 @@ final class RowDataDeserializationSchema implements PubSubDeserializationSchema<
             physical.deserialize(message.getData().toByteArray(), out);
             return;
         }
-        if (collector == null) {
-            collector = new MetadataAppendingCollector();
+        GenericRowData metadataRow = new GenericRowData(metadata.length);
+        for (int i = 0; i < metadata.length; i++) {
+            metadataRow.setField(i, metadata[i].getConverter().read(message, subscription));
         }
-        collector.bind(message, subscription, out);
-        try {
-            physical.deserialize(message.getData().toByteArray(), collector);
-        } finally {
-            collector.unbind();
-        }
+        SynchronousDeserializationCollector.<RowData, IOException>deserialize(
+                physicalRow ->
+                        out.collect(
+                                new JoinedRowData(
+                                        physicalRow.getRowKind(), physicalRow, metadataRow)),
+                physicalOut -> physical.deserialize(message.getData().toByteArray(), physicalOut));
     }
 
     @Override
     public TypeInformation<RowData> getProducedType() {
         return producedTypeInfo;
-    }
-
-    /**
-     * Appends a delivery's metadata columns to every row the format emits for it.
-     *
-     * <p>Bound to one message at a time and reused, so the metadata row is built once per message
-     * rather than once per emitted row. The rows are joined rather than copied, and the physical
-     * row's {@link org.apache.flink.types.RowKind} is carried over: the source delegates its
-     * changelog mode to the format, so a format that emits updates must keep emitting them through
-     * this.
-     *
-     * <p>Same shape as {@code PubSubRecordEmitter.SourceOutputCollector}, and nested for the same
-     * reason: it is a detail of its one owner, and it is never serialized — the field holding it is
-     * transient and it is rebuilt on the task.
-     */
-    private final class MetadataAppendingCollector implements Collector<RowData> {
-
-        private Collector<RowData> out;
-        private GenericRowData metadataRow;
-
-        private void bind(
-                PubsubMessage message,
-                SubscriptionDestination subscription,
-                Collector<RowData> out) {
-            this.out = out;
-            this.metadataRow = new GenericRowData(metadata.length);
-            for (int i = 0; i < metadata.length; i++) {
-                metadataRow.setField(i, metadata[i].getConverter().read(message, subscription));
-            }
-        }
-
-        private void unbind() {
-            this.out = null;
-            this.metadataRow = null;
-        }
-
-        @Override
-        public void collect(RowData physicalRow) {
-            out.collect(new JoinedRowData(physicalRow.getRowKind(), physicalRow, metadataRow));
-        }
-
-        @Override
-        public void close() {}
     }
 }

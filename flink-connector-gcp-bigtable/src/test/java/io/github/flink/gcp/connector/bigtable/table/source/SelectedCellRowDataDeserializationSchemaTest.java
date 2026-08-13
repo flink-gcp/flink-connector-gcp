@@ -136,7 +136,11 @@ class SelectedCellRowDataDeserializationSchemaTest {
                     out.collect(GenericRowData.of(StringData.fromString("two"), 2));
                 },
                 "emitted 2 rows");
-        assertFormatCardinality((bytes, out) -> out.collect(null), "emitted 1 null row");
+        SelectedCellRowDataDeserializationSchema schema =
+                schema((bytes, out) -> out.collect(null), new ChangeStreamReadableMetadata[0]);
+        assertThatThrownBy(() -> schema.deserialize(upsert(), collectingInto(new ArrayList<>())))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("must not collect null");
     }
 
     @Test

@@ -55,13 +55,13 @@ public final class BigQueryMetricNames {
     // Registered by the default-stream and FILE_LOADS writers, which hold per-destination state.
     public static final String OPEN_DESTINATIONS = "openDestinations";
 
-    // Registered by all three writers and by the source's reader, which all report a record their
-    // serializer or deserializer returned null for.
+    // Registered by all three writers and by the source's reader. Writers count a record whose
+    // serializer returned null; the source counts an input row whose deserializer emitted nothing.
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
     // Registered by the source's reader (BigQuerySourceReaderMetrics). Rows and bytes are what the
-    // Storage Read API bills, so these are the two numbers a cost question is answered with;
-    // rowsRead differs from Flink's own numRecordsIn by exactly the skipped rows.
+    // Storage Read API bills, so these are the two numbers a cost question is answered with.
+    // A zero-to-many deserializer makes rowsRead independent of Flink's own numRecordsIn.
     public static final String ROWS_READ = "rowsRead";
     public static final String BYTES_READ = "bytesRead";
 

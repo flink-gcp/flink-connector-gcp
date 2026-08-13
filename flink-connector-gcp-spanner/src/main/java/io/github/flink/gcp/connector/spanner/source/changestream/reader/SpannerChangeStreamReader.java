@@ -25,11 +25,11 @@ import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.core.io.InputStatus;
-import org.apache.flink.util.Collector;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
@@ -40,8 +40,6 @@ import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeSt
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -66,8 +64,6 @@ public final class SpannerChangeStreamReader<T>
     private final int maximumQueries;
     private final SpannerChangeStreamQueryClient client;
     private final SpannerChangeStreamReaderMetrics metrics;
-    private final TimestampedCollector timestampedCollector = new TimestampedCollector();
-
     private final Deque<SpannerChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveQuery> active = new LinkedHashMap<>();
     private final Object availabilityLock = new Object();
@@ -204,16 +200,14 @@ public final class SpannerChangeStreamReader<T>
             } else {
                 metrics.columnOccurrencesFiltered(filtered.getRemovedColumnOccurrences());
                 DataChangeRecord projected = filtered.getRecord();
-                timestampedCollector.retarget(
-                        output.createOutputForSplit(query.split.splitId()),
-                        projected.getCommitTimestamp().toEpochMilli());
-                try {
-                    deserializer.deserialize(projected, timestampedCollector);
-                    if (timestampedCollector.emittedRecords == 0) {
-                        metrics.skipped();
-                    }
-                } finally {
-                    timestampedCollector.retarget(null, 0);
+                SourceOutput<T> splitOutput = output.createOutputForSplit(query.split.splitId());
+                long timestamp = projected.getCommitTimestamp().toEpochMilli();
+                long emittedCount =
+                        SynchronousDeserializationCollector.<T, Exception>deserialize(
+                                emitted -> splitOutput.collect(emitted, timestamp),
+                                out -> deserializer.deserialize(projected, out));
+                if (emittedCount == 0) {
+                    metrics.skipped();
                 }
             }
         } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
@@ -383,35 +377,6 @@ public final class SpannerChangeStreamReader<T>
                 + " the future, and at or after the change stream was created. If the stream was"
                 + " created recently, use StartPosition.latest() or StartPosition.at(...) with a"
                 + " timestamp after its DDL completed.";
-    }
-
-    /** Counts and timestamps everything one data-change record produces. */
-    private final class TimestampedCollector implements Collector<T> {
-
-        @Nullable private SourceOutput<T> output;
-        private long timestamp;
-        private int emittedRecords;
-
-        private void retarget(@Nullable SourceOutput<T> output, long timestamp) {
-            this.output = output;
-            this.timestamp = timestamp;
-            emittedRecords = 0;
-        }
-
-        @Override
-        public void collect(T record) {
-            Preconditions.checkState(
-                    output != null,
-                    "The collector handed to a Spanner Change Streams deserializer was used"
-                            + " outside the deserialize call it was handed to.");
-            output.collect(record, timestamp);
-            emittedRecords++;
-        }
-
-        @Override
-        public void close() {
-            // The split output belongs to the reader; a deserializer must not detach it.
-        }
     }
 
     @Override

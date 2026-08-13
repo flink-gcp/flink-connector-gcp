@@ -24,7 +24,7 @@ import org.apache.flink.util.Preconditions;
  *
  * <p>Separate from the split because the two are touched by different threads: the split reader
  * runs on the fetcher thread and holds the split it was handed, while the record emitter runs on
- * the task thread and advances this state per emitted row. A single mutable type would put a field
+ * the task thread and advances this state per consumed row. A single mutable type would put a field
  * the task thread writes inside an object the fetcher thread reads.
  *
  * <p>Not thread-safe, and does not need to be: every method here is called from the task thread.
@@ -46,19 +46,19 @@ public final class BigQueryReadStreamSplitState {
         this.offset = split.getOffset();
     }
 
-    /** Returns how many rows of this stream have been emitted downstream. */
+    /** Returns how many input rows of this stream have been consumed successfully. */
     public long getOffset() {
         return offset;
     }
 
     /**
-     * Records that one row read from this stream has been handed to the emitter.
+     * Records that one input row has been consumed successfully.
      *
-     * <p>Called once per row the split reader produced, including a row the deserializer skipped:
-     * the offset counts rows <em>consumed from the stream</em>, and leaving a skipped row uncounted
-     * would make a restore replay it together with every row emitted after it.
+     * <p>Called once after the deserializer returns and all of its synchronous output calls
+     * succeed, including when it emitted nothing. The offset counts input rows <em>consumed from
+     * the stream</em>, not output records.
      */
-    public void recordEmitted() {
+    public void recordConsumed() {
         offset++;
     }
 

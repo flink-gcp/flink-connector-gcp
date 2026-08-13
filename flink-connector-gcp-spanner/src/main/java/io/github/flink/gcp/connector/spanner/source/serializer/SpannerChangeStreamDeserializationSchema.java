@@ -27,7 +27,13 @@ import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecor
 import java.io.IOException;
 import java.io.Serializable;
 
-/** Turns one Spanner data-change record into zero or more user records. */
+/**
+ * Turns one Spanner data-change record into zero or more user records.
+ *
+ * <p>Returning successfully without collecting skips the data-change record and increments {@code
+ * recordsSkipped} once. Collected records must be non-null. The collector is valid only for the
+ * synchronous duration of the call; an implementation must not retain it.
+ */
 @PublicEvolving
 public interface SpannerChangeStreamDeserializationSchema<T>
         extends Serializable, ResultTypeQueryable<T> {
@@ -38,8 +44,8 @@ public interface SpannerChangeStreamDeserializationSchema<T>
      * Deserializes one self-describing change record.
      *
      * @param record the record, including the column types active when Spanner captured it
-     * @param out the collector for zero or more output records; it is valid only for this method
-     *     call, so implementations must collect synchronously and must not retain it
+     * @param out the collector for non-null output records; it is valid only for this synchronous
+     *     call and must not be retained
      * @throws IOException if the change cannot be deserialized
      */
     void deserialize(DataChangeRecord record, Collector<T> out) throws IOException;

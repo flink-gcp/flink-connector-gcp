@@ -92,8 +92,8 @@ Source<Long, ?, ?> source =
                 .deserializer(
                         new SpannerStructDeserializationSchema<Long>() {
                             @Override
-                            public Long deserialize(Struct row) {
-                                return row.getLong("OrderId");
+                            public void deserialize(Struct row, Collector<Long> out) {
+                                out.collect(row.getLong("OrderId"));
                             }
 
                             @Override

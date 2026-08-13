@@ -128,7 +128,7 @@ the sink creates. See
 | Option | Default | What it does |
 |---|---|---|
 | `subscription` / `subscriptions` | **required**, at least one | The subscriptions to consume. The two-argument `subscription(...)` also [authorises creating it](#subscriptioncreateoptions) |
-| `deserializationSchema` | **required** | Converts each `PubsubMessage` into zero or more records |
+| `deserializationSchema` | **required** | Converts each `PubsubMessage` into zero or more non-null records. Emit synchronously during the call; do not retain the collector |
 | `orderingMode` | `NONE` | `PER_KEY` preserves per-ordering-key order, at the cost of one subtask per subscription and one pull connection |
 | `subscriberOptions` | [defaults](#pubsubsubscriberoptions) | Subscriber and reader tuning |
 | `deserializationFailurePolicy` | `FAIL` | What happens to a message the schema cannot convert — fail, drop, or nack |

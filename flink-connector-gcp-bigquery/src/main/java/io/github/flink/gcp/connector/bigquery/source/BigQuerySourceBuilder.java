@@ -300,7 +300,7 @@ public class BigQuerySourceBuilder<T> {
     }
 
     /**
-     * Sets the deserializer converting each row into a record.
+     * Sets the deserializer converting each row into zero or more records.
      *
      * @param deserializer the deserializer
      * @return this builder

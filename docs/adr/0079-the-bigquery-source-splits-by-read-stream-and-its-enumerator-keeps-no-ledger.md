@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-09 (BigQuery and emulator behaviour measured the same day), revised by [#392]
-  (2026-08-10) and [#393] (2026-08-11)
-- Issues: [#390], [#64], [#392], [#393], [#542]
+  (2026-08-10), [#393] (2026-08-11), and [#587] (2026-08-13)
+- Issues: [#390], [#64], [#392], [#393], [#542], [#587]
 - Modules: bigquery (`source`, `source.enumerator`, `source.reader`, `source.serializer`,
   `source.split`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
@@ -27,7 +27,7 @@ limitations under the License.
 ## Context / Evidence
 
 [#64] settled the shape — a FLIP-27 bounded source over the Storage Read API, split = one
-`ReadStream` plus the emitted-row offset, one read session created once, pull assignment, Avro only
+`ReadStream` plus the consumed-input-row offset, one read session created once, pull assignment, Avro only
 — from three public references (the Dataproc `flink-bigquery-connector`, Beam's `DIRECT_READ` paths
 and the Spark connector). What it deferred to implementation is what this record holds, and most of
 it turned on measurement rather than on the references.
@@ -69,12 +69,14 @@ throws `UnsupportedOperationException` on the record's own schema (Flink 2.2, Av
 
 ## Decision
 
-**A split is one `ReadStream` plus the number of rows already emitted, and the offset advances once
-per row read — including a row the deserializer skipped.** The offset counts rows consumed from the
-stream, not records emitted; advancing only on the emitting branch would make a restore after a skip
-replay the skipped row and everything emitted after it. Split and split state are **two types**,
-because the split reader reads one on the fetcher thread while the emitter mutates the other on the
-task thread.
+**A split is one `ReadStream` plus the number of input rows already consumed, and the offset advances
+once after each successful deserializer call and all its synchronous downstream emissions.**
+Zero, one, or many outputs advance the offset by one because it counts input rows rather than output
+records.
+A deserialization or downstream collection failure does not advance it, so recovery retries the
+input row whose processing did not complete.
+Split and split state are **two types**, because the split reader reads one on the fetcher thread
+while the emitter mutates the other on the task thread.
 
 **The read session is created exactly once**, guarded by a checkpointed `initialized` flag; a
 restore adopts the session. A second session would pin a second snapshot of the table and a
@@ -118,14 +120,20 @@ measurement shows: `maxStreamCount` is a cap and never a floor. The builder reje
 `preferredMinStreamCount > maxStreamCount` with the service's own rule, so a job fails where it is
 written rather than at session creation.
 
-**The deserializer takes a `GenericRecord` and returns at most one record**, `null` meaning skip
-(ADR-0001). It may declare a **reader schema**, and rows are then resolved into it by Avro's
-resolution rules, so a hand-written schema naming a subset of the columns works and the records
-carry the schema the produced `TypeInformation` was derived from. The shipped `genericRecord(...)`
-implementation answers with **`GenericRecordAvroTypeInfo`**, which is why `flink-avro` is a new
-`provided` dependency: the Kryo fallback does not work at all. **This SPI is the only one**, and
-Avro the source's only wire format: [#393] measured a batch-aware Arrow variant and declined to
-build it, the gain being reachable only by a consumer that never asks for a row (ADR-0090).
+**The deserializer takes a `GenericRecord` and emits zero or more non-null records through a
+synchronous collector.**
+Emitting nothing skips the input row and increments `recordsSkipped` once; retaining the collector
+or using it after the call returns is invalid.
+All source emitters enforce that boundary through the shared synchronous invocation collector in
+ADR-0108.
+It may declare a **reader schema**, and rows are then resolved into it by Avro's resolution rules,
+so a hand-written schema naming a subset of the columns works and the records carry the schema the
+produced `TypeInformation` was derived from.
+The shipped `genericRecord(...)` implementation answers with **`GenericRecordAvroTypeInfo`**, which
+is why `flink-avro` is a new `provided` dependency: the Kryo fallback does not work at all.
+**This SPI is the only one**, and Avro the source's only wire format: [#393] measured a batch-aware
+Arrow variant and declined to build it, the gain being reachable only by a consumer that never asks
+for a row (ADR-0090).
 
 **The source takes one emulator endpoint where the sink takes two** (ADR-0029). It makes no REST
 call: the read session carries the schema. The moment the source grows a metadata call, this is the
@@ -153,8 +161,10 @@ the Avro-namespace reason above.
 
 ## Consequences
 
-- A restored job reads each row exactly once, and the three-way test split is what says so — no
-  single tier could.
+- A restored job resumes after every successfully processed input row. A row whose deserializer or
+  downstream collection failed is replayed; when an earlier output from that same row had already
+  succeeded, that output can therefore be emitted again. The three-way test split verifies this
+  input-progress boundary — no single tier could.
 - The enumerator's simplicity is load-bearing: an assigned-splits gauge cannot be added without
   reintroducing the ledger this record exists to refuse. The unassigned-splits gauge Flink registers
   reads the queue from the reporter thread, so its value is best-effort — as it is in Flink's own
@@ -179,3 +189,4 @@ the Avro-namespace reason above.
 [#393]: https://github.com/laughingman7743/flink-connector-gcp/issues/393
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
 [#542]: https://github.com/laughingman7743/flink-connector-gcp/issues/542
+[#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587

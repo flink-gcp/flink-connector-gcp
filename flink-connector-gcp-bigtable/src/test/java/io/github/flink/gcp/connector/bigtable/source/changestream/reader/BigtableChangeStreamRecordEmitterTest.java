@@ -35,8 +35,11 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigtableChangeStreamRecordEmitterTest {
 
@@ -75,6 +78,7 @@ class BigtableChangeStreamRecordEmitterTest {
                         });
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
         assertThat(counter("changeStreamMutationsRead")).isEqualTo(1);
+        assertThat(counter("recordsSkipped")).isZero();
         assertThat(gauge("partitionLowWatermarkMillis")).isEqualTo(watermark.toEpochMilli());
     }
 
@@ -146,6 +150,117 @@ class BigtableChangeStreamRecordEmitterTest {
         assertThat(counter("recordsSkipped")).isEqualTo(1);
         assertThat(state.toSplit().getContinuationTokens().get(0).getToken()).isEqualTo("filtered");
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
+    }
+
+    @Test
+    void downstreamFailureDoesNotAdvanceMutationStateOrMetrics() {
+        Instant watermark = Instant.parse("2026-08-11T02:59:00Z");
+        ChangeStreamPartitionSplitState state = state();
+        CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
+        output.failOnCollect(new IllegalStateException("downstream"));
+        BigtableChangeStreamRecordEmitter<String> emitter =
+                new BigtableChangeStreamRecordEmitter<>(schema(), context, metrics);
+
+        assertThatThrownBy(
+                        () ->
+                                emitter.emitRecord(
+                                        TestChangeStreamRecords.mutation(
+                                                Instant.parse("2026-08-11T03:00:00Z"),
+                                                watermark,
+                                                "failed"),
+                                        output,
+                                        state))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("downstream");
+
+        assertThat(output.records()).isEmpty();
+        assertThat(state.toSplit().getContinuationTokens()).isEmpty();
+        assertThat(state.getLowWatermark()).isEqualTo(Instant.EPOCH);
+        assertThat(counter("changeStreamMutationsRead")).isZero();
+        assertThat(counter("recordsSkipped")).isZero();
+    }
+
+    @Test
+    void refusesACollectorUsedAfterItsDeserializeCall() throws Exception {
+        AtomicReference<Collector<String>> retained = new AtomicReference<>();
+        AtomicInteger calls = new AtomicInteger();
+        BigtableChangeStreamRecordEmitter<String> emitter =
+                new BigtableChangeStreamRecordEmitter<>(
+                        new BigtableChangeStreamDeserializationSchema<String>() {
+                            @Override
+                            public void deserialize(
+                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                if (calls.getAndIncrement() == 0) {
+                                    retained.set(out);
+                                } else {
+                                    retained.get().collect("late");
+                                }
+                            }
+
+                            @Override
+                            public org.apache.flink.api.common.typeinfo.TypeInformation<String>
+                                    getProducedType() {
+                                return org.apache.flink.api.common.typeinfo.Types.STRING;
+                            }
+                        },
+                        context,
+                        metrics);
+
+        emitter.emitRecord(
+                TestChangeStreamRecords.mutation(
+                        Instant.parse("2026-08-11T03:00:00Z"),
+                        Instant.parse("2026-08-11T02:59:00Z"),
+                        "retained"),
+                new CollectingSourceOutput<>(),
+                state());
+
+        assertThatThrownBy(
+                        () ->
+                                emitter.emitRecord(
+                                        TestChangeStreamRecords.mutation(
+                                                Instant.parse("2026-08-11T03:01:00Z"),
+                                                Instant.parse("2026-08-11T03:00:00Z"),
+                                                "second"),
+                                        new CollectingSourceOutput<>(),
+                                        state()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only during its synchronous deserialize call");
+    }
+
+    @Test
+    void rejectsANullCollectedRecordWithoutAdvancingTheSplit() {
+        ChangeStreamPartitionSplitState state = state();
+        BigtableChangeStreamRecordEmitter<String> emitter =
+                new BigtableChangeStreamRecordEmitter<>(
+                        new BigtableChangeStreamDeserializationSchema<String>() {
+                            @Override
+                            public void deserialize(
+                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                out.collect(null);
+                            }
+
+                            @Override
+                            public org.apache.flink.api.common.typeinfo.TypeInformation<String>
+                                    getProducedType() {
+                                return org.apache.flink.api.common.typeinfo.Types.STRING;
+                            }
+                        },
+                        context,
+                        metrics);
+
+        assertThatThrownBy(
+                        () ->
+                                emitter.emitRecord(
+                                        TestChangeStreamRecords.mutation(
+                                                Instant.parse("2026-08-11T03:00:00Z"),
+                                                Instant.parse("2026-08-11T02:59:00Z"),
+                                                "null"),
+                                        new CollectingSourceOutput<>(),
+                                        state))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("source deserializer must not collect null");
+        assertThat(state.toSplit().getContinuationTokens()).isEmpty();
+        assertThat(counter("recordsSkipped")).isZero();
     }
 
     private long counter(String name) {

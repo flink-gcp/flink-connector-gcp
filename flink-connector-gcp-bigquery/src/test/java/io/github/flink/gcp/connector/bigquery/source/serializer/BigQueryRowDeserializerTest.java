@@ -20,6 +20,7 @@ import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.util.Collector;
 import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
@@ -31,6 +32,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -42,8 +45,21 @@ class BigQueryRowDeserializerTest {
         BigQueryRowDeserializer<GenericRecord> deserializer =
                 BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
         GenericRecord row = TestRows.rows(1).get(0);
+        List<GenericRecord> records = new ArrayList<>();
 
-        assertThat(deserializer.deserialize(row)).isSameAs(row);
+        deserializer.deserialize(
+                row,
+                new Collector<GenericRecord>() {
+                    @Override
+                    public void collect(GenericRecord record) {
+                        records.add(record);
+                    }
+
+                    @Override
+                    public void close() {}
+                });
+
+        assertThat(records).singleElement().isSameAs(row);
     }
 
     @Test
@@ -89,8 +105,8 @@ class BigQueryRowDeserializerTest {
 
     @Test
     void survivesTheJobGraphAsSerializedState() throws Exception {
-        // An Avro Schema is not serializable, so the deserializer holds its JSON and parses it
-        // back; without that the source would fail when the job graph is shipped.
+        // Avro's Schema serialization replacement must preserve both the reader schema and the
+        // TypeInformation derived from it when Flink ships the job graph.
         BigQueryRowDeserializer<GenericRecord> deserializer =
                 BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
 

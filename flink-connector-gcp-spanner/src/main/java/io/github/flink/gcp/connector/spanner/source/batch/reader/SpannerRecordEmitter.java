@@ -22,19 +22,18 @@ import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplitState;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 
-import javax.annotation.Nullable;
-
 /**
- * Deserializes each row and hands the record on.
+ * Deserializes each row and hands its output records on.
  *
  * <p>Runs on the task thread, one row at a time, as {@code pollNext} drains the element queue.
  *
  * <p>Nothing is recorded on the split state, because a partition has no position to record: a
- * restore re-reads the partition it was given from the start. That is why this emitter can be a
- * plain mapping while the other connectors' advance a resume point here.
+ * restore re-reads the partition it was given from the start. That is why this emitter can emit
+ * zero or more records without advancing a resume point here.
  *
  * <p>No timestamp is assigned. A Spanner row carries no event time of its own — the read timestamp
  * belongs to the whole snapshot, not to a row — so any per-record time would be a choice this
@@ -66,14 +65,11 @@ public class SpannerRecordEmitter<T> implements RecordEmitter<Struct, T, Partiti
     @Override
     public void emitRecord(Struct row, SourceOutput<T> output, PartitionSplitState splitState)
             throws Exception {
-        @Nullable T record = deserializer.deserialize(row);
-        if (record == null) {
-            // A skip, not a failure: the row is written nowhere and this counter is the only thing
-            // that reports it. A deserializer that could not read the row throws instead, and the
-            // job fails rather than losing the row quietly.
+        long emittedCount =
+                SynchronousDeserializationCollector.<T, Exception>deserialize(
+                        output::collect, out -> deserializer.deserialize(row, out));
+        if (emittedCount == 0) {
             metrics.recordSkipped();
-            return;
         }
-        output.collect(record);
     }
 }

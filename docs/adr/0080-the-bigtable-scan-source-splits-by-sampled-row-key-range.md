@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0080: The Bigtable scan source splits by sampled row-key range, and a checkpoint truncates the range
 
 - Status: Accepted
-- Date: 2026-08-09
-- Issues: [#216], [#34], [#248], [#481]
+- Date: 2026-08-09, revised by [#587] (2026-08-13)
+- Issues: [#216], [#34], [#248], [#481], [#587]
 - Modules: bigtable (`source`, `source.readrows`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Source
 
@@ -79,9 +79,9 @@ Checked against the pinned versions before the design was committed (`google-clo
 **A split is one row-key range, and the range is the remaining work.** The enumerator samples the
 table once, cuts every configured range at each sampled boundary strictly inside it, and hands the
 pieces out one per request. A reader checkpoints its split by truncating that range to start
-*exclusively* at the last row it emitted, so a restore resumes rather than replays. `ReadRows` has
-no row offset to resume at — only a range to ask for — which is what makes the range, and not a
-count, the unit of progress.
+*exclusively* at the last row it successfully deserialized, including a row that produced no
+output, so a restore resumes rather than replays. `ReadRows` has no row offset to resume at — only a
+range to ask for — which is what makes the range, and not a count, the unit of progress.
 
 **The cut convention is the client library's**, so a connector split boundary and an SDK one agree:
 `endOpen(k)` on the left, `startClosed(k)` on the right, and a boundary equal to a range's start is
@@ -115,20 +115,23 @@ either way while cancelled hands over what it read and reopens next time; the sa
 the flag are a finished split and a real failure respectively.
 
 **A truncated range may be empty, and the reader finishes such a split without opening a stream.**
-That is the normal state of a split whose inclusively-ended range had its last row emitted before
-the checkpoint, and it is also what keeps an inverted range from ever reaching the service. That
+That is the normal state of a split whose inclusively-ended range had its last row successfully
+deserialized before the checkpoint, and it is also what keeps an inverted range from ever reaching
+the service. That
 short-circuit is **load-bearing, not tidy**: the gated suite measured what Bigtable answers such a
 range with ([#481]), and the answer is `INVALID_ARGUMENT` — a job that let one through would fail,
 not read empty — so the unit test pinning the short-circuit asserts zero stream opens rather than
 merely an empty fetch. Note the deliberate asymmetry with the builder, which *rejects* an empty
 range: user error and normal end-of-split are different things.
 
-**The deserialization SPI is collector-shaped**, unlike the BigQuery source's nullable return, and
-the difference is in the resume unit rather than in taste: BigQuery resumes at a count of rows
-handed downstream, so a one-to-many mapping would move that count off the rows it counts, while this
-source resumes at a row key and a row producing none or five advances the resume point by exactly
-one row either way. The rule the two connectors share is *the collector where a one-to-many mapping
-is meaningful and the resume unit permits it, the nullable return where the resume unit forbids it*.
+**The deserialization SPI is collector-shaped**, as are the other row-oriented source SPIs.
+A successfully deserialized row producing zero, one, or many outputs advances the source's input
+progress by exactly one row: this source resumes at a row key, while BigQuery records a
+consumed-input-row count and Spanner replays an interrupted partition from its start.
+The shared synchronous invocation collector in ADR-0108 enforces that boundary before progress can
+advance.
+On deserialization or downstream failure, this source leaves the row-key progress unchanged; a
+partial output can therefore be emitted again when the row is retried.
 A Bigtable row is a whole row — many families, many qualifiers, many cell versions — so fanning one
 out per qualifier or per cell is a mapping wide-table jobs want. `recordsSkipped` counts rows that
 emitted nothing; ADR-0001 is unaffected, its scope being sink serialization SPIs.
@@ -187,3 +190,4 @@ onto it rather than left as a second copy.
 [#248]: https://github.com/laughingman7743/flink-connector-gcp/issues/248
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
 [#481]: https://github.com/laughingman7743/flink-connector-gcp/issues/481
+[#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587

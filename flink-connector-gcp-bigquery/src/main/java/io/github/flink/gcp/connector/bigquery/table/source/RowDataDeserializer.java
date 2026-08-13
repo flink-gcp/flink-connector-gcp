@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
 import org.apache.avro.generic.GenericRecord;
@@ -28,7 +29,7 @@ import javax.annotation.Nullable;
 
 /** Converts Storage Read Avro rows to the planner's internal row type. */
 @Internal
-final class RowDataDeserializer extends BigQueryRowDeserializer<RowData> {
+final class RowDataDeserializer implements BigQueryRowDeserializer<RowData> {
 
     private static final long serialVersionUID = 1L;
 
@@ -44,8 +45,8 @@ final class RowDataDeserializer extends BigQueryRowDeserializer<RowData> {
     }
 
     @Override
-    public RowData deserialize(GenericRecord row) {
-        return converter.convert(row);
+    public void deserialize(GenericRecord row, Collector<RowData> out) {
+        out.collect(converter.convert(row));
     }
 
     @Override

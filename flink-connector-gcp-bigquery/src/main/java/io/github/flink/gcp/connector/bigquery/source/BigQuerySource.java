@@ -26,9 +26,9 @@ import org.apache.flink.annotation.PublicEvolving;
  *
  * <p>Rows arrive as Avro and are handed to a {@link
  * io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer}, which converts
- * each one into a record — or into {@code null} to skip it. Column projection and row filtering are
- * applied by BigQuery when the read session is created, so what they exclude is neither transferred
- * nor billed.
+ * each one into zero or more non-null records through a collector. Collecting nothing skips the
+ * row. Column projection and row filtering are applied by BigQuery when the read session is
+ * created, so what they exclude is neither transferred nor billed.
  *
  * <p>A read through this API is charged for the bytes BigQuery scans to serve it, unlike the sink's
  * {@code FILE_LOADS} write path, which is free.

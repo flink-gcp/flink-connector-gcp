@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.source.serializer;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
+import org.apache.flink.util.Collector;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -29,34 +30,30 @@ import java.io.IOException;
 import java.io.Serializable;
 
 /**
- * Converts a row read from the BigQuery Storage Read API into a record of the source's output type.
+ * Converts a row read from the BigQuery Storage Read API into zero or more output records.
  *
  * <p>The Storage Read API delivers rows as Avro binary blocks described by a schema the read
  * session carries, so the connector decodes each row into a {@link GenericRecord} and hands it
- * here. One call produces at most one record: the source counts emitted records to resume a stream
- * at the right row, so a collector-style SPI producing several records per row is deliberately not
- * offered.
+ * here. One call may produce zero, one, or several records. The source resumes a stream by the
+ * number of input rows consumed, independently of how many records each row produces.
  *
- * <p>This is an abstract class rather than a functional interface for the reason the sink's {@code
- * BigQueryProtoSerializer} is one: implementations are shipped inside the Flink job graph and must
- * be {@link Serializable}, while an Avro {@link Schema} is not. A schema must therefore be held as
- * its JSON form and parsed into a {@code transient} field after deserialization.
+ * <p>Implementations are shipped inside the Flink job graph and must be {@link Serializable}. Avro
+ * {@link Schema} implements that contract and may be held directly.
  *
- * <p>Exception contract: {@link #deserialize(GenericRecord)} throws {@link IOException} for
- * per-record failures, which fail the job. Configuration errors — a malformed schema, a column the
- * implementation cannot map — must surface as unchecked exceptions when the deserializer is built,
- * not per record, so a misconfigured job fails at submission instead of once rows flow.
+ * <p>Exception contract: {@link #deserialize(GenericRecord, Collector)} throws {@link IOException}
+ * for per-record failures, which fail the job. Configuration errors — a malformed schema, a column
+ * the implementation cannot map — must surface as unchecked exceptions when the deserializer is
+ * built, not per record, so a misconfigured job fails at submission instead of once rows flow.
  *
- * <p>Returning {@code null} from {@link #deserialize(GenericRecord)} skips the row: nothing is
- * emitted, it is not a failure, and the {@code recordsSkipped} metric is the only report of it.
- * Every serialization SPI of this connector family reads {@code null} that way.
+ * <p>Returning successfully without collecting skips the row: nothing is emitted, it is not a
+ * failure, and the {@code recordsSkipped} metric is the only report of it. Collected records must
+ * be non-null. The collector is valid only for the synchronous duration of the call; an
+ * implementation must not retain it.
  *
  * @param <T> type of the records produced by the source
  */
 @PublicEvolving
-public abstract class BigQueryRowDeserializer<T> implements Serializable, ResultTypeQueryable<T> {
-
-    private static final long serialVersionUID = 1L;
+public interface BigQueryRowDeserializer<T> extends Serializable, ResultTypeQueryable<T> {
 
     /**
      * Initializes the deserializer on the subtask that will use it, before any row is read.
@@ -64,7 +61,7 @@ public abstract class BigQueryRowDeserializer<T> implements Serializable, Result
      * @param context the initialization context
      * @throws Exception if the deserializer cannot be initialized; the job fails
      */
-    public void open(DeserializationSchema.InitializationContext context) throws Exception {}
+    default void open(DeserializationSchema.InitializationContext context) throws Exception {}
 
     /**
      * Returns the Avro schema rows are decoded into, or {@code null} (the default) to decode them
@@ -72,28 +69,28 @@ public abstract class BigQueryRowDeserializer<T> implements Serializable, Result
      *
      * <p>When a schema is returned, rows are resolved from the session's schema into it by Avro's
      * schema-resolution rules, and the {@link GenericRecord} handed to {@link
-     * #deserialize(GenericRecord)} carries the returned schema. An implementation that declares a
-     * produced type derived from a schema must return that same schema here, so that the records it
-     * emits and the type it declares agree.
+     * #deserialize(GenericRecord, Collector)} carries the returned schema. An implementation that
+     * declares a produced type derived from a schema must return that same schema here, so that the
+     * records it emits and the type it declares agree.
      *
      * <p>Called once per assigned stream, not per row.
      *
      * @return the reader schema, or {@code null} to use the session's schema
      */
     @Nullable
-    public Schema getReaderSchema() {
+    default Schema getReaderSchema() {
         return null;
     }
 
     /**
-     * Converts one row into a record.
+     * Converts one row into zero or more records.
      *
      * @param row the decoded row
-     * @return the record, or {@code null} to skip the row
+     * @param out the collector for non-null output records; it is valid only for this synchronous
+     *     call and must not be retained
      * @throws IOException if the row cannot be converted; the job fails
      */
-    @Nullable
-    public abstract T deserialize(GenericRecord row) throws IOException;
+    void deserialize(GenericRecord row, Collector<T> out) throws IOException;
 
     /**
      * Returns a deserializer handing rows on as the {@link GenericRecord}s they were decoded into.
@@ -110,7 +107,7 @@ public abstract class BigQueryRowDeserializer<T> implements Serializable, Result
      * @param readerSchema the Avro schema rows are read into
      * @return the deserializer
      */
-    public static BigQueryRowDeserializer<GenericRecord> genericRecord(Schema readerSchema) {
+    static BigQueryRowDeserializer<GenericRecord> genericRecord(Schema readerSchema) {
         return new GenericRecordDeserializer(readerSchema);
     }
 
@@ -121,7 +118,7 @@ public abstract class BigQueryRowDeserializer<T> implements Serializable, Result
      * @return the deserializer
      * @see #genericRecord(Schema)
      */
-    public static BigQueryRowDeserializer<GenericRecord> genericRecord(String readerSchemaJson) {
+    static BigQueryRowDeserializer<GenericRecord> genericRecord(String readerSchemaJson) {
         return new GenericRecordDeserializer(readerSchemaJson);
     }
 }

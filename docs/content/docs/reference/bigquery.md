@@ -229,7 +229,7 @@ does with the two stream-count knobs, is under
 |---|---|---|
 | `table` | **required**, unless `query` is set | The table to read. To read a named view, combine it with `materializeViews`; the Storage Read API cannot read the view directly |
 | `query` | **required**, unless `table` is set | The explicit-query route: runs this GoogleSQL query first, then reads its result. It can read a view without naming that view as `table`. Billed twice: the bytes the query scans, then the bytes the read session scans |
-| `deserializer` | **required** | Converts each Avro row into a record, or into `null` to skip it |
+| `deserializer` | **required** | Emits zero or more non-null output records from each Avro row through a synchronous Flink `Collector`; emitting nothing skips the row |
 | `parentProject` | the table's own project | The project the read session belongs to and is billed to. Set it to read a table in another project, such as a public dataset. **Required with `query`**, which names no table to default from and which is billed to it as well |
 | `materializeViews` | off | Reads a `table` that turns out to be a view by materializing it: one metadata call at job start, then `SELECT … FROM the_view` and a read of its result. An ordinary table is read directly. Off by default because it costs that call, and because it bills a query nobody wrote. Spelled `viewsEnabled` in the Spark and Dataproc connectors |
 | `queryLocation` | BigQuery infers it from the tables the query names | The location the query job runs in. `query` or `materializeViews` only |

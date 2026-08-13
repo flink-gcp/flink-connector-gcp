@@ -1650,7 +1650,7 @@ wide table to use two of its columns pays for the rest unless it says so with
 
 ### Splits, offsets and recovery
 
-A **split is one `ReadStream` of the read session, plus the number of rows already emitted from it**.
+A **split is one `ReadStream` of the read session, plus the number of rows already consumed from it**.
 Restoring re-issues `ReadRows` at that offset, which is the API's own resume mechanism rather than
 anything this connector invents. Three facts hold it together:
 
@@ -1658,8 +1658,13 @@ anything this connector invents. Three facts hold it together:
   a restore adopts the existing session instead of creating a second one. A second session would pin
   a second snapshot of the table, and a failed-over job would silently read the table as of two
   different instants. `readSessionsCreated` reports the same fact at runtime.
-- The offset advances **once per row read from the stream**, in the record emitter, including a row
-  the deserializer skipped by returning `null`. It counts rows consumed, not records emitted.
+- The offset advances **once per successfully deserialized row**, after every synchronous output
+  has reached the source output.
+  It advances by one whether the row emitted zero, one, or many records, because it counts input
+  rows consumed rather than output records.
+  If deserialization or downstream collection fails, the offset does not advance.
+  A retry therefore replays that input row; if an earlier output from the same row had already
+  reached downstream before a later output failed, the earlier output can be duplicated.
 - A stream's rows arrive in BigQuery's **storage order, not the table's**, and an offset is a
   position in that order (measured 2026-08-09). Nothing downstream should read order into it.
 
@@ -1855,10 +1860,13 @@ gone is probed past like a failed job, and the query runs again under a fresh re
 ### Deserialization
 
 Rows arrive as Avro and are decoded into a `GenericRecord`, which
-`BigQueryRowDeserializer.deserialize(GenericRecord)` converts into one record — or into `null` to
-skip the row, which `recordsSkipped` is the only report of. The SPI is an abstract class rather than
-a functional interface for the reason the sink's serializer is one: it is shipped inside the job
-graph and must be serializable, while an Avro `Schema` is not.
+`BigQueryRowDeserializer.deserialize(GenericRecord, Collector)` converts into zero or more output
+records.
+Emitting nothing skips the row, and `recordsSkipped` is the only report of that successful skip.
+Every output must be non-null and emitted synchronously during the call; retaining the collector or
+using it after the method returns is invalid.
+The SPI is a serializable interface shipped inside the job graph.
+Avro's `Schema` is itself serializable and an implementation may hold it directly.
 
 A deserializer may declare a **reader schema**, and the shipped `genericRecord(...)` implementation
 does. Rows are then resolved from the session's schema into it by Avro's schema-resolution rules, so
@@ -2116,10 +2124,10 @@ is one set for the job, since there is one enumerator.
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `numRecordsIn` | counter (Flink standard) | records handed downstream, which is `rowsRead` minus the skipped rows |
+| `numRecordsIn` | counter (Flink standard) | records handed downstream. With a zero-to-many deserializer this may be less than, equal to, or greater than `rowsRead` |
 | `rowsRead` | counter | rows decoded from the response blocks this subtask received |
 | `bytesRead` | counter | their serialized bytes as they arrived on the wire. Not the billed quantity — BigQuery charges for bytes *scanned from storage*, which a client cannot see — but it is what says whether a job is moving what you expected |
-| `recordsSkipped` | counter | rows the deserializer skipped by returning `null` — neither emitted nor failed |
+| `recordsSkipped` | counter | input rows whose deserializer call returned successfully without emitting output — neither emitted nor failed |
 | `readRetries` | counter | attempts at a read stream the client library retried. Rising while the job still progresses is a stream that keeps dropping and resuming — see [Read failures and retries](#read-failures-and-retries) |
 | `splitsAssigned` | counter | read streams handed to a reader, on the enumerator |
 | `splitsReturned` | counter | read streams a failed reader gave back, on the enumerator |

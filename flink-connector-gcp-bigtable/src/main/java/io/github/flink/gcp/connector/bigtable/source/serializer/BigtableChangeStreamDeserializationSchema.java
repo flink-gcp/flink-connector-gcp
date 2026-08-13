@@ -27,13 +27,27 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import java.io.IOException;
 import java.io.Serializable;
 
-/** Turns one Bigtable change-stream mutation into zero or more user records. */
+/**
+ * Turns one Bigtable change-stream mutation into zero or more user records.
+ *
+ * <p>Returning successfully without collecting skips the mutation and increments {@code
+ * recordsSkipped} once. Collected records must be non-null. The collector is valid only for the
+ * synchronous duration of the call; an implementation must not retain it.
+ */
 @PublicEvolving
 public interface BigtableChangeStreamDeserializationSchema<T>
         extends Serializable, ResultTypeQueryable<T> {
 
     default void open(DeserializationSchema.InitializationContext context) throws Exception {}
 
+    /**
+     * Deserializes one mutation.
+     *
+     * @param mutation the mutation from Bigtable
+     * @param out the collector for non-null output records; it is valid only for this synchronous
+     *     call and must not be retained
+     * @throws IOException if the mutation cannot be deserialized
+     */
     void deserialize(ChangeStreamMutation mutation, Collector<T> out) throws IOException;
 
     @Override

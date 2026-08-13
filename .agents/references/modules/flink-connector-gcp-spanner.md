@@ -132,9 +132,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   base closes. Readers close their own transaction handle and never call it — releasing the session
   would end every other reader's read. Against the pinned client the call is a no-op (multiplexed
   session); it stays because it is the contract.
-- **The deserialization SPI is a nullable return**, not the collector Bigtable's source takes: a
-  whole-partition resume permits either, and a relational row makes a one-to-many mapping
-  meaningless. `null` skips, `recordsSkipped` counts.
+- **The deserialization SPI emits zero or more non-null records synchronously through a collector.**
+  The collector is valid only for the deserializer call and must not be retained. Emitting nothing
+  increments `recordsSkipped` once for the input row. The progress model is unchanged: a reader
+  resumes only at a whole-partition boundary, so any interrupted partition is replayed from its
+  start regardless of how many outputs each row produced.
 - **`SpannerRpcPriority` is at the module root, with the enum-to-SDK mapping on it**, because both
   directions take it — `SpannerDatabase`'s reasoning applied. The mapping is one written-out switch,
   so a value added to either side fails to compile rather than silently changing what a job asked
