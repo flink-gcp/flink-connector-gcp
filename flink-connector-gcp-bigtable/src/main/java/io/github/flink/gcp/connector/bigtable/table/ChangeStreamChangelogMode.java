@@ -23,7 +23,10 @@ import org.apache.flink.annotation.PublicEvolving;
 public enum ChangeStreamChangelogMode {
 
     /** Emit one insert-only generic mutation envelope per Bigtable mutation. */
-    ENVELOPE("envelope");
+    ENVELOPE("envelope"),
+
+    /** Decode a complete logical row from one selected cell and emit keyed upserts. */
+    SELECTED_CELL("selected-cell");
 
     private final String value;
 

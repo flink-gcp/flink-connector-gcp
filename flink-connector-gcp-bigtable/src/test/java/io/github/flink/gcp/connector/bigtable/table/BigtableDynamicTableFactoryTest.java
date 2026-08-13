@@ -492,6 +492,28 @@ class BigtableDynamicTableFactoryTest {
         return options;
     }
 
+    private static Map<String, String> minimalSelectedCellOptions() {
+        Map<String, String> options = minimalChangeStreamOptions();
+        options.put("scan.change-stream.changelog-mode", "selected-cell");
+        options.put("scan.change-stream.selected-cell.family", "state");
+        options.put("scan.change-stream.selected-cell.qualifier-base64", "");
+        options.put("scan.change-stream.selected-cell.source-cluster-id", "cluster-1");
+        options.put("value.format", "json");
+        return options;
+    }
+
+    private static ResolvedSchema selectedCellSchema(String... primaryKeyColumns) {
+        java.util.List<Column> columns =
+                Arrays.asList(
+                        Column.physical("name", DataTypes.STRING()),
+                        Column.physical("row_id", DataTypes.STRING().notNull()),
+                        Column.physical("score", DataTypes.INT()));
+        return new ResolvedSchema(
+                columns,
+                Collections.emptyList(),
+                UniqueConstraint.primaryKey("pk", Arrays.asList(primaryKeyColumns)));
+    }
+
     /**
      * The connector's own source configuration, as the planner would build it — the source-side
      * mirror of {@link #built(ResolvedSchema, Map)}.
@@ -528,6 +550,99 @@ class BigtableDynamicTableFactoryTest {
         assertThat(((ScanTableSource) source).getChangelogMode().getContainedKinds())
                 .containsExactly(org.apache.flink.types.RowKind.INSERT);
         assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+    }
+
+    @Test
+    void buildsASelectedCellUpsertSourceWithANonLeadingPrimaryKey() {
+        DynamicTableSource source =
+                source(selectedCellSchema("row_id"), minimalSelectedCellOptions());
+
+        assertThat(source).isInstanceOf(BigtableChangeStreamDynamicSource.class);
+        assertThat(((ScanTableSource) source).getChangelogMode().getContainedKinds())
+                .containsExactlyInAnyOrder(
+                        org.apache.flink.types.RowKind.INSERT,
+                        org.apache.flink.types.RowKind.UPDATE_AFTER,
+                        org.apache.flink.types.RowKind.DELETE);
+        assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source)
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        assertThat(provider.createSource())
+                .extracting("config.deserializer")
+                .hasFieldOrPropertyWithValue("primaryKeyIndex", 1);
+    }
+
+    @Test
+    void validatesTheSelectedCellSchemaAndRequiredProtocolOptions() {
+        Map<String, String> options = minimalSelectedCellOptions();
+        options.remove("scan.change-stream.selected-cell.family");
+        assertThatThrownBy(() -> source(selectedCellSchema("row_id"), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.selected-cell.family' is required");
+
+        ResolvedSchema noPrimaryKey =
+                ResolvedSchema.of(
+                        Column.physical("name", DataTypes.STRING()),
+                        Column.physical("row_id", DataTypes.STRING()),
+                        Column.physical("score", DataTypes.INT()));
+        assertThatThrownBy(() -> source(noPrimaryKey, minimalSelectedCellOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires exactly one physical PRIMARY KEY column");
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        selectedCellSchema("row_id", "name"),
+                                        minimalSelectedCellOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires exactly one physical PRIMARY KEY column");
+
+        ResolvedSchema keyOnly =
+                new ResolvedSchema(
+                        Collections.singletonList(
+                                Column.physical("row_id", DataTypes.STRING().notNull())),
+                        Collections.emptyList(),
+                        UniqueConstraint.primaryKey("pk", Collections.singletonList("row_id")));
+        assertThatThrownBy(() -> source(keyOnly, minimalSelectedCellOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("needs at least one non-key physical column");
+    }
+
+    @Test
+    void validatesSelectedCellQualifierAndRejectsItsOptionsInEnvelopeMode() {
+        Map<String, String> malformed = minimalSelectedCellOptions();
+        malformed.put("scan.change-stream.selected-cell.qualifier-base64", "YQ");
+        assertThatThrownBy(() -> source(selectedCellSchema("row_id"), malformed))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+
+        for (Map.Entry<String, String> incompatible :
+                Arrays.asList(
+                        Map.entry("scan.change-stream.selected-cell.family", "state"),
+                        Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
+                        Map.entry(
+                                "scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
+                        Map.entry("value.format", "json"))) {
+            Map<String, String> envelope = minimalChangeStreamOptions();
+            envelope.put(incompatible.getKey(), incompatible.getValue());
+            assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, envelope))
+                    .as("with selected-cell option '%s'", incompatible.getKey())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("valid only when")
+                    .hasStackTraceContaining("selected-cell");
+        }
+    }
+
+    @Test
+    void rejectsAChangelogValueFormatInSelectedCellMode() {
+        Map<String, String> options = minimalSelectedCellOptions();
+        options.put("value.format", "debezium-json");
+
+        assertThatThrownBy(() -> source(selectedCellSchema("row_id"), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("must be insert-only in Bigtable selected-cell mode");
     }
 
     @Test
@@ -830,7 +945,12 @@ class BigtableDynamicTableFactoryTest {
                         Map.entry("scan.resume-fallback.mode", "earliest"),
                         Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
                         Map.entry("scan.end-timestamp-millis", "2000"),
-                        Map.entry("scan.max-concurrent-streams-per-subtask", "1"))) {
+                        Map.entry("scan.max-concurrent-streams-per-subtask", "1"),
+                        Map.entry("scan.change-stream.selected-cell.family", "state"),
+                        Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
+                        Map.entry(
+                                "scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
+                        Map.entry("value.format", "json"))) {
             Map<String, String> bounded = minimalOptions();
             bounded.put(incompatible.getKey(), incompatible.getValue());
             assertThatThrownBy(() -> source(bounded))

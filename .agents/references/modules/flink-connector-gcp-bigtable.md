@@ -262,12 +262,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   builder default behind them, and
   `BigtableConnectorOptionsTest` asserts that partition **exactly** rather than exempting it — a
   mapped option gaining a default and a table-owned one losing its own both fail.
-- **Change Streams uses one exact insert-only mutation envelope** (#600, ADR-0106).
+- **Change Streams defaults to neither interpretation: its DDL explicitly selects the exact
+  insert-only mutation envelope or the constrained selected-cell upsert contract** (#600, #603,
+  ADR-0106).
   It preserves the row key and ordered `SetCell`, `DeleteCells`, `DeleteFamily`, `AddToCell` and
   `MergeToCell` entries through discriminated raw-value, raw-timestamp and integer fields.
   It never claims row-level update or delete semantics without before and full after images.
   Reject a primary key, any physical schema change, an unknown future SDK entry/value subtype and
   every option owned by the bounded scan instead of widening or ignoring the contract.
+- **Selected-cell mode is stateless because the producer supplies the complete logical value.**
+  Require exactly one physical primary key and at least one non-key field; decode the mutation row
+  key with `CellValueCodec` and the non-key fields with insert-only `value.format`.
+  Accept only one full selected-column or selected-family delete followed by exactly one selected
+  `SetCell` for `UPDATE_AFTER`, or that delete alone for a key-only `DELETE`.
+  Ignore unrelated entries and fail on every ambiguous selected-cell mutation, wrong source
+  cluster, selected-cell GC or aggregate mutation, and zero/multiple/null format output.
+  Do not add a lookup, snapshot bootstrap, old-value state, or format metadata.
 - **Readable Change Streams metadata is scalar mutation data, not source protocol state** (#601,
   ADR-0106). `mutation-type` is `STRING NOT NULL`; `source-cluster-id` is nullable and maps the GC
   model's empty id to null; `commit-timestamp` and `estimated-low-watermark` are

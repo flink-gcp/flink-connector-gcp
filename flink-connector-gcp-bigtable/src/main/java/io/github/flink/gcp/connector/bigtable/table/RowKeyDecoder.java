@@ -60,7 +60,7 @@ final class RowKeyDecoder {
                         option.key()));
     }
 
-    private static ByteString decodeBase64(ConfigOption<?> option, String configuredValue) {
+    static ByteString decodeBase64(ConfigOption<?> option, String configuredValue) {
         byte[] decoded;
         try {
             decoded = Base64.getDecoder().decode(configuredValue);
