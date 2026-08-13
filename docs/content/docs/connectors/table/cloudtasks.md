@@ -69,13 +69,26 @@ The three metadata columns configure the request outside that body.
 
 ## Getting the connector onto the classpath
 
-The table factory is in `flink-connector-gcp-cloudtasks`.
-A Maven or Gradle job can use that module and its transitive runtime dependencies directly.
+Use `flink-sql-connector-gcp-cloudtasks`, the relocated SQL uber-jar, for SQL Client deployments.
+Place `flink-sql-connector-gcp-cloudtasks-<version>.jar` in Flink's `lib/` before starting the
+cluster, or load it for one SQL Client session:
 
-The standalone shaded `flink-sql-connector-gcp-cloudtasks` jar is tracked separately in
-[#607]({{< param BookRepo >}}/issues/607).
-Until it exists, SQL Client deployments must provide the plain connector and its runtime dependency
-tree rather than expecting one self-contained jar.
+```sql
+ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-0.1.0-SNAPSHOT.jar';
+```
+
+The jar bundles `flink-connector-gcp-cloudtasks` and the runtime dependency tree it needs. Java
+dependency packages linked by the connector move under
+`io.github.flink.gcp.connector.cloudtasks.shaded`, including the matching native-resource rename
+required by the already-shaded gRPC Netty transport. Conscrypt remains unrelocated because it owns
+native libraries and is optional; the other unrelocated packages are annotations only. The
+generated `META-INF/NOTICE` enumerates every bundled artifact, with pinned permissive licence texts
+under `META-INF/licenses/`.
+
+Keep sibling SQL connector jars as separate files in `lib/` or add each with its own `ADD JAR`.
+Merging them into another fat jar without merging service descriptors can silently discard one of
+the factory registrations. A Maven or Gradle DataStream job should instead depend on the plain
+`flink-connector-gcp-cloudtasks` module and resolve its transitive dependencies normally.
 
 ## Body format and request metadata
 

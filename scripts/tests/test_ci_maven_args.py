@@ -35,6 +35,7 @@ MODULES = [
     "flink-connector-gcp-pubsub",
     "flink-sql-connector-gcp-pubsub",
     "flink-connector-gcp-cloudtasks",
+    "flink-sql-connector-gcp-cloudtasks",
     "flink-connector-gcp-bigtable",
     "flink-sql-connector-gcp-bigtable",
     "flink-connector-gcp-spanner",
@@ -299,22 +300,25 @@ def test_full_mode_builds_everything(ci_maven_args):
         "check_notice": "true",
         "notice_modules": (
             "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
-            " flink-sql-connector-gcp-bigtable flink-sql-connector-gcp-spanner"
+            " flink-sql-connector-gcp-cloudtasks flink-sql-connector-gcp-bigtable"
+            " flink-sql-connector-gcp-spanner"
         ),
         "check_notice_sources": "false",
     }
 
 
-def test_one_connector_builds_its_slice(ci_maven_args):
-    # Cloud Tasks is the remaining connector with no shaded sibling.
+def test_one_sql_module_builds_its_slice(ci_maven_args):
     out = outputs(
-        run_cli("--files", json.dumps(["flink-connector-gcp-cloudtasks/src/X.java"]))
+        run_cli(
+            "--files", json.dumps(["flink-sql-connector-gcp-cloudtasks/src/X.java"])
+        )
     )
     assert out["maven_args"] == (
         "-pl .,flink-connector-gcp-test-utils,flink-connector-gcp-base,"
-        "flink-connector-gcp-cloudtasks"
+        "flink-connector-gcp-cloudtasks,flink-sql-connector-gcp-cloudtasks"
     )
-    assert out["check_notice"] == "false"
+    assert out["notice_modules"] == "flink-sql-connector-gcp-cloudtasks"
+    assert out["check_notice"] == "true"
 
 
 def test_pubsub_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
@@ -336,18 +340,18 @@ def test_only_the_selected_shaded_modules_are_named(ci_maven_args):
     assert out["check_notice"] == "true"
 
 
-def test_a_change_reaching_no_shaded_module_names_none(ci_maven_args):
-    # This needs a change whose closure holds no shaded module.
+def test_cloudtasks_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     out = outputs(
-        run_cli("--files", json.dumps(["flink-connector-gcp-cloudtasks/src/X.java"]))
+        run_cli("--files", json.dumps(["flink-connector-gcp-cloudtasks/pom.xml"]))
     )
-    assert out["notice_modules"] == ""
-    assert out["check_notice"] == "false"
+    assert "flink-sql-connector-gcp-cloudtasks" in out["maven_args"]
+    assert out["notice_modules"] == "flink-sql-connector-gcp-cloudtasks"
+    assert out["check_notice"] == "true"
 
 
 def test_bigquery_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     # The same edge, on the second shaded module (#290): what makes it work is
-    # the dependency read out of the poms, so a third one needs no change here
+    # the dependency read out of the poms, so a sibling needs no script change
     # either — but a module that stopped pulling its uber-jar would ship an
     # unrebuilt, unlicensed bundle, and that is what this pins.
     out = outputs(
@@ -427,7 +431,8 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
         "check_notice": "true",
         "notice_modules": (
             "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
-            " flink-sql-connector-gcp-bigtable flink-sql-connector-gcp-spanner"
+            " flink-sql-connector-gcp-cloudtasks flink-sql-connector-gcp-bigtable"
+            " flink-sql-connector-gcp-spanner"
         ),
         "check_notice_sources": "true",
     }

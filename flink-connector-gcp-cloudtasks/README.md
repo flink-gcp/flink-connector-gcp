@@ -12,7 +12,7 @@ later, paced by the queue's rate limit.
 | Per-task failure policy (fail, drop or dead-letter) | Implemented ([#207](https://github.com/laughingman7743/flink-connector-gcp/issues/207)) |
 | Table API / SQL sink, generic body formats and writable request metadata | Implemented ([#605](https://github.com/laughingman7743/flink-connector-gcp/issues/605)) |
 | Form-encoded SQL body format | Implemented ([#606](https://github.com/laughingman7743/flink-connector-gcp/issues/606)) |
-| Shaded SQL connector jar | Planned ([#607](https://github.com/laughingman7743/flink-connector-gcp/issues/607)) |
+| Shaded SQL connector jar | Implemented ([#607](https://github.com/laughingman7743/flink-connector-gcp/issues/607)) |
 
 ```java
 Sink<OrderEvent> sink =

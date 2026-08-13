@@ -100,12 +100,13 @@ which one command does both halves of:
 ./mvnw install -DskipTests -Dflink.version=1.20.4 -Dflink.compat=flink1
 ```
 
-**For SQL**, use the corresponding `flink-sql-connector-gcp-{bigquery,pubsub,bigtable,spanner}`
+**For SQL**, use the corresponding
+`flink-sql-connector-gcp-{bigquery,pubsub,cloudtasks,bigtable,spanner}`
 uber-jar instead. Each bundles one connector with its runtime tree and can be dropped into Flink's
 `lib/` or added with `ADD JAR`. The connector-specific Table API pages document the artifact and
-installation details. The jars can share one `lib/`, which is why each relocates every behaving
-third-party package it bundles; only inert annotation packages and native-library carriers remain
-unrelocated.
+installation details. The jars can share one `lib/`, which is why each relocates the linked
+third-party Java packages that could conflict; only documented annotation-only packages and
+optional native-library carriers remain unrelocated.
 
 ## Credentials
 
