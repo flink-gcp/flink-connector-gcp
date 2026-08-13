@@ -19,11 +19,13 @@ package io.github.flink.gcp.connector.spanner.sink.writer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.auth.Credentials;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.Options.TransactionOption;
 import com.google.cloud.spanner.Spanner;
+import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
@@ -46,6 +48,7 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
     private final SpannerDatabase database;
     private final SpannerWriterOptions writerOptions;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final Credentials credentialsOverride;
 
     /**
      * Creates the factory.
@@ -58,14 +61,30 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
             SpannerDatabase database,
             SpannerWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(database, writerOptions, emulatorEndpoint, null);
+    }
+
+    /** Creates the factory with credentials loaded by the writer runtime. */
+    public DefaultSpannerDatabaseAccessFactory(
+            SpannerDatabase database,
+            SpannerWriterOptions writerOptions,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Credentials credentialsOverride) {
         this.database = database;
         this.writerOptions = writerOptions;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.credentialsOverride = credentialsOverride;
     }
 
     @Override
     public SpannerDatabaseAccess create() throws IOException {
-        return create(SpannerClients.open(database, emulatorEndpoint));
+        return create(SpannerClients.open(database, settings()));
+    }
+
+    /** Builds settings exposed for verifying the writer's credential injection. */
+    @VisibleForTesting
+    SpannerOptions settings() {
+        return SpannerClients.settings(database, emulatorEndpoint, credentialsOverride);
     }
 
     @VisibleForTesting

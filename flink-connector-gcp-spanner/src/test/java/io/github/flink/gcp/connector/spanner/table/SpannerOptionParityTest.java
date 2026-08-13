@@ -93,12 +93,19 @@ class SpannerOptionParityTest {
                         "writerOptions",
                         "failedMutationHandler",
                         "constraintViolationPolicy",
+                        "serviceAccountKeyFile",
                         "emulatorEndpoint");
 
         // database is assembled from project/instance/database, serializer from the physical DDL,
         // writerOptions from the eight options above. Failure policy stays fail-job because a DDL
         // has no serializable FailureHandler to pair with a dropping constraint policy.
-        assertThat(declaredKeys()).contains("project", "instance", "database", "emulator-endpoint");
+        assertThat(declaredKeys())
+                .contains(
+                        "project",
+                        "instance",
+                        "database",
+                        "service-account-key-file",
+                        "emulator-endpoint");
     }
 
     @Test
@@ -113,6 +120,7 @@ class SpannerOptionParityTest {
                         "partitionSizeBytes",
                         "dataBoostEnabled",
                         "rpcPriority",
+                        "serviceAccountKeyFile",
                         "emulatorEndpoint");
 
         // The database and read operation come from destination options and the projected DDL;
@@ -126,6 +134,7 @@ class SpannerOptionParityTest {
                         "scan.partition.size",
                         "scan.data-boost-enabled",
                         "scan.rpc-priority",
+                        "service-account-key-file",
                         "emulator-endpoint");
     }
 
@@ -140,6 +149,7 @@ class SpannerOptionParityTest {
                         "schema",
                         "dialect",
                         "emulator-endpoint",
+                        "service-account-key-file",
                         "schema.json-field-paths",
                         "schema.uuid-field-paths",
                         "schema.proto-type-names",

@@ -17,7 +17,9 @@
 package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
 
+import com.google.auth.Credentials;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
@@ -54,10 +56,31 @@ public final class SpannerClients {
      */
     public static SpannerOptions settings(
             SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        return settings(database, emulatorEndpoint, null);
+    }
+
+    /**
+     * Builds client settings with an optional runtime-loaded credential override.
+     *
+     * @param database the database the handle will reach
+     * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
+     * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
+     *     ADC
+     * @return the settings
+     */
+    public static SpannerOptions settings(
+            SpannerDatabase database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Credentials credentialsOverride) {
+        Preconditions.checkArgument(
+                emulatorEndpoint == null || credentialsOverride == null,
+                "credentialsOverride cannot be combined with an emulator endpoint");
         SpannerOptions.Builder settings =
                 SpannerOptions.newBuilder().setProjectId(database.getProject());
         if (emulatorEndpoint != null) {
             settings.setEmulatorHost(emulatorEndpoint.getTarget());
+        } else if (credentialsOverride != null) {
+            settings.setCredentials(credentialsOverride);
         }
         return settings.build();
     }
@@ -73,8 +96,23 @@ public final class SpannerClients {
     public static Spanner open(
             SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint)
             throws IOException {
+        return open(database, emulatorEndpoint, null);
+    }
+
+    /** Opens a service handle with an optional runtime-loaded credential override. */
+    public static Spanner open(
+            SpannerDatabase database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Credentials credentialsOverride)
+            throws IOException {
+        return open(database, settings(database, emulatorEndpoint, credentialsOverride));
+    }
+
+    /** Opens a handle from settings already assembled by the owning runtime component. */
+    public static Spanner open(SpannerDatabase database, SpannerOptions settings)
+            throws IOException {
         try {
-            return settings(database, emulatorEndpoint).getService();
+            return settings.getService();
         } catch (RuntimeException e) {
             throw new IOException("Failed to create the Spanner client for " + database + ".", e);
         }

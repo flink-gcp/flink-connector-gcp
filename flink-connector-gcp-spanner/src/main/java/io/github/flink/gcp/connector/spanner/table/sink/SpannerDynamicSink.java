@@ -44,6 +44,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
     private final String table;
     private final SpannerWriterOptions writerOptions;
     @Nullable private final String emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
 
     private SpannerDynamicSink(Builder builder) {
@@ -53,6 +54,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         this.writerOptions =
                 Preconditions.checkNotNull(builder.writerOptions, "writerOptions must not be null");
         this.emulatorEndpoint = builder.emulatorEndpoint;
+        this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.parallelism = builder.parallelism;
     }
 
@@ -78,6 +80,9 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         Sink<RowData> sink = builder.build();
         return SinkV2Provider.of(sink, parallelism);
     }
@@ -90,6 +95,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 .table(table)
                 .writerOptions(writerOptions)
                 .emulatorEndpoint(emulatorEndpoint)
+                .serviceAccountKeyFile(serviceAccountKeyFile)
                 .parallelism(parallelism)
                 .build();
     }
@@ -113,12 +119,20 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 && table.equals(that.table)
                 && writerOptions.equals(that.writerOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(parallelism, that.parallelism);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(schema, database, table, writerOptions, emulatorEndpoint, parallelism);
+        return Objects.hash(
+                schema,
+                database,
+                table,
+                writerOptions,
+                emulatorEndpoint,
+                serviceAccountKeyFile,
+                parallelism);
     }
 
     /** Collects values for the immutable sink. */
@@ -128,6 +142,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         private String table;
         private SpannerWriterOptions writerOptions;
         @Nullable private String emulatorEndpoint;
+        @Nullable private String serviceAccountKeyFile;
         @Nullable private Integer parallelism;
 
         private Builder() {}
@@ -154,6 +169,11 @@ public final class SpannerDynamicSink implements DynamicTableSink {
 
         public Builder emulatorEndpoint(@Nullable String emulatorEndpoint) {
             this.emulatorEndpoint = emulatorEndpoint;
+            return this;
+        }
+
+        public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
             return this;
         }
 

@@ -40,6 +40,7 @@ import org.apache.flink.table.types.logical.RowType;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
+import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Key;
@@ -47,13 +48,16 @@ import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.TestServiceAccountKeyFile;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import javax.annotation.Nullable;
 
 import java.lang.reflect.Proxy;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -69,6 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SpannerLookupSourceTest {
+    @TempDir Path tempDir;
     private static final DataType PHYSICAL =
             DataTypes.ROW(
                     DataTypes.FIELD("region", DataTypes.STRING().notNull()),
@@ -159,6 +164,70 @@ class SpannerLookupSourceTest {
                 .isInstanceOfSatisfying(
                         SpannerDatabaseRowLookup.class,
                         lookup -> assertThat(lookup.table()).isEqualTo("analytics.people"));
+    }
+
+    @Test
+    void passesTheCredentialPathToSyncAndAsyncPointReads() {
+        LookupFunctionProvider sync =
+                (LookupFunctionProvider)
+                        provider(
+                                config("service-account-key-file", "/var/run/secrets/spanner.json"),
+                                new int[][] {{0}, {1}});
+        AsyncLookupFunctionProvider async =
+                (AsyncLookupFunctionProvider)
+                        provider(
+                                config(
+                                        "service-account-key-file",
+                                        "/var/run/secrets/spanner.json",
+                                        "lookup.async",
+                                        "true"),
+                                new int[][] {{0}, {1}});
+
+        assertThat(((SpannerRowDataLookupFunction) sync.createLookupFunction()).rowLookup())
+                .isInstanceOfSatisfying(
+                        SpannerDatabaseRowLookup.class,
+                        lookup ->
+                                assertThat(lookup.serviceAccountKeyFile())
+                                        .isEqualTo("/var/run/secrets/spanner.json"));
+        assertThat(
+                        ((SpannerRowDataAsyncLookupFunction) async.createAsyncLookupFunction())
+                                .rowLookup())
+                .isInstanceOfSatisfying(
+                        SpannerDatabaseRowLookup.class,
+                        lookup ->
+                                assertThat(lookup.serviceAccountKeyFile())
+                                        .isEqualTo("/var/run/secrets/spanner.json"));
+    }
+
+    @Test
+    void lookupLoadsTheCredentialPathWhenTheFunctionOpens() {
+        String path = "/missing/spanner-service-account.json";
+        SpannerDatabaseRowLookup lookup =
+                new SpannerDatabaseRowLookup(
+                        SpannerDatabase.of("p", "i", "d"),
+                        "people",
+                        Collections.singletonList("id"),
+                        null,
+                        path);
+
+        assertThatThrownBy(lookup::open)
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessage("Failed to load the configured Spanner service-account key file.")
+                .hasNoCause();
+    }
+
+    @Test
+    void lookupInjectsRuntimeCredentialsIntoClientSettings() throws Exception {
+        SpannerDatabaseRowLookup lookup =
+                new SpannerDatabaseRowLookup(
+                        SpannerDatabase.of("p", "i", "d"),
+                        "people",
+                        Collections.singletonList("id"),
+                        null,
+                        TestServiceAccountKeyFile.create(tempDir).toString());
+
+        assertThat(lookup.settings().getCredentials() instanceof ServiceAccountCredentials)
+                .isTrue();
     }
 
     @Test

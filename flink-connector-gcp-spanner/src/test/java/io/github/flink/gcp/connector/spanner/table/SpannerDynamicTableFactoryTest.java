@@ -182,6 +182,37 @@ class SpannerDynamicTableFactoryTest {
     }
 
     @Test
+    void mapsTheCredentialPathToSinkAndScan() {
+        Map<String, String> options = options();
+        options.put("service-account-key-file", "/var/run/secrets/spanner.json");
+
+        assertThat(built(SCHEMA, options).getConfig().getServiceAccountKeyFile())
+                .isEqualTo("/var/run/secrets/spanner.json");
+        assertThat(builtSource(SCHEMA, options).getServiceAccountKeyFile())
+                .isEqualTo("/var/run/secrets/spanner.json");
+    }
+
+    @Test
+    void rejectsInvalidCredentialOptionsForSinkAndSource() {
+        Map<String, String> blank = options();
+        blank.put("service-account-key-file", "  ");
+        assertThatThrownBy(() -> sink(SCHEMA, blank))
+                .hasStackTraceContaining("service-account-key-file must not be blank");
+        assertThatThrownBy(() -> source(SCHEMA, blank))
+                .hasStackTraceContaining("service-account-key-file must not be blank");
+
+        Map<String, String> conflict = options();
+        conflict.put("service-account-key-file", "key.json");
+        conflict.put("emulator-endpoint", "localhost:9010");
+        assertThatThrownBy(() -> sink(SCHEMA, conflict))
+                .hasStackTraceContaining(
+                        "service-account-key-file cannot be combined with emulator-endpoint");
+        assertThatThrownBy(() -> source(SCHEMA, conflict))
+                .hasStackTraceContaining(
+                        "service-account-key-file cannot be combined with emulator-endpoint");
+    }
+
+    @Test
     void carriesSinkParallelismAndCopyState() {
         Map<String, String> options = options();
         options.put("sink.parallelism", "3");

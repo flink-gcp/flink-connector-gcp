@@ -44,6 +44,7 @@ public class SpannerSinkBuilder<T> {
     private FailureHandler<? super FailedMutation> failedMutationHandler = FailureHandler.failJob();
     private ConstraintViolationPolicy constraintViolationPolicy =
             ConstraintViolationPolicy.FAIL_JOB;
+    @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
 
     SpannerSinkBuilder() {}
@@ -120,6 +121,28 @@ public class SpannerSinkBuilder<T> {
     }
 
     /**
+     * Authenticates the sink with the service-account JSON key at the given path instead of
+     * application-default credentials. The file is read on each TaskManager when its writer is
+     * created, so every TaskManager that can run the sink must see the same path. Optional; when
+     * unset the real-service path uses application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel carries no credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public SpannerSinkBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the sink at a Spanner emulator instead of the real service. Optional; for tests.
      *
      * <p>The emulator needs no credentials, so setting this also stops the client from looking for
@@ -146,6 +169,11 @@ public class SpannerSinkBuilder<T> {
                 database != null, "A database is required. Set it with database(...).");
         Preconditions.checkState(
                 serializer != null, "A serializer is required. Set it with serializer(...).");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         return new SpannerMutationsSink<>(
                 new SpannerSinkConfig<>(
                         database,
@@ -153,6 +181,7 @@ public class SpannerSinkBuilder<T> {
                         writerOptions,
                         failedMutationHandler,
                         constraintViolationPolicy,
+                        serviceAccountKeyFile,
                         emulatorEndpoint));
     }
 }

@@ -80,6 +80,7 @@ public final class SpannerDynamicSource
     @Nullable private final SpannerRpcPriority rpcPriority;
     private final TimestampBound timestampBound;
     @Nullable private final String emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
     private final SpannerLookupConfig lookupConfig;
     private DataType producedDataType;
@@ -108,6 +109,7 @@ public final class SpannerDynamicSource
                 config.getOptional(SpannerConnectorOptions.SCAN_RPC_PRIORITY).orElse(null),
                 timestampBound(config),
                 config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
                 SpannerLookupConfig.from(config));
     }
@@ -138,6 +140,7 @@ public final class SpannerDynamicSource
             @Nullable SpannerRpcPriority rpcPriority,
             TimestampBound timestampBound,
             @Nullable String emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
             @Nullable Integer parallelism,
             SpannerLookupConfig lookupConfig) {
         this.schema = schema;
@@ -152,6 +155,7 @@ public final class SpannerDynamicSource
         this.rpcPriority = rpcPriority;
         this.timestampBound = timestampBound;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
         this.lookupConfig = lookupConfig;
     }
@@ -236,6 +240,9 @@ public final class SpannerDynamicSource
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
+        if (serviceAccountKeyFile != null) {
+            builder.serviceAccountKeyFile(serviceAccountKeyFile);
+        }
         Source<RowData, ?, ?> source = builder.build();
         return SourceProvider.of(source, parallelism);
     }
@@ -308,6 +315,7 @@ public final class SpannerDynamicSource
                             projectedFields,
                             keyPositions,
                             emulatorEndpoint,
+                            serviceAccountKeyFile,
                             lookupConfig.getMaxRetries(),
                             filterState.runtime());
             return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
@@ -324,6 +332,7 @@ public final class SpannerDynamicSource
                         projectedFields,
                         keyPositions,
                         emulatorEndpoint,
+                        serviceAccountKeyFile,
                         lookupConfig.getMaxRetries(),
                         filterState.runtime());
         return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
@@ -389,6 +398,7 @@ public final class SpannerDynamicSource
                         rpcPriority,
                         timestampBound,
                         emulatorEndpoint,
+                        serviceAccountKeyFile,
                         parallelism,
                         lookupConfig);
         copy.projectedFields = projectedFields == null ? null : projectedFields.clone();
@@ -422,6 +432,7 @@ public final class SpannerDynamicSource
                 && rpcPriority == that.rpcPriority
                 && timestampBound.equals(that.timestampBound)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
+                && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(parallelism, that.parallelism)
                 && lookupConfig.equals(that.lookupConfig)
                 && Arrays.equals(projectedFields, that.projectedFields)
@@ -443,6 +454,7 @@ public final class SpannerDynamicSource
                 rpcPriority,
                 timestampBound,
                 emulatorEndpoint,
+                serviceAccountKeyFile,
                 parallelism,
                 lookupConfig,
                 filterState,

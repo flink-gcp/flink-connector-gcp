@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.sink.writer;
 
+import com.google.auth.oauth2.AccessToken;
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Options;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
@@ -26,6 +28,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.time.Duration;
+import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -63,6 +66,17 @@ class DefaultSpannerDatabaseAccessFactoryTest {
                 .hasSize(2)
                 .anyMatch(option -> option.getClass() == commitDelayKind())
                 .anyMatch(option -> option.getClass() == priorityKind());
+    }
+
+    @Test
+    void injectsWriterRuntimeCredentialsIntoClientSettings() {
+        GoogleCredentials credentials =
+                GoogleCredentials.create(new AccessToken("token", new Date(Long.MAX_VALUE)));
+        DefaultSpannerDatabaseAccessFactory factory =
+                new DefaultSpannerDatabaseAccessFactory(
+                        DATABASE, SpannerWriterOptions.defaults(), null, credentials);
+
+        assertThat(factory.settings().getCredentials() == credentials).isTrue();
     }
 
     @ParameterizedTest

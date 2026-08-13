@@ -69,6 +69,12 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The host:port of a Spanner emulator; unset uses the service.");
+    public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
+            ConfigOptions.key("service-account-key-file")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The service-account JSON key-file path available to each runtime process; unset uses Application Default Credentials for the real service.");
 
     public static final ConfigOption<List<String>> SCHEMA_JSON_FIELD_PATHS =
             ConfigOptions.key("schema.json-field-paths")

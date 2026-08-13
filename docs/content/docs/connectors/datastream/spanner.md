@@ -30,6 +30,31 @@ Every option is listed on the [Spanner options]({{< relref "docs/reference/spann
 is implemented and what is planned is in the
 [module README](https://github.com/laughingman7743/flink-connector-gcp/blob/main/flink-connector-gcp-spanner/README.md).
 
+## Credentials
+
+The bounded source and sink use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
+Set it only when the job must select a service-account JSON key that the runtime environment cannot supply through ADC.
+
+```java
+SpannerSink.<OrderEvent>builder()
+        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+        .serializer(orderSerializer)
+        .serviceAccountKeyFile("/var/run/secrets/spanner/key.json")
+        .build();
+```
+
+The connector serializes only the path into the job graph and reads the file in each process that creates a client.
+The sink reads it on each TaskManager when a writer starts.
+The bounded source reads it on the JobManager when a fresh or restored enumerator starts and on each TaskManager when a reader starts.
+Table lookup functions read it on their TaskManager when the synchronous or asynchronous lookup function opens, including lookup providers with a partial cache.
+A deployment must therefore mount the same configured path in every applicable JobManager and TaskManager container.
+Restart and restore load the mounted file again instead of retaining credential material in checkpointed state.
+
+`serviceAccountKeyFile(...)` and `emulatorEndpoint(...)` are mutually exclusive because the emulator channel deliberately uses no credentials.
+Prefer an attached service account or Workload Identity over a long-lived key where the deployment supports one.
+The option accepts service-account JSON only, and a loading failure is sanitized so neither the path nor credential contents enter the exception.
+The Change Streams builder does not expose this option and continues to use ADC or its emulator endpoint.
+
 ## The destination is a database, not a table
 
 The sink is configured with a `SpannerDatabase`. Which *table* a record goes to is not configured
@@ -690,8 +715,8 @@ The source class also verifies named-schema Table API writes, bounded index scan
 It now verifies Change Streams in both dialects on the same ephemeral instance.
 The measured recovery run delivered all 5,000 unique mutation ids after an intentional post-checkpoint failure, with 500 repeated deliveries at the inclusive checkpoint boundary, then restored a savepoint and consumed a mutation written while the job was stopped.
 It also verifies that restored readers wait for retention validation, so expired state fails in the coordinator unless an explicit fallback replaces it.
-It is also the only place the connector's clients are built over application-default credentials
-rather than an emulator endpoint.
+It is also the only place the connector's clients reach the real service.
+The suite authenticates those clients through ADC; configured key-file coverage instead verifies runtime loading and the exact non-emulator client settings without opening a service connection.
 
 The suite is opt-in per command rather than per shell: each class carries `@Tag("gated")`, which
 every ordinary build excludes, and `just e2e` is the one thing that clears the exclusion. Each class
