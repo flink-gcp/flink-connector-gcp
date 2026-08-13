@@ -18,12 +18,15 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -33,12 +36,19 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcSequenceNumberProvider;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -54,20 +64,22 @@ import java.util.Objects;
  * partition spec fails at plan time rather than being silently ignored, and everything goes through
  * {@code sink.table-create.*}. {@code SupportsOverwrite}: {@code INSERT OVERWRITE} has no meaning
  * for the Storage Write API, while {@code WRITE_TRUNCATE} stays reachable as {@code
- * sink.file-loads.write-disposition}. {@code SupportsWritingMetadata}: a BigQuery row has no
- * envelope around it to expose.
+ * sink.file-loads.write-disposition}. Writable metadata exists only when CDC is enabled: the
+ * planner appends one selected sequence source after the physical row, while the physical DDL row
+ * remains the BigQuery table schema.
  *
- * <p>Built through {@link #builder()} rather than a constructor: fifteen values reach it, twelve of
- * them nullable, and a positional list of those would be repeated three times over — the
- * constructor, {@link #copy()} and {@link #equals(Object)} — with no compiler check that the
- * repetitions agree.
+ * <p>Built through {@link #builder()} rather than a constructor: the resolved option families,
+ * physical-key model and planner-selected metadata would otherwise form a positional list repeated
+ * by construction, {@link #copy()} and {@link #equals(Object)}.
  */
 @Internal
-public final class BigQueryDynamicSink implements DynamicTableSink {
+public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
 
     private final DataType physicalDataType;
     private final TableDestination destination;
     private final RowDataSchemaOptions schemaOptions;
+    private final boolean cdcEnabled;
+    private final int[] primaryKeyIndexes;
     @Nullable private final WriteMethod writeMethod;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
@@ -81,10 +93,15 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
     @Nullable private final String emulatorRestEndpoint;
     @Nullable private final Integer parallelism;
 
+    /** Metadata keys selected by the planner, in {@link WritableMetadata#listAll()} order. */
+    private List<String> metadataKeys;
+
     private BigQueryDynamicSink(Builder builder) {
         this.physicalDataType = builder.physicalDataType;
         this.destination = builder.destination;
         this.schemaOptions = builder.schemaOptions;
+        this.cdcEnabled = builder.cdcEnabled;
+        this.primaryKeyIndexes = builder.primaryKeyIndexes.clone();
         this.writeMethod = builder.writeMethod;
         this.createDisposition = builder.createDisposition;
         this.tableCreateOptions = builder.tableCreateOptions;
@@ -97,6 +114,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
         this.parallelism = builder.parallelism;
+        this.metadataKeys = immutableMetadataKeys(builder.metadataKeys, cdcEnabled);
     }
 
     /**
@@ -109,20 +127,60 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
     }
 
     @Override
+    public Map<String, DataType> listWritableMetadata() {
+        return WritableMetadata.listAll();
+    }
+
+    @Override
+    public void applyWritableMetadata(List<String> metadataKeys, DataType consumedDataType) {
+        this.metadataKeys = immutableMetadataKeys(metadataKeys, cdcEnabled);
+    }
+
+    private static List<String> immutableMetadataKeys(
+            List<String> metadataKeys, boolean cdcEnabled) {
+        List<String> selected = new ArrayList<>(metadataKeys);
+        selected.forEach(WritableMetadata::of);
+        if (!selected.isEmpty() && !cdcEnabled) {
+            throw new ValidationException(
+                    "BigQuery writable metadata is available only when 'sink.cdc.enabled' ="
+                            + " 'true'.");
+        }
+        if (selected.size() > 1) {
+            throw new ValidationException(
+                    "Select exactly one BigQuery CDC sequence source: 'change-sequence-number'"
+                            + " or 'debezium-source-properties', not both.");
+        }
+        return Collections.unmodifiableList(selected);
+    }
+
+    @Override
     public ChangelogMode getChangelogMode(ChangelogMode requestedMode) {
-        // BigQuery's append-only write paths cannot express a retraction, so an updating query is
-        // rejected at plan time rather than having its -U and -D rows appended as ordinary ones.
-        // Upserts are their own issue (#65).
+        if (cdcEnabled && !requestedMode.containsOnly(RowKind.INSERT)) {
+            return CrossVersionChangelogMode.upsert();
+        }
         return ChangelogMode.insertOnly();
     }
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         RowType rowType = (RowType) physicalDataType.getLogicalType();
+        RowDataSerializer serializer =
+                new RowDataSerializer(
+                        rowType, schemaOptions, cdcEnabled ? primaryKeyIndexes : new int[0]);
         BigQuerySinkBuilder<RowData> builder =
-                BigQuerySink.<RowData>builder()
-                        .destination(destination)
-                        .serializer(new RowDataSerializer(rowType, schemaOptions));
+                BigQuerySink.<RowData>builder().destination(destination).serializer(serializer);
+        if (cdcEnabled) {
+            CdcOptions.Builder<RowData> cdc =
+                    CdcOptions.builder(RowDataCdcChangeTypeProvider.INSTANCE);
+            if (!metadataKeys.isEmpty()) {
+                WritableMetadata source = WritableMetadata.of(metadataKeys.get(0));
+                int position = DataType.getFieldCount(physicalDataType);
+                CdcSequenceNumberProvider<RowData> sequenceProvider =
+                        new RowDataCdcSequenceNumberProvider(source, position);
+                cdc.sequenceNumberProvider(sequenceProvider);
+            }
+            builder.cdcOptions(cdc.build());
+        }
         if (writeMethod != null) {
             builder.writeMethod(writeMethod);
         }
@@ -168,6 +226,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 .physicalDataType(physicalDataType)
                 .destination(destination)
                 .schemaOptions(schemaOptions)
+                .cdcEnabled(cdcEnabled)
+                .primaryKeyIndexes(primaryKeyIndexes)
                 .writeMethod(writeMethod)
                 .createDisposition(createDisposition)
                 .tableCreateOptions(tableCreateOptions)
@@ -180,6 +240,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 .emulatorEndpoint(emulatorEndpoint)
                 .emulatorRestEndpoint(emulatorRestEndpoint)
                 .parallelism(parallelism)
+                .metadataKeys(metadataKeys)
                 .build();
     }
 
@@ -200,6 +261,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         return physicalDataType.equals(that.physicalDataType)
                 && destination.equals(that.destination)
                 && schemaOptions.equals(that.schemaOptions)
+                && cdcEnabled == that.cdcEnabled
+                && Arrays.equals(primaryKeyIndexes, that.primaryKeyIndexes)
                 && writeMethod == that.writeMethod
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
@@ -211,27 +274,33 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
-                && Objects.equals(parallelism, that.parallelism);
+                && Objects.equals(parallelism, that.parallelism)
+                && metadataKeys.equals(that.metadataKeys);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(
-                physicalDataType,
-                destination,
-                schemaOptions,
-                writeMethod,
-                createDisposition,
-                tableCreateOptions,
-                location,
-                schemaUpdateOptions,
-                defaultStreamOptions,
-                bufferedStreamOptions,
-                fileLoadsOptions,
-                serviceAccountKeyFile,
-                emulatorEndpoint,
-                emulatorRestEndpoint,
-                parallelism);
+        int result =
+                Objects.hash(
+                        physicalDataType,
+                        destination,
+                        schemaOptions,
+                        cdcEnabled,
+                        writeMethod,
+                        createDisposition,
+                        tableCreateOptions,
+                        location,
+                        schemaUpdateOptions,
+                        defaultStreamOptions,
+                        bufferedStreamOptions,
+                        fileLoadsOptions,
+                        serviceAccountKeyFile,
+                        emulatorEndpoint,
+                        emulatorRestEndpoint,
+                        parallelism,
+                        metadataKeys);
+        result = 31 * result + Arrays.hashCode(primaryKeyIndexes);
+        return result;
     }
 
     /**
@@ -248,6 +317,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         private DataType physicalDataType;
         private TableDestination destination;
         private RowDataSchemaOptions schemaOptions;
+        private boolean cdcEnabled;
+        private int[] primaryKeyIndexes = new int[0];
         @Nullable private WriteMethod writeMethod;
         @Nullable private CreateDisposition createDisposition;
         @Nullable private TableCreateOptions tableCreateOptions;
@@ -260,6 +331,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
         @Nullable private String emulatorEndpoint;
         @Nullable private String emulatorRestEndpoint;
         @Nullable private Integer parallelism;
+        private List<String> metadataKeys = Collections.emptyList();
 
         private Builder() {}
 
@@ -293,6 +365,18 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
          */
         public Builder schemaOptions(RowDataSchemaOptions schemaOptions) {
             this.schemaOptions = schemaOptions;
+            return this;
+        }
+
+        /** Sets whether rows are written as BigQuery CDC mutations. */
+        public Builder cdcEnabled(boolean cdcEnabled) {
+            this.cdcEnabled = cdcEnabled;
+            return this;
+        }
+
+        /** Sets the physical column indexes of the declared primary key. */
+        public Builder primaryKeyIndexes(int[] primaryKeyIndexes) {
+            this.primaryKeyIndexes = primaryKeyIndexes.clone();
             return this;
         }
 
@@ -427,6 +511,12 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
             return this;
         }
 
+        /** Restores the writable metadata selection when a sink is copied. */
+        Builder metadataKeys(List<String> metadataKeys) {
+            this.metadataKeys = new ArrayList<>(metadataKeys);
+            return this;
+        }
+
         /**
          * Builds the sink.
          *
@@ -436,6 +526,10 @@ public final class BigQueryDynamicSink implements DynamicTableSink {
             Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
             Preconditions.checkNotNull(destination, "destination must not be null");
             Preconditions.checkNotNull(schemaOptions, "schemaOptions must not be null");
+            Preconditions.checkNotNull(primaryKeyIndexes, "primaryKeyIndexes must not be null");
+            Preconditions.checkState(
+                    !cdcEnabled || primaryKeyIndexes.length > 0,
+                    "cdcEnabled requires at least one primaryKeyIndexes entry");
             return new BigQueryDynamicSink(this);
         }
     }

@@ -126,6 +126,17 @@ final class RowDataToProtoConverter {
         this.plan = buildRecordPlan(rowType, tableSchema.getFieldsList(), rowDescriptor, "");
     }
 
+    /** Builds a root-row converter that reads only the selected physical column indexes. */
+    RowDataToProtoConverter(
+            RowType rowType,
+            TableSchema tableSchema,
+            Descriptors.Descriptor rowDescriptor,
+            int[] selectedIndexes) {
+        this.plan =
+                buildSelectedRecordPlan(
+                        rowType, tableSchema.getFieldsList(), rowDescriptor, selectedIndexes);
+    }
+
     /**
      * Converts one row.
      *
@@ -135,6 +146,44 @@ final class RowDataToProtoConverter {
      */
     public DynamicMessage convert(RowData row) throws IOException {
         return plan.convert(row);
+    }
+
+    /** Converts a row without requiring descriptor fields excluded from this converter's plan. */
+    DynamicMessage convertPartial(RowData row) throws IOException {
+        return plan.convertPartial(row);
+    }
+
+    private static RecordPlan buildSelectedRecordPlan(
+            RowType rowType,
+            List<TableFieldSchema> fields,
+            Descriptors.Descriptor descriptor,
+            int[] selectedIndexes) {
+        Preconditions.checkState(
+                descriptor.getFields().size() == fields.size(),
+                "The row descriptor has %s fields where the root schema has %s",
+                descriptor.getFields().size(),
+                fields.size());
+        boolean[] selected = new boolean[fields.size()];
+        List<FieldPlan> plans = new ArrayList<>();
+        for (int index : selectedIndexes) {
+            Preconditions.checkArgument(
+                    index >= 0 && index < fields.size(),
+                    "Selected physical column index %s is outside a row with %s columns",
+                    index,
+                    fields.size());
+            Preconditions.checkArgument(
+                    !selected[index], "Selected physical column index %s is repeated", index);
+            selected[index] = true;
+            RowType.RowField rowField = rowType.getFields().get(index);
+            plans.add(
+                    buildFieldPlan(
+                            rowField.getType(),
+                            fields.get(index),
+                            descriptor.getFields().get(index),
+                            rowField.getName(),
+                            RowData.createFieldGetter(rowField.getType(), index)));
+        }
+        return new RecordPlan(descriptor, plans);
     }
 
     private static RecordPlan buildRecordPlan(
@@ -301,6 +350,14 @@ final class RowDataToProtoConverter {
                 field.apply(row, builder);
             }
             return builder.build();
+        }
+
+        DynamicMessage convertPartial(RowData row) throws IOException {
+            DynamicMessage.Builder builder = DynamicMessage.newBuilder(descriptor);
+            for (FieldPlan field : fields) {
+                field.apply(row, builder);
+            }
+            return builder.buildPartial();
         }
     }
 

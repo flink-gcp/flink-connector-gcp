@@ -23,6 +23,7 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -55,6 +56,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -73,6 +75,13 @@ class BigQueryDynamicTableFactoryTest {
             ResolvedSchema.of(
                     Column.physical("id", DataTypes.STRING()),
                     Column.physical("amount", DataTypes.INT()));
+
+    private static ResolvedSchema withPrimaryKey(ResolvedSchema schema) {
+        return new ResolvedSchema(
+                schema.getColumns(),
+                Collections.emptyList(),
+                UniqueConstraint.primaryKey("pk", Collections.singletonList("id")));
+    }
 
     /** {@link #SCHEMA} plus a column {@code sink.table-create.*} can partition on. */
     private static final ResolvedSchema PARTITIONABLE =
@@ -133,6 +142,16 @@ class BigQueryDynamicTableFactoryTest {
         return ((SinkV2Provider)
                         FactoryMocks.createTableSink(schema, options)
                                 .getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
+                .createSink();
+    }
+
+    private static Sink<?> builtWithMetadata(
+            ResolvedSchema schema, Map<String, String> options, String... metadataKeys) {
+        BigQueryDynamicSink dynamic =
+                (BigQueryDynamicSink) FactoryMocks.createTableSink(schema, options);
+        dynamic.applyWritableMetadata(Arrays.asList(metadataKeys), schema.toSinkRowDataType());
+        return ((SinkV2Provider)
+                        dynamic.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
                 .createSink();
     }
 
@@ -707,6 +726,97 @@ class BigQueryDynamicTableFactoryTest {
                                 .getChangelogMode(
                                         org.apache.flink.table.connector.ChangelogMode.all()))
                 .isEqualTo(org.apache.flink.table.connector.ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void cdcRequiresADeclaredPrimaryKeyAndTheDefaultStream() {
+        Map<String, String> noPrimaryKey = minimalOptions();
+        noPrimaryKey.put("sink.cdc.enabled", "true");
+        assertThatThrownBy(() -> sink(noPrimaryKey))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires the sink table to declare a PRIMARY KEY");
+
+        for (WriteMethod unsupported :
+                Arrays.asList(WriteMethod.STORAGE_API_EXACTLY_ONCE, WriteMethod.FILE_LOADS)) {
+            Map<String, String> options = optionsFor(unsupported);
+            options.put("sink.cdc.enabled", "true");
+            assertThatThrownBy(() -> FactoryMocks.createTableSink(withPrimaryKey(SCHEMA), options))
+                    .as("CDC under %s", unsupported)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(
+                            "accepted only on the Storage Write API default stream")
+                    .hasStackTraceContaining("sink.cdc.enabled")
+                    .hasStackTraceContaining("sink.write-method");
+        }
+    }
+
+    @Test
+    void cdcReachesTheBuiltDefaultStreamAndIsDisabledByDefault() {
+        BigQueryDefaultStreamSink<?> ordinary =
+                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), minimalOptions());
+        assertThat(ordinary.getConfig().getCdcOptions()).isNull();
+
+        Map<String, String> options = minimalOptions();
+        options.put("sink.cdc.enabled", "true");
+        BigQueryDefaultStreamSink<?> cdc =
+                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), options);
+        assertThat(cdc.getConfig().getCdcOptions()).isNotNull();
+        assertThat(cdc.getConfig().getCdcOptions().hasSequenceNumberProvider()).isFalse();
+    }
+
+    @Test
+    void plannerSelectedSequenceMetadataReachesTheCdcConfiguration() {
+        ResolvedSchema sequenceSchema =
+                withPrimaryKey(
+                        ResolvedSchema.of(
+                                Column.physical("id", DataTypes.STRING()),
+                                Column.physical("amount", DataTypes.INT()),
+                                Column.metadata(
+                                        "sequence",
+                                        DataTypes.STRING(),
+                                        "change-sequence-number",
+                                        false)));
+        Map<String, String> options = minimalOptions();
+        options.put("sink.cdc.enabled", "true");
+
+        BigQueryDefaultStreamSink<?> cdc =
+                (BigQueryDefaultStreamSink<?>)
+                        builtWithMetadata(sequenceSchema, options, "change-sequence-number");
+
+        assertThat(cdc.getConfig().getCdcOptions().hasSequenceNumberProvider()).isTrue();
+        assertThat(cdc.getConfig().getSerializer().getTableSchema(DESTINATION).getFieldsList())
+                .extracting(com.google.cloud.bigquery.storage.v1.TableFieldSchema::getName)
+                .containsExactly("id", "amount");
+    }
+
+    @Test
+    void selectingBothSequenceMetadataSourcesFailsAtPlanning() {
+        ResolvedSchema both =
+                withPrimaryKey(
+                        ResolvedSchema.of(
+                                Column.physical("id", DataTypes.STRING()),
+                                Column.metadata(
+                                        "sequence",
+                                        DataTypes.STRING(),
+                                        "change-sequence-number",
+                                        false),
+                                Column.metadata(
+                                        "source_properties",
+                                        DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()),
+                                        "debezium-source-properties",
+                                        false)));
+        Map<String, String> options = minimalOptions();
+        options.put("sink.cdc.enabled", "true");
+
+        assertThatThrownBy(
+                        () ->
+                                builtWithMetadata(
+                                        both,
+                                        options,
+                                        "change-sequence-number",
+                                        "debezium-source-properties"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Select exactly one BigQuery CDC sequence source");
     }
 
     @Test

@@ -20,12 +20,17 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowSerializer;
 import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -114,6 +119,128 @@ class RowDataSerializerTest {
     }
 
     @Test
+    void aCdcDeleteSerializesOnlyPrimaryKeyColumns() throws Exception {
+        RowType requiredRow =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                                        DataTypes.FIELD(
+                                                "required_value", DataTypes.STRING().notNull()))
+                                .getLogicalType();
+        RowDataSerializer serializer =
+                new RowDataSerializer(
+                        requiredRow,
+                        RowDataSchemaOptions.builder().deriveRequiredColumns(true).build(),
+                        new int[] {0});
+        GenericRowData delete =
+                GenericRowData.ofKind(
+                        RowKind.DELETE, StringData.fromString("order-7"), (Object) null);
+
+        DynamicMessage message =
+                DynamicMessage.newBuilder(serializer.getDescriptor(DESTINATION))
+                        .mergeFrom(serializer.serialize(delete))
+                        .buildPartial();
+
+        assertThat(message.hasField(serializer.getDescriptor(DESTINATION).findFieldByName("id")))
+                .isTrue();
+        assertThat(
+                        message.hasField(
+                                serializer
+                                        .getDescriptor(DESTINATION)
+                                        .findFieldByName("required_value")))
+                .isFalse();
+    }
+
+    @Test
+    void aPrimaryKeyChangeSerializesAsDeleteThenUpsertWithIndependentSequences() throws Exception {
+        RowType cdcRow =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.STRING().notNull()),
+                                        DataTypes.FIELD("amount", DataTypes.BIGINT()))
+                                .getLogicalType();
+        RowDataSerializer physical =
+                new RowDataSerializer(cdcRow, RowDataSchemaOptions.defaults(), new int[] {0});
+        CdcProtoRowSerializer<GenericRowData> cdc =
+                new CdcProtoRowSerializer<>(
+                        physical,
+                        CdcOptions.<GenericRowData>builder(RowDataCdcChangeTypeProvider.INSTANCE)
+                                .sequenceNumberProvider(
+                                        new RowDataCdcSequenceNumberProvider(
+                                                WritableMetadata.CHANGE_SEQUENCE_NUMBER, 2))
+                                .build());
+        GenericRowData delete =
+                GenericRowData.ofKind(
+                        RowKind.DELETE,
+                        StringData.fromString("old-id"),
+                        null,
+                        StringData.fromString("1"));
+        GenericRowData upsert =
+                GenericRowData.ofKind(
+                        RowKind.UPDATE_AFTER,
+                        StringData.fromString("new-id"),
+                        7L,
+                        StringData.fromString("2"));
+        DynamicMessage deleted = cdcMessage(cdc, delete);
+        DynamicMessage upserted = cdcMessage(cdc, upsert);
+
+        assertThat(deleted.getField(deleted.getDescriptorForType().findFieldByName("id")))
+                .isEqualTo("old-id");
+        assertThat(deleted.hasField(deleted.getDescriptorForType().findFieldByName("amount")))
+                .isFalse();
+        assertThat(deleted.getField(deleted.getDescriptorForType().findFieldByName("_change_type")))
+                .isEqualTo("DELETE");
+        assertThat(
+                        deleted.getField(
+                                deleted.getDescriptorForType()
+                                        .findFieldByName("_change_sequence_number")))
+                .isEqualTo("1");
+        assertThat(upserted.getField(upserted.getDescriptorForType().findFieldByName("id")))
+                .isEqualTo("new-id");
+        assertThat(upserted.getField(upserted.getDescriptorForType().findFieldByName("amount")))
+                .isEqualTo(7L);
+        assertThat(
+                        upserted.getField(
+                                upserted.getDescriptorForType().findFieldByName("_change_type")))
+                .isEqualTo("UPSERT");
+        assertThat(
+                        upserted.getField(
+                                upserted.getDescriptorForType()
+                                        .findFieldByName("_change_sequence_number")))
+                .isEqualTo("2");
+    }
+
+    @Test
+    void rejectsUpdateBeforeAtTheSerializerBoundary() {
+        RowDataSerializer serializer =
+                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults(), new int[] {0});
+        GenericRowData updateBefore =
+                GenericRowData.ofKind(RowKind.UPDATE_BEFORE, StringData.fromString("alice"), 2L);
+
+        assertThatThrownBy(() -> serializer.serialize(updateBefore))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("UPDATE_BEFORE is not part of the BigQuery CDC sink");
+    }
+
+    @Test
+    void ignoresPlannerAppendedMetadataWhenSerializingThePhysicalRow() throws Exception {
+        RowDataSerializer serializer =
+                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults(), new int[] {0});
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("alice"), 3L, StringData.fromString("0001/0002"));
+
+        DynamicMessage message =
+                DynamicMessage.parseFrom(
+                        serializer.getDescriptor(DESTINATION), serializer.serialize(row));
+
+        assertThat(message.getAllFields()).hasSize(2);
+        assertThat(serializer.getTableSchema(DESTINATION).getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("name", "amount");
+    }
+
+    @Test
     void survivesTheTripToATaskManager() throws Exception {
         RowDataSerializer serializer =
                 new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults());
@@ -128,5 +255,11 @@ class RowDataSerializerTest {
                 .isEqualTo(
                         serializer.serialize(
                                 GenericRowData.of(StringData.fromString("alice"), 3L)));
+    }
+
+    private static DynamicMessage cdcMessage(
+            CdcProtoRowSerializer<GenericRowData> serializer, GenericRowData row) throws Exception {
+        return DynamicMessage.parseFrom(
+                serializer.getDescriptor(DESTINATION), serializer.serialize(row, DESTINATION));
     }
 }

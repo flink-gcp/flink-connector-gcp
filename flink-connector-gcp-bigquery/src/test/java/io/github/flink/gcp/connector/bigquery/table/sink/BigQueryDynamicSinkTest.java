@@ -17,9 +17,12 @@
 package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.types.RowKind;
 
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
@@ -41,6 +44,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link BigQueryDynamicSink}. */
 class BigQueryDynamicSinkTest {
@@ -64,7 +68,8 @@ class BigQueryDynamicSinkTest {
         return BigQueryDynamicSink.builder()
                 .physicalDataType(ROW)
                 .destination(DESTINATION)
-                .schemaOptions(RowDataSchemaOptions.defaults());
+                .schemaOptions(RowDataSchemaOptions.defaults())
+                .primaryKeyIndexes(new int[] {0});
     }
 
     private static BigQueryDynamicSink sink() {
@@ -83,6 +88,51 @@ class BigQueryDynamicSinkTest {
                 .isEqualTo(ChangelogMode.insertOnly());
         assertThat(sink().getChangelogMode(ChangelogMode.upsert()))
                 .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void cdcAcceptsAnUpsertChangelogButKeepsAppendPlansInsertOnly() {
+        BigQueryDynamicSink cdc = sinkWith(builder -> builder.cdcEnabled(true));
+
+        assertThat(cdc.getChangelogMode(ChangelogMode.all()).getContainedKinds())
+                .containsExactlyInAnyOrder(RowKind.INSERT, RowKind.UPDATE_AFTER, RowKind.DELETE);
+        assertThat(cdc.getChangelogMode(ChangelogMode.insertOnly()))
+                .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void exposesTheTwoAlternativeCdcSequenceMetadataColumns() {
+        Map<String, DataType> expected = new LinkedHashMap<>();
+        expected.put("change-sequence-number", DataTypes.STRING().nullable());
+        expected.put(
+                "debezium-source-properties",
+                DataTypes.MAP(DataTypes.STRING().nullable(), DataTypes.STRING().nullable())
+                        .nullable());
+
+        assertThat(((SupportsWritingMetadata) sink()).listWritableMetadata())
+                .containsExactlyEntriesOf(expected);
+    }
+
+    @Test
+    void writableMetadataRequiresCdcAndExactlyOneSequenceSource() {
+        BigQueryDynamicSink ordinary = sink();
+        assertThatThrownBy(
+                        () ->
+                                ordinary.applyWritableMetadata(
+                                        Collections.singletonList("change-sequence-number"), ROW))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("available only when 'sink.cdc.enabled' = 'true'");
+
+        BigQueryDynamicSink cdc = sinkWith(builder -> builder.cdcEnabled(true));
+        assertThatThrownBy(
+                        () ->
+                                cdc.applyWritableMetadata(
+                                        List.of(
+                                                "change-sequence-number",
+                                                "debezium-source-properties"),
+                                        ROW))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Select exactly one BigQuery CDC sequence source");
     }
 
     @Test
@@ -106,6 +156,8 @@ class BigQueryDynamicSinkTest {
                                 RowDataSchemaOptions.builder()
                                         .jsonFieldPaths(Collections.singletonList("id"))
                                         .build()));
+        varied.put("cdcEnabled", a -> a.cdcEnabled(true));
+        varied.put("primaryKeyIndexes", a -> a.primaryKeyIndexes(new int[] {1}));
         varied.put("writeMethod", a -> a.writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE));
         varied.put("createDisposition", a -> a.createDisposition(CreateDisposition.CREATE_NEVER));
         varied.put(
@@ -143,6 +195,11 @@ class BigQueryDynamicSinkTest {
         varied.put("emulatorEndpoint", a -> a.emulatorEndpoint("localhost:9060"));
         varied.put("emulatorRestEndpoint", a -> a.emulatorRestEndpoint("localhost:9050"));
         varied.put("parallelism", a -> a.parallelism(3));
+        varied.put(
+                "metadataKeys",
+                a ->
+                        a.cdcEnabled(true)
+                                .metadataKeys(Collections.singletonList("change-sequence-number")));
         return varied;
     }
 
@@ -181,10 +238,13 @@ class BigQueryDynamicSinkTest {
         // more since fullySpecified() applied them all at once: two entries touching one field
         // would leave a third at its default, and a copy() that dropped *that* call would survive
         // the test above. So each entry is checked to change its own field and no other.
-        BigQueryDynamicSink base = sink();
         variations()
                 .forEach(
                         (field, vary) -> {
+                            BigQueryDynamicSink base =
+                                    field.equals("metadataKeys")
+                                            ? sinkWith(builder -> builder.cdcEnabled(true))
+                                            : sink();
                             BigQueryDynamicSink varied = sinkWith(vary);
                             for (Field declared : BigQueryDynamicSink.class.getDeclaredFields()) {
                                 if (Modifier.isStatic(declared.getModifiers())) {

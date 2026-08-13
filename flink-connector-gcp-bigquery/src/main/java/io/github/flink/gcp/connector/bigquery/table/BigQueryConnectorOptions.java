@@ -247,6 +247,15 @@ public final class BigQueryConnectorOptions {
                                     + " the location load jobs run in, derived from the"
                                     + " destination dataset when unset.");
 
+    public static final ConfigOption<Boolean> SINK_CDC_ENABLED =
+            ConfigOptions.key("sink.cdc.enabled")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the default-stream sink writes the table changelog as"
+                                    + " BigQuery CDC UPSERT and DELETE mutations. Requires a"
+                                    + " declared primary key and storage-api-at-least-once.");
+
     public static final ConfigOption<Boolean> SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS =
             ConfigOptions.key("sink.schema-update.allow-new-fields")
                     .booleanType()

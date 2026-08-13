@@ -126,6 +126,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
+                        BigQueryConnectorOptions.SINK_CDC_ENABLED,
                         BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS,
                         BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_FIELD_RELAXATION,
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_TYPE,
@@ -191,12 +192,15 @@ public class BigQueryDynamicTableFactory
                 config.getOptional(BigQueryConnectorOptions.SINK_WRITE_METHOD);
         WriteMethod writeMethod =
                 configuredWriteMethod.orElse(WriteMethod.STORAGE_API_AT_LEAST_ONCE);
+        boolean cdcEnabled =
+                config.getOptional(BigQueryConnectorOptions.SINK_CDC_ENABLED).orElse(false);
 
         // Every rejection this class owns runs before the first mapper, so that the write method
         // being unusable is reported ahead of anything configured under it. The mappers throw too
         // — a table-creation column BigQuery cannot use, a staging path that is not a gs:// URI —
         // and evaluating them inside the builder chain would let those messages arrive first.
         SchemaUpdateOptions schemaUpdateOptions = schemaUpdateOptions(config);
+        checkCdcConfiguration(context, writeMethod, cdcEnabled);
         checkFamiliesMatchTheWriteMethod(config, writeMethod);
         checkEmulatorEndpointsAreSupported(config, writeMethod);
         checkCredentials(config);
@@ -225,6 +229,8 @@ public class BigQueryDynamicTableFactory
                 .physicalDataType(physicalDataType)
                 .destination(destination)
                 .schemaOptions(schemaOptions(config))
+                .cdcEnabled(cdcEnabled)
+                .primaryKeyIndexes(context.getPrimaryKeyIndexes())
                 .writeMethod(configuredWriteMethod.orElse(null))
                 .createDisposition(
                         config.getOptional(BigQueryConnectorOptions.SINK_CREATE_DISPOSITION)
@@ -247,6 +253,31 @@ public class BigQueryDynamicTableFactory
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
                 .build();
+    }
+
+    private static void checkCdcConfiguration(
+            Context context, WriteMethod writeMethod, boolean cdcEnabled) {
+        if (!cdcEnabled) {
+            return;
+        }
+        if (writeMethod != WriteMethod.STORAGE_API_AT_LEAST_ONCE) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' = 'true' requires '%s' = '%s': BigQuery CDC"
+                                    + " pseudocolumns are accepted only on the Storage Write API"
+                                    + " default stream.",
+                            BigQueryConnectorOptions.SINK_CDC_ENABLED.key(),
+                            BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
+                            WriteMethod.STORAGE_API_AT_LEAST_ONCE));
+        }
+        if (context.getPrimaryKeyIndexes().length == 0) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' = 'true' requires the sink table to declare a PRIMARY"
+                                    + " KEY NOT ENFORCED. BigQuery applies each CDC mutation by"
+                                    + " that key.",
+                            BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
+        }
     }
 
     @Override
