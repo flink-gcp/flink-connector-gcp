@@ -93,6 +93,13 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                 helper.discoverEncodingFormat(SerializationFormatFactory.class, FactoryUtil.FORMAT);
         helper.validate();
 
+        String contentType = null;
+        if (format instanceof HttpContentTypeEncodingFormat) {
+            HttpContentTypeEncodingFormat httpFormat = (HttpContentTypeEncodingFormat) format;
+            httpFormat.validatePhysicalDataType(context.getPhysicalRowDataType());
+            contentType = httpFormat.getContentType();
+        }
+
         ReadableConfig config = helper.getOptions();
         validateCredentials(config);
         return new CloudTasksDynamicSink(
@@ -102,7 +109,7 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         config.get(CloudTasksConnectorOptions.PROJECT),
                         config.get(CloudTasksConnectorOptions.LOCATION),
                         config.get(CloudTasksConnectorOptions.QUEUE)),
-                TableHttpTarget.from(config),
+                TableHttpTarget.from(config, contentType),
                 hasNotNullUrlMetadata(context),
                 CloudTasksWriterOptionsMapper.map(config),
                 config.getOptional(CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)

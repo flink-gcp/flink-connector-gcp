@@ -87,6 +87,11 @@ final class RowDataToTaskMetadataConverter implements Serializable {
         return task;
     }
 
+    @Nullable
+    String getBodyContentType() {
+        return target.getBodyContentType();
+    }
+
     private String url(RowData element) throws IOException {
         String value = target.getUrl();
         if (urlIndex >= 0 && !element.isNullAt(urlIndex)) {
@@ -153,6 +158,17 @@ final class RowDataToTaskMetadataConverter implements Serializable {
                                 + " name '"
                                 + name
                                 + "'.");
+            }
+            if (target.getBodyContentType() != null && "content-type".equals(normalized)) {
+                if (!TableHttpTarget.sameContentType(target.getBodyContentType(), value)) {
+                    throw new IOException(
+                            "Cloud Tasks HTTP header metadata contains Content-Type '"
+                                    + value
+                                    + "', which conflicts with the body format's Content-Type '"
+                                    + target.getBodyContentType()
+                                    + "'.");
+                }
+                continue;
             }
             String existing = requestHeaderNames.put(normalized, name);
             if (existing != null) {

@@ -72,6 +72,9 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
         HttpMethod method = request.getHttpMethod();
 
         if (carriesBody(method)) {
+            if (metadataConverter.getBodyContentType() != null) {
+                request.putHeaders("Content-Type", metadataConverter.getBodyContentType());
+            }
             byte[] payload = physical.serialize(hasMetadata ? projected(element) : element);
             if (payload == null) {
                 throw new IOException(

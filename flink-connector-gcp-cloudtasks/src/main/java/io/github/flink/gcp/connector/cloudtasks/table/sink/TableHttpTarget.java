@@ -43,6 +43,7 @@ public final class TableHttpTarget implements Serializable {
     @Nullable private final String url;
     private final HttpMethod method;
     private final Map<String, String> headers;
+    @Nullable private final String bodyContentType;
     @Nullable private final String oidcServiceAccountEmail;
     @Nullable private final String oidcAudience;
     @Nullable private final String oauthServiceAccountEmail;
@@ -52,6 +53,7 @@ public final class TableHttpTarget implements Serializable {
             @Nullable String url,
             HttpMethod method,
             Map<String, String> headers,
+            @Nullable String bodyContentType,
             @Nullable String oidcServiceAccountEmail,
             @Nullable String oidcAudience,
             @Nullable String oauthServiceAccountEmail,
@@ -59,6 +61,7 @@ public final class TableHttpTarget implements Serializable {
         this.url = url;
         this.method = method;
         this.headers = Collections.unmodifiableMap(new LinkedHashMap<>(headers));
+        this.bodyContentType = bodyContentType;
         this.oidcServiceAccountEmail = oidcServiceAccountEmail;
         this.oidcAudience = oidcAudience;
         this.oauthServiceAccountEmail = oauthServiceAccountEmail;
@@ -67,6 +70,11 @@ public final class TableHttpTarget implements Serializable {
 
     /** Maps and validates the HTTP-related table options. */
     public static TableHttpTarget from(ReadableConfig config) {
+        return from(config, null);
+    }
+
+    /** Maps HTTP options and reserves Content-Type when the body format owns one. */
+    public static TableHttpTarget from(ReadableConfig config, @Nullable String bodyContentType) {
         String url = config.getOptional(CloudTasksConnectorOptions.HTTP_URL).orElse(null);
         if (url != null && !isAbsoluteHttpUrl(url)) {
             throw new ValidationException(
@@ -83,11 +91,12 @@ public final class TableHttpTarget implements Serializable {
                             CloudTasksConnectorOptions.HTTP_METHOD.key()));
         }
 
-        Map<String, String> headers =
+        Map<String, String> configuredHeaders =
                 config.getOptional(CloudTasksConnectorOptions.HTTP_HEADERS)
                         .orElse(Collections.emptyMap());
         Map<String, String> names = new LinkedHashMap<>();
-        for (Map.Entry<String, String> header : headers.entrySet()) {
+        Map<String, String> headers = new LinkedHashMap<>();
+        for (Map.Entry<String, String> header : configuredHeaders.entrySet()) {
             if (header.getKey().isBlank()) {
                 throw new ValidationException(
                         String.format(
@@ -105,6 +114,19 @@ public final class TableHttpTarget implements Serializable {
                                 previous,
                                 header.getKey()));
             }
+            if (bodyContentType != null && "content-type".equals(normalized)) {
+                if (!sameContentType(bodyContentType, header.getValue())) {
+                    throw new ValidationException(
+                            String.format(
+                                    "Option '%s' contains Content-Type '%s', which conflicts with"
+                                            + " the body format's Content-Type '%s'.",
+                                    CloudTasksConnectorOptions.HTTP_HEADERS.key(),
+                                    header.getValue(),
+                                    bodyContentType));
+                }
+                continue;
+            }
+            headers.put(header.getKey(), header.getValue());
         }
 
         String oidcEmail =
@@ -135,7 +157,14 @@ public final class TableHttpTarget implements Serializable {
                 CloudTasksConnectorOptions.HTTP_OAUTH_SCOPE.key(),
                 CloudTasksConnectorOptions.HTTP_OAUTH_SERVICE_ACCOUNT_EMAIL.key());
         return new TableHttpTarget(
-                url, method, headers, oidcEmail, oidcAudience, oauthEmail, oauthScope);
+                url,
+                method,
+                headers,
+                bodyContentType,
+                oidcEmail,
+                oidcAudience,
+                oauthEmail,
+                oauthScope);
     }
 
     @Nullable
@@ -185,6 +214,15 @@ public final class TableHttpTarget implements Serializable {
     }
 
     @Nullable
+    String getBodyContentType() {
+        return bodyContentType;
+    }
+
+    static boolean sameContentType(String expected, String actual) {
+        return expected.equalsIgnoreCase(actual.trim());
+    }
+
+    @Nullable
     String getOidcServiceAccountEmail() {
         return oidcServiceAccountEmail;
     }
@@ -216,6 +254,7 @@ public final class TableHttpTarget implements Serializable {
         return Objects.equals(url, that.url)
                 && method == that.method
                 && headers.equals(that.headers)
+                && Objects.equals(bodyContentType, that.bodyContentType)
                 && Objects.equals(oidcServiceAccountEmail, that.oidcServiceAccountEmail)
                 && Objects.equals(oidcAudience, that.oidcAudience)
                 && Objects.equals(oauthServiceAccountEmail, that.oauthServiceAccountEmail)
@@ -228,6 +267,7 @@ public final class TableHttpTarget implements Serializable {
                 url,
                 method,
                 headers,
+                bodyContentType,
                 oidcServiceAccountEmail,
                 oidcAudience,
                 oauthServiceAccountEmail,

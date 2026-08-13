@@ -162,24 +162,45 @@ class RowDataSerializationSchemaTest {
         assertThat(task.getHttpRequest().getBody()).isEmpty();
     }
 
+    @Test
+    void bodylessMethodDoesNotCarryTheFormatsContentType() throws Exception {
+        RecordingEncoder encoder = new RecordingEncoder();
+        Configuration config = target("https://example.com/search");
+        config.set(CloudTasksConnectorOptions.HTTP_METHOD, HttpMethod.GET);
+        RowDataSerializationSchema schema =
+                new RowDataSerializationSchema(
+                        encoder,
+                        1,
+                        new WritableMetadata[0],
+                        TableHttpTarget.from(config, "application/x-www-form-urlencoded"));
+
+        Task task = schema.serialize(GenericRowData.of(str("ignored")));
+
+        assertThat(encoder.calls).isZero();
+        assertThat(task.getHttpRequest().getHeadersMap()).doesNotContainKey("Content-Type");
+    }
+
     @ParameterizedTest
     @EnumSource(
             value = HttpMethod.class,
             names = {"POST", "PUT", "PATCH"})
     void bodyMethodInvokesTheFormat(HttpMethod method) throws Exception {
         RecordingEncoder encoder = new RecordingEncoder();
+        Configuration config = target("https://example.com/tasks");
         RowDataSerializationSchema schema =
                 new RowDataSerializationSchema(
                         encoder,
                         1,
                         new WritableMetadata[] {WritableMetadata.HTTP_METHOD},
-                        target(target("https://example.com/tasks")));
+                        TableHttpTarget.from(config, "application/x-www-form-urlencoded"));
 
         Task task = schema.serialize(GenericRowData.of(str("payload"), str(method.name())));
 
         assertThat(encoder.calls).isOne();
         assertThat(task.getHttpRequest().getHttpMethod()).isEqualTo(method);
         assertThat(task.getHttpRequest().getBody().toStringUtf8()).isEqualTo("payload");
+        assertThat(task.getHttpRequest().getHeadersMap())
+                .containsEntry("Content-Type", "application/x-www-form-urlencoded");
     }
 
     @Test

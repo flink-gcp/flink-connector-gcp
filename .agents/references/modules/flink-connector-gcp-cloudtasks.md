@@ -41,4 +41,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `url` metadata must be declared `STRING NOT NULL` in the catalog schema.
 - Selecting `task-id` installs the existing sink-builder extractor — never name a task in the table
   serializer. API credentials, OIDC/OAuth dispatch tokens and network reachability remain three
-  separate concerns; App Engine targets and form encoding are separate follow-ups.
+  separate concerns; App Engine targets remain a separate follow-up.
+- The built-in `form-urlencoded` format accepts only `STRING` and `ARRAY<STRING>`, preserves
+  physical schema and array order, and owns `application/x-www-form-urlencoded` for body-carrying
+  methods. Fixed and metadata headers may repeat that value but may not conflict with it.

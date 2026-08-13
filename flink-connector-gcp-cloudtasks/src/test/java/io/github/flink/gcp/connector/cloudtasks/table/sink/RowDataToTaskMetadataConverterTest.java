@@ -55,7 +55,16 @@ class RowDataToTaskMetadataConverterTest {
 
     private static Task convert(Configuration config, WritableMetadata[] metadata, RowData row)
             throws IOException {
-        return new RowDataToTaskMetadataConverter(1, metadata, target(config)).convert(row).build();
+        return convert(config, metadata, row, null);
+    }
+
+    private static Task convert(
+            Configuration config, WritableMetadata[] metadata, RowData row, String bodyContentType)
+            throws IOException {
+        return new RowDataToTaskMetadataConverter(
+                        1, metadata, TableHttpTarget.from(config, bodyContentType))
+                .convert(row)
+                .build();
     }
 
     @Test
@@ -182,5 +191,49 @@ class RowDataToTaskMetadataConverterTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("case-insensitive duplicate")
                 .hasMessageContaining("x-request-id");
+    }
+
+    @Test
+    void rejectsMetadataContentTypeThatConflictsWithTheBodyFormat() {
+        Configuration config = target("https://example.com/tasks");
+
+        assertThatThrownBy(
+                        () ->
+                                convert(
+                                        config,
+                                        new WritableMetadata[] {WritableMetadata.HEADERS},
+                                        GenericRowData.of(
+                                                str("body"),
+                                                new GenericMapData(
+                                                        java.util.Collections.singletonMap(
+                                                                str("content-TYPE"),
+                                                                str(
+                                                                        "application/x-www-form-urlencoded;"
+                                                                                + " charset=UTF-8")))),
+                                        "application/x-www-form-urlencoded"))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(
+                        "metadata contains Content-Type"
+                                + " 'application/x-www-form-urlencoded; charset=UTF-8'")
+                .hasMessageContaining("conflicts with the body format's Content-Type");
+    }
+
+    @Test
+    void leavesAMatchingMetadataContentTypeForTheBodyFormatToCanonicalize() throws Exception {
+        Configuration config = target("https://example.com/tasks");
+
+        Task task =
+                convert(
+                        config,
+                        new WritableMetadata[] {WritableMetadata.HEADERS},
+                        GenericRowData.of(
+                                str("body"),
+                                new GenericMapData(
+                                        java.util.Collections.singletonMap(
+                                                str("content-type"),
+                                                str(" APPLICATION/X-WWW-FORM-URLENCODED ")))),
+                        "application/x-www-form-urlencoded");
+
+        assertThat(task.getHttpRequest().getHeadersMap()).isEmpty();
     }
 }

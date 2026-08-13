@@ -23,11 +23,15 @@ import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 
+import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
+import io.github.flink.gcp.connector.cloudtasks.table.form.FormUrlEncodedFormatFactory;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksDynamicSink;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.TableHttpTarget;
 import org.junit.jupiter.api.Test;
@@ -50,6 +54,9 @@ class CloudTasksDynamicTableFactoryTest {
                     Column.physical("id", DataTypes.STRING()),
                     Column.physical("amount", DataTypes.INT()));
 
+    private static final ResolvedSchema FORM_SCHEMA =
+            ResolvedSchema.of(Column.physical("name", DataTypes.STRING()));
+
     private static Map<String, String> minimalOptions() {
         Map<String, String> options = new HashMap<>();
         options.put("connector", CloudTasksDynamicTableFactory.IDENTIFIER);
@@ -62,11 +69,22 @@ class CloudTasksDynamicTableFactoryTest {
     }
 
     private static CloudTasksCreateTaskSink<?> runtimeSink(Map<String, String> options) {
+        return runtimeSink(SCHEMA, options);
+    }
+
+    private static CloudTasksCreateTaskSink<?> runtimeSink(
+            ResolvedSchema schema, Map<String, String> options) {
         SinkV2Provider provider =
                 (SinkV2Provider)
-                        FactoryMocks.createTableSink(SCHEMA, options)
+                        FactoryMocks.createTableSink(schema, options)
                                 .getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
         return (CloudTasksCreateTaskSink<?>) provider.createSink();
+    }
+
+    private static Map<String, String> formOptions() {
+        Map<String, String> options = minimalOptions();
+        options.put("format", FormUrlEncodedFormatFactory.IDENTIFIER);
+        return options;
     }
 
     @Test
@@ -85,6 +103,60 @@ class CloudTasksDynamicTableFactoryTest {
 
         assertThat(FactoryMocks.createTableSink(SCHEMA, options))
                 .isInstanceOf(CloudTasksDynamicSink.class);
+    }
+
+    @Test
+    void discoversTheBuiltInFormEncodingFormat() throws Exception {
+        CloudTasksCreateTaskSink<?> sink = runtimeSink(FORM_SCHEMA, formOptions());
+
+        Task task =
+                ((CloudTasksCreateTaskSink<GenericRowData>) sink)
+                        .getConfig()
+                        .getSerializer()
+                        .serialize(GenericRowData.of(StringData.fromString("Alice & Bob")));
+
+        assertThat(task.getHttpRequest().getBody().toStringUtf8()).isEqualTo("name=Alice+%26+Bob");
+        assertThat(task.getHttpRequest().getHeadersMap())
+                .containsEntry("Content-Type", FormUrlEncodedFormatFactory.CONTENT_TYPE);
+    }
+
+    @Test
+    void validatesFormPhysicalTypesWhileCreatingTheTableSink() {
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, formOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("supports only STRING and ARRAY<STRING>")
+                .hasStackTraceContaining("amount")
+                .hasStackTraceContaining("Cast the value to STRING explicitly in SQL");
+    }
+
+    @Test
+    void rejectsAFixedContentTypeThatConflictsWithTheFormFormat() {
+        Map<String, String> options = formOptions();
+        options.put(
+                "http.headers.content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(FORM_SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("conflicts with the body format's Content-Type")
+                .hasStackTraceContaining("application/x-www-form-urlencoded; charset=UTF-8");
+    }
+
+    @Test
+    void acceptsAndCanonicalizesAMatchingFixedContentType() throws Exception {
+        Map<String, String> options = formOptions();
+        options.put("http.headers.content-type", " APPLICATION/X-WWW-FORM-URLENCODED ");
+
+        CloudTasksCreateTaskSink<?> sink = runtimeSink(FORM_SCHEMA, options);
+        Task task =
+                ((CloudTasksCreateTaskSink<GenericRowData>) sink)
+                        .getConfig()
+                        .getSerializer()
+                        .serialize(GenericRowData.of(StringData.fromString("Alice")));
+
+        assertThat(task.getHttpRequest().getHeadersMap())
+                .containsOnly(
+                        org.assertj.core.api.Assertions.entry(
+                                "Content-Type", FormUrlEncodedFormatFactory.CONTENT_TYPE));
     }
 
     @Test
