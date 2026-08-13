@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
 import com.google.cloud.spanner.DatabaseClient;
@@ -30,10 +31,12 @@ import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerException;
+import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
@@ -74,6 +77,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
 
     private final SpannerDatabase database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     /**
      * The service handle and the batch transaction on it, both built by {@link #plan}.
@@ -84,6 +88,8 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      * scheduler thread and may overtake it.
      */
     @Nullable private transient volatile Spanner spanner;
+
+    @Nullable private transient GoogleCredentials credentialsOverride;
 
     @Nullable private transient volatile BatchReadOnlyTransaction transaction;
 
@@ -98,8 +104,17 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      */
     public BatchClientPartitionPlanner(
             SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(database, emulatorEndpoint, null);
+    }
+
+    /** Creates the planner with an optional runtime-loaded service-account key path. */
+    public BatchClientPartitionPlanner(
+            SpannerDatabase database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -212,7 +227,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
         synchronized (this) {
             checkOpen();
             if (spanner == null) {
-                spanner = SpannerClients.open(database, emulatorEndpoint);
+                spanner = SpannerClients.open(database, settings());
             }
             batchClient =
                     spanner.getBatchClient(
@@ -236,6 +251,25 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
             transaction = opened;
         }
         return opened;
+    }
+
+    /** Loads credentials when the JobManager creates or restores the enumerator. */
+    public void loadCredentials() throws IOException {
+        credentials();
+    }
+
+    /** Builds settings exposed for verifying that the planner injects runtime credentials. */
+    @VisibleForTesting
+    SpannerOptions settings() throws IOException {
+        return SpannerClients.settings(database, emulatorEndpoint, credentials());
+    }
+
+    @Nullable
+    private GoogleCredentials credentials() throws IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = SpannerCredentials.load(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
     }
 
     private DatabaseClient databaseClient() throws IOException {

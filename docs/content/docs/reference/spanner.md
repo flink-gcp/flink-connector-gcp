@@ -46,6 +46,7 @@ The complete DDL option table, native UUID and other schema mappings, and primar
 | `writerOptions` | [defaults](#spannerwriteroptions) | The batch limits, the request scheduling and the retry budget |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation the service terminally refused. See [Error handling]({{< relref "docs/connectors/datastream/spanner" >}}#error-handling) for the two statuses that reach it |
 | `constraintViolationPolicy` | `FAIL_JOB` | What happens to a mutation refused for violating a constraint. `ROUTE_TO_FAILURE_HANDLER` hands it to `failedMutationHandler` instead, so that handler then decides between failing, dropping and dead-lettering. See [Error handling]({{< relref "docs/connectors/datastream/spanner" >}}#error-handling) |
+| `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by each TaskManager writer at runtime. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) |
 | `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |
 
 ## `SpannerWriterOptions`
@@ -102,6 +103,7 @@ is under [Source]({{< relref "docs/connectors/datastream/spanner" >}}#source).
 | `partitionSizeBytes` | *unset ⇒ the service decides* | How much data one partition should cover. A hint, like the one above |
 | `dataBoostEnabled` | `false` | Runs the read on Data Boost's independent compute. Needs `spanner.databases.useDataBoost`, is billed separately, and has a concurrency quota of its own |
 | `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`, applied to the reads that move the rows. `LOW` is what a backfill that must not disturb serving traffic wants. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it |
+| `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by a fresh or restored JobManager enumerator and by every TaskManager reader. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) |
 | `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |
 
 There is no per-fetch record cap here, and no options object: the cap is a correctness floor rather

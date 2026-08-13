@@ -57,6 +57,7 @@ public class SpannerSourceBuilder<T> {
     private @Nullable Long partitionSizeBytes;
     private boolean dataBoostEnabled;
     private @Nullable SpannerRpcPriority rpcPriority;
+    private @Nullable String serviceAccountKeyFile;
     private @Nullable EmulatorEndpoint emulatorEndpoint;
     private @Nullable PartitionPlanner planner;
     private @Nullable StructStreamOpener opener;
@@ -212,6 +213,29 @@ public class SpannerSourceBuilder<T> {
     }
 
     /**
+     * Authenticates the source with the service-account JSON key at the given path instead of
+     * application-default credentials. The JobManager reads the file when it creates or restores
+     * the enumerator, and each TaskManager reads it when it creates a reader. Every eligible
+     * process must therefore see the same path. Optional; when unset the real-service path uses
+     * application-default credentials.
+     *
+     * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
+     * Workload Identity where the deployment supports one. This setting cannot be combined with
+     * {@link #emulatorEndpoint(String)}, whose plaintext channel carries no credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
+     */
+    public SpannerSourceBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
+        String checked =
+                Preconditions.checkNotNull(
+                        serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
+        Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
+        this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
      * Points the source at an emulator, over a plaintext channel with no credentials. Never
      * production.
      *
@@ -264,6 +288,11 @@ public class SpannerSourceBuilder<T> {
                 readOperation != null, "A read operation is required: set readOperation(...).");
         Preconditions.checkState(
                 deserializer != null, "A deserializer is required: set deserializer(...).");
+        Preconditions.checkState(
+                serviceAccountKeyFile == null || emulatorEndpoint == null,
+                "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
+                        + " emulator uses a plaintext channel with no credentials. Remove one of"
+                        + " the two settings.");
         return new SpannerBatchReadSource<>(
                 new SpannerSourceConfig<>(
                         database,
@@ -273,12 +302,15 @@ public class SpannerSourceBuilder<T> {
                         partitionOptions(),
                         dataBoostEnabled,
                         rpcPriority,
+                        serviceAccountKeyFile,
                         planner != null
                                 ? planner
-                                : new BatchClientPartitionPlanner(database, emulatorEndpoint),
+                                : new BatchClientPartitionPlanner(
+                                        database, emulatorEndpoint, serviceAccountKeyFile),
                         opener != null
                                 ? opener
-                                : new BatchClientStructStreamOpener(database, emulatorEndpoint),
+                                : new BatchClientStructStreamOpener(
+                                        database, emulatorEndpoint, serviceAccountKeyFile),
                         maxRecordsPerFetch));
     }
 

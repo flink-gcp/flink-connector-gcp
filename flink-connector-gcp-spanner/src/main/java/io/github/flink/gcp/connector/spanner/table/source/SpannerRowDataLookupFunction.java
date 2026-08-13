@@ -61,6 +61,7 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
                 projectedFields,
                 keyPositions,
                 emulatorEndpoint,
+                null,
                 maxRetries,
                 SpannerFilterPushDown.State.empty().runtime());
     }
@@ -73,6 +74,7 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
             @Nullable int[] projectedFields,
             int[] keyPositions,
             @Nullable String emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
             int maxRetries,
             SpannerFilterPushDown.RuntimeState filters) {
         this(
@@ -80,7 +82,8 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
                 projectedFields,
                 keyPositions,
                 maxRetries,
-                new SpannerDatabaseRowLookup(database, table, columns, emulatorEndpoint),
+                new SpannerDatabaseRowLookup(
+                        database, table, columns, emulatorEndpoint, serviceAccountKeyFile),
                 filters);
     }
 

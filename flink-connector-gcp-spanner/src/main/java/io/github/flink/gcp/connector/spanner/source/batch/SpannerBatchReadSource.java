@@ -35,7 +35,9 @@ import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerPartitionSplitEnumerator;
+import io.github.flink.gcp.connector.spanner.source.batch.reader.BatchClientStructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerRecordEmitter;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReader;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReaderMetrics;
@@ -89,11 +91,14 @@ public class SpannerBatchReadSource<T>
     @Override
     public SourceReader<T, PartitionSplit> createReader(SourceReaderContext context)
             throws Exception {
+        StructStreamOpener opener = config.getOpener();
+        if (opener instanceof BatchClientStructStreamOpener) {
+            ((BatchClientStructStreamOpener) opener).loadCredentials();
+        }
         SpannerStructDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
         SpannerSourceReaderMetrics metrics = new SpannerSourceReaderMetrics(context.metricGroup());
-        StructStreamOpener opener = config.getOpener();
         Supplier<SplitReader<Struct, PartitionSplit>> splitReaderSupplier =
                 () ->
                         new SpannerSplitReader(
@@ -111,15 +116,23 @@ public class SpannerBatchReadSource<T>
 
     @Override
     public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> createEnumerator(
-            SplitEnumeratorContext<PartitionSplit> context) {
+            SplitEnumeratorContext<PartitionSplit> context) throws Exception {
+        loadEnumeratorCredentials();
         return new SpannerPartitionSplitEnumerator(context, config, null);
     }
 
     @Override
     public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> restoreEnumerator(
-            SplitEnumeratorContext<PartitionSplit> context,
-            SpannerBatchEnumeratorState checkpoint) {
+            SplitEnumeratorContext<PartitionSplit> context, SpannerBatchEnumeratorState checkpoint)
+            throws Exception {
+        loadEnumeratorCredentials();
         return new SpannerPartitionSplitEnumerator(context, config, checkpoint);
+    }
+
+    private void loadEnumeratorCredentials() throws java.io.IOException {
+        if (config.getPlanner() instanceof BatchClientPartitionPlanner) {
+            ((BatchClientPartitionPlanner) config.getPlanner()).loadCredentials();
+        }
     }
 
     @Override

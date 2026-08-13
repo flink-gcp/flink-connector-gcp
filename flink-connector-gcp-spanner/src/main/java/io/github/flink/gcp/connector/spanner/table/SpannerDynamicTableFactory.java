@@ -66,6 +66,7 @@ public final class SpannerDynamicTableFactory
         return new HashSet<>(
                 Arrays.asList(
                         SpannerConnectorOptions.EMULATOR_ENDPOINT,
+                        SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         SpannerConnectorOptions.DIALECT,
                         SpannerConnectorOptions.SCHEMA,
                         SpannerConnectorOptions.SCHEMA_JSON_FIELD_PATHS,
@@ -103,6 +104,7 @@ public final class SpannerDynamicTableFactory
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
         helper.validate();
         ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
         SpannerTableName table = tableName(config);
@@ -118,6 +120,9 @@ public final class SpannerDynamicTableFactory
                 .writerOptions(WriterOptionsMapper.map(config))
                 .emulatorEndpoint(
                         config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
+                .serviceAccountKeyFile(
+                        config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                                .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
                 .build();
     }
@@ -127,6 +132,7 @@ public final class SpannerDynamicTableFactory
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
         helper.validate();
         ReadableConfig config = helper.getOptions();
+        validateCredentialsMode(config);
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
         return new SpannerDynamicSource(
@@ -138,6 +144,20 @@ public final class SpannerDynamicTableFactory
                 config.get(SpannerConnectorOptions.TABLE),
                 physicalType,
                 config);
+    }
+
+    private static void validateCredentialsMode(ReadableConfig config) {
+        String keyFile =
+                config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null);
+        if (keyFile != null && keyFile.trim().isEmpty()) {
+            throw new org.apache.flink.table.api.ValidationException(
+                    "service-account-key-file must not be blank.");
+        }
+        if (keyFile != null
+                && config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).isPresent()) {
+            throw new org.apache.flink.table.api.ValidationException(
+                    "service-account-key-file cannot be combined with emulator-endpoint.");
+        }
     }
 
     private static SpannerTableName tableName(ReadableConfig config) {

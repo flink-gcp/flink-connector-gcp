@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0096: The Spanner table connector maps DDL rows to native values
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-12
+- Date: 2026-08-11, revised 2026-08-13
 - Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#527](https://github.com/laughingman7743/flink-connector-gcp/issues/527), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528), [#529](https://github.com/laughingman7743/flink-connector-gcp/issues/529), [#563](https://github.com/laughingman7743/flink-connector-gcp/issues/563) (under
-  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573)
+  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573), [#544](https://github.com/laughingman7743/flink-connector-gcp/issues/544)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -52,6 +52,9 @@ A table without a primary key is insert-only because SQL cannot construct a Span
 **The table options are a mapping onto the existing builders.**
 The destination fields assemble `SpannerDatabase`, the physical DDL supplies the serializer, and the eight `sink.*` options map one-for-one onto `SpannerWriterOptions`.
 The table layer keeps the DataStream sink's fail-job constraint and failed-mutation policies because a DDL cannot carry a serializable failure-handler implementation.
+The shared `service-account-key-file` option maps to the bounded source and sink builders and to synchronous and asynchronous lookup clients.
+Only its path is serialized, and each JobManager or TaskManager component that owns a client reads the service-account JSON when that component opens.
+Absent on a real-service path keeps ADC, and an emulator endpoint is mutually exclusive with the key path.
 
 **The optional `schema` value qualifies every Table API data path.**
 The sink mutations, bounded source reads, and lookup point reads use the same dialect-specific fully qualified table name.

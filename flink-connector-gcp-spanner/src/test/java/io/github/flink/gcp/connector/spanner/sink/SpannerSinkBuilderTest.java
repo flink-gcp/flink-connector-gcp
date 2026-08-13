@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.spanner.sink;
 
 import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.spanner.Mutation;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
@@ -67,6 +68,44 @@ class SpannerSinkBuilderTest {
         assertThat(config.getFailedMutationHandler()).isSameAs(handler);
         assertThat(config.getEmulatorEndpoint()).isNotNull();
         assertThat(config.getEmulatorEndpoint().getTarget()).isEqualTo("localhost:9010");
+    }
+
+    @Test
+    void serviceAccountKeyFileSurvivesJobSubmissionSerialization() throws Exception {
+        Sink<String> sink =
+                SpannerSink.<String>builder()
+                        .database(DATABASE)
+                        .serializer(serializer())
+                        .serviceAccountKeyFile("/var/run/secrets/spanner.json")
+                        .build();
+
+        Sink<String> restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(sink), getClass().getClassLoader());
+
+        assertThat(((SpannerMutationsSink<String>) restored).getConfig().getServiceAccountKeyFile())
+                .isEqualTo("/var/run/secrets/spanner.json");
+    }
+
+    @Test
+    void rejectsInvalidOrConflictingServiceAccountKeyFile() {
+        assertThatThrownBy(() -> SpannerSink.<String>builder().serviceAccountKeyFile(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("serviceAccountKeyFile must not be null");
+        assertThatThrownBy(() -> SpannerSink.<String>builder().serviceAccountKeyFile(" \t"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
+        assertThatThrownBy(
+                        () ->
+                                SpannerSink.<String>builder()
+                                        .database(DATABASE)
+                                        .serializer(serializer())
+                                        .serviceAccountKeyFile("key.json")
+                                        .emulatorEndpoint("localhost:9010")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("serviceAccountKeyFile(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
     }
 
     @Test

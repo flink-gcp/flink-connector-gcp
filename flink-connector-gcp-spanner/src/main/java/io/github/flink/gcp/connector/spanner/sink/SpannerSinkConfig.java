@@ -43,6 +43,7 @@ public final class SpannerSinkConfig<T> implements Serializable {
     private final SpannerWriterOptions writerOptions;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
     private final ConstraintViolationPolicy constraintViolationPolicy;
+    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
@@ -55,12 +56,14 @@ public final class SpannerSinkConfig<T> implements Serializable {
             SpannerWriterOptions writerOptions,
             FailureHandler<? super FailedMutation> failedMutationHandler,
             ConstraintViolationPolicy constraintViolationPolicy,
+            @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.database = database;
         this.serializer = serializer;
         this.writerOptions = writerOptions;
         this.failedMutationHandler = failedMutationHandler;
         this.constraintViolationPolicy = constraintViolationPolicy;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
     }
 
@@ -87,6 +90,14 @@ public final class SpannerSinkConfig<T> implements Serializable {
     /** Returns what happens to a mutation refused for violating a constraint. */
     public ConstraintViolationPolicy getConstraintViolationPolicy() {
         return constraintViolationPolicy;
+    }
+
+    /**
+     * Returns the service-account key-file path, or {@code null} when no override is configured.
+     */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /** Returns the emulator endpoint, or {@code null} when writing to the real service. */

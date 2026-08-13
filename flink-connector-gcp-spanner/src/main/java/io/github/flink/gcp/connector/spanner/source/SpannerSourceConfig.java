@@ -53,6 +53,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
     private final PartitionOptions partitionOptions;
     private final boolean dataBoostEnabled;
     @Nullable private final SpannerRpcPriority rpcPriority;
+    @Nullable private final String serviceAccountKeyFile;
     private final PartitionPlanner planner;
     private final StructStreamOpener opener;
     private final int maxRecordsPerFetch;
@@ -65,6 +66,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
             PartitionOptions partitionOptions,
             boolean dataBoostEnabled,
             @Nullable SpannerRpcPriority rpcPriority,
+            @Nullable String serviceAccountKeyFile,
             PartitionPlanner planner,
             StructStreamOpener opener,
             int maxRecordsPerFetch) {
@@ -79,6 +81,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
                 Preconditions.checkNotNull(partitionOptions, "partitionOptions must not be null");
         this.dataBoostEnabled = dataBoostEnabled;
         this.rpcPriority = rpcPriority;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.planner = Preconditions.checkNotNull(planner, "planner must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         Preconditions.checkArgument(
@@ -150,6 +153,14 @@ public final class SpannerSourceConfig<T> implements Serializable {
     @Nullable
     public SpannerRpcPriority getRpcPriority() {
         return rpcPriority;
+    }
+
+    /**
+     * Returns the service-account key-file path, or {@code null} when no override is configured.
+     */
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     /**

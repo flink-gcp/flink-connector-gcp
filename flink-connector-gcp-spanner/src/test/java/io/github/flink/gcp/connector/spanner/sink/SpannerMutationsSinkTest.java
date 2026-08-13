@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner.sink;
 
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.SinkWriter;
+import org.apache.flink.api.connector.sink2.WriterInitContext;
 
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
@@ -132,6 +133,23 @@ class SpannerMutationsSinkTest {
                                                 () -> new CountingAccess()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Spanner serialization schema");
+    }
+
+    @Test
+    void productionWriterLoadsCredentialsBeforeUsingTheContext() {
+        String path = "/missing/spanner-service-account.json";
+        SpannerMutationsSink<String> sink =
+                (SpannerMutationsSink<String>)
+                        SpannerSink.<String>builder()
+                                .database(DATABASE)
+                                .serializer(new RecordingSerializer())
+                                .serviceAccountKeyFile(path)
+                                .build();
+
+        assertThatThrownBy(() -> sink.createWriter((WriterInitContext) null))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to load the configured Spanner service-account key file.")
+                .hasNoCause();
     }
 
     private static SpannerMutationsSink<String> sink(

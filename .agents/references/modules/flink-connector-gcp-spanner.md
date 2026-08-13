@@ -147,6 +147,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `SpannerClients` at the module root builds the service handle both directions open. The
   emulator-versus-credentials branch is exactly what `docs/adr/0064` exists for; do not grow a
   second copy.
+- `SpannerCredentials` loads only service-account JSON and returns `null` when no credential
+  override is configured. Serialize only `serviceAccountKeyFile` paths: bounded enumerators load on the JobManager,
+  bounded readers and sink writers load on TaskManagers, and Table lookup functions load when they
+  open. Restored components reload independently, emulator endpoints are mutually exclusive, and
+  loading failures remain cause-free so paths and credential material cannot leak.
 - **A test needing a `Partition` or a `BatchTransactionId` goes through
   `src/test/java/com/google/cloud/spanner/TestPartitions.java`** — the second file in this
   repository declaring a vendor package, taken under `docs/adr/0067`'s bar and recorded in

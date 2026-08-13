@@ -22,8 +22,10 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccess;
@@ -61,12 +63,14 @@ public class SpannerMutationsSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
+        GoogleCredentials credentials = SpannerCredentials.load(config.getServiceAccountKeyFile());
         return createWriter(
                 context,
                 new DefaultSpannerDatabaseAccessFactory(
                         config.getDatabase(),
                         config.getWriterOptions(),
-                        config.getEmulatorEndpoint()));
+                        config.getEmulatorEndpoint(),
+                        credentials));
     }
 
     /**

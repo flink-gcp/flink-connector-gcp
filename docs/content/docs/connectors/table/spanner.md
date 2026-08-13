@@ -58,6 +58,16 @@ by the cluster. Its bundled packages are relocated so it can coexist with other 
 with application dependencies. DataStream applications should depend on
 `flink-connector-gcp-spanner` instead of the SQL uber-jar.
 
+## Credentials
+
+`service-account-key-file` selects one service-account JSON key for the sink, bounded scan, and synchronous or asynchronous lookup paths.
+When it and `emulator-endpoint` are absent, every path uses Application Default Credentials.
+The option stores only the path in the job graph and reads the file in each runtime process that creates a Spanner client.
+Sink and lookup jobs need the path on applicable TaskManagers, while a bounded scan needs it on the JobManager and applicable TaskManagers.
+Mount the same configured path in all of those containers, including after a restart or restore.
+The option is mutually exclusive with `emulator-endpoint`; prefer an attached service account or Workload Identity when available.
+See the [DataStream credential deployment contract]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) for the exact process boundaries and failure behavior.
+
 ## Named schemas
 
 Set `schema` when the destination or source table belongs to a named Spanner schema.
@@ -209,6 +219,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `schema` | *unset ⇒ empty GoogleSQL schema or PostgreSQL `public`* | Named schema containing the table; one canonical quoted or unquoted identifier component |
 | `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `schema` is set |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery |
+| `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, and lookup paths; rejected with `emulator-endpoint` |
 | `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
 | `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |

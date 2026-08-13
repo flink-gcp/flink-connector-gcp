@@ -17,7 +17,9 @@
 package io.github.flink.gcp.connector.spanner.source.batch.reader;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
 import com.google.cloud.spanner.BatchTransactionId;
@@ -25,10 +27,12 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
+import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 
 import javax.annotation.Nullable;
@@ -53,6 +57,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
 
     private final SpannerDatabase database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
 
     /**
      * The client, built on first use.
@@ -62,6 +67,8 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      * runs on the task thread once those fetchers are down.
      */
     @Nullable private transient volatile Spanner spanner;
+
+    @Nullable private transient GoogleCredentials credentialsOverride;
 
     private transient volatile boolean closed;
 
@@ -74,8 +81,17 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      */
     public BatchClientStructStreamOpener(
             SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(database, emulatorEndpoint, null);
+    }
+
+    /** Creates the opener with an optional runtime-loaded service-account key path. */
+    public BatchClientStructStreamOpener(
+            SpannerDatabase database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -132,10 +148,29 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
                                 + " was closed before it was used.");
             }
             if (spanner == null) {
-                spanner = SpannerClients.open(database, emulatorEndpoint);
+                spanner = SpannerClients.open(database, settings());
             }
             return spanner;
         }
+    }
+
+    /** Loads credentials when a TaskManager creates the source reader. */
+    public void loadCredentials() throws IOException {
+        credentials();
+    }
+
+    /** Builds settings exposed for verifying that the reader injects runtime credentials. */
+    @VisibleForTesting
+    SpannerOptions settings() throws IOException {
+        return SpannerClients.settings(database, emulatorEndpoint, credentials());
+    }
+
+    @Nullable
+    private GoogleCredentials credentials() throws IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = SpannerCredentials.load(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
     }
 
     /**
