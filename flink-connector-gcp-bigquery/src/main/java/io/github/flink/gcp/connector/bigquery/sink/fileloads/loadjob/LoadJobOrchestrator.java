@@ -51,8 +51,11 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -69,24 +72,20 @@ import java.util.TreeMap;
  * schema would be rejected at submission for exactly that case, and whether a run fits one
  * partition must not decide whether its records load.
  *
- * <p><b>Common case — one partition.</b> A table whose files fit one load job is loaded directly:
- * the load job carries the reconciled schema, the configured dispositions, and — belt-and-braces
- * against external mid-run schema changes — the native {@code ALLOW_FIELD_ADDITION}/{@code
- * ALLOW_FIELD_RELAXATION} schema update options. (BigQuery only honors schema update options on
- * {@code WRITE_APPEND} jobs; with other dispositions they are omitted — {@code WRITE_TRUNCATE}
- * replaces the schema wholesale anyway.)
+ * <p><b>Common case — one partition per format.</b> A table whose files fit one load job per
+ * staging format is loaded directly: each load job carries the reconciled schema, the configured
+ * dispositions, and — belt-and-braces against external mid-run schema changes — the native {@code
+ * ALLOW_FIELD_ADDITION}/{@code ALLOW_FIELD_RELAXATION} schema update options. (BigQuery only honors
+ * schema update options on {@code WRITE_APPEND} jobs; with other dispositions they are omitted —
+ * {@code WRITE_TRUNCATE} replaces the schema wholesale anyway.)
  *
- * <p><b>Overflow, batch — temporary tables plus one copy job.</b> A table exceeding the limits is
- * loaded partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code
- * CREATE_IF_NEEDED}, so a retried partition load is idempotent), then appended to the final table
- * with a single atomic copy job. Copy jobs support no schema update options and require matching
- * schemas, so the temporary tables are loaded with the reconciled schema.
- *
- * <p><b>Overflow, streaming — multiple direct loads.</b> A streaming run (one with a checkpoint id)
- * skips the temporary-table path and submits one direct append job per partition instead:
- * deterministic ids keep the retries exactly-once, only the checkpoint's atomic visibility is lost
- * — rows of a partition become visible as its job completes. Streaming is {@code WRITE_APPEND}
- * only, enforced at graph construction.
+ * <p><b>Overflow — temporary tables plus one copy job.</b> If any staging format for a table
+ * exceeds the limits, every format for that table is loaded partition-by-partition into temporary
+ * tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED}, so a retried partition load is
+ * idempotent), then appended to the final table with a single atomic copy job. Copy jobs support no
+ * schema update options and require matching schemas, so the temporary tables are loaded with the
+ * reconciled schema. Streaming temporary-table names include the checkpoint id so consecutive
+ * checkpoints do not collide.
  *
  * <p><b>Concurrency.</b> All jobs are submitted first and awaited second — BigQuery runs them
  * concurrently server-side, so no thread pool is needed.
@@ -109,6 +108,9 @@ public final class LoadJobOrchestrator {
 
     /** Per-load-job byte budget: 11 TiB, a safety margin under BigQuery's 15 TB limit. */
     @VisibleForTesting static final long MAX_BYTES_PER_JOB = 11L * (1L << 40);
+
+    /** BigQuery's maximum source-table count for one copy job. */
+    @VisibleForTesting static final int MAX_SOURCE_TABLES_PER_COPY = 1_200;
 
     private final BigQuerySinkConfig<?> config;
     private final FileLoadsOptions options;
@@ -133,8 +135,7 @@ public final class LoadJobOrchestrator {
      * @param storage the staging storage (post-load cleanup)
      * @param flinkJobId the Flink job id (hex), scoping temporary table names and job ids
      * @param checkpointId the checkpoint whose files this run loads, or {@code null} for a batch
-     *     run; a non-null id selects the streaming behavior (visible job-id segment, direct loads
-     *     on overflow)
+     *     run; a non-null id scopes streaming job ids and temporary-table names
      * @param loadJobsSubmitted the committer's load-job counter. Passed as the counter rather than
      *     as a metric group because this type is constructed once per commit, while the metric it
      *     feeds is registered once per committer
@@ -171,22 +172,53 @@ public final class LoadJobOrchestrator {
             return;
         }
         List<DestinationLoad> loads = plan(committables);
+        Map<TableDestination, DestinationCopy> copies = new LinkedHashMap<>();
+        Map<TableDestination, Integer> formatCounts = new HashMap<>();
+        Set<TableDestination> overflowingDestinations = new HashSet<>();
+        for (DestinationLoad load : loads) {
+            formatCounts.merge(load.destination, 1, Integer::sum);
+            if (load.partitions.size() > 1) {
+                overflowingDestinations.add(load.destination);
+            }
+        }
+        for (TableDestination destination : overflowingDestinations) {
+            int sourceTables =
+                    loads.stream()
+                            .filter(load -> load.destination.equals(destination))
+                            .mapToInt(load -> load.partitions.size())
+                            .sum();
+            if (sourceTables > MAX_SOURCE_TABLES_PER_COPY) {
+                throw new IOException(
+                        "FILE_LOADS overflow for "
+                                + destination
+                                + " requires "
+                                + sourceTables
+                                + " temporary tables, but BigQuery copy jobs accept at most "
+                                + MAX_SOURCE_TABLES_PER_COPY
+                                + " source tables; increase maxStagingFileBytes or reduce the"
+                                + " volume per commit");
+            }
+        }
 
         for (DestinationLoad load : loads) {
-            submitLoads(load);
+            boolean useTempTables = overflowingDestinations.contains(load.destination);
+            submitLoads(load, useTempTables, formatCounts.get(load.destination) > 1);
+            if (useTempTables) {
+                copies.computeIfAbsent(load.destination, DestinationCopy::new)
+                        .tempTables
+                        .addAll(load.tempTables);
+            }
         }
         for (DestinationLoad load : loads) {
             for (String jobId : load.loadJobIds) {
                 runner.awaitJob(jobId);
             }
         }
-        for (DestinationLoad load : loads) {
-            submitCopyIfNeeded(load);
+        for (DestinationCopy copy : copies.values()) {
+            submitCopy(copy);
         }
-        for (DestinationLoad load : loads) {
-            if (load.copyJobId != null) {
-                runner.awaitJob(load.copyJobId);
-            }
+        for (DestinationCopy copy : copies.values()) {
+            runner.awaitJob(copy.copyJobId);
         }
         for (DestinationLoad load : loads) {
             for (TableDestination tempTable : load.tempTables) {
@@ -292,25 +324,11 @@ public final class LoadJobOrchestrator {
         return partitions;
     }
 
-    private void submitLoads(DestinationLoad load) throws IOException {
+    private void submitLoads(DestinationLoad load, boolean useTempTables, boolean multipleFormats)
+            throws IOException {
         TableDestination destination = load.destination;
-        if (load.partitions.size() == 1) {
-            load.loadJobIds.add(
-                    submitDirectLoad(destination, load.format, load.partitions.get(0), null));
-            return;
-        }
-        if (checkpointId != null) {
-            // Streaming overflow: no temporary tables — one direct append job per partition.
-            // Only the checkpoint's atomic visibility is lost; deterministic per-partition ids
-            // keep retries exactly-once. The partitions run sequentially (each awaited before
-            // the next is submitted): the schema is reconciled once up front, but the jobs still
-            // carry schema-update options, which must not race each other on the destination
-            // table the way concurrent ALLOW_FIELD_ADDITION jobs would.
-            for (int i = 0; i < load.partitions.size(); i++) {
-                runner.awaitJob(
-                        submitDirectLoad(
-                                destination, load.format, load.partitions.get(i), "p" + i));
-            }
+        if (!useTempTables) {
+            load.loadJobIds.add(submitDirectLoad(destination, load.format, load.partitions.get(0)));
             return;
         }
         // Copy jobs require matching schemas, so temp tables are loaded with the final table's
@@ -318,7 +336,7 @@ public final class LoadJobOrchestrator {
         Schema schema = finalTableSchema(destination);
         for (int i = 0; i < load.partitions.size(); i++) {
             List<String> uris = urisOf(load.partitions.get(i));
-            TableDestination tempTable = tempTable(destination, i);
+            TableDestination tempTable = tempTable(destination, load.format, multipleFormats, i);
             load.tempTables.add(tempTable);
             String jobId = jobId("flink-bq-load", destination, uris, "p" + i);
             load.loadJobIds.add(jobId);
@@ -345,12 +363,11 @@ public final class LoadJobOrchestrator {
     private String submitDirectLoad(
             TableDestination destination,
             StagingFormat format,
-            List<FileLoadsCommittable> partition,
-            @Nullable String suffix)
+            List<FileLoadsCommittable> partition)
             throws IOException {
         Schema schema = finalTableSchema(destination);
         List<String> uris = urisOf(partition);
-        String jobId = jobId("flink-bq-load", destination, uris, suffix);
+        String jobId = jobId("flink-bq-load", destination, uris, null);
         loadJobsSubmitted.inc();
         runner.submitLoad(
                 jobId,
@@ -365,28 +382,24 @@ public final class LoadJobOrchestrator {
         return jobId;
     }
 
-    private void submitCopyIfNeeded(DestinationLoad load) throws IOException {
-        if (load.tempTables.isEmpty()) {
-            return;
-        }
-        TableDestination destination = load.destination;
-        List<String> tempTablePaths = new ArrayList<>(load.tempTables.size());
-        for (TableDestination tempTable : load.tempTables) {
+    private void submitCopy(DestinationCopy copy) throws IOException {
+        List<String> tempTablePaths = new ArrayList<>(copy.tempTables.size());
+        for (TableDestination tempTable : copy.tempTables) {
             tempTablePaths.add(tempTable.toTablePath());
         }
-        load.copyJobId = jobId("flink-bq-copy", destination, tempTablePaths, null);
+        copy.copyJobId = jobId("flink-bq-copy", copy.destination, tempTablePaths, null);
         runner.submitCopy(
-                load.copyJobId,
+                copy.copyJobId,
                 new CopyJobSpec(
-                        load.tempTables,
-                        destination,
+                        copy.tempTables,
+                        copy.destination,
                         toWriteDisposition(options.getWriteDisposition())));
     }
 
     /**
      * Memoizing wrapper around {@link #ensureFinalTable}: the reconciliation and its create/update
-     * side effects run once per destination per run, however many loads the destination receives
-     * (streaming overflow submits one per partition).
+     * side effects run once per destination per run, however many temporary-table loads the
+     * destination requires.
      */
     private Schema finalTableSchema(TableDestination destination) throws IOException {
         Schema schema = finalTableSchemas.get(destination);
@@ -500,16 +513,27 @@ public final class LoadJobOrchestrator {
         return jobOptions;
     }
 
-    private TableDestination tempTable(TableDestination destination, int partitionIndex) {
+    private TableDestination tempTable(
+            TableDestination destination,
+            StagingFormat format,
+            boolean multipleFormats,
+            int partitionIndex) {
         String dataset =
                 options.getTempDataset() != null
                         ? options.getTempDataset()
                         : destination.getDataset();
+        String hashMaterial = destination.toTablePath();
+        if (checkpointId != null || multipleFormats) {
+            // A format transition can put two independently partitioned loads for one destination
+            // in the same checkpoint. Both need distinct temp tables and copy-job source lists.
+            hashMaterial += "\n" + format;
+        }
         String name =
                 "tmp_"
                         + flinkJobId
                         + "_"
-                        + sha256Hex(destination.toTablePath()).substring(0, 12)
+                        + sha256Hex(hashMaterial).substring(0, 12)
+                        + (checkpointId != null ? "_c" + checkpointId : "")
                         + "_p"
                         + partitionIndex;
         return TableDestination.of(destination.getProject(), dataset, name);
@@ -579,7 +603,6 @@ public final class LoadJobOrchestrator {
         private final List<List<FileLoadsCommittable>> partitions;
         private final List<String> loadJobIds = new ArrayList<>();
         private final List<TableDestination> tempTables = new ArrayList<>();
-        private String copyJobId;
 
         DestinationLoad(
                 TableDestination destination,
@@ -588,6 +611,18 @@ public final class LoadJobOrchestrator {
             this.destination = destination;
             this.format = format;
             this.partitions = partitions;
+        }
+    }
+
+    /** One destination table's combined overflow copy across all staging formats. */
+    private static final class DestinationCopy {
+
+        private final TableDestination destination;
+        private final List<TableDestination> tempTables = new ArrayList<>();
+        private String copyJobId;
+
+        DestinationCopy(TableDestination destination) {
+            this.destination = destination;
         }
     }
 }

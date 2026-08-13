@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0021: Every FILE_LOADS load reconciles against the live table first
 
 - Status: Accepted
-- Date: 2026-07-27
-- Issues: [#142]
+- Date: 2026-07-27; overflow wording revised by [#72] (2026-08-13)
+- Issues: [#72], [#142]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Schema evolution
 
@@ -35,8 +35,7 @@ never a problem.
 
 `ensureFinalTable` is the shared entry point for **every** load — direct and temp-table alike —
 memoized once per destination per run (`finalTableSchema`; the orchestrator is constructed per
-commit, so the memo is naturally per-run and streaming overflow's sequential per-partition
-direct loads reconcile once).
+commit, so the memo is naturally per-run and an overflow's partition loads reconcile once).
 
 Consequences that are decisions, not accidents:
 
@@ -64,3 +63,4 @@ Both measured rows are pinned against real BigQuery by
 `BigQueryFileLoadsSchemaEvolutionITCase`.
 
 [#142]: https://github.com/laughingman7743/flink-connector-gcp/issues/142
+[#72]: https://github.com/laughingman7743/flink-connector-gcp/issues/72

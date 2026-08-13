@@ -75,8 +75,8 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
     /**
      * Load jobs this committer has submitted to BigQuery. The one custom metric of the FILE_LOADS
      * path's commit side: it is what turns "the checkpoint took a while" into "the checkpoint
-     * issued N load jobs", against a quota of 1,500 per table per day. The overflow path's copy job
-     * is deliberately not counted — the name says load jobs, and a copy is a different quota.
+     * issued N load jobs". The overflow path's copy job is deliberately not counted because the
+     * name says load jobs.
      *
      * <p>The framework registers the standard committer metrics ({@code totalCommittables} and
      * friends) itself; nothing here has to.
@@ -229,9 +229,10 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                 && now - lastStreamingCommitMillis < warnGapMs
                 && now - lastQuotaWarnMillis > QUOTA_WARN_THROTTLE_MS) {
             LOG.warn(
-                    "Checkpoints are completing less than {} ms apart; each checkpoint issues at"
-                            + " least one load job per destination table and BigQuery allows"
-                            + " 1,500 load jobs per table per day (2 min = 720/day, 1 min ="
+                    "Checkpoints are completing less than {} ms apart; each checkpoint issues a"
+                            + " direct load or an overflow copy per destination table, and"
+                            + " BigQuery allows 1,500 modifications per standard table per day"
+                            + " (2 min = 720/day, 1 min ="
                             + " 1,440/day). Increase the checkpoint interval for sustained"
                             + " streaming.",
                     warnGapMs);

@@ -49,7 +49,7 @@ import java.util.Objects;
  *
  * <p>The checkpoint id is stamped by the pre-commit stage (the writer does not know it); it stays
  * {@code null} in batch execution and selects the streaming behavior of the load-job orchestrator
- * (visible {@code -c<id>} job-id segment, direct loads on overflow).
+ * (visible {@code -c<id>} job-id segment and checkpoint-scoped overflow tables).
  */
 @Internal
 public final class FileLoadsCommittable {

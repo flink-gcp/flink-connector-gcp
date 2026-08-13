@@ -132,7 +132,7 @@ pool-sizing knob here.
 
 Required by `FILE_LOADS` and rejected by the other two methods. Only `stagingPath` has no default —
 see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads), which is also
-where the load-job quota that shapes `minCheckpointInterval` is set out.
+where the daily job and destination-table limits that shape `minCheckpointInterval` are set out.
 
 | Option | Default | What it does |
 |---|---|---|
