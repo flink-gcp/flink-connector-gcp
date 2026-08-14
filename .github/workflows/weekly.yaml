@@ -140,7 +140,7 @@ jobs:
       # the pom pins — that is the point, and `just verify` takes the rest
       # through to Maven unchanged.
       - name: Build and verify
-        run: just verify ${{ steps.resolve.outputs.args }}
+        run: just verify -Pdocs-snippets ${{ steps.resolve.outputs.args }}
 
   # Does one artifact cover the whole supported range?
   #
