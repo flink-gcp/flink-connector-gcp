@@ -36,6 +36,8 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -55,6 +57,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -748,6 +751,39 @@ class BigQueryDynamicTableFactoryTest {
                     .hasStackTraceContaining("sink.cdc.enabled")
                     .hasStackTraceContaining("sink.write-method");
         }
+
+        Map<String, String> autoCreate = minimalOptions();
+        autoCreate.put("sink.cdc.enabled", "true");
+        autoCreate.put("sink.cdc.max-staleness", "10 min");
+        BigQueryDefaultStreamSink<?> sink =
+                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), autoCreate);
+        CdcTableOptions cdcTable =
+                sink.getConfig().getCdcTableOptionsProvider().optionsFor(DESTINATION);
+        assertThat(cdcTable.getPrimaryKeyColumns()).containsExactly("id");
+        assertThat(cdcTable.getMaxStaleness()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(sink.getConfig().getCdcTableReconciliationPolicy())
+                .isEqualTo(CdcTableReconciliationPolicy.VERIFY_ONLY);
+    }
+
+    @Test
+    void cdcTableOptionsRequireCdcButNotCreationPermission() {
+        Map<String, String> withoutCdc = minimalOptions();
+        withoutCdc.put("sink.cdc.max-staleness", "10 min");
+        assertThatThrownBy(() -> built(withoutCdc))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("CDC table options require")
+                .hasStackTraceContaining("sink.cdc.enabled");
+
+        Map<String, String> createNever = minimalOptions();
+        createNever.put("sink.cdc.enabled", "true");
+        createNever.put("sink.create-disposition", "create-never");
+        createNever.put("sink.cdc.max-staleness", "10 min");
+        createNever.put("sink.cdc.table-reconciliation", "reconcile");
+        BigQueryDefaultStreamSink<?> sink =
+                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), createNever);
+        assertThat(sink.getConfig().getCreateDisposition().name()).isEqualTo("CREATE_NEVER");
+        assertThat(sink.getConfig().getCdcTableReconciliationPolicy())
+                .isEqualTo(CdcTableReconciliationPolicy.RECONCILE);
     }
 
     @Test
@@ -758,6 +794,7 @@ class BigQueryDynamicTableFactoryTest {
 
         Map<String, String> options = minimalOptions();
         options.put("sink.cdc.enabled", "true");
+        options.put("sink.create-disposition", "create-never");
         BigQueryDefaultStreamSink<?> cdc =
                 (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), options);
         assertThat(cdc.getConfig().getCdcOptions()).isNotNull();
@@ -778,6 +815,7 @@ class BigQueryDynamicTableFactoryTest {
                                         false)));
         Map<String, String> options = minimalOptions();
         options.put("sink.cdc.enabled", "true");
+        options.put("sink.create-disposition", "create-never");
 
         BigQueryDefaultStreamSink<?> cdc =
                 (BigQueryDefaultStreamSink<?>)
@@ -807,6 +845,7 @@ class BigQueryDynamicTableFactoryTest {
                                         false)));
         Map<String, String> options = minimalOptions();
         options.put("sink.cdc.enabled", "true");
+        options.put("sink.create-disposition", "create-never");
 
         assertThatThrownBy(
                         () ->

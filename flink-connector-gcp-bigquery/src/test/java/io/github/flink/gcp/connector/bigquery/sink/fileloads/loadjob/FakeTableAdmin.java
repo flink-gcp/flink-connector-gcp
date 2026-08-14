@@ -17,7 +17,11 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
@@ -43,6 +47,19 @@ public final class FakeTableAdmin implements TableAdmin {
         tables.putIfAbsent(destination, schema);
         created.add(destination);
         createOptions.put(destination, options);
+    }
+
+    @Override
+    public boolean ensureCdcTable(
+            TableDestination destination,
+            TableSchema schema,
+            TableCreateOptionsProvider optionsProvider,
+            CdcTableOptions cdcOptions,
+            CreateDisposition createDisposition,
+            CdcTableReconciliationPolicy reconciliationPolicy) {
+        boolean creationRequested = !tables.containsKey(destination);
+        create(destination, schema, optionsProvider.optionsFor(destination));
+        return creationRequested;
     }
 
     @Override

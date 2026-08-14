@@ -16,17 +16,24 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.tables;
 
+import com.google.api.client.http.LowLevelHttpResponse;
+import com.google.api.client.testing.http.MockHttpTransport;
+import com.google.api.client.testing.http.MockLowLevelHttpRequest;
+import com.google.api.client.testing.http.MockLowLevelHttpResponse;
 import com.google.cloud.NoCredentials;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
+import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TimePartitioning;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import com.google.cloud.http.HttpTransportOptions;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
@@ -36,6 +43,8 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -116,6 +125,70 @@ class BigQueryTableAdminTest {
         assertThat(definition.getTimePartitioning().getType())
                 .isEqualTo(TimePartitioning.Type.MONTH);
         assertThat(definition.getTimePartitioning().getField()).isNull();
+    }
+
+    @Test
+    void appliesPrimaryKeyThroughTheTablesApiRequest() {
+        TableInfo tableInfo =
+                BigQueryTableAdmin.buildTableInfo(
+                        DESTINATION,
+                        SCHEMA,
+                        TableCreateOptions.defaults(),
+                        CdcTableOptions.builder()
+                                .primaryKeyColumns(Arrays.asList("event_ts", "tenant"))
+                                .build());
+
+        assertThat(tableInfo.getTableConstraints().getPrimaryKey().getColumns())
+                .containsExactly("event_ts", "tenant");
+    }
+
+    @Test
+    void buildsMaximumStalenessDdlAtMicrosecondPrecision() {
+        QueryJobConfiguration query =
+                BigQueryTableAdmin.alterMaxStalenessQuery(
+                        TableDestination.of("my-project", "analytics", "orders"),
+                        Duration.ofNanos(600_000_001_000L));
+
+        assertThat(query.getQuery())
+                .isEqualTo(
+                        "ALTER TABLE `my-project.analytics.orders` SET OPTIONS"
+                                + " (max_staleness = INTERVAL 600000001 MICROSECOND)");
+        assertThat(query.useLegacySql()).isFalse();
+    }
+
+    @Test
+    void clearsMaximumStalenessWithNull() {
+        QueryJobConfiguration query = BigQueryTableAdmin.alterMaxStalenessQuery(DESTINATION, null);
+
+        assertThat(query.getQuery())
+                .isEqualTo("ALTER TABLE `p.d.t` SET OPTIONS (max_staleness = NULL)");
+    }
+
+    @Test
+    void informationSchemaCheckBindsTheTableName() {
+        QueryJobConfiguration query =
+                BigQueryTableAdmin.maxStalenessCheckQuery(
+                        TableDestination.of("my-project", "analytics", "orders' OR TRUE"),
+                        Duration.ofMinutes(10));
+
+        assertThat(query.getQuery())
+                .contains("`my-project.analytics.INFORMATION_SCHEMA.TABLE_OPTIONS`")
+                .contains("table_name = @table_name")
+                .contains("INTERVAL 600000000 MICROSECOND")
+                .doesNotContain("orders' OR TRUE");
+        assertThat(query.getNamedParameters().get("table_name").getValue())
+                .isEqualTo("orders' OR TRUE");
+    }
+
+    @Test
+    void informationSchemaTreatsAbsenceOrTheZeroIntervalAsCleared() {
+        QueryJobConfiguration query = BigQueryTableAdmin.maxStalenessCheckQuery(DESTINATION, null);
+
+        assertThat(query.getQuery())
+                .contains(
+                        "(COUNT(*) = 0 OR (COUNT(*) = 1 AND COUNTIF(CAST(option_value AS"
+                                + " INTERVAL) = INTERVAL 0 MICROSECOND) = 1)) AS matches")
+                .contains("option_name = 'max_staleness'");
     }
 
     @Test
@@ -260,6 +333,228 @@ class BigQueryTableAdminTest {
     }
 
     @Test
+    void aTransientCdcTableReadIsRetriable() {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.failing(
+                        new BigQueryException(503, "temporarily unavailable")));
+
+        assertThatThrownBy(() -> new BigQueryTableAdmin(client).read(DESTINATION))
+                .isExactlyInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("Failed to read BigQuery table")
+                .hasCauseInstanceOf(BigQueryException.class);
+    }
+
+    @Test
+    void updateProvisioningLabelCarriesTheVerifiedEtagAndOnlyLabelsThroughTheProductionPath()
+            throws Exception {
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest()
+                        .setResponse(new MockLowLevelHttpResponse().setStatusCode(200));
+        BigQueryTableAdmin admin = completionAdmin(request);
+
+        assertThat(
+                        admin.updateProvisioningLabel(
+                                DESTINATION, "pending_spec", "complete_spec", "verified-etag"))
+                .isTrue();
+
+        assertThat(request.getUrl())
+                .isEqualTo("https://bigquery.example/bigquery/v2/projects/p/datasets/d/tables/t");
+        assertThat(request.getFirstHeaderValue("X-HTTP-Method-Override")).isEqualTo("PATCH");
+        assertThat(request.getFirstHeaderValue("If-Match")).isEqualTo("verified-etag");
+        assertThat(request.getContentAsString())
+                .startsWith("{\"labels\":{")
+                .contains("\"flink_gcp_cdc\":\"complete_spec\"")
+                .contains("\"owner\":\"ops\"")
+                .doesNotContain("etag");
+    }
+
+    @Test
+    void aCompletionLabelPreconditionFailureReportsALostRace() throws Exception {
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest()
+                        .setResponse(new MockLowLevelHttpResponse().setStatusCode(412));
+
+        assertThat(
+                        completionAdmin(request)
+                                .updateProvisioningLabel(
+                                        DESTINATION,
+                                        "pending_spec",
+                                        "complete_spec",
+                                        "verified-etag"))
+                .isFalse();
+    }
+
+    @Test
+    void aMissingTableDuringTheCompletionPatchReportsALostRace() throws Exception {
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest()
+                        .setResponse(new MockLowLevelHttpResponse().setStatusCode(404));
+
+        assertThat(
+                        completionAdmin(request)
+                                .updateProvisioningLabel(
+                                        DESTINATION,
+                                        "pending_spec",
+                                        "complete_spec",
+                                        "verified-etag"))
+                .isFalse();
+    }
+
+    @Test
+    void transientCompletionLabelFailuresAreRetriable() {
+        assertCompletionFailureIsRetriable(
+                new MockLowLevelHttpResponse()
+                        .setStatusCode(403)
+                        .setContentType("application/json")
+                        .setContent(
+                                "{\"error\":{\"errors\":[{\"reason\":\"rateLimitExceeded\"}]}}"));
+        assertCompletionFailureIsRetriable(new MockLowLevelHttpResponse().setStatusCode(503));
+    }
+
+    @Test
+    void anAmbiguousCompletionLabelTransportFailureIsRetriable() {
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest() {
+                    @Override
+                    public LowLevelHttpResponse execute() throws IOException {
+                        throw new IOException("connection reset after request");
+                    }
+                };
+
+        assertThatThrownBy(
+                        () ->
+                                completionAdmin(request)
+                                        .updateProvisioningLabel(
+                                                DESTINATION,
+                                                "pending_spec",
+                                                "complete_spec",
+                                                "verified-etag"))
+                .isExactlyInstanceOf(RetriableTableAdminException.class)
+                .hasCauseInstanceOf(IOException.class);
+    }
+
+    @Test
+    void aTerminalCompletionLabelFailureStaysTerminal() {
+        MockLowLevelHttpRequest request =
+                new MockLowLevelHttpRequest()
+                        .setResponse(
+                                new MockLowLevelHttpResponse()
+                                        .setStatusCode(403)
+                                        .setContentType("application/json")
+                                        .setContent(
+                                                "{\"error\":{\"errors\":[{\"reason\":\"accessDenied\"}]}}"));
+
+        assertThatThrownBy(
+                        () ->
+                                completionAdmin(request)
+                                        .updateProvisioningLabel(
+                                                DESTINATION,
+                                                "pending_spec",
+                                                "complete_spec",
+                                                "verified-etag"))
+                .isExactlyInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class);
+    }
+
+    private static void assertCompletionFailureIsRetriable(MockLowLevelHttpResponse response) {
+        MockLowLevelHttpRequest request = new MockLowLevelHttpRequest().setResponse(response);
+        assertThatThrownBy(
+                        () ->
+                                completionAdmin(request)
+                                        .updateProvisioningLabel(
+                                                DESTINATION,
+                                                "pending_spec",
+                                                "complete_spec",
+                                                "verified-etag"))
+                .isExactlyInstanceOf(RetriableTableAdminException.class);
+    }
+
+    private static BigQueryTableAdmin completionAdmin(MockLowLevelHttpRequest request) {
+        MockHttpTransport transport =
+                new MockHttpTransport() {
+                    @Override
+                    public MockLowLevelHttpRequest buildRequest(String method, String url) {
+                        assertThat(method).isEqualTo("POST");
+                        return request.setUrl(url);
+                    }
+                };
+        BigQueryOptions options =
+                BigQueryOptions.newBuilder()
+                        .setProjectId("p")
+                        .setHost("https://bigquery.example")
+                        .setCredentials(NoCredentials.getInstance())
+                        .setTransportOptions(
+                                HttpTransportOptions.newBuilder()
+                                        .setHttpTransportFactory(() -> transport)
+                                        .build())
+                        .build();
+        StubBigQuery client = new StubBigQuery(options);
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        "current-etag", Map.of("flink_gcp_cdc", "pending_spec", "owner", "ops")));
+        return new BigQueryTableAdmin(client);
+    }
+
+    @Test
+    void documentedTransientQueryJobReasonsAreRetriable() {
+        assertThat(
+                        Set.of(
+                                        "rateLimitExceeded",
+                                        "jobRateLimitExceeded",
+                                        "backendError",
+                                        "internalError",
+                                        "jobBackendError",
+                                        "jobInternalError")
+                                .stream()
+                                .allMatch(BigQueryTableAdmin::isRetriableJobReason))
+                .isTrue();
+        assertThat(BigQueryTableAdmin.isRetriableJobReason("invalidQuery")).isFalse();
+        assertThat(BigQueryTableAdmin.isRetriableJobReason("accessDenied")).isFalse();
+    }
+
+    @Test
+    void directQueryFailuresUseTheSameTransientReasonsAsPolledJobs() {
+        assertThat(
+                        BigQueryTableAdmin.isRetriableQueryFailure(
+                                new BigQueryException(
+                                        Arrays.asList(
+                                                new BigQueryError(
+                                                        "jobBackendError",
+                                                        null,
+                                                        "transient query failure")))))
+                .isTrue();
+        assertThat(
+                        BigQueryTableAdmin.isRetriableQueryFailure(
+                                new BigQueryException(
+                                        Arrays.asList(
+                                                new BigQueryError(
+                                                        "accessDenied", null, "terminal")))))
+                .isFalse();
+        assertThat(
+                        BigQueryTableAdmin.isRetriableQueryFailure(
+                                new BigQueryException(400, "terminal without structured errors")))
+                .isFalse();
+    }
+
+    @Test
+    void theDirectQueryPathSurfacesTransientReasonsToTheProvisioningRetry() {
+        StubBigQuery client = new StubBigQuery();
+        client.queryFailure =
+                new BigQueryException(
+                        Arrays.asList(
+                                new BigQueryError(
+                                        "jobRateLimitExceeded", null, "retry this query")));
+
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .maxStalenessMatches(DESTINATION, Duration.ofMinutes(10)))
+                .isExactlyInstanceOf(RetriableTableAdminException.class)
+                .hasCause(client.queryFailure);
+    }
+
+    @Test
     void theSdkDoesNotConsiderTheRateLimitedCreationRaceRetryable() {
         // Why the connector needs a rule of its own at all: BigQueryImpl.create runs under
         // runWithRetries, but the handler consults isRetryable(), whose RETRYABLE_ERRORS set is
@@ -359,6 +654,26 @@ class BigQueryTableAdminTest {
         BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
 
         admin.create(DESTINATION, SCHEMA, TableCreateOptions.defaults());
+
+        assertThat(client.createdTables).hasSize(1);
+    }
+
+    @Test
+    void cdcCreateTreatsAConflictAsSuccess() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.createTableFailure = new BigQueryException(409, "Already Exists");
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+
+        assertThat(
+                        admin.create(
+                                DESTINATION,
+                                SCHEMA,
+                                TableCreateOptions.defaults(),
+                                CdcTableOptions.builder()
+                                        .primaryKeyColumns(Arrays.asList("id"))
+                                        .build(),
+                                "pending_specification"))
+                .isFalse();
 
         assertThat(client.createdTables).hasSize(1);
     }

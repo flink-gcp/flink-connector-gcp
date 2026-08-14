@@ -36,7 +36,12 @@ import com.google.rpc.Status;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
@@ -84,6 +89,19 @@ class BigQueryDefaultStreamWriterTest {
                 TableSchema schema,
                 io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions options)
                 throws IOException {}
+
+        @Override
+        public boolean ensureCdcTable(
+                TableDestination destination,
+                TableSchema schema,
+                TableCreateOptionsProvider createOptionsProvider,
+                CdcTableOptions cdcOptions,
+                CreateDisposition createDisposition,
+                CdcTableReconciliationPolicy reconciliationPolicy)
+                throws IOException {
+            create(destination, schema, createOptionsProvider.optionsFor(destination));
+            return true;
+        }
 
         @Override
         public TableSchemaSnapshot getSchema(TableDestination destination) {
@@ -293,6 +311,29 @@ class BigQueryDefaultStreamWriterTest {
         }
     }
 
+    private static final class RecordingCdcTableAdmin extends NoopTableAdmin {
+        private final List<TableDestination> ensured = new ArrayList<>();
+        private TableSchema schema;
+        private CdcTableOptions options;
+        private boolean ready;
+        private boolean creationRequested = true;
+
+        @Override
+        public boolean ensureCdcTable(
+                TableDestination destination,
+                TableSchema schema,
+                TableCreateOptionsProvider createOptionsProvider,
+                CdcTableOptions options,
+                CreateDisposition createDisposition,
+                CdcTableReconciliationPolicy reconciliationPolicy) {
+            ensured.add(destination);
+            this.schema = schema;
+            this.options = options;
+            ready = true;
+            return creationRequested;
+        }
+    }
+
     private static BigQuerySinkConfig<String> config(
             DestinationResolver<? super String> resolver,
             BigQueryProtoSerializer<? super String> serializer) {
@@ -353,6 +394,7 @@ class BigQueryDefaultStreamWriterTest {
                                                 TableDestination.of(
                                                         "p", "d", element.substring(0, 1)))
                                 .serializer(new CdcStringSerializer())
+                                .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
@@ -419,6 +461,164 @@ class BigQueryDefaultStreamWriterTest {
     }
 
     @Test
+    void provisionsCdcTableBeforeOpeningTheFirstAppender() throws Exception {
+        RecordingCdcTableAdmin admin = new RecordingCdcTableAdmin();
+        FakeAppenderFactory factory =
+                new FakeAppenderFactory() {
+                    @Override
+                    public RowAppender create(
+                            TableDestination destination,
+                            Descriptors.Descriptor rowDescriptor,
+                            String location) {
+                        assertThat(admin.ready).isTrue();
+                        return super.create(destination, rowDescriptor, location);
+                    }
+                };
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(TableDestination.of("p", "d", "t"))
+                                .serializer(new CdcStringSerializer())
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(
+                                                        java.util.Collections.singletonList(
+                                                                "value"))
+                                                .maxStaleness(java.time.Duration.ofMinutes(10))
+                                                .build())
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(factory, admin, TestSinkWriterMetricGroup.create());
+
+        writer.write("first", CONTEXT);
+        writer.write("second", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.ensured).containsExactly(TableDestination.of("p", "d", "t"));
+        assertThat(admin.schema.getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("value", "source");
+        assertThat(admin.options.getPrimaryKeyColumns()).containsExactly("value");
+        assertThat(admin.options.getMaxStaleness()).isEqualTo(java.time.Duration.ofMinutes(10));
+    }
+
+    @Test
+    void existingCdcTableVerificationDoesNotResolveCreationOptions() throws Exception {
+        RecordingCdcTableAdmin admin = new RecordingCdcTableAdmin();
+        admin.creationRequested = false;
+        AtomicInteger creationOptionsCalls = new AtomicInteger();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(TableDestination.of("p", "d", "t"))
+                                .serializer(new CdcStringSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(
+                                                        java.util.Collections.singletonList(
+                                                                "value"))
+                                                .build())
+                                .tableCreateOptionsProvider(
+                                        destination -> {
+                                            creationOptionsCalls.incrementAndGet();
+                                            return TableCreateOptions.builder().build();
+                                        })
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(
+                        new FakeAppenderFactory(), admin, TestSinkWriterMetricGroup.create());
+
+        writer.write("value", CONTEXT);
+
+        assertThat(creationOptionsCalls).hasValue(0);
+        assertThat(admin.ensured).containsExactly(TableDestination.of("p", "d", "t"));
+    }
+
+    @Test
+    void nullCdcTableOptionsIdentifyTheProviderAndDestination() {
+        TableDestination destination = TableDestination.of("p", "d", "t");
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(destination)
+                                .serializer(new CdcStringSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptionsProvider(ignored -> null)
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(
+                        new FakeAppenderFactory(),
+                        new RecordingCdcTableAdmin(),
+                        TestSinkWriterMetricGroup.create());
+
+        assertThatThrownBy(() -> writer.write("value", CONTEXT))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("CdcTableOptionsProvider returned null")
+                .hasMessageContaining(destination.toString());
+    }
+
+    @Test
+    void oldJobGraphsKeepTheirPreCreatedCdcTableBehavior() throws Exception {
+        RecordingCdcTableAdmin admin = new RecordingCdcTableAdmin();
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(TableDestination.of("p", "d", "t"))
+                                .serializer(new CdcStringSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(
+                                                        java.util.Collections.singletonList(
+                                                                "value"))
+                                                .build())
+                                .build();
+        BigQuerySinkConfig<String> config = sink.getConfig();
+        java.lang.reflect.Field field =
+                BigQuerySinkConfig.class.getDeclaredField("manageCdcTableCreation");
+        field.setAccessible(true);
+        field.setBoolean(config, false);
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config,
+                        factory,
+                        admin,
+                        TestSinkWriterMetricGroup.create(),
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        fastSchedule(3),
+                        fastSchedule(3));
+
+        writer.write("value", CONTEXT);
+
+        assertThat(admin.ensured).isEmpty();
+        assertThat(factory.appenders).hasSize(1);
+    }
+
+    @Test
     void rejectsCdcDescriptorConflictsBeforeRowFailureHandling() {
         FakeAppenderFactory factory = new FakeAppenderFactory();
         ConflictingCdcSerializer serializer = new ConflictingCdcSerializer();
@@ -427,6 +627,7 @@ class BigQueryDefaultStreamWriterTest {
                         BigQuerySink.<String>builder()
                                 .destination(TableDestination.of("p", "d", "t"))
                                 .serializer(serializer)
+                                .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())

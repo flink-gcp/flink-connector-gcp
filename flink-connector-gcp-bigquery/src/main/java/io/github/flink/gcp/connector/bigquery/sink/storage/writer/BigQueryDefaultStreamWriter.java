@@ -37,11 +37,13 @@ import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdminException;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.protobuf.StatusProto;
@@ -547,16 +549,21 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Returns the destination's state, creating it if absent. When creating the appender itself
-     * fails with a missing-table verdict (the SDK looks up the table's location when none is
-     * configured) and the disposition allows it, the table is created and the appender creation
-     * retried. A recovery that fails in turn carries that first verdict as a suppressed exception,
-     * so the failure a reader acts on still says what made this writer try to create a table.
+     * Returns the destination's state, creating it if absent. A CDC destination under {@code
+     * CREATE_IF_NEEDED} is provisioned and verified before the appender opens. For other writes,
+     * when creating the appender itself fails with a missing-table verdict (the SDK looks up the
+     * table's location when none is configured) and the disposition allows it, the table is created
+     * and the appender creation retried. A recovery that fails in turn carries that first verdict
+     * as a suppressed exception, so the failure a reader acts on still says what made this writer
+     * try to create a table.
      */
     private DestinationState ensureState(TableDestination destination) throws IOException {
         DestinationState state = states.get(destination);
         if (state != null) {
             return state;
+        }
+        if (managesCdcTableContract()) {
+            ensureCdcTable(destination);
         }
         try {
             state = createState(destination);
@@ -971,6 +978,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
      * the missing-table verdict itself off that budget for the same reason.
      */
     private void createTable(TableDestination destination) throws IOException {
+        if (managesCdcTableContract()) {
+            ensureCdcTable(destination);
+            return;
+        }
         tableAdmin.create(
                 destination,
                 config.getTableSchema(destination),
@@ -979,6 +990,41 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         // reach it. Creation is idempotent across subtasks, so this counts what this subtask
         // asked for, not what BigQuery had to do — and a creation the admin had to repeat counts
         // once, since the repeats happen before this line is reached.
+        metrics.tableCreated();
+    }
+
+    private boolean managesCdcTableContract() {
+        return config.managesCdcTableContract();
+    }
+
+    private void ensureCdcTable(TableDestination destination) throws IOException {
+        CdcTableOptions cdcTableOptions =
+                Preconditions.checkNotNull(
+                        config.getCdcTableOptionsProvider().optionsFor(destination),
+                        "CdcTableOptionsProvider returned null for %s",
+                        destination);
+        try {
+            if (tableAdmin.ensureCdcTable(
+                    destination,
+                    config.getTableSchema(destination),
+                    config.getTableCreateOptionsProvider(),
+                    cdcTableOptions,
+                    config.getCreateDisposition(),
+                    config.getCdcTableReconciliationPolicy())) {
+                countCdcTableCreationRequest();
+            }
+        } catch (TableAdminException e) {
+            if (e.wasCreationRequested()) {
+                countCdcTableCreationRequest();
+            }
+            throw e;
+        }
+    }
+
+    private void countCdcTableCreationRequest() {
+        // Eager CDC verification of a table that already exists must not look like another
+        // creation after every restart or destination reactivation. Once creation was requested,
+        // count it even when later provisioning fails: the table still exists for the operator.
         metrics.tableCreated();
     }
 

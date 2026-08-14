@@ -24,6 +24,8 @@ import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
@@ -58,11 +60,10 @@ class BigQueryDynamicSinkTest {
             TableDestination.of("my-project", "my_dataset", "my_table");
 
     /**
-     * The sink's three required values, so a test can vary one of the other twelve by name.
+     * The sink's required values, so a test can vary each optional field by name.
      *
      * <p>The production builder is the holder: the identity test below builds one variation per
-     * field, and a private copy of the same fifteen fields would have to be kept in step with it
-     * for no gain.
+     * field, and a private copy of those fields would have to be kept in step with it for no gain.
      */
     private static BigQueryDynamicSink.Builder base() {
         return BigQueryDynamicSink.builder()
@@ -168,6 +169,16 @@ class BigQueryDynamicSinkTest {
                                         .timePartitioning(
                                                 TableCreateOptions.TimePartitioningType.DAY)
                                         .build()));
+        varied.put(
+                "cdcTableOptions",
+                a ->
+                        a.cdcTableOptions(
+                                CdcTableOptions.builder()
+                                        .primaryKeyColumns(Collections.singletonList("id"))
+                                        .build()));
+        varied.put(
+                "cdcTableReconciliationPolicy",
+                a -> a.cdcTableReconciliationPolicy(CdcTableReconciliationPolicy.RECONCILE));
         varied.put("location", a -> a.location("US"));
         varied.put(
                 "schemaUpdateOptions",
@@ -212,7 +223,7 @@ class BigQueryDynamicSinkTest {
 
     @Test
     void aCopyOfAFullySpecifiedSinkEqualsIt() {
-        // Fully specified, not the default one: copy() is a chain of fifteen builder calls, and a
+        // Fully specified, not the default one: copy() is a chain of builder calls, and a
         // dropped call reproduces whatever the default already was — copying a sink whose optional
         // fields are all null cannot tell the two apart. Measured: a copy() that lost writeMethod
         // survived that version of this test.

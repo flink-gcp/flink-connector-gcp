@@ -19,6 +19,7 @@ package com.google.cloud.bigquery;
 import javax.annotation.Nullable;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Mints {@link Job}, {@link JobStatus}, {@link Table} and {@link Dataset} values for tests, from
@@ -180,6 +181,15 @@ public final class TestJobs {
      */
     public static Table table(BigQuery bigquery, TableId tableId) {
         return new Table.Builder(bigquery, tableId, StandardTableDefinition.of(Schema.of()))
+                .build();
+    }
+
+    /** Returns a table carrying the metadata needed by conditional table-update tests. */
+    public static Table table(
+            BigQuery bigquery, TableId tableId, String etag, Map<String, String> labels) {
+        return new Table.Builder(bigquery, tableId, StandardTableDefinition.of(Schema.of()))
+                .setEtag(etag)
+                .setLabels(labels)
                 .build();
     }
 

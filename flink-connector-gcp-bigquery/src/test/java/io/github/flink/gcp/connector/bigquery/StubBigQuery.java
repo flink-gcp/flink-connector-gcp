@@ -64,11 +64,12 @@ import java.util.Map;
  * The parts of {@link BigQuery} this module's REST callers read, with everything else unsupported —
  * so a new dependency on the client shows up as a failing test rather than as a silent null.
  *
- * <p>Six methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
+ * <p>Seven methods are live ({@link #getJob}, {@link #create(JobInfo, JobOption...)}, {@link
  * #create(TableInfo, TableOption...)}, {@link #delete(TableId)}, {@link #getTable(TableId,
- * TableOption...)}, {@link #getDataset(DatasetId, DatasetOption...)}), plus {@link #getOptions()},
- * which no caller invokes itself — {@link Job}'s constructor does, so a stub throwing there fails
- * on the first submitted job. The other 49 throw.
+ * TableOption...)}, {@link #getDataset(DatasetId, DatasetOption...)}, and {@link
+ * #query(QueryJobConfiguration, JobId, JobOption...)}), plus {@link #getOptions()}, which no caller
+ * invokes itself — {@link Job}'s constructor does, so a stub throwing there fails on the first
+ * submitted job. The other methods throw.
  *
  * <p>It lives here, beside {@link RealBigQuery}, rather than in one caller's package, because it
  * has two consumers: {@link BigQueryLoadJobRunner}'s tests, which it was written for, and {@code
@@ -131,6 +132,9 @@ public final class StubBigQuery implements BigQuery {
     /** Thrown by {@code getDataset} when set. */
     @Nullable public BigQueryException getDatasetFailure;
 
+    /** Thrown by the query overload used by CDC provisioning when set. */
+    @Nullable public BigQueryException queryFailure;
+
     /**
      * The configuration a minted job reports, instead of the one it was submitted with.
      *
@@ -154,11 +158,21 @@ public final class StubBigQuery implements BigQuery {
      * so that lookup would not fail the test — it would make it read the environment (a credentials
      * file, or a metadata-server probe with its timeout) for a value nothing here uses.
      */
-    private final BigQueryOptions options =
-            BigQueryOptions.newBuilder()
-                    .setProjectId("stub-project")
-                    .setCredentials(NoCredentials.getInstance())
-                    .build();
+    private final BigQueryOptions options;
+
+    /** Creates a stub with inert local options. */
+    public StubBigQuery() {
+        this(
+                BigQueryOptions.newBuilder()
+                        .setProjectId("stub-project")
+                        .setCredentials(NoCredentials.getInstance())
+                        .build());
+    }
+
+    /** Creates a stub exposing the supplied options to code that owns its HTTP transport. */
+    public StubBigQuery(BigQueryOptions options) {
+        this.options = options;
+    }
 
     /** What a scripted {@code getJob} call answers. */
     public static final class JobAnswer {
@@ -224,25 +238,38 @@ public final class StubBigQuery implements BigQuery {
 
         private final boolean present;
         @Nullable private final BigQueryException failure;
+        @Nullable private final String etag;
+        @Nullable private final Map<String, String> labels;
 
-        private TableAnswer(boolean present, @Nullable BigQueryException failure) {
+        private TableAnswer(
+                boolean present,
+                @Nullable BigQueryException failure,
+                @Nullable String etag,
+                @Nullable Map<String, String> labels) {
             this.present = present;
             this.failure = failure;
+            this.etag = etag;
+            this.labels = labels;
         }
 
         /** Answers that no table exists under the id asked for. */
         public static TableAnswer absent() {
-            return new TableAnswer(false, null);
+            return new TableAnswer(false, null, null, null);
         }
 
         /** Answers with a live table under the id asked for. */
         public static TableAnswer existing() {
-            return new TableAnswer(true, null);
+            return new TableAnswer(true, null, null, null);
+        }
+
+        /** Answers with a live table carrying conditional-update metadata. */
+        public static TableAnswer existing(String etag, Map<String, String> labels) {
+            return new TableAnswer(true, null, etag, new HashMap<>(labels));
         }
 
         /** Fails the lookup, as the client does once its own retries are exhausted. */
         public static TableAnswer failing(BigQueryException failure) {
-            return new TableAnswer(false, failure);
+            return new TableAnswer(false, failure, null, null);
         }
     }
 
@@ -496,7 +523,12 @@ public final class StubBigQuery implements BigQuery {
         // mint reaches the vendor's package (docs/adr/0067), which is what lets this stub answer
         // "still there" at all. The expiration update against such a table is still unsupported —
         // that round trip is the gated real-GCP case's.
-        return answer.present ? TestJobs.table(this, tableId) : null;
+        if (!answer.present) {
+            return null;
+        }
+        return answer.etag == null
+                ? TestJobs.table(this, tableId)
+                : TestJobs.table(this, tableId, answer.etag, answer.labels);
     }
 
     @Override
@@ -610,6 +642,9 @@ public final class StubBigQuery implements BigQuery {
     @Override
     public TableResult query(
             QueryJobConfiguration configuration, JobId jobId, JobOption... options) {
+        if (queryFailure != null) {
+            throw queryFailure;
+        }
         throw unsupported("query(QueryJobConfiguration, JobId)");
     }
 

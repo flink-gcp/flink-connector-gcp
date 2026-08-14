@@ -71,6 +71,7 @@ class BigQueryCdcPlanTest {
                         + "PRIMARY KEY (id) NOT ENFORCED) WITH ("
                         + "'connector'='bigquery', 'project'='p', 'dataset'='d', "
                         + "'table'='current_rows', 'sink.cdc.enabled'='true', "
+                        + "'sink.cdc.max-staleness'='10 min', "
                         + "'emulator-endpoint'='localhost:1')");
 
         String plan =

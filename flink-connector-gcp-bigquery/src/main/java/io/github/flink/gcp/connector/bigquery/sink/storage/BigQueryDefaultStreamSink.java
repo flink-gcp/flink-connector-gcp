@@ -124,7 +124,9 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
     TableAdmin createTableAdmin() {
         return new RetryingTableAdmin(
                 new BigQueryTableAdmin(
-                        config.getServiceAccountKeyFile(), config.getEmulatorRestEndpoint()),
+                        config.getServiceAccountKeyFile(),
+                        config.getEmulatorRestEndpoint(),
+                        config.getLocation()),
                 options.toRecoverySchedule());
     }
 

@@ -31,6 +31,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -39,6 +40,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink;
 import io.github.flink.gcp.connector.bigquery.table.sink.BufferedStreamOptionsMapper;
+import io.github.flink.gcp.connector.bigquery.table.sink.CdcTableOptionsMapper;
 import io.github.flink.gcp.connector.bigquery.table.sink.DefaultStreamOptionsMapper;
 import io.github.flink.gcp.connector.bigquery.table.sink.FileLoadsOptionsMapper;
 import io.github.flink.gcp.connector.bigquery.table.sink.RowDataSchemaOptions;
@@ -127,6 +129,9 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
                         BigQueryConnectorOptions.SINK_CDC_ENABLED,
+                        BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS,
+                        BigQueryConnectorOptions.SINK_CDC_CLEAR_MAX_STALENESS,
+                        BigQueryConnectorOptions.SINK_CDC_TABLE_RECONCILIATION,
                         BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS,
                         BigQueryConnectorOptions.SINK_SCHEMA_UPDATE_ALLOW_FIELD_RELAXATION,
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_TYPE,
@@ -185,13 +190,15 @@ public class BigQueryDynamicTableFactory
         helper.validate();
 
         ReadableConfig config = helper.getOptions();
-        // Read once and defaulted once: the checks below need a value, while the sink must not
-        // carry a copy of the builder's default (BigQuerySinkBuilder's own field), because an
-        // unset option has to leave that setter uncalled.
+        // Read once and defaulted once: the checks below need values, while the sink must not carry
+        // copies of the builder's defaults, because an unset option has to leave its setter
+        // uncalled.
         Optional<WriteMethod> configuredWriteMethod =
                 config.getOptional(BigQueryConnectorOptions.SINK_WRITE_METHOD);
         WriteMethod writeMethod =
                 configuredWriteMethod.orElse(WriteMethod.STORAGE_API_AT_LEAST_ONCE);
+        Optional<CreateDisposition> configuredCreateDisposition =
+                config.getOptional(BigQueryConnectorOptions.SINK_CREATE_DISPOSITION);
         boolean cdcEnabled =
                 config.getOptional(BigQueryConnectorOptions.SINK_CDC_ENABLED).orElse(false);
 
@@ -200,7 +207,7 @@ public class BigQueryDynamicTableFactory
         // — a table-creation column BigQuery cannot use, a staging path that is not a gs:// URI —
         // and evaluating them inside the builder chain would let those messages arrive first.
         SchemaUpdateOptions schemaUpdateOptions = schemaUpdateOptions(config);
-        checkCdcConfiguration(context, writeMethod, cdcEnabled);
+        checkCdcConfiguration(context, config, writeMethod, cdcEnabled);
         checkFamiliesMatchTheWriteMethod(config, writeMethod);
         checkEmulatorEndpointsAreSupported(config, writeMethod);
         checkCredentials(config);
@@ -232,12 +239,20 @@ public class BigQueryDynamicTableFactory
                 .cdcEnabled(cdcEnabled)
                 .primaryKeyIndexes(context.getPrimaryKeyIndexes())
                 .writeMethod(configuredWriteMethod.orElse(null))
-                .createDisposition(
-                        config.getOptional(BigQueryConnectorOptions.SINK_CREATE_DISPOSITION)
-                                .orElse(null))
+                .createDisposition(configuredCreateDisposition.orElse(null))
                 .tableCreateOptions(
                         TableCreateOptionsMapper.map(
                                 config, (RowType) physicalDataType.getLogicalType()))
+                .cdcTableOptions(
+                        cdcEnabled
+                                ? CdcTableOptionsMapper.map(
+                                        config,
+                                        primaryKeyColumns(
+                                                (RowType) physicalDataType.getLogicalType(),
+                                                context.getPrimaryKeyIndexes()))
+                                : null)
+                .cdcTableReconciliationPolicy(
+                        cdcEnabled ? CdcTableOptionsMapper.policy(config) : null)
                 .location(config.getOptional(BigQueryConnectorOptions.SINK_LOCATION).orElse(null))
                 .schemaUpdateOptions(schemaUpdateOptions)
                 .defaultStreamOptions(DefaultStreamOptionsMapper.map(config))
@@ -256,7 +271,19 @@ public class BigQueryDynamicTableFactory
     }
 
     private static void checkCdcConfiguration(
-            Context context, WriteMethod writeMethod, boolean cdcEnabled) {
+            Context context, ReadableConfig config, WriteMethod writeMethod, boolean cdcEnabled) {
+        if (!cdcEnabled
+                && (config.getOptional(BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS).isPresent()
+                        || config.getOptional(BigQueryConnectorOptions.SINK_CDC_CLEAR_MAX_STALENESS)
+                                .isPresent()
+                        || config.getOptional(
+                                        BigQueryConnectorOptions.SINK_CDC_TABLE_RECONCILIATION)
+                                .isPresent())) {
+            throw new ValidationException(
+                    String.format(
+                            "CDC table options require '%s' = 'true'.",
+                            BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
+        }
         if (!cdcEnabled) {
             return;
         }
@@ -278,6 +305,14 @@ public class BigQueryDynamicTableFactory
                                     + " that key.",
                             BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
         }
+    }
+
+    private static List<String> primaryKeyColumns(RowType rowType, int[] primaryKeyIndexes) {
+        List<String> columns = new ArrayList<>(primaryKeyIndexes.length);
+        for (int index : primaryKeyIndexes) {
+            columns.add(rowType.getFieldNames().get(index));
+        }
+        return columns;
     }
 
     @Override

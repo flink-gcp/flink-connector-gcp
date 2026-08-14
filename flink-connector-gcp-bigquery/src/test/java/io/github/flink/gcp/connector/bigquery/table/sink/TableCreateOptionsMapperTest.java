@@ -116,7 +116,7 @@ class TableCreateOptionsMapperTest {
                         .collect(Collectors.toSet());
 
         // Both directions: a new knob without an option, and an option whose knob was removed.
-        assertThat(setters).isEqualTo(SETTER_TO_OPTIONS.keySet());
+        assertThat(setters).containsExactlyInAnyOrderElementsOf(SETTER_TO_OPTIONS.keySet());
     }
 
     @Test

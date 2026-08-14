@@ -34,15 +34,22 @@ import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdminException;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -225,6 +232,108 @@ class BigQueryDefaultStreamWriterMetricsTest {
         assertThat(counter("tablesCreated")).isEqualTo(1);
         assertThat(counter("schemaReconciliations")).isZero();
         assertThat(errors("NOT_FOUND")).isEqualTo(1);
+    }
+
+    @Test
+    void countsOneCdcCreationRequestBeforeTheAppenderOpens() throws Exception {
+        admin.liveSchema = null;
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new ValidEmptyProtoSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(List.of("name"))
+                                                .build())
+                                .build();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        sink.getConfig(),
+                        factory,
+                        admin,
+                        metrics,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        writer.write("aa", CONTEXT);
+
+        assertThat(admin.creates).containsExactly(DESTINATION);
+        assertThat(counter("tablesCreated")).isEqualTo(1);
+    }
+
+    @Test
+    void countsACdcCreationRequestWhenLaterProvisioningFails() throws Exception {
+        admin.liveSchema = null;
+        admin.cdcFailureAfterCreate =
+                new TableAdminException("ALTER denied", new IOException("denied"), true);
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new ValidEmptyProtoSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(List.of("name"))
+                                                .build())
+                                .build();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        sink.getConfig(),
+                        factory,
+                        admin,
+                        metrics,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        assertThatThrownBy(() -> writer.write("aa", CONTEXT))
+                .isInstanceOf(TableAdminException.class)
+                .hasMessage("ALTER denied");
+
+        assertThat(admin.creates).containsExactly(DESTINATION);
+        assertThat(counter("tablesCreated")).isEqualTo(1);
+    }
+
+    @Test
+    void doesNotCountCdcVerificationOfAnExistingTableAsCreation() throws Exception {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new ValidEmptyProtoSerializer())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(List.of("name"))
+                                                .build())
+                                .build();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        sink.getConfig(),
+                        factory,
+                        admin,
+                        metrics,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        writer.write("aa", CONTEXT);
+
+        assertThat(admin.creates).isEmpty();
+        assertThat(counter("tablesCreated")).isZero();
     }
 
     @Test
@@ -567,6 +676,16 @@ class BigQueryDefaultStreamWriterMetricsTest {
         }
     }
 
+    /** Serializer emitting bytes valid for the Empty descriptor, for CDC augmentation tests. */
+    private static final class ValidEmptyProtoSerializer extends StringSerializer {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ByteString serialize(String element) {
+            return Empty.getDefaultInstance().toByteString();
+        }
+    }
+
     /** Serializer rejecting every record. */
     private static final class FailingSerializer extends StringSerializer {
         private static final long serialVersionUID = 1L;
@@ -618,6 +737,8 @@ class BigQueryDefaultStreamWriterMetricsTest {
         /** What each creation attempt throws, one entry per attempt; exhausted means success. */
         private final Deque<IOException> creationFailures = new ArrayDeque<>();
 
+        private IOException cdcFailureAfterCreate;
+
         private TableSchema liveSchema;
 
         RecordingTableAdmin(TableSchema liveSchema) {
@@ -634,6 +755,25 @@ class BigQueryDefaultStreamWriterMetricsTest {
                 throw failure;
             }
             liveSchema = schema;
+        }
+
+        @Override
+        public boolean ensureCdcTable(
+                TableDestination destination,
+                TableSchema schema,
+                TableCreateOptionsProvider optionsProvider,
+                CdcTableOptions cdcOptions,
+                CreateDisposition createDisposition,
+                CdcTableReconciliationPolicy reconciliationPolicy)
+                throws IOException {
+            if (liveSchema != null) {
+                return false;
+            }
+            create(destination, schema, optionsProvider.optionsFor(destination));
+            if (cdcFailureAfterCreate != null) {
+                throw cdcFailureAfterCreate;
+            }
+            return true;
         }
 
         @Override

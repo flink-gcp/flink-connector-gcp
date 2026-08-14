@@ -23,7 +23,11 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,9 +53,10 @@ import java.io.IOException;
  * enumerable, and leaves every caller holding the SPI it already held. It also makes the budget
  * structural: a site cannot pass the wrong schedule, because no site passes one.
  *
- * <p>Only {@link #create} retries. {@link #getSchema} and {@link #updateSchema} pass straight
- * through — the latter reports its own lost race as {@code false} for the caller to re-read and
- * re-derive from, which a blind repeat here would turn into a stale-proposal loop.
+ * <p>{@link #create} and {@link #ensureCdcTable} retry. {@link #getSchema} and {@link
+ * #updateSchema} pass straight through — the latter reports its own lost race as {@code false} for
+ * the caller to re-read and re-derive from, which a blind repeat here would turn into a
+ * stale-proposal loop.
  */
 @Internal
 public final class RetryingTableAdmin implements TableAdmin {
@@ -75,36 +80,111 @@ public final class RetryingTableAdmin implements TableAdmin {
     @Override
     public void create(TableDestination destination, TableSchema schema, TableCreateOptions options)
             throws IOException {
+        retry(destination, "create", false, () -> delegate.create(destination, schema, options));
+    }
+
+    @Override
+    public boolean ensureCdcTable(
+            TableDestination destination,
+            TableSchema schema,
+            TableCreateOptionsProvider createOptionsProvider,
+            CdcTableOptions cdcOptions,
+            CreateDisposition createDisposition,
+            CdcTableReconciliationPolicy reconciliationPolicy)
+            throws IOException {
+        boolean[] creationRequested = {false};
+        retry(
+                destination,
+                "provision for CDC",
+                true,
+                () -> {
+                    try {
+                        creationRequested[0] |=
+                                delegate.ensureCdcTable(
+                                        destination,
+                                        schema,
+                                        createOptionsProvider,
+                                        cdcOptions,
+                                        createDisposition,
+                                        reconciliationPolicy);
+                    } catch (RetriableTableAdminException e) {
+                        creationRequested[0] |= e.wasCreationRequested();
+                        if (creationRequested[0] && !e.wasCreationRequested()) {
+                            throw new RetriableTableAdminException(e.getMessage(), e, true);
+                        }
+                        throw e;
+                    } catch (TableAdminException e) {
+                        creationRequested[0] |= e.wasCreationRequested();
+                        if (creationRequested[0] && !e.wasCreationRequested()) {
+                            throw new TableAdminException(e.getMessage(), e, true);
+                        }
+                        throw e;
+                    } catch (IOException e) {
+                        if (creationRequested[0]) {
+                            throw new TableAdminException(e.getMessage(), e, true);
+                        }
+                        throw e;
+                    }
+                });
+        return creationRequested[0];
+    }
+
+    private void retry(
+            TableDestination destination,
+            String operation,
+            boolean retainCreationOutcome,
+            IoRunnable runnable)
+            throws IOException {
         for (int attempt = 1; ; attempt++) {
             try {
-                delegate.create(destination, schema, options);
+                runnable.run();
                 return;
             } catch (RetriableTableAdminException e) {
                 if (attempt >= schedule.maxAttempts()) {
-                    throw new IOException(
-                            "Failed to create BigQuery table "
+                    String message =
+                            "Failed to "
+                                    + operation
+                                    + " BigQuery table "
                                     + destination
                                     + ", the retry budget is exhausted ("
                                     + attempt
-                                    + " attempt(s))",
-                            e);
+                                    + " attempt(s))";
+                    if (retainCreationOutcome) {
+                        throw new TableAdminException(message, e, e.wasCreationRequested());
+                    }
+                    throw new IOException(message, e);
                 }
                 long backoffMs = schedule.backoffMs(attempt);
                 // The throwable itself rather than its toString: the reason an operator needs —
                 // "Exceeded rate limits", a 503 — is on the client exception underneath, and the
                 // wrapper's own message carries only the table name.
                 LOG.info(
-                        "Creating BigQuery table {} is not possible yet (attempt {}/{}),"
+                        "Trying to {} BigQuery table {} is not possible yet (attempt {}/{}),"
                                 + " backing off {} ms",
+                        operation,
                         destination,
                         attempt,
                         schedule.maxAttempts(),
                         backoffMs,
                         e);
-                Retries.sleep(
-                        backoffMs, "Interrupted while waiting to retry a BigQuery table creation");
+                try {
+                    Retries.sleep(
+                            backoffMs,
+                            "Interrupted while waiting to retry a BigQuery table creation");
+                } catch (IOException interrupted) {
+                    if (retainCreationOutcome) {
+                        throw new TableAdminException(
+                                interrupted.getMessage(), interrupted, e.wasCreationRequested());
+                    }
+                    throw interrupted;
+                }
             }
         }
+    }
+
+    @FunctionalInterface
+    private interface IoRunnable {
+        void run() throws IOException;
     }
 
     @Override

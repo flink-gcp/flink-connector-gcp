@@ -102,7 +102,8 @@ instead of being dropped or dead-lettered once per record.
 
 DataStream callers can supply CDC mutations independently of their physical serializer and can use
 the same API with dynamic destinations and evolving descriptors.
-The destination must already have a BigQuery primary key because the current table-creation API
-cannot declare one or configure `max_staleness`; #627 owns that work.
+The destination must have a BigQuery primary key.
+ADR-0112 records how `CREATE_IF_NEEDED` creates that key through the Tables API and applies optional
+maximum staleness through verified DDL because REST creation silently drops the setting.
 Flink SQL changelog conversion and Debezium PostgreSQL, MySQL and Spanner metadata mappings remain
 separate layers tracked by #626, #629, #631 and #633.
