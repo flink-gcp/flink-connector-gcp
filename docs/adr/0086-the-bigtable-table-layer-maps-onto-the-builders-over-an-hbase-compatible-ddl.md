@@ -195,7 +195,7 @@ Measured 2026-08-10 against the pom-pinned `flink.version` 2.2.1 sources jars,
   `DefaultLookupCache`, which reaches shaded Guava through `flink-core` and exposes nothing from
   `flink-table-runtime` in its public signature. So the module's only new compile-scope dependency
   is `flink-table-common` at `provided`, and `flink-table-runtime` stays test scope. Nothing this
-  layer imports needs a `scripts/flink-api-tiers.toml` entry.
+  layer imports needs a `scripts/config/flink-api-tiers.toml` entry.
 - **`Context.createTypeInformation(DataType)` returns exactly the `InternalTypeInfo` the planner
   would have built**, through a `@PublicEvolving` interface — which is how the source side of [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459)
   satisfies `ResultTypeQueryable` without that artifact.

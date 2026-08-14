@@ -27,7 +27,7 @@ limitations under the License.
 
 Every `close()`-shaped call site in this repository goes through `Closers.closeAll` (closing is
 the operation) or `Closers.closeAllSuppressing` (something else already failed) — nothing calls
-`IOUtils.closeAll` any more, so its `scripts/flink-api-tiers.toml` entry is gone.
+`IOUtils.closeAll` any more, so its `scripts/config/flink-api-tiers.toml` entry is gone.
 
 **The loop is written out rather than delegated to `IOUtils.closeAll`, and that is [#276]'s
 whole decision** — reversing [#229]'s "delegate rather than reimplement", worth stating because

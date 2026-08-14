@@ -169,7 +169,7 @@ which is the layer that reads it.
   nothing breaks silently; what a SQL user cannot do is act on it without translating a builder
   method name into an option key, which is exactly the boundary this class exists to hold.
 - **`TimeUtils.formatWithHighestUnit` for the durations in the message.** `org.apache.flink.util
-  .TimeUtils` is unannotated, so it would owe an entry in `scripts/flink-api-tiers.toml`; the
+  .TimeUtils` is unannotated, so it would owe an entry in `scripts/config/flink-api-tiers.toml`; the
   message reports milliseconds instead, as `BigQueryFileLoadsSink`'s does.
 
 [#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57

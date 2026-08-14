@@ -18,7 +18,7 @@
 Every `org.apache.flink` type the main sources import is classified by its
 class-level annotation (@Public / @PublicEvolving / @Experimental / @Internal,
 or none), read from the -sources.jars of the artifacts listed in
-scripts/flink-api-tiers.toml at the pom-pinned flink.version. A type on an
+scripts/config/flink-api-tiers.toml at the pom-pinned flink.version. A type on an
 unstable tier — @Internal, @Experimental or unannotated — must have an
 allowlist entry with a reason in that file, and a stale entry (import gone, or
 tier changed) fails too, so the list stays an exact record.
@@ -59,7 +59,7 @@ except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
     )
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = Path(__file__).resolve().parent / "flink-api-tiers.toml"
+CONFIG = Path(__file__).resolve().parent / "config" / "flink-api-tiers.toml"
 CACHE = ROOT / "target" / "flink-api-tiers"
 MAVEN = "https://repo1.maven.org/maven2/org/apache/flink"
 

@@ -30,7 +30,7 @@ Work down this ladder and stop at the first rung that holds.
    `SplitsRemoval` case: naming the `@Internal` subtype is how the
    `SplitReader` SPI distinguishes removal from addition). The entry's reason
    must say *why it is unavoidable* and *what the fallback is* if Flink moves
-   it — the existing entries in `scripts/flink-api-tiers.toml` are the
+   it — the existing entries in `scripts/config/flink-api-tiers.toml` are the
    template. Name call sites, not vibes.
 
 ## Failure: a new `@Experimental` type
@@ -54,7 +54,7 @@ discuss: the list is an exact record of the present, never a superset.
 ## Failure: "resolves to no .java entry" / "owns no imported type"
 
 Mechanical config maintenance, not judgment: extend or trim the `artifacts`
-list in `scripts/flink-api-tiers.toml`. Find the owning artifact by searching
+list in `scripts/config/flink-api-tiers.toml`. Find the owning artifact by searching
 Maven Central for the sources jar that contains the type's path, and note in
 the TOML comment when the owner is non-obvious (the existing comments about
 flink-runtime owning `streaming.api.*` and flink-core-api owning
