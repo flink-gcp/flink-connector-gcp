@@ -27,8 +27,8 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;

@@ -21,22 +21,14 @@ import org.apache.flink.table.data.GenericArrayData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.StringData;
 
-import com.google.cloud.bigtable.data.v2.models.AddToCell;
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
-import com.google.cloud.bigtable.data.v2.models.DeleteCells;
-import com.google.cloud.bigtable.data.v2.models.DeleteFamily;
-import com.google.cloud.bigtable.data.v2.models.Entry;
-import com.google.cloud.bigtable.data.v2.models.MergeToCell;
-import com.google.cloud.bigtable.data.v2.models.Range;
-import com.google.cloud.bigtable.data.v2.models.SetCell;
-import com.google.cloud.bigtable.data.v2.models.Value;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-/** Converts one SDK 2.80.0 Change Streams mutation to the generic table envelope. */
+/** Converts one connector-owned Change Streams mutation to the generic table envelope. */
 @Internal
 final class ChangeStreamMutationToRowDataConverter implements Serializable {
 
@@ -54,7 +46,7 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
     private static final StringData UNBOUNDED = stringData("UNBOUNDED");
 
     GenericRowData convert(ChangeStreamMutation mutation) throws IOException {
-        List<Entry> entries = mutation.getEntries();
+        List<ChangeStreamMutation.Entry> entries = mutation.getEntries();
         Object[] converted = new Object[entries.size()];
         for (int index = 0; index < entries.size(); index++) {
             converted[index] = convertEntry(index, entries.get(index));
@@ -67,20 +59,22 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
         return StringData.fromBytes(value.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static GenericRowData convertEntry(int index, Entry entry) throws IOException {
-        if (entry instanceof SetCell) {
-            SetCell set = (SetCell) entry;
+    private static GenericRowData convertEntry(int index, ChangeStreamMutation.Entry entry)
+            throws IOException {
+        if (entry instanceof ChangeStreamMutation.SetCellEntry) {
+            ChangeStreamMutation.SetCellEntry set = (ChangeStreamMutation.SetCellEntry) entry;
             return entry(
                     index,
                     SET_CELL,
                     set.getFamilyName(),
                     rawValue(set.getQualifier().toByteArray()),
-                    rawTimestamp(set.getTimestamp()),
+                    rawTimestamp(set.getTimestampMicros()),
                     rawValue(set.getValue().toByteArray()),
                     null);
         }
-        if (entry instanceof DeleteCells) {
-            DeleteCells delete = (DeleteCells) entry;
+        if (entry instanceof ChangeStreamMutation.DeleteCellsEntry) {
+            ChangeStreamMutation.DeleteCellsEntry delete =
+                    (ChangeStreamMutation.DeleteCellsEntry) entry;
             return entry(
                     index,
                     DELETE_CELLS,
@@ -90,27 +84,29 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                     null,
                     deleteRange(delete.getTimestampRange()));
         }
-        if (entry instanceof DeleteFamily) {
-            DeleteFamily delete = (DeleteFamily) entry;
+        if (entry instanceof ChangeStreamMutation.DeleteFamilyEntry) {
+            ChangeStreamMutation.DeleteFamilyEntry delete =
+                    (ChangeStreamMutation.DeleteFamilyEntry) entry;
             return entry(index, DELETE_FAMILY, delete.getFamilyName(), null, null, null, null);
         }
-        if (entry instanceof AddToCell) {
-            AddToCell add = (AddToCell) entry;
+        if (entry instanceof ChangeStreamMutation.AddToCellEntry) {
+            ChangeStreamMutation.AddToCellEntry add = (ChangeStreamMutation.AddToCellEntry) entry;
             return entry(
                     index,
                     ADD_TO_CELL,
-                    add.getFamily(),
+                    add.getFamilyName(),
                     value(add.getQualifier()),
                     value(add.getTimestamp()),
                     value(add.getInput()),
                     null);
         }
-        if (entry instanceof MergeToCell) {
-            MergeToCell merge = (MergeToCell) entry;
+        if (entry instanceof ChangeStreamMutation.MergeToCellEntry) {
+            ChangeStreamMutation.MergeToCellEntry merge =
+                    (ChangeStreamMutation.MergeToCellEntry) entry;
             return entry(
                     index,
                     MERGE_TO_CELL,
-                    merge.getFamily(),
+                    merge.getFamilyName(),
                     value(merge.getQualifier()),
                     value(merge.getTimestamp()),
                     value(merge.getInput()),
@@ -119,7 +115,7 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
         throw new IOException(
                 "Unsupported Bigtable Change Streams entry type: "
                         + entry.getClass().getName()
-                        + ". Upgrade the table envelope converter before accepting this SDK type.");
+                        + ". Upgrade the table envelope converter before accepting this type.");
     }
 
     private static GenericRowData entry(
@@ -140,20 +136,21 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                 deleteRange);
     }
 
-    private static GenericRowData value(Value value) throws IOException {
-        if (value instanceof Value.RawValue) {
-            return rawValue(((Value.RawValue) value).getValue().toByteArray());
+    private static GenericRowData value(ChangeStreamMutation.Value value) throws IOException {
+        if (value instanceof ChangeStreamMutation.RawValue) {
+            return rawValue(((ChangeStreamMutation.RawValue) value).getValue().toByteArray());
         }
-        if (value instanceof Value.RawTimestamp) {
-            return rawTimestamp(((Value.RawTimestamp) value).getValue());
+        if (value instanceof ChangeStreamMutation.RawTimestamp) {
+            return rawTimestamp(((ChangeStreamMutation.RawTimestamp) value).getValue());
         }
-        if (value instanceof Value.IntValue) {
-            return GenericRowData.of(INT64, null, ((Value.IntValue) value).getValue());
+        if (value instanceof ChangeStreamMutation.Int64Value) {
+            return GenericRowData.of(
+                    INT64, null, ((ChangeStreamMutation.Int64Value) value).getValue());
         }
         throw new IOException(
                 "Unsupported Bigtable Change Streams value type: "
                         + value.getClass().getName()
-                        + ". Upgrade the table envelope converter before accepting this SDK type.");
+                        + ". Upgrade the table envelope converter before accepting this type.");
     }
 
     private static GenericRowData rawValue(byte[] value) {
@@ -164,15 +161,19 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
         return GenericRowData.of(RAW_TIMESTAMP, null, micros);
     }
 
-    private static GenericRowData deleteRange(Range.TimestampRange range) {
+    private static GenericRowData deleteRange(ChangeStreamMutation.TimestampRange range) {
         return GenericRowData.of(
-                bound(range.getStartBound()),
-                range.getStartBound() == Range.BoundType.UNBOUNDED ? null : range.getStart(),
-                bound(range.getEndBound()),
-                range.getEndBound() == Range.BoundType.UNBOUNDED ? null : range.getEnd());
+                bound(range.getStart().getType()),
+                range.getStart().getTimestampMicros().isPresent()
+                        ? range.getStart().getTimestampMicros().getAsLong()
+                        : null,
+                bound(range.getEnd().getType()),
+                range.getEnd().getTimestampMicros().isPresent()
+                        ? range.getEnd().getTimestampMicros().getAsLong()
+                        : null);
     }
 
-    private static StringData bound(Range.BoundType bound) {
+    private static StringData bound(ChangeStreamMutation.BoundType bound) {
         switch (bound) {
             case OPEN:
                 return OPEN;

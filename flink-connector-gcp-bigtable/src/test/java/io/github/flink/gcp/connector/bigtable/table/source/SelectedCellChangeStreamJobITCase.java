@@ -31,12 +31,13 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Collector;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
 import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestChangeStreamMutations;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
 import org.junit.jupiter.api.Test;
 
@@ -134,9 +135,10 @@ class SelectedCellChangeStreamJobITCase {
             } else {
                 builder.deleteCells(FAMILY, QUALIFIER, Range.TimestampRange.unbounded());
             }
-            return (ChangeStreamMutation)
-                    builder.finishChangeStreamMutation(
-                            "token", Instant.parse("2026-08-12T23:59:00Z"));
+            return TestChangeStreamMutations.convert(
+                    (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+                            builder.finishChangeStreamMutation(
+                                    "token", Instant.parse("2026-08-12T23:59:00Z")));
         }
     }
 

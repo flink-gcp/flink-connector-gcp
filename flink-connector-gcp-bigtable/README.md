@@ -1,8 +1,10 @@
 # flink-connector-gcp-bigtable
 
-Cloud Bigtable connector for Apache Flink. The sink applies one row mutation per record through
-the client's bulk `MutateRows` batcher, into a fixed table or one the record names; the source reads
-a table's rows, splitting it by the row-key boundaries the service samples.
+Cloud Bigtable connector for Apache Flink.
+The sink applies one row mutation per record through the client's bulk `MutateRows` batcher, into
+a fixed table or one the record names.
+The bounded source splits a table by sampled row-key boundaries, while the Change Streams source
+checkpoints the service's moving partition topology and continuation tokens.
 
 | Feature | Status |
 |---|---|
@@ -13,7 +15,7 @@ a table's rows, splitting it by the row-key boundaries the service samples.
 | Gated real-GCP integration tests | Implemented ([#218](https://github.com/laughingman7743/flink-connector-gcp/issues/218)) |
 | Table and column-family auto-creation (`CREATE_IF_NEEDED`) | Implemented ([#233](https://github.com/laughingman7743/flink-connector-gcp/issues/233)) |
 | Per-record table destinations (`destinationResolver`) | Implemented ([#232](https://github.com/laughingman7743/flink-connector-gcp/issues/232)) |
-| Change streams source | Planned ([#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35)) |
+| Change Streams source | Implemented ([#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35)) |
 
 ```java
 Sink<OrderEvent> sink =

@@ -16,13 +16,14 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
 import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.cloud.bigtable.data.v2.models.Value;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestChangeStreamMutations;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -151,9 +152,10 @@ class SelectedCellMutationClassifierTest {
                 ByteString.copyFromUtf8("row-1"), Instant.parse("2026-08-13T00:00:00Z"), 0);
         builder.deleteCells(FAMILY, QUALIFIER, Range.TimestampRange.unbounded());
         ChangeStreamMutation mutation =
-                (ChangeStreamMutation)
-                        builder.finishChangeStreamMutation(
-                                "token", Instant.parse("2026-08-12T23:59:00Z"));
+                TestChangeStreamMutations.convert(
+                        (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+                                builder.finishChangeStreamMutation(
+                                        "token", Instant.parse("2026-08-12T23:59:00Z")));
 
         assertProtocolFailure(mutation, "garbage-collection mutation");
     }
@@ -176,8 +178,10 @@ class SelectedCellMutationClassifierTest {
                 Instant.parse("2026-08-13T00:00:00Z"),
                 0);
         entries.accept(builder);
-        return (ChangeStreamMutation)
-                builder.finishChangeStreamMutation("token", Instant.parse("2026-08-12T23:59:00Z"));
+        return TestChangeStreamMutations.convert(
+                (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+                        builder.finishChangeStreamMutation(
+                                "token", Instant.parse("2026-08-12T23:59:00Z")));
     }
 
     private static void set(ChangeStreamRecordBuilder<ChangeStreamRecord> builder, String value) {

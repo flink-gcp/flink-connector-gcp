@@ -22,7 +22,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

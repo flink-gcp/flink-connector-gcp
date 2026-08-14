@@ -64,6 +64,10 @@ public final class BigtableMetricNames {
     public static final String CHANGE_STREAM_USER_MUTATIONS_READ = "changeStreamUserMutationsRead";
     public static final String CHANGE_STREAM_GARBAGE_COLLECTION_MUTATIONS_READ =
             "changeStreamGarbageCollectionMutationsRead";
+    public static final String CHANGE_STREAM_MUTATION_ENTRIES_FILTERED =
+            "changeStreamMutationEntriesFiltered";
+    public static final String CHANGE_STREAM_RECORDS_SKIPPED_WITHOUT_CHANGE =
+            "changeStreamRecordsSkippedWithoutChange";
     public static final String PARTITION_LOW_WATERMARK_MILLIS = "partitionLowWatermarkMillis";
 
     // Registered by the Change Streams split enumerator.

@@ -78,6 +78,8 @@ class BigtableChangeStreamReaderMetricsTest {
         metrics.heartbeat();
         metrics.closeStream();
         metrics.skipped();
+        metrics.entriesFiltered(3);
+        metrics.skippedWithoutChange();
 
         assertThat(counter("changeStreamMutationsRead")).isEqualTo(2);
         assertThat(counter("changeStreamUserMutationsRead")).isEqualTo(1);
@@ -85,6 +87,8 @@ class BigtableChangeStreamReaderMetricsTest {
         assertThat(counter("changeStreamHeartbeatsRead")).isEqualTo(1);
         assertThat(counter("changeStreamCloseStreamsRead")).isEqualTo(1);
         assertThat(counter("recordsSkipped")).isEqualTo(1);
+        assertThat(counter("changeStreamMutationEntriesFiltered")).isEqualTo(3);
+        assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isEqualTo(1);
     }
 
     @Test

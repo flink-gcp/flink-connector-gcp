@@ -23,18 +23,25 @@ import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 import org.apache.flink.util.InstantiationUtil;
 
 import com.google.api.gax.rpc.ResponseObserver;
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import com.google.api.gax.rpc.StreamController;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
+import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,6 +113,9 @@ class BigtableChangeStreamSourceBuilderTest {
                 minimal()
                         .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
                         .maxConcurrentStreamsPerSubtask(3)
+                        .familyIncludeList(Collections.singletonList("selected"))
+                        .qualifierExcludeList(Collections.singletonList("selected:Yg=="))
+                        .skipMessagesWithoutChange(true)
                         .build();
 
         byte[] serialized = InstantiationUtil.serializeObject(source);
@@ -118,6 +128,90 @@ class BigtableChangeStreamSourceBuilderTest {
         assertThat(restoredSource.getConfig().getServiceAccountKeyFile())
                 .isEqualTo("/var/run/secrets/bigtable.json");
         assertThat(restoredSource.getConfig().getMaxConcurrentStreamsPerSubtask()).isEqualTo(3);
+        io.github.flink.gcp.connector.bigtable.source.changestream
+                        .BigtableChangeStreamMutationFilter
+                restoredFilter = restoredSource.getConfig().getMutationFilter();
+        assertThat(restoredFilter.hasEntryFilters()).isTrue();
+        assertThat(restoredFilter.includesFamily("other")).isFalse();
+        assertThat(restoredFilter.includesFamily("selected")).isTrue();
+        assertThat(restoredFilter.includesQualifiedColumn("selected", ByteString.copyFromUtf8("a")))
+                .isTrue();
+        assertThat(restoredFilter.includesQualifiedColumn("selected", ByteString.copyFromUtf8("b")))
+                .isFalse();
+        assertThat(restoredFilter.skipsMessagesWithoutChange()).isTrue();
+    }
+
+    @Test
+    void changedFilterConfigurationDoesNotAlterRestoredSplitProgress() throws Exception {
+        BigtableChangeStreamSource<ChangeStreamMutation> oldSource =
+                minimal().familyIncludeList(Collections.singletonList("old")).build();
+        CapturingChangeStreamOpener opener = new CapturingChangeStreamOpener();
+        BigtableChangeStreamSource<ChangeStreamMutation> newSource =
+                minimal()
+                        .familyIncludeList(Collections.singletonList("new"))
+                        .opener(opener)
+                        .restoreResolver((split, ignored) -> split)
+                        .build();
+        ByteStringRange partition = ByteStringRange.create("a", "z");
+        Instant lowWatermark = Instant.parse("2026-08-14T01:23:45Z");
+        ChangeStreamPartitionSplit checkpointed =
+                new ChangeStreamPartitionSplit(
+                        "restored",
+                        partition,
+                        Collections.singletonList(
+                                TestChangeStreamTokens.token(partition, "checkpoint-token")),
+                        lowWatermark);
+
+        byte[] serialized = oldSource.getSplitSerializer().serialize(checkpointed);
+        ChangeStreamPartitionSplit restored =
+                newSource
+                        .getSplitSerializer()
+                        .deserialize(oldSource.getSplitSerializer().getVersion(), serialized);
+
+        assertThat(restored).isEqualTo(checkpointed);
+        assertThat(restored.getContinuationTokens())
+                .singleElement()
+                .satisfies(token -> assertThat(token.getToken()).isEqualTo("checkpoint-token"));
+        assertThat(restored.getLowWatermark()).isEqualTo(lowWatermark);
+
+        FakeSourceReaderContext context =
+                new FakeSourceReaderContext(
+                        InternalSourceReaderMetricGroup.mock(
+                                new MetricListener().getMetricGroup()));
+        SourceReader<ChangeStreamMutation, ChangeStreamPartitionSplit> reader =
+                newSource.createReader(context);
+        try {
+            reader.addSplits(Collections.singletonList(restored));
+            reader.start();
+            opener.deliver(mutation("old", "new"));
+            CollectingReaderOutput<ChangeStreamMutation> output = new CollectingReaderOutput<>();
+
+            reader.pollNext(output);
+
+            assertThat(output.records())
+                    .singleElement()
+                    .satisfies(
+                            delivered ->
+                                    assertThat(delivered.getEntries())
+                                            .containsExactly(
+                                                    new ChangeStreamMutation.DeleteFamilyEntry(
+                                                            "new")));
+            assertThat(reader.snapshotState(1L))
+                    .singleElement()
+                    .satisfies(
+                            split -> {
+                                assertThat(split.getContinuationTokens())
+                                        .singleElement()
+                                        .satisfies(
+                                                token ->
+                                                        assertThat(token.getToken())
+                                                                .isEqualTo("new-token"));
+                                assertThat(split.getLowWatermark())
+                                        .isEqualTo(lowWatermark.plusSeconds(1));
+                            });
+        } finally {
+            reader.close();
+        }
     }
 
     @Test
@@ -147,11 +241,82 @@ class BigtableChangeStreamSourceBuilderTest {
                 .hasMessage("serviceAccountKeyFile must not be blank");
     }
 
+    @Test
+    void rejectsInvalidNullAndMutuallyExclusiveFilterLists() {
+        assertThatThrownBy(() -> minimal().familyIncludeList(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("familyIncludeList must not be null");
+        assertThatThrownBy(() -> minimal().qualifierIncludeList(Arrays.asList("valid", null)))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("qualifierIncludeList must not contain null");
+        assertThatThrownBy(() -> minimal().familyIncludeList(Collections.singletonList("[")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("familyIncludeList pattern at index 0 is invalid");
+        assertThatThrownBy(
+                        () ->
+                                minimal()
+                                        .familyIncludeList(Collections.singletonList("a"))
+                                        .familyExcludeList(Collections.singletonList("b"))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must not both be set");
+        assertThatThrownBy(
+                        () ->
+                                minimal()
+                                        .qualifierIncludeList(Collections.singletonList("a:.*"))
+                                        .qualifierExcludeList(Collections.singletonList("b:.*"))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("must not both be set");
+    }
+
     private static BigtableChangeStreamSourceBuilder<ChangeStreamMutation> minimal() {
         return BigtableChangeStreamSource.<ChangeStreamMutation>builder()
                 .table(TableDestination.of("p", "i", "t"))
                 .appProfileId("single-cluster")
                 .deserializer(new ChangeStreamMutationDeserializationSchema());
+    }
+
+    private static ChangeStreamRecord mutation(String firstFamily, String secondFamily) {
+        ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
+                new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
+        builder.startUserMutation(ByteString.copyFromUtf8("row"), "cluster", Instant.EPOCH, 0);
+        builder.deleteFamily(firstFamily);
+        builder.deleteFamily(secondFamily);
+        return builder.finishChangeStreamMutation(
+                "new-token", Instant.parse("2026-08-14T01:23:46Z"));
+    }
+
+    private static final class CapturingChangeStreamOpener implements ChangeStreamOpener {
+        private ResponseObserver<ChangeStreamRecord> observer;
+
+        @Override
+        public void open(
+                TableDestination table,
+                ChangeStreamPartitionSplit split,
+                Instant endTime,
+                ResponseObserver<ChangeStreamRecord> observer) {
+            this.observer = observer;
+            observer.onStart(new TestStreamController());
+        }
+
+        private void deliver(ChangeStreamRecord record) {
+            observer.onResponse(record);
+        }
+
+        @Override
+        public void close() throws IOException {}
+    }
+
+    private static final class TestStreamController implements StreamController {
+        @Override
+        public void cancel() {}
+
+        @Override
+        public void disableAutoInboundFlowControl() {}
+
+        @Override
+        public void request(int count) {}
     }
 
     private static final class NoOpChangeStreamOpener implements ChangeStreamOpener {

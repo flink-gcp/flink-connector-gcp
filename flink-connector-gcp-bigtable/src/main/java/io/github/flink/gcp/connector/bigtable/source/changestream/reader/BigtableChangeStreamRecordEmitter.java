@@ -23,12 +23,13 @@ import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.CloseStream;
 import com.google.cloud.bigtable.data.v2.models.Heartbeat;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
@@ -43,6 +44,7 @@ public final class BigtableChangeStreamRecordEmitter<T>
         implements RecordEmitter<ChangeStreamRecord, T, ChangeStreamPartitionSplitState> {
 
     private final BigtableChangeStreamDeserializationSchema<T> deserializer;
+    private final BigtableChangeStreamMutationFilter mutationFilter;
     private final SourceReaderContext context;
     private final BigtableChangeStreamReaderMetrics metrics;
 
@@ -50,7 +52,16 @@ public final class BigtableChangeStreamRecordEmitter<T>
             BigtableChangeStreamDeserializationSchema<T> deserializer,
             SourceReaderContext context,
             BigtableChangeStreamReaderMetrics metrics) {
+        this(deserializer, BigtableChangeStreamMutationFilter.none(), context, metrics);
+    }
+
+    public BigtableChangeStreamRecordEmitter(
+            BigtableChangeStreamDeserializationSchema<T> deserializer,
+            BigtableChangeStreamMutationFilter mutationFilter,
+            SourceReaderContext context,
+            BigtableChangeStreamReaderMetrics metrics) {
         this.deserializer = deserializer;
+        this.mutationFilter = mutationFilter;
         this.context = context;
         this.metrics = metrics;
     }
@@ -61,22 +72,31 @@ public final class BigtableChangeStreamRecordEmitter<T>
             SourceOutput<T> output,
             ChangeStreamPartitionSplitState state)
             throws Exception {
-        if (record instanceof ChangeStreamMutation) {
-            ChangeStreamMutation mutation = (ChangeStreamMutation) record;
-            long timestamp = mutation.getCommitTime().toEpochMilli();
-            long emittedCount =
-                    SynchronousDeserializationCollector.<T, Exception>deserialize(
-                            emitted -> output.collect(emitted, timestamp),
-                            out -> deserializer.deserialize(mutation, out));
-            if (emittedCount == 0) {
-                metrics.skipped();
+        if (record instanceof com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation) {
+            com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation sdkMutation =
+                    (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation) record;
+            long removedEntries = 0;
+            if (mutationFilter.hasEntryFilters()) {
+                ChangeStreamMutationConverter.Result result =
+                        ChangeStreamMutationConverter.convertFiltered(sdkMutation, mutationFilter);
+                removedEntries = result.getRemovedEntries();
+                if (result.isSkipped()) {
+                    metrics.skippedWithoutChange();
+                } else {
+                    emitMutation(result.getMutation(), output);
+                }
+            } else {
+                emitMutation(ChangeStreamMutationConverter.convert(sdkMutation), output);
             }
             state.advance(
                     ChangeStreamContinuationToken.create(
                             ChangeStreamPartitions.sdkRange(state.toSplit().getPartition()),
-                            mutation.getToken()),
-                    mutation.getEstimatedLowWatermarkTime());
-            metrics.mutation(mutation);
+                            sdkMutation.getToken()),
+                    sdkMutation.getEstimatedLowWatermarkTime());
+            if (removedEntries > 0) {
+                metrics.entriesFiltered(removedEntries);
+            }
+            metrics.mutation(sdkMutation);
             return;
         }
         if (record instanceof Heartbeat) {
@@ -116,5 +136,17 @@ public final class BigtableChangeStreamRecordEmitter<T>
         }
         throw new IllegalArgumentException(
                 "Unsupported Bigtable change-stream record " + record + ".");
+    }
+
+    private void emitMutation(ChangeStreamMutation mutation, SourceOutput<T> output)
+            throws Exception {
+        long timestamp = mutation.getCommitTime().toEpochMilli();
+        long emittedCount =
+                SynchronousDeserializationCollector.<T, Exception>deserialize(
+                        emitted -> output.collect(emitted, timestamp),
+                        out -> deserializer.deserialize(mutation, out));
+        if (emittedCount == 0) {
+            metrics.skipped();
+        }
     }
 }

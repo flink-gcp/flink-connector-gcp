@@ -23,15 +23,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
-import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
-import com.google.cloud.bigtable.data.v2.models.Entry;
-import com.google.cloud.bigtable.data.v2.models.Range;
-import com.google.cloud.bigtable.data.v2.models.Value;
-import com.google.common.collect.ImmutableList;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -43,7 +36,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
 class ChangeStreamMutationToRowDataConverterTest {
@@ -123,7 +115,7 @@ class ChangeStreamMutationToRowDataConverterTest {
     }
 
     @Test
-    void preservesEverySdkEntryKindAndItsOrderedGenericValues() throws Exception {
+    void preservesEveryConnectorEntryKindAndItsOrderedGenericValues() throws Exception {
         ChangeStreamMutation mutation = mutationWithEveryEntryKind();
         RowData envelope = new ChangeStreamMutationToRowDataConverter().convert(mutation);
         assertThat(envelope.getRowKind()).isEqualTo(RowKind.INSERT);
@@ -175,23 +167,6 @@ class ChangeStreamMutationToRowDataConverterTest {
         assertRawValue(merge.getRow(3, 3), "merge-qualifier");
         assertRawTimestamp(merge.getRow(4, 3), 987_654L);
         assertRawValue(merge.getRow(5, 3), "fragment");
-    }
-
-    @Test
-    void rejectsAnUnknownFutureEntryInsteadOfEmittingAPartialEnvelope() {
-        Entry futureEntry = new Entry() {};
-        Entry validEntry = mutationWithEveryEntryKind().getEntries().get(0);
-        ChangeStreamMutation mutation = mutationWithEntries(validEntry, futureEntry);
-        List<RowData> output = new ArrayList<>();
-        ChangeStreamMutationRowDataDeserializationSchema schema =
-                new ChangeStreamMutationRowDataDeserializationSchema(
-                        TypeInformation.of(RowData.class));
-
-        assertThatThrownBy(() -> schema.deserialize(mutation, collectingInto(output)))
-                .isInstanceOf(java.io.IOException.class)
-                .hasMessageContaining(futureEntry.getClass().getName())
-                .hasMessageContaining("Upgrade the table envelope converter");
-        assertThat(output).isEmpty();
     }
 
     @Test
@@ -280,48 +255,16 @@ class ChangeStreamMutationToRowDataConverterTest {
         };
     }
 
-    private static ChangeStreamMutation mutationWithEntries(Entry... entries) {
-        return new ChangeStreamMutation() {
-            @Override
-            public ByteString getRowKey() {
-                return ByteString.copyFromUtf8("row-1");
-            }
-
-            @Override
-            public MutationType getType() {
-                return MutationType.USER;
-            }
-
-            @Override
-            public String getSourceClusterId() {
-                return "cluster-1";
-            }
-
-            @Override
-            public Instant getCommitTime() {
-                return Instant.parse("2026-08-13T00:00:00Z");
-            }
-
-            @Override
-            public int getTieBreaker() {
-                return 0;
-            }
-
-            @Override
-            public String getToken() {
-                return "token";
-            }
-
-            @Override
-            public Instant getEstimatedLowWatermarkTime() {
-                return Instant.parse("2026-08-12T23:59:00Z");
-            }
-
-            @Override
-            public ImmutableList<Entry> getEntries() {
-                return ImmutableList.copyOf(entries);
-            }
-        };
+    private static ChangeStreamMutation mutationWithEntries(ChangeStreamMutation.Entry... entries) {
+        return new ChangeStreamMutation(
+                ByteString.copyFromUtf8("row-1"),
+                ChangeStreamMutation.MutationType.USER,
+                "cluster-1",
+                Instant.parse("2026-08-13T00:00:00Z"),
+                0,
+                "token",
+                Instant.parse("2026-08-12T23:59:00Z"),
+                java.util.Arrays.asList(entries));
     }
 
     private static ChangeStreamMutation mutationWithMetadata(
@@ -331,80 +274,59 @@ class ChangeStreamMutationToRowDataConverterTest {
             int tieBreaker,
             String token,
             Instant estimatedLowWatermark) {
-        Entry entry = mutationWithEveryEntryKind().getEntries().get(0);
-        return new ChangeStreamMutation() {
-            @Override
-            public ByteString getRowKey() {
-                return ByteString.copyFromUtf8("row-1");
-            }
-
-            @Override
-            public MutationType getType() {
-                return type;
-            }
-
-            @Override
-            public String getSourceClusterId() {
-                return sourceClusterId;
-            }
-
-            @Override
-            public Instant getCommitTime() {
-                return commitTime;
-            }
-
-            @Override
-            public int getTieBreaker() {
-                return tieBreaker;
-            }
-
-            @Override
-            public String getToken() {
-                return token;
-            }
-
-            @Override
-            public Instant getEstimatedLowWatermarkTime() {
-                return estimatedLowWatermark;
-            }
-
-            @Override
-            public ImmutableList<Entry> getEntries() {
-                return ImmutableList.of(entry);
-            }
-        };
+        ChangeStreamMutation.Entry entry = mutationWithEveryEntryKind().getEntries().get(0);
+        return new ChangeStreamMutation(
+                ByteString.copyFromUtf8("row-1"),
+                type,
+                sourceClusterId,
+                commitTime,
+                tieBreaker,
+                token,
+                estimatedLowWatermark,
+                java.util.Collections.singletonList(entry));
     }
 
     private static ChangeStreamMutation mutationWithEveryEntryKind() {
-        ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
-                new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
-        builder.startUserMutation(
+        return new ChangeStreamMutation(
                 ByteString.copyFromUtf8("row-1"),
+                ChangeStreamMutation.MutationType.USER,
                 "cluster-1",
                 Instant.parse("2026-08-13T00:00:00Z"),
-                0);
-        builder.startCell("family", ByteString.copyFromUtf8("qualifier"), 123_456L);
-        builder.cellValue(ByteString.copyFromUtf8("value"));
-        builder.finishCell();
-        builder.deleteCells(
-                "family",
-                ByteString.copyFromUtf8("qualifier"),
-                Range.TimestampRange.create(10L, 20L));
-        builder.deleteCells(
-                "family", ByteString.copyFromUtf8("qualifier"), Range.TimestampRange.unbounded());
-        builder.deleteFamily("family");
-        builder.addToCell(
-                "aggregate",
-                Value.rawValue(ByteString.copyFromUtf8("add-qualifier")),
-                Value.rawTimestamp(456_789L),
-                Value.intValue(7L));
-        builder.mergeToCell(
-                "aggregate",
-                Value.rawValue(ByteString.copyFromUtf8("merge-qualifier")),
-                Value.rawTimestamp(987_654L),
-                Value.rawValue(ByteString.copyFromUtf8("fragment")));
-        return (ChangeStreamMutation)
-                builder.finishChangeStreamMutation("token", Instant.parse("2026-08-12T23:59:00Z"));
+                0,
+                "token",
+                Instant.parse("2026-08-12T23:59:00Z"),
+                java.util.Arrays.asList(
+                        new ChangeStreamMutation.SetCellEntry(
+                                "family",
+                                ByteString.copyFromUtf8("qualifier"),
+                                123_456L,
+                                ByteString.copyFromUtf8("value")),
+                        new ChangeStreamMutation.DeleteCellsEntry(
+                                "family",
+                                ByteString.copyFromUtf8("qualifier"),
+                                new ChangeStreamMutation.TimestampRange(
+                                        ChangeStreamMutation.TimestampBound.closed(10L),
+                                        ChangeStreamMutation.TimestampBound.open(20L))),
+                        new ChangeStreamMutation.DeleteCellsEntry(
+                                "family",
+                                ByteString.copyFromUtf8("qualifier"),
+                                new ChangeStreamMutation.TimestampRange(
+                                        ChangeStreamMutation.TimestampBound.unbounded(),
+                                        ChangeStreamMutation.TimestampBound.unbounded())),
+                        new ChangeStreamMutation.DeleteFamilyEntry("family"),
+                        new ChangeStreamMutation.AddToCellEntry(
+                                "aggregate",
+                                new ChangeStreamMutation.RawValue(
+                                        ByteString.copyFromUtf8("add-qualifier")),
+                                new ChangeStreamMutation.RawTimestamp(456_789L),
+                                new ChangeStreamMutation.Int64Value(7L)),
+                        new ChangeStreamMutation.MergeToCellEntry(
+                                "aggregate",
+                                new ChangeStreamMutation.RawValue(
+                                        ByteString.copyFromUtf8("merge-qualifier")),
+                                new ChangeStreamMutation.RawTimestamp(987_654L),
+                                new ChangeStreamMutation.RawValue(
+                                        ByteString.copyFromUtf8("fragment")))));
     }
 
     private static void assertEntry(RowData entry, int index, String kind, String family) {

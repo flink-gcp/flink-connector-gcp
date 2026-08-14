@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
@@ -32,7 +33,13 @@ import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeSt
 import javax.annotation.Nullable;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /** Builds a {@link BigtableChangeStreamSource}. */
 @PublicEvolving
@@ -49,6 +56,11 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     private Optional<StartPosition> resumeFallback = Optional.empty();
     @Nullable private Instant endTime;
     private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
+    private List<Pattern> familyIncludeList = Collections.emptyList();
+    private List<Pattern> familyExcludeList = Collections.emptyList();
+    private List<Pattern> qualifierIncludeList = Collections.emptyList();
+    private List<Pattern> qualifierExcludeList = Collections.emptyList();
+    private boolean skipMessagesWithoutChange;
     @Nullable private ChangeStreamOpener opener;
     @Nullable private ChangeStreamRestoreResolver restoreResolver;
     @Nullable private ChangeStreamCoordinatorClient coordinatorClient;
@@ -130,6 +142,66 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Includes entries whose column-family names fully match at least one Java regular expression.
+     *
+     * <p>An empty collection disables this filter. It is mutually exclusive with {@link
+     * #familyExcludeList(Collection)}.
+     */
+    public BigtableChangeStreamSourceBuilder<T> familyIncludeList(Collection<String> patterns) {
+        this.familyIncludeList = compilePatterns(patterns, "familyIncludeList");
+        return this;
+    }
+
+    /**
+     * Excludes entries whose column-family names fully match at least one Java regular expression.
+     *
+     * <p>An empty collection disables this filter. It is mutually exclusive with {@link
+     * #familyIncludeList(Collection)}.
+     */
+    public BigtableChangeStreamSourceBuilder<T> familyExcludeList(Collection<String> patterns) {
+        this.familyExcludeList = compilePatterns(patterns, "familyExcludeList");
+        return this;
+    }
+
+    /**
+     * Includes qualified columns that fully match at least one Java regular expression.
+     *
+     * <p>The matched identifier is {@code family:qualifierBase64}, where the qualifier is canonical
+     * padded RFC 4648 standard Base64. An empty qualifier therefore produces {@code family:}.
+     * Family-delete entries have no qualifier and are governed only by the family filter. An empty
+     * collection disables this filter. It is mutually exclusive with {@link
+     * #qualifierExcludeList(Collection)}.
+     */
+    public BigtableChangeStreamSourceBuilder<T> qualifierIncludeList(Collection<String> patterns) {
+        this.qualifierIncludeList = compilePatterns(patterns, "qualifierIncludeList");
+        return this;
+    }
+
+    /**
+     * Excludes qualified columns that fully match at least one Java regular expression.
+     *
+     * <p>The matched identifier uses the same {@code family:qualifierBase64} representation as
+     * {@link #qualifierIncludeList(Collection)}. Family-delete entries have no qualifier and are
+     * governed only by the family filter. An empty collection disables this filter. It is mutually
+     * exclusive with {@link #qualifierIncludeList(Collection)}.
+     */
+    public BigtableChangeStreamSourceBuilder<T> qualifierExcludeList(Collection<String> patterns) {
+        this.qualifierExcludeList = compilePatterns(patterns, "qualifierExcludeList");
+        return this;
+    }
+
+    /**
+     * Skips a mutation when entry filtering removes every entry it reported.
+     *
+     * <p>The default is {@code false}, which delivers the mutation with an empty entry list so that
+     * the atomic row mutation remains visible.
+     */
+    public BigtableChangeStreamSourceBuilder<T> skipMessagesWithoutChange(boolean skip) {
+        this.skipMessagesWithoutChange = skip;
+        return this;
+    }
+
     @VisibleForTesting
     BigtableChangeStreamSourceBuilder<T> opener(ChangeStreamOpener opener) {
         this.opener = opener;
@@ -156,6 +228,12 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                 deserializer != null, "A deserializer is required: set deserializer(...).");
         Preconditions.checkState(
                 appProfileId != null, "An app profile is required: set appProfileId(...).");
+        Preconditions.checkState(
+                familyIncludeList.isEmpty() || familyExcludeList.isEmpty(),
+                "familyIncludeList(...) and familyExcludeList(...) must not both be set.");
+        Preconditions.checkState(
+                qualifierIncludeList.isEmpty() || qualifierExcludeList.isEmpty(),
+                "qualifierIncludeList(...) and qualifierExcludeList(...) must not both be set.");
         return new BigtableChangeStreamSource<>(
                 new BigtableChangeStreamSourceConfig<>(
                         table,
@@ -166,6 +244,12 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         resumeFallback,
                         endTime,
                         maxConcurrentStreamsPerSubtask,
+                        new BigtableChangeStreamMutationFilter(
+                                familyIncludeList,
+                                familyExcludeList,
+                                qualifierIncludeList,
+                                qualifierExcludeList,
+                                skipMessagesWithoutChange),
                         opener != null
                                 ? opener
                                 : new DataClientChangeStreamOpener(
@@ -175,5 +259,27 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                                 : new DefaultChangeStreamRestoreResolver(
                                         table, appProfileId, serviceAccountKeyFile),
                         coordinatorClient));
+    }
+
+    private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {
+        Preconditions.checkNotNull(patterns, option + " must not be null");
+        List<Pattern> compiled = new ArrayList<>(patterns.size());
+        int index = 0;
+        for (String pattern : patterns) {
+            Preconditions.checkNotNull(pattern, option + " must not contain null");
+            try {
+                compiled.add(Pattern.compile(pattern));
+            } catch (PatternSyntaxException e) {
+                throw new IllegalArgumentException(
+                        option
+                                + " pattern at index "
+                                + index
+                                + " is invalid: "
+                                + e.getDescription(),
+                        e);
+            }
+            index++;
+        }
+        return Collections.unmodifiableList(compiled);
     }
 }

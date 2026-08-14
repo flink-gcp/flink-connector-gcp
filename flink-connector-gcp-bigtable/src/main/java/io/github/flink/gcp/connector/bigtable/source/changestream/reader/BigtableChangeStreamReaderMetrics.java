@@ -48,6 +48,8 @@ public final class BigtableChangeStreamReaderMetrics {
     private final Counter closeStreams;
     private final Counter userMutations;
     private final Counter garbageCollectionMutations;
+    private final Counter mutationEntriesFiltered;
+    private final Counter recordsSkippedWithoutChange;
     private final Set<ReadTiming> activeReads = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> activeLowWatermarks = new ConcurrentHashMap<>();
     private final AtomicInteger queuedPartitions = new AtomicInteger();
@@ -71,6 +73,10 @@ public final class BigtableChangeStreamReaderMetrics {
         userMutations = group.counter(BigtableMetricNames.CHANGE_STREAM_USER_MUTATIONS_READ);
         garbageCollectionMutations =
                 group.counter(BigtableMetricNames.CHANGE_STREAM_GARBAGE_COLLECTION_MUTATIONS_READ);
+        mutationEntriesFiltered =
+                group.counter(BigtableMetricNames.CHANGE_STREAM_MUTATION_ENTRIES_FILTERED);
+        recordsSkippedWithoutChange =
+                group.counter(BigtableMetricNames.CHANGE_STREAM_RECORDS_SKIPPED_WITHOUT_CHANGE);
         group.gauge(
                 BigtableMetricNames.ACTIVE_CHANGE_STREAM_READS, (Gauge<Integer>) activeReads::size);
         group.gauge(
@@ -137,6 +143,14 @@ public final class BigtableChangeStreamReaderMetrics {
 
     void skipped() {
         skipped.inc();
+    }
+
+    void entriesFiltered(long count) {
+        mutationEntriesFiltered.inc(count);
+    }
+
+    void skippedWithoutChange() {
+        recordsSkippedWithoutChange.inc();
     }
 
     void assigned(
