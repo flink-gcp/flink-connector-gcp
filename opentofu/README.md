@@ -154,11 +154,12 @@ see the comment in `tofu-apply.yaml`), diagnosed only after the missing agent
 had been blamed; check the authenticated principal in the workflow log before
 theorising about the resource.
 
-A failed apply also leaves the pull request's saved plan **stale** — the
-failure itself bumps the state serial, so the plan no longer describes the
-state, and rerunning the apply job fails with "Saved plan is stale" by
-design. The recovery is a follow-up pull request whose fresh plan picks up
-the remainder; rerunning the old job can never succeed. tfaction can create
+A state-changing operation after CI creates a pull request's saved plan leaves
+that plan **stale**. A failed apply can bump the state serial, and an intentional
+local apply can update the same state before the pull request merges. Do not
+pre-apply a reviewed pull request locally; let the merge workflow apply its
+saved plan. The recovery is a follow-up pull request whose fresh plan picks up
+the current state; rerunning the old job can never succeed. tfaction can create
 that follow-up pull request automatically, but only with a GitHub App token —
 adopting the App is planned together with the dedicated org at go-public time
 ([#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177)),

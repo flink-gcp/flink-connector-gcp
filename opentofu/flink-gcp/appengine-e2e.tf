@@ -68,6 +68,9 @@ resource "google_service_account_iam_member" "appengine_e2e_deployer" {
   member             = google_service_account.opentofu.member
 }
 
+# Apply persistent version changes through the merge workflow from the reviewed
+# plan. A local state-changing apply after CI plans the change would invalidate
+# that saved plan and require a follow-up root-module pull request.
 resource "google_app_engine_standard_app_version" "e2e" {
   project         = local.project_id
   service         = local.cloudtasks_appengine_e2e_service
