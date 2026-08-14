@@ -23,7 +23,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import java.io.IOException;
 
 /**
- * Executes BigQuery load and copy jobs for the FILE_LOADS orchestration.
+ * Executes BigQuery load, copy and terminal query jobs for the FILE_LOADS orchestration.
  *
  * <p>Submission and completion are split so the orchestrator can submit an independent wave first,
  * let BigQuery run it concurrently server-side, and then wait without managing threads itself.
@@ -56,6 +56,16 @@ public interface LoadJobRunner {
      * @throws IOException if the job cannot be submitted
      */
     void submitCopy(String jobId, CopyJobSpec spec) throws IOException;
+
+    /**
+     * Submits a terminal query job, or re-attaches to the BigQuery job a previous run of the same
+     * {@code jobId} left behind.
+     *
+     * @param jobId the deterministic job id
+     * @param spec the query job
+     * @throws IOException if the job cannot be submitted
+     */
+    void submitQuery(String jobId, QueryJobSpec spec) throws IOException;
 
     /**
      * Waits for a previously submitted job to complete.

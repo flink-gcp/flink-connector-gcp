@@ -220,7 +220,7 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.location` | String | `location(...)` |
 | `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
-| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load-job option is `write-append`-only, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
+| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load/query option applies to `write-append` and `write-truncate-data`, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
 | `sink.derive-required-columns` | Boolean | Derives a `REQUIRED` column from a `NOT NULL` one; off, every derived column is `NULLABLE` |
 | `sink.json-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `JSON` |
 | `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
@@ -416,8 +416,8 @@ default, and required by the write method rather than by the connector — and l
 | Option | Type | Maps to |
 |---|---|---|
 | `sink.file-loads.staging-path` | String | `stagingPath(...)` — `gs://bucket` or `gs://bucket/prefix`. **Required** under this write method |
-| `sink.file-loads.temp-dataset` | String | `tempDataset(...)`, holding the leaf and intermediate temporary tables a load too large for one job goes through. It must share the final destination's BigQuery location. Absent, each destination table's own dataset. Applies to batch and streaming overflow |
-| `sink.file-loads.write-disposition` | Enum | `writeDisposition(...)` — `write-append`, `write-truncate` or `write-empty`. Streaming execution accepts `write-append` only, since every checkpoint commits its own staged files |
+| `sink.file-loads.temp-dataset` | String | `tempDataset(...)`, holding leaf, intermediate and aggregate temporary tables when a load is too large for one job or replacement rows span staging formats. It must share the final destination's BigQuery location. Absent, each destination table's own dataset |
+| `sink.file-loads.write-disposition` | Enum | `writeDisposition(...)` — `write-append`, `write-truncate`, `write-truncate-data` or `write-empty`. `write-truncate-data` preserves the existing table schema and constraints. Streaming execution accepts `write-append` only, since every checkpoint commits its own staged files |
 | `sink.file-loads.min-checkpoint-interval` | Duration | `minCheckpointInterval(...)`, the smallest checkpoint interval streaming execution accepts. Lowering it is an explicit opt-in: each checkpoint consumes at least one destination-table modification, a direct load or an overflow copy, against BigQuery's daily limits |
 | `sink.file-loads.max-staging-file-bytes` | MemorySize | `maxStagingFileBytes(...)`, the size at which an open staging file is finished and the next one opened. The default is measured — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) — and raising it matters mainly for a very large volume to one destination, since the 10,000-URI per-load-job cap is a file count |
 | `sink.file-loads.staging-format` | Enum | `stagingFormat(...)` — `avro` (default) or `parquet`. Parquet needs `parquet-avro`, and a Hadoop runtime unless the compression is `none`, on the cluster's classpath; a destination whose schema has a `JSON` column stages Avro whatever this says |
@@ -538,7 +538,7 @@ The selected write method decides when that union is applied.
 `storage-api-at-least-once` rebuilds its default-stream writer after reconciling the table.
 `storage-api-exactly-once` drains old-schema rows and reconnects the same buffered stream at the same next offset.
 `file-loads` reconciles once per destination before loading each batch run or streaming checkpoint, then puts the reconciled schema on every load job.
-For `file-loads`, `write-append` jobs also carry BigQuery's native schema-update options, `write-empty` relies on the connector's pre-load reconciliation, and `write-truncate` replaces the table schema instead of reconciling it.
+For `file-loads`, `write-append` and `write-truncate-data` jobs also carry BigQuery's native schema-update options, `write-empty` relies on the connector's pre-load reconciliation, `write-truncate-data` preserves the live schema and constraints, and `write-truncate` replaces the table schema instead of reconciling it.
 
 See [Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) on the DataStream page for the nullability result table, failure behavior, propagation waits and serializer compatibility rules.
 
@@ -564,7 +564,8 @@ on the DataStream page for the full statement; what a SQL user needs is:
   them with load jobs. In streaming execution each checkpoint issues at least one load job per
   table, against BigQuery's quota of **1,500 per table per day**, so the checkpoint interval has a
   floor — two minutes — that `sink.file-loads.min-checkpoint-interval` lowers only as an explicit
-  opt-in; and each checkpoint appends, so `write-truncate` and `write-empty` are refused there.
+  opt-in; and each checkpoint appends, so `write-truncate`, `write-truncate-data` and `write-empty`
+  are refused there.
   Both refusals arrive when the plan is built, and each names the `sink.file-loads.*` key you
   would change. The quota is per *table* while the floor is checked per *job*, so two jobs writing
   one table, or two `INSERT INTO` statements in one `StatementSet`, each pass the check and

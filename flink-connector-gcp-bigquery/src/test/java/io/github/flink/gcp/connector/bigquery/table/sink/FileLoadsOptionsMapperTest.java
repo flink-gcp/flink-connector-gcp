@@ -162,7 +162,7 @@ class FileLoadsOptionsMapperTest {
     void mapsEveryOptionOntoItsKnob() {
         Map<String, String> options = staged();
         options.put(key("tempDataset"), "staging_dataset");
-        options.put(key("writeDisposition"), "write-truncate");
+        options.put(key("writeDisposition"), "write-truncate-data");
         options.put(key("minCheckpointInterval"), "30 s");
         // A MemorySize key, so the unit suffix is the point: a plain "64" would also parse, and
         // would pass whether or not the mapper converted the value.
@@ -180,7 +180,7 @@ class FileLoadsOptionsMapperTest {
 
         assertThat(mapped.getStagingPath()).isEqualTo("gs://bucket/prefix");
         assertThat(mapped.getTempDataset()).isEqualTo("staging_dataset");
-        assertThat(mapped.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE);
+        assertThat(mapped.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE_DATA);
         assertThat(mapped.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(30));
         assertThat(mapped.getMaxStagingFileBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(mapped.getStagingFormat()).isEqualTo(StagingFormat.PARQUET);

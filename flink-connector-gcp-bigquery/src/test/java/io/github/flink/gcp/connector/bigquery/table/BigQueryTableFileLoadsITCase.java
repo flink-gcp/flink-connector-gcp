@@ -22,6 +22,11 @@ import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 
+import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.PrimaryKey;
+import com.google.cloud.bigquery.Schema;
+import com.google.cloud.bigquery.StandardSQLTypeName;
+import com.google.cloud.bigquery.TableConstraints;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.RealGcs;
 import io.github.flink.gcp.connector.testutils.TestNames;
@@ -32,6 +37,8 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -62,16 +69,18 @@ class BigQueryTableFileLoadsITCase {
     private static final String RUN_ID = TestNames.runId();
     private static final String STREAMING_TABLE = "table_file_loads_streaming_" + RUN_ID;
     private static final String BATCH_TABLE = "table_file_loads_batch_" + RUN_ID;
+    private static final String BATCH_METADATA_TABLE = "table_file_loads_metadata_" + RUN_ID;
 
     // One staging directory per test: the streaming one asserts its own is empty after the load,
     // and a failing sibling keeps its staged files by design.
     private static final String STAGING_ROOT = "flink-table-file-loads-it/" + RUN_ID;
     private static final String STREAMING_PREFIX = STAGING_ROOT + "/streaming";
     private static final String BATCH_PREFIX = STAGING_ROOT + "/batch";
+    private static final String BATCH_METADATA_PREFIX = STAGING_ROOT + "/metadata";
 
     @AfterAll
     static void cleanUp() {
-        RealBigQuery.deleteTables(STREAMING_TABLE, BATCH_TABLE);
+        RealBigQuery.deleteTables(STREAMING_TABLE, BATCH_TABLE, BATCH_METADATA_TABLE);
         RealGcs.deletePrefix(STAGING_ROOT);
     }
 
@@ -140,6 +149,57 @@ class BigQueryTableFileLoadsITCase {
                         RealBigQuery.queryLongs(
                                 "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(BATCH_TABLE)))
                 .containsExactly(1L);
+    }
+
+    @Test
+    void batchWriteTruncateDataReplacesRowsAndPreservesMetadata() throws Exception {
+        Schema schema =
+                Schema.of(
+                        Field.newBuilder("name", StandardSQLTypeName.STRING)
+                                .setDescription("stable name description")
+                                .build(),
+                        Field.newBuilder("amount", StandardSQLTypeName.INT64)
+                                .setDescription("stable amount description")
+                                .build());
+        TableConstraints constraints =
+                TableConstraints.newBuilder()
+                        .setPrimaryKey(PrimaryKey.newBuilder().setColumns(List.of("name")).build())
+                        .build();
+        RealBigQuery.createTableWithMetadata(
+                BATCH_METADATA_TABLE,
+                schema,
+                "stable table description",
+                Map.of("owner", "file-loads-it"),
+                constraints);
+        RealBigQuery.queryRows(
+                "INSERT INTO "
+                        + RealBigQuery.tablePath(BATCH_METADATA_TABLE)
+                        + " VALUES ('old', 0)");
+
+        TableEnvironment tEnv = TableEnvironment.create(EnvironmentSettings.inBatchMode());
+        tEnv.executeSql(
+                "CREATE TABLE events (name STRING, amount BIGINT) "
+                        + withOptions(
+                                BATCH_METADATA_TABLE,
+                                BATCH_METADATA_PREFIX,
+                                "sink.file-loads.write-disposition",
+                                "write-truncate-data"));
+        tEnv.executeSql("INSERT INTO events VALUES ('new', 1)").await();
+
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT amount FROM "
+                                        + RealBigQuery.tablePath(BATCH_METADATA_TABLE)))
+                .containsExactly(1L);
+        assertThat(RealBigQuery.tableDescription(BATCH_METADATA_TABLE))
+                .isEqualTo("stable table description");
+        assertThat(RealBigQuery.tableLabels(BATCH_METADATA_TABLE))
+                .containsEntry("owner", "file-loads-it");
+        assertThat(RealBigQuery.tableFields(BATCH_METADATA_TABLE))
+                .extracting(Field::getDescription)
+                .containsExactly("stable name description", "stable amount description");
+        assertThat(RealBigQuery.tableConstraints(BATCH_METADATA_TABLE).getPrimaryKey().getColumns())
+                .containsExactly("name");
     }
 
     private static void loadInBatch(String values, String writeDisposition) throws Exception {

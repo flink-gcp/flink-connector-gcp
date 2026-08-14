@@ -248,12 +248,11 @@ public class BigQueryFileLoadsSink<T>
             throw new IllegalStateException(
                     WriteMethod.FILE_LOADS
                             + " in streaming execution supports WriteDisposition.WRITE_APPEND"
-                            + " only (each checkpoint appends its rows; WRITE_TRUNCATE and"
-                            + " WRITE_EMPTY would make every checkpoint replace or reject the"
-                            + " table), but the write disposition is "
+                            + " only (each checkpoint appends its rows; non-append dispositions"
+                            + " would make every checkpoint replace or reject the table), but the"
+                            + " write disposition is "
                             // name(), not toString(): the sentence above names the Java constants
-                            // WRITE_APPEND, WRITE_TRUNCATE and WRITE_EMPTY, and the DDL spelling
-                            // must not mix with them inside one message.
+                            // and the DDL spelling must not mix with it inside one message.
                             + options.getWriteDisposition().name()
                             + ".");
         }

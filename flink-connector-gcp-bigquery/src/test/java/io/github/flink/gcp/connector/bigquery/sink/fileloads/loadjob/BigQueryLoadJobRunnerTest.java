@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.FormatOptions;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
+import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import com.google.cloud.bigquery.TableId;
@@ -654,8 +655,9 @@ class BigQueryLoadJobRunnerTest {
         // Not every failure here is a BigQueryException: the delete is the first call to reach
         // the lazily built client, which answers a missing project with IllegalArgumentException,
         // and a closed or broken transport with IllegalStateException. Cleanup runs after every
-        // load and copy has been awaited, so an escape fails a commit whose data is already
-        // durable — which is why the catch is RuntimeException rather than the client's own type.
+        // load, copy, and terminal query has been awaited, so an escape fails a commit whose data
+        // is already durable — which is why the catch is RuntimeException rather than the client's
+        // own type.
         client.deleteFailure = new IllegalStateException("client is closed");
 
         BigQueryLoadJobRunner runner = runner();
@@ -855,6 +857,45 @@ class BigQueryLoadJobRunnerTest {
         assertThat(copy.getCreateDisposition())
                 .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
         assertThat(copy.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+    }
+
+    @Test
+    void aTerminalQueryReplacesOnlyTheDestinationData() throws Exception {
+        client.answering(JobAnswer.absent());
+        QueryJobSpec spec =
+                new QueryJobSpec(
+                        TEMP,
+                        DESTINATION,
+                        List.of(JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION));
+
+        runner().submitQuery(JOB_ID, spec);
+
+        QueryJobConfiguration query = client.created.get(0).getConfiguration();
+        assertThat(query.getQuery()).isEqualTo("SELECT * FROM `p.d.t_tmp`");
+        assertThat(query.useLegacySql()).isFalse();
+        assertThat(query.getPriority()).isEqualTo(QueryJobConfiguration.Priority.INTERACTIVE);
+        assertThat(query.getDestinationTable()).isEqualTo(TableId.of("p", "d", "t"));
+        assertThat(query.getCreateDisposition()).isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
+        assertThat(query.getWriteDisposition())
+                .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE_DATA);
+        assertThat(query.getSchemaUpdateOptions())
+                .containsExactly(JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION);
+    }
+
+    @Test
+    void aTerminalQueryOmitsEmptySchemaUpdateOptionsAndEscapesItsSource() throws Exception {
+        client.answering(JobAnswer.absent());
+        QueryJobSpec spec =
+                new QueryJobSpec(
+                        TableDestination.of("p", "d", "table`with\\slashes"),
+                        DESTINATION,
+                        List.of());
+
+        runner().submitQuery(JOB_ID, spec);
+
+        QueryJobConfiguration query = client.created.get(0).getConfiguration();
+        assertThat(query.getQuery()).isEqualTo("SELECT * FROM `p.d.table\\`with\\\\slashes`");
+        assertThat(query.getSchemaUpdateOptions()).isNull();
     }
 
     @Test

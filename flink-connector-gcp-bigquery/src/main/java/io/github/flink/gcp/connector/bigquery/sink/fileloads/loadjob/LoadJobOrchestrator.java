@@ -73,26 +73,30 @@ import java.util.function.Function;
  * schema would be rejected at submission for exactly that case, and whether a run fits one
  * partition must not decide whether its records load.
  *
- * <p><b>Common case — one partition per format.</b> A table whose files fit one load job per
- * staging format is loaded directly: each load job carries the reconciled schema, the configured
- * dispositions, and — belt-and-braces against external mid-run schema changes — the native {@code
- * ALLOW_FIELD_ADDITION}/{@code ALLOW_FIELD_RELAXATION} schema update options. (BigQuery only honors
- * schema update options on {@code WRITE_APPEND} jobs; with other dispositions they are omitted —
- * {@code WRITE_TRUNCATE} replaces the schema wholesale anyway.)
+ * <p><b>Common case — one partition in one format.</b> A table whose files share a format and fit
+ * one load job is loaded directly: the job carries the reconciled schema, the configured
+ * disposition, and — belt-and-braces against external mid-run schema changes — the native {@code
+ * ALLOW_FIELD_ADDITION}/{@code ALLOW_FIELD_RELAXATION} schema update options on {@code
+ * WRITE_APPEND} and {@code WRITE_TRUNCATE_DATA} jobs. Multiple fitting formats also stay direct for
+ * append/empty dispositions, while replacement dispositions combine them as described below.
  *
- * <p><b>Overflow — temporary tables plus a copy hierarchy.</b> If any staging format for a table
- * exceeds the limits, every format for that table is loaded partition-by-partition into temporary
- * tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED}, so a retried partition load is
- * idempotent). At most 1,200 sources feed one copy job. A larger source set is reduced through
- * deterministic intermediate tables until one final copy can atomically append it to the final
- * table. Copy jobs support no schema update options and require matching schemas, so every leaf is
- * loaded with the reconciled schema and every intermediate inherits it. Streaming temporary-table
- * names include the checkpoint id so consecutive checkpoints do not collide.
+ * <p><b>Temporary tables plus a copy hierarchy.</b> If any staging format for a table exceeds the
+ * limits, or replacement rows span formats, every format for that table is loaded
+ * partition-by-partition into temporary tables ({@code WRITE_TRUNCATE} + {@code CREATE_IF_NEEDED},
+ * so a retried partition load is idempotent). At most 1,200 sources feed one copy job. A larger
+ * source set is reduced through deterministic intermediate tables. An ordinary disposition then
+ * uses one final copy. Because a copy job cannot use {@code WRITE_TRUNCATE_DATA}, that disposition
+ * first copies into one aggregate temporary table and then atomically replaces the final table's
+ * data with a terminal query job. Copy jobs support no schema update options and require matching
+ * schemas, so every leaf is loaded with the reconciled schema and every intermediate inherits it.
+ * Streaming temporary-table names include the checkpoint id so consecutive checkpoints do not
+ * collide.
  *
  * <p><b>Concurrency.</b> Independent jobs are submitted first and awaited second in deterministic
  * waves of at most 50,000 submissions, within BigQuery's per-project, per-region pending-job limit.
- * Copy levels are barriers: a level is complete before a job that reads its tables is submitted.
- * BigQuery runs each wave concurrently server-side, so no thread pool is needed.
+ * Interactive terminal queries use waves of at most 1,000, within their narrower queued-query
+ * limit. Copy levels are barriers: a level is complete before a job that reads its tables is
+ * submitted. BigQuery runs each wave concurrently server-side, so no thread pool is needed.
  *
  * <p><b>Determinism and retries.</b> Files are sorted by URI before bin-packing, so a retried run
  * over the same committables produces identical partitions, temporary table names and job ids
@@ -104,6 +108,9 @@ import java.util.function.Function;
  */
 @Internal
 public final class LoadJobOrchestrator {
+
+    // BigQuery admits at most 1,000 queued interactive queries per project and region.
+    private static final int MAX_QUERY_SUBMISSIONS_PER_WAVE = 1_000;
 
     private static final Logger LOG = LoggerFactory.getLogger(LoadJobOrchestrator.class);
 
@@ -199,7 +206,8 @@ public final class LoadJobOrchestrator {
      * Loads all staged files of the run into their destination tables.
      *
      * @param committables the staged files
-     * @throws IOException if any load or copy fails; staged files are left in place
+     * @throws IOException if any load, copy, or terminal query fails; staged files are left in
+     *     place
      */
     public void run(List<FileLoadsCommittable> committables) throws IOException {
         if (committables.isEmpty()) {
@@ -224,6 +232,18 @@ public final class LoadJobOrchestrator {
         }
         runInWaves(finalCopies, this::submitCopy, copy -> copy.jobId);
 
+        List<PlannedQuery> terminalQueries = new ArrayList<>();
+        for (DestinationCopy copy : plan.copies) {
+            if (copy.terminalQuery != null) {
+                terminalQueries.add(copy.terminalQuery);
+            }
+        }
+        runInWaves(
+                terminalQueries,
+                this::submitQuery,
+                query -> query.jobId,
+                Math.min(limits.maxSubmissionsPerWave, MAX_QUERY_SUBMISSIONS_PER_WAVE));
+
         for (DestinationCopy copy : plan.copies) {
             for (TableDestination tempTable : copy.cleanupTables) {
                 runner.deleteTable(tempTable);
@@ -241,11 +261,11 @@ public final class LoadJobOrchestrator {
                 "Loaded {} rows from {} staged files into {} tables{}",
                 rows,
                 committables.size(),
-                plan.destinationFormatCount,
+                plan.destinationCount,
                 checkpointId != null ? " for checkpoint " + checkpointId : "");
     }
 
-    /** Builds and validates every load, copy level and cleanup target before any side effect. */
+    /** Builds and validates every load, copy level, terminal query and cleanup target first. */
     private CommitPlan planCommit(List<FileLoadsCommittable> committables) throws IOException {
         List<DestinationLoad> destinationLoads = plan(committables);
         Map<TableDestination, Integer> formatCounts = new HashMap<>();
@@ -260,7 +280,10 @@ public final class LoadJobOrchestrator {
         List<PlannedLoad> loads = new ArrayList<>();
         Map<TableDestination, List<TableDestination>> copySources = new LinkedHashMap<>();
         for (DestinationLoad load : destinationLoads) {
-            boolean useTempTables = overflowingDestinations.contains(load.destination);
+            boolean replacementAcrossFormats =
+                    isReplacementDisposition() && formatCounts.get(load.destination) > 1;
+            boolean useTempTables =
+                    overflowingDestinations.contains(load.destination) || replacementAcrossFormats;
             for (int partitionIndex = 0;
                     partitionIndex < load.partitions.size();
                     partitionIndex++) {
@@ -312,7 +335,7 @@ public final class LoadJobOrchestrator {
             copyJobCount += copy.jobCount();
         }
         validateJobCounts(loads.size(), copyJobCount, limits);
-        return new CommitPlan(loads, copies, intermediateLevelCount, destinationLoads.size());
+        return new CommitPlan(loads, copies, intermediateLevelCount, formatCounts.size());
     }
 
     private DestinationCopy planCopy(
@@ -355,15 +378,34 @@ public final class LoadJobOrchestrator {
             level++;
         }
 
+        PlannedQuery terminalQuery = null;
+        TableDestination copyDestination = destination;
+        JobInfo.CreateDisposition copyCreateDisposition = JobInfo.CreateDisposition.CREATE_NEVER;
+        JobInfo.WriteDisposition copyWriteDisposition =
+                toWriteDisposition(options.getWriteDisposition());
+        if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE_DATA) {
+            copyDestination = aggregateTable(destination, sources);
+            cleanupTables.add(copyDestination);
+            copyCreateDisposition = JobInfo.CreateDisposition.CREATE_IF_NEEDED;
+            copyWriteDisposition = JobInfo.WriteDisposition.WRITE_TRUNCATE;
+            terminalQuery =
+                    new PlannedQuery(
+                            jobId(
+                                    "flink-bq-query",
+                                    destination,
+                                    List.of(copyDestination.toString()),
+                                    null),
+                            new QueryJobSpec(copyDestination, destination, schemaUpdateOptions()));
+        }
         PlannedCopy finalCopy =
                 new PlannedCopy(
-                        jobId("flink-bq-copy", destination, tablePaths(sources), null),
+                        jobId("flink-bq-copy", copyDestination, tablePaths(sources), null),
                         new CopyJobSpec(
                                 sources,
-                                destination,
-                                JobInfo.CreateDisposition.CREATE_NEVER,
-                                toWriteDisposition(options.getWriteDisposition())));
-        return new DestinationCopy(intermediateLevels, finalCopy, cleanupTables);
+                                copyDestination,
+                                copyCreateDisposition,
+                                copyWriteDisposition));
+        return new DestinationCopy(intermediateLevels, finalCopy, terminalQuery, cleanupTables);
     }
 
     @VisibleForTesting
@@ -393,8 +435,17 @@ public final class LoadJobOrchestrator {
 
     private <T> void runInWaves(List<T> jobs, JobSubmitter<T> submitter, Function<T, String> jobId)
             throws IOException {
-        for (int start = 0; start < jobs.size(); start += limits.maxSubmissionsPerWave) {
-            int end = Math.min(start + limits.maxSubmissionsPerWave, jobs.size());
+        runInWaves(jobs, submitter, jobId, limits.maxSubmissionsPerWave);
+    }
+
+    private <T> void runInWaves(
+            List<T> jobs,
+            JobSubmitter<T> submitter,
+            Function<T, String> jobId,
+            int maxSubmissionsPerWave)
+            throws IOException {
+        for (int start = 0; start < jobs.size(); start += maxSubmissionsPerWave) {
+            int end = Math.min(start + maxSubmissionsPerWave, jobs.size());
             for (int i = start; i < end; i++) {
                 submitter.submit(jobs.get(i));
             }
@@ -415,11 +466,12 @@ public final class LoadJobOrchestrator {
      * introduces the format at all, where committables already in committer state were written as
      * Avro and new ones are not.
      *
-     * <p><b>That commit therefore issues two load jobs for one table</b>, and the "one load job per
-     * table" property — and the single-job atomicity that comes with it — does not hold for it. The
-     * alternatives were both worse: draining the old format first needs the writer to know what is
-     * still in committer state, which it cannot, and rejecting the mix would wedge the restart of
-     * any job whose format changed, recoverable only by discarding state.
+     * <p>Append and empty dispositions retain two direct load jobs when both format groups fit.
+     * Replacement dispositions instead route both groups through temporary tables and one final
+     * action, so one direct truncate cannot erase the other format's rows. Draining the old format
+     * first needs the writer to know what is still in committer state, which it cannot, and
+     * rejecting the mix would wedge the restart of any job whose format changed, recoverable only
+     * by discarding state.
      *
      * <p>The job ids need no help from this: {@link #jobId} hashes the source URI list, and the two
      * formats' files are different objects, so their ids already differ.
@@ -510,6 +562,10 @@ public final class LoadJobOrchestrator {
         runner.submitCopy(copy.jobId, copy.spec);
     }
 
+    private void submitQuery(PlannedQuery query) throws IOException {
+        runner.submitQuery(query.jobId, query.spec);
+    }
+
     /**
      * Memoizing wrapper around {@link #ensureFinalTable}: the reconciliation and its create/update
      * side effects run once per destination per run, however many temporary-table loads the
@@ -532,10 +588,11 @@ public final class LoadJobOrchestrator {
      * partitioning/clustering (fails under {@code CREATE_NEVER}), then re-reads it — creation
      * swallows a lost race, so what exists may not be what was asked for. Under {@code
      * WRITE_TRUNCATE} the load or copy replaces the table's schema wholesale, so the serializer's
-     * schema is used as-is. Otherwise — appending, or writing into an empty table — the live schema
-     * wins: it is returned untouched when schema updates are disabled, and unioned with the
-     * serializer's when they are enabled (new {@code REQUIRED} columns arrive {@code NULLABLE},
-     * since BigQuery cannot add {@code REQUIRED} columns), retrying lost update races.
+     * schema is used as-is. Otherwise — appending, replacing only data, or writing into an empty
+     * table — the live schema wins: it is returned untouched when schema updates are disabled, and
+     * unioned with the serializer's when they are enabled (new {@code REQUIRED} columns arrive
+     * {@code NULLABLE}, since BigQuery cannot add {@code REQUIRED} columns), retrying lost update
+     * races.
      */
     private Schema ensureFinalTable(TableDestination destination) throws IOException {
         TableSchema desired = config.getSerializer().getTableSchema(destination);
@@ -611,9 +668,11 @@ public final class LoadJobOrchestrator {
     }
 
     private List<JobInfo.SchemaUpdateOption> schemaUpdateOptions() {
-        // BigQuery only honors schema update options when appending; WRITE_TRUNCATE replaces the
-        // schema wholesale and WRITE_EMPTY only ever writes into empty tables.
-        if (options.getWriteDisposition() != WriteDisposition.WRITE_APPEND) {
+        // BigQuery honors schema update options when appending or replacing only the data.
+        // WRITE_TRUNCATE replaces the schema wholesale and WRITE_EMPTY only writes into an empty
+        // table after the connector has reconciled it.
+        if (options.getWriteDisposition() != WriteDisposition.WRITE_APPEND
+                && options.getWriteDisposition() != WriteDisposition.WRITE_TRUNCATE_DATA) {
             return List.of();
         }
         SchemaUpdateOptions updateOptions = config.getSchemaUpdateOptions();
@@ -675,6 +734,25 @@ public final class LoadJobOrchestrator {
         return TableDestination.of(destination.getProject(), dataset, name);
     }
 
+    private TableDestination aggregateTable(
+            TableDestination destination, List<TableDestination> sources) {
+        String dataset =
+                options.getTempDataset() != null
+                        ? options.getTempDataset()
+                        : destination.getDataset();
+        String hash =
+                sha256Hex(destination.toTablePath() + "\n" + String.join("\n", tablePaths(sources)))
+                        .substring(0, 12);
+        String name =
+                "tmp_"
+                        + flinkJobId
+                        + "_"
+                        + hash
+                        + (checkpointId != null ? "_c" + checkpointId : "")
+                        + "_aggregate";
+        return TableDestination.of(destination.getProject(), dataset, name);
+    }
+
     /**
      * A deterministic job id: prefix, Flink job id, and a hash of the destination and sources. The
      * hash alone is the idempotency key — source URI sets are unique per run by construction — and
@@ -732,11 +810,18 @@ public final class LoadJobOrchestrator {
         switch (disposition) {
             case WRITE_TRUNCATE:
                 return JobInfo.WriteDisposition.WRITE_TRUNCATE;
+            case WRITE_TRUNCATE_DATA:
+                return JobInfo.WriteDisposition.WRITE_TRUNCATE_DATA;
             case WRITE_EMPTY:
                 return JobInfo.WriteDisposition.WRITE_EMPTY;
             default:
                 return JobInfo.WriteDisposition.WRITE_APPEND;
         }
+    }
+
+    private boolean isReplacementDisposition() {
+        return options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE
+                || options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE_DATA;
     }
 
     /** One destination table's load plan and the job/table names it produced. */
@@ -797,17 +882,17 @@ public final class LoadJobOrchestrator {
         private final List<PlannedLoad> loads;
         private final List<DestinationCopy> copies;
         private final int intermediateLevelCount;
-        private final int destinationFormatCount;
+        private final int destinationCount;
 
         CommitPlan(
                 List<PlannedLoad> loads,
                 List<DestinationCopy> copies,
                 int intermediateLevelCount,
-                int destinationFormatCount) {
+                int destinationCount) {
             this.loads = loads;
             this.copies = copies;
             this.intermediateLevelCount = intermediateLevelCount;
-            this.destinationFormatCount = destinationFormatCount;
+            this.destinationCount = destinationCount;
         }
     }
 
@@ -849,19 +934,34 @@ public final class LoadJobOrchestrator {
         }
     }
 
-    /** One destination table's combined overflow hierarchy across all staging formats. */
+    /** One deterministic terminal query that replaces only the final table's data. */
+    private static final class PlannedQuery {
+
+        private final String jobId;
+        private final QueryJobSpec spec;
+
+        PlannedQuery(String jobId, QueryJobSpec spec) {
+            this.jobId = jobId;
+            this.spec = spec;
+        }
+    }
+
+    /** One destination table's combined temporary-table hierarchy across all staging formats. */
     private static final class DestinationCopy {
 
         private final List<List<PlannedCopy>> intermediateLevels;
         private final PlannedCopy finalCopy;
+        @Nullable private final PlannedQuery terminalQuery;
         private final List<TableDestination> cleanupTables;
 
         DestinationCopy(
                 List<List<PlannedCopy>> intermediateLevels,
                 PlannedCopy finalCopy,
+                @Nullable PlannedQuery terminalQuery,
                 List<TableDestination> cleanupTables) {
             this.intermediateLevels = intermediateLevels;
             this.finalCopy = finalCopy;
+            this.terminalQuery = terminalQuery;
             this.cleanupTables = cleanupTables;
         }
 

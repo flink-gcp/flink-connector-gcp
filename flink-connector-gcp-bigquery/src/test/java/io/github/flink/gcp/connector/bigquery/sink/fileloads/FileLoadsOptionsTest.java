@@ -306,11 +306,11 @@ class FileLoadsOptionsTest {
                 FileLoadsOptions.builder()
                         .stagingPath("gs://bucket")
                         .tempDataset("temp_dataset")
-                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE)
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
                         .build();
 
         assertThat(options.getTempDataset()).isEqualTo("temp_dataset");
-        assertThat(options.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE);
+        assertThat(options.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE_DATA);
     }
 
     @Test

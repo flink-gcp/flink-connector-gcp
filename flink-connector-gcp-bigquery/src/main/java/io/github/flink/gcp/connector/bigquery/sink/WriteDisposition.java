@@ -32,6 +32,9 @@ public enum WriteDisposition {
     /** Replaces the existing table data (and schema) with the loaded rows. */
     WRITE_TRUNCATE("write-truncate"),
 
+    /** Replaces the existing table data while preserving the table schema and constraints. */
+    WRITE_TRUNCATE_DATA("write-truncate-data"),
+
     /** Fails the load when the destination table is not empty. */
     WRITE_EMPTY("write-empty");
 

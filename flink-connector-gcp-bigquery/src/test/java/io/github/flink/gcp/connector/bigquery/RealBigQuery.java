@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardTableDefinition;
 import com.google.cloud.bigquery.Table;
+import com.google.cloud.bigquery.TableConstraints;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -32,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.StorageSchemaConverter
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -100,6 +102,23 @@ public final class RealBigQuery {
                                 StandardTableDefinition.of(schema)));
     }
 
+    /** Creates a table carrying representative metadata that a data-only replacement must keep. */
+    public static void createTableWithMetadata(
+            String table,
+            Schema schema,
+            String description,
+            Map<String, String> labels,
+            TableConstraints constraints) {
+        client().create(
+                        TableInfo.newBuilder(
+                                        TableId.of(project(), dataset(), table),
+                                        StandardTableDefinition.of(schema))
+                                .setDescription(description)
+                                .setLabels(labels)
+                                .setTableConstraints(constraints)
+                                .build());
+    }
+
     /**
      * Deletes the given tables, best-effort; the dataset's default table expiration (24 h, set in
      * {@code opentofu/flink-gcp/it-resources.tf}) is the backstop for a crashed run.
@@ -123,11 +142,44 @@ public final class RealBigQuery {
      * clustering the service actually stored.
      */
     public static StandardTableDefinition tableDefinition(String table) {
+        return tableInfo(table).getDefinition();
+    }
+
+    /** Returns the table-level description of {@code table}. */
+    public static String tableDescription(String table) {
+        return tableInfo(table).getDescription();
+    }
+
+    /** Returns the labels stored on {@code table}. */
+    public static Map<String, String> tableLabels(String table) {
+        return tableInfo(table).getLabels();
+    }
+
+    /** Returns the constraints stored on {@code table}. */
+    public static TableConstraints tableConstraints(String table) {
+        return tableInfo(table).getTableConstraints();
+    }
+
+    /** Returns the bytes processed by a completed query job in the gated dataset's location. */
+    public static long queryBytesProcessed(String jobId) {
+        com.google.cloud.bigquery.Job job =
+                client().getJob(
+                                com.google.cloud.bigquery.JobId.newBuilder()
+                                        .setJob(jobId)
+                                        .setLocation(datasetLocation())
+                                        .build());
+        assertThat(job).as("query job %s exists", jobId).isNotNull();
+        com.google.cloud.bigquery.JobStatistics.QueryStatistics statistics = job.getStatistics();
+        assertThat(statistics).as("query job %s has query statistics", jobId).isNotNull();
+        return statistics.getTotalBytesProcessed();
+    }
+
+    private static Table tableInfo(String table) {
         Table live = client().getTable(TableId.of(project(), dataset(), table));
         // Named rather than left to a bare NPE below: a table the sink was expected to auto-create
         // is exactly what a caller of this asserts about, and the run that finds out is a paid one.
         assertThat(live).as("table %s exists", table).isNotNull();
-        return live.getDefinition();
+        return live;
     }
 
     /** Runs the query and returns its rows. */
