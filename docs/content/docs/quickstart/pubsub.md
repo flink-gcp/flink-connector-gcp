@@ -28,20 +28,7 @@ Assumes the artifacts and credentials from the
 
 ## Publish a stream to a topic
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-env.enableCheckpointing(60_000);
-
-env.fromData("hello", "world")
-        .sinkTo(
-                PubSubSink.<String>builder()
-                        .topic(TopicDestination.of("my-project", "orders"))
-                        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
-                        .build());
-
-env.execute("pubsub-sink-quickstart");
-```
+{{< java-snippet file="PubSubQuickstartPublish.java" tag="pubsub-quickstart-publish" >}}
 
 Checkpointing is not decoration: the sink is at-least-once *only* with it, since the checkpoint is
 what makes Flink flush the messages the SDK publishers are still batching.
@@ -57,26 +44,7 @@ the subscription first when trying this.
 
 ## Read a stream from a subscription
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-// Also not optional here, and for a sharper reason: the source acknowledges on checkpoint
-// completion, so without checkpointing nothing is ever acknowledged and it stalls once the client
-// library's flow control fills. It fails the job itself after 10 minutes of that rather than
-// hanging quietly.
-env.enableCheckpointing(60_000);
-
-Source<String, ?, ?> source =
-        PubSubSource.<String>builder()
-                .subscription(SubscriptionDestination.of("my-project", "orders-sub"))
-                .deserializationSchema(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
-                .build();
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "pubsub").print();
-
-env.execute("pubsub-source-quickstart");
-```
+{{< java-snippet file="PubSubQuickstartRead.java" tag="pubsub-quickstart-read" >}}
 
 The subscription must already exist: passing it without creation settings is the statement that it
 does, and the enumerator checks before assigning a split. Pub/Sub's publish time becomes each

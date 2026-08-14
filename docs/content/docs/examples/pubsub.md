@@ -28,23 +28,7 @@ Starting from the [Cloud Pub/Sub quickstart]({{< relref "docs/quickstart/pubsub"
 
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#pubsub-topics) explains the shared resolver contract and the ordering boundary for a dynamically selected topic.
 
-```java
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
-        .keyBy(OrderEvent::customerId)
-        .sinkTo(
-                PubSubSink.<OrderEvent>builder()
-                        .destinationResolver(
-                                (element, context) ->
-                                        TopicDestination.of("my-project", element.region()))
-                        .serializer(
-                                PubSubSerializationSchema.dataOnly(new OrderEventSchema())
-                                        .withOrderingKey(OrderEvent::customerId))
-                        .publisherOptions(
-                                PubSubPublisherOptions.builder()
-                                        .enableMessageOrdering(true)
-                                        .build())
-                        .build());
-```
+{{< java-snippet file="PubSubExamplesTopicPerRecord.java" tag="pubsub-examples-topic-per-record" >}}
 
 A lambda is fine where the destination set is small: `TopicDestination` is pure identity, so the allocation is a few fields.
 Cache it as the [BigQuery example]({{< relref "docs/examples/bigquery" >}}#a-table-per-day) does when the resolver is doing real work to produce the name.
@@ -60,18 +44,7 @@ The sink creates a missing topic reactively: a publish failing with `NOT_FOUND` 
 creates the topic, and republishes under a bounded backoff. An existing topic costs nothing — no
 admin call is made unless a publish actually fails.
 
-```java
-PubSubSink.<OrderEvent>builder()
-        .topic(TopicDestination.of("my-project", "orders"))
-        .topicCreateOptions(
-                TopicCreateOptions.builder()
-                        // What makes messages published before a subscription exists reachable
-                        // by one created later, or by a backwards seek.
-                        .messageRetention(Duration.ofDays(7))
-                        .build())
-        .serializer(PubSubSerializationSchema.dataOnly(new OrderEventSchema()))
-        .build();
-```
+{{< java-snippet file="PubSubExamplesTopicsOnSink.java" tag="pubsub-examples-topics-on-sink" >}}
 
 **An auto-created topic starts with no subscriptions**, so without `messageRetention` the messages
 published before one is attached are retained for nobody. That makes auto-creation without it suit
@@ -89,19 +62,7 @@ authorises creating it.** There is no disposition, because there is no meaningfu
 defaults" — a subscription without a topic is not a subscription, and only you know which topic to
 bind.
 
-```java
-PubSubSource.<OrderEvent>builder()
-        .subscription(
-                SubscriptionDestination.of("my-project", "orders-sub"),
-                SubscriptionCreateOptions.builder()
-                        .topic(TopicDestination.of("my-project", "orders"))
-                        .ackDeadline(Duration.ofSeconds(60))
-                        .build())
-        // No options: this one must already exist, and the startup check says so if it does not.
-        .subscription(SubscriptionDestination.of("my-project", "returns-sub"))
-        .deserializationSchema(new OrderEventDeserializationSchema())
-        .build();
-```
+{{< java-snippet file="PubSubExamplesSubscriptionsOnSource.java" tag="pubsub-examples-subscriptions-on-source" >}}
 
 **The settings are per subscription because they carry the topic binding.** One options object
 shared across several would bind them all to one topic, and Pub/Sub delivers a complete copy of a
@@ -124,13 +85,7 @@ gcloud beta emulators pubsub start --project=my-project --host-port=localhost:80
 Pass `--host-port` rather than taking the default, which binds the IPv6 loopback (`[::1]:8085`) —
 `emulatorEndpoint("localhost:8085")` is then resolving a name the emulator may not be listening on.
 
-```java
-PubSubSink.<String>builder()
-        .topic(TopicDestination.of("my-project", "orders"))
-        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
-        .emulatorEndpoint("localhost:8085")
-        .build();
-```
+{{< java-snippet file="PubSubExamplesEmulator.java" tag="pubsub-examples-emulator" >}}
 
 `emulatorEndpoint(...)` exists on the source too, and on both it opens a **plaintext channel with
 no credentials** — so it must only ever point at an emulator, never at production Pub/Sub. Note the

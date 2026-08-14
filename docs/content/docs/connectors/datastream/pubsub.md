@@ -29,22 +29,7 @@ sink and multi-subscription consumption on the source, provided by the
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-pubsub/README.md).
 
-```java
-Sink<MyEvent> sink =
-        PubSubSink.<MyEvent>builder()
-                .destinationResolver(
-                        (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
-                .serializer(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
-                                .withAttributes(e -> Map.of("source", e.source()))
-                                .withOrderingKey(MyEvent::deviceId))
-                .publisherOptions(
-                        PubSubPublisherOptions.builder()
-                                .enableMessageOrdering(true)
-                                .batchDelayThreshold(Duration.ofMillis(10))
-                                .build())
-                .build();
-```
+{{< java-snippet file="PubSubConnectorOverview.java" tag="pubsub-connector-overview" >}}
 
 API notes:
 
@@ -408,19 +393,7 @@ is, because a topic (unlike a subscription) can meaningfully be created with def
 are purely additive, and combining them with `CREATE_NEVER` is rejected at graph construction,
 since they would configure a topic the sink never creates.
 
-```java
-PubSubSink.<String>builder()
-        .topic(TopicDestination.of("my-project", "orders-topic"))
-        .topicCreateOptions(
-                TopicCreateOptions.builder()
-                        .messageRetention(Duration.ofDays(7))
-                        .kmsKeyName("projects/p/locations/l/keyRings/r/cryptoKeys/k")
-                        .allowedPersistenceRegions(List.of("europe-west1", "europe-west4"))
-                        .enforceInTransit(true)
-                        .build())
-        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
-        .build();
-```
+{{< java-snippet file="PubSubConnectorTopicCreationSettings.java" tag="pubsub-connector-topic-creation-settings" >}}
 
 Knobs: `messageRetention` (topic-level retention, acknowledged or not — what lets a subscription
 created *later*, or a backwards seek, reach messages published before it existed),
@@ -524,14 +497,7 @@ failure, so it never reaches the handler and is counted by
 ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
 repository):
 
-```java
-Sink<String> sink =
-        PubSubSink.<String>builder()
-                .topic(TopicDestination.of("my-project", "events"))
-                .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
-                .failedMessageHandler(FailureHandler.logAndDrop())
-                .build();
-```
+{{< java-snippet file="PubSubConnectorFailedMessagePolicy.java" tag="pubsub-connector-failed-message-policy" >}}
 
 - `FailureHandler.failJob()` (default) — every per-message failure fails the checkpoint, which is
   the sink's behavior when nothing is configured
@@ -664,17 +630,7 @@ serves every connector here**, not only this one. Every knob and its default is 
 [configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder);
 this section is why they are what they are.
 
-```java
-PubSubSink.<String>builder()
-        .topic(TopicDestination.of("my-project", "events"))
-        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
-        .failedMessageHandler(
-                FailureHandler.sendToDeadLetterQueue(
-                        PubSubDeadLetterQueue.builder()
-                                .topic(TopicDestination.of("my-project", "dead-letters"))
-                                .build()))
-        .build();
-```
+{{< java-snippet file="PubSubConnectorDeadLettering.java" tag="pubsub-connector-dead-lettering" >}}
 
 `PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
 publisher independently of this Pub/Sub sink's `serviceAccountKeyFile(path)` setting.
@@ -922,23 +878,7 @@ a job that wants publish spans configures OpenTelemetry itself.
 
 ## Source
 
-```java
-Source<String, ?, ?> source =
-        PubSubSource.<String>builder()
-                .subscriptions(
-                        SubscriptionDestination.of("my-project", "orders"),
-                        SubscriptionDestination.of("my-project", "returns"))
-                .deserializationSchema(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
-                .subscriberOptions(
-                        PubSubSubscriberOptions.builder()
-                                .flowControlMaxOutstandingElementCount(5_000)
-                                .maxAckExtensionPeriod(Duration.ofMinutes(30))
-                                .build())
-                .build();
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "pubsub");
-```
+{{< java-snippet file="PubSubConnectorSource.java" tag="pubsub-connector-source" >}}
 
 API notes:
 
@@ -1091,20 +1031,7 @@ added without them must already exist, and the job fails at startup naming the o
 There is no separate disposition enum because there is no meaningful "create with defaults": a
 subscription without a topic is not a subscription, and only you know which topic to bind.
 
-```java
-PubSubSource.<String>builder()
-        .subscription(
-                SubscriptionDestination.of("my-project", "orders"),
-                SubscriptionCreateOptions.builder()
-                        .topic(TopicDestination.of("my-project", "orders-topic"))
-                        .ackDeadline(Duration.ofSeconds(60))
-                        .retainAckedMessages(true)
-                        .build())
-        // No options: this one must already exist.
-        .subscription(SubscriptionDestination.of("my-project", "returns"))
-        .deserializationSchema(PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
-        .build();
-```
+{{< java-snippet file="PubSubConnectorSubscriptionAutoCreation.java" tag="pubsub-connector-subscription-auto-creation" >}}
 
 **Settings are per subscription because they carry the topic binding.** One options object shared by
 several subscriptions would bind them all to the same topic, and Pub/Sub delivers a complete copy of
