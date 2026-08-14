@@ -16,7 +16,7 @@ a reference page. It is offline and takes under a second.
 
 ## The config file, in one paragraph
 
-`scripts/option-docs.toml` has four tables and they do different jobs:
+`scripts/config/option-docs.toml` has four tables and they do different jobs:
 
 | Table | Direction | Answers |
 |---|---|---|
