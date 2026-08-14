@@ -903,9 +903,9 @@ one per genuinely invalid message.
 
 **`perDestinationMetrics` is off by default, and should stay off for dynamic destinations.** Flink
 cannot unregister a metric, so every topic the job has ever written to keeps its counters for the
-lifetime of the task — and, for the same reason, a topic whose writer state was evicted and later
-rebuilt resumes its old counters rather than restarting at zero. Switch it on when the topic set is
-small and known; the option is in
+lifetime of the task.
+The writer also retains each topic's publisher until it closes; there is no sink-side destination eviction or rebuild.
+Switch the metrics on when the topic set is small and known; the option is in
 [`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
 
 `currentSendTime` is deliberately **not** set. The SDK batches publishes and completes their futures

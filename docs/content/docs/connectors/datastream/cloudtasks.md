@@ -98,10 +98,10 @@ Sink<OrderEvent> sink =
   serializer unused. Rejecting those methods would leave no convenience path for `GET` tasks.
 - `QueueDestination` is pure queue identity (`equals`/`hashCode` over project, location and queue)
   and can be resolved per record through `destinationResolver(...)`, exactly as the BigQuery and
-  Pub/Sub sinks resolve tables and topics. Unlike those two this costs nothing: Cloud Tasks has no
-  per-destination connection or stream, so one `CloudTasksClient` serves every queue and dynamic
-  destinations need no per-queue state. Resolvers run per record — cache and reuse
-  `QueueDestination` instances.
+  Pub/Sub sinks resolve tables and topics.
+  Dynamic routing creates no per-queue service-client state: one `CloudTasksClient` serves every queue.
+  Optional per-destination metrics are separate and keep counters for each queue with a recorded send or failure for the task lifetime.
+  Resolvers run per record, so cache and reuse `QueueDestination` instances.
 - The location is part of the destination because queues are regional and a project may hold
   queues in several regions.
 - `serviceAccountKeyFile(path)` selects a service-account JSON key when application-default
@@ -635,9 +635,9 @@ one at a time under a dropping policy, and this counter is what shows it while t
 
 **`perDestinationMetrics` is off by default**, and should stay off with a per-record
 `destinationResolver`: Flink cannot unregister a metric, so every queue the job has written to keeps
-its counters for the lifetime of the task. A fixed `queue(...)` is the case to switch it on for. For
-the same reason the counters survive eviction — a queue seen again resumes its own totals rather
-than restarting at zero.
+its counters for the lifetime of the task.
+A fixed `queue(...)` is the case to switch it on for.
+Because the registry entries cannot be removed, a queue seen again resumes its own totals rather than restarting at zero.
 
 `currentSendTime` is deliberately **not** set: a creation may sit parked through several backoffs,
 so the interval this writer could measure would describe its own retry budget rather than the

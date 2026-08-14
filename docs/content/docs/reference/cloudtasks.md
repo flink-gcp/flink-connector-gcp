@@ -38,7 +38,7 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 | Option | Default | What it does |
 |---|---|---|
 | `queue` | **required**, unless `destinationResolver` is set | Writes every task to one fixed queue |
-| `destinationResolver` | — | Resolves the queue per record. Costs nothing here: one client serves every queue |
+| `destinationResolver` | — | Resolves the queue per record. One client serves every queue, so routing allocates no per-queue service-client state |
 | `serializer` | **required** | Builds the `Task` — HTTP URL or App Engine relative URI/routing, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
 | `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
 | `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |

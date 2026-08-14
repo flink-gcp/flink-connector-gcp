@@ -29,6 +29,7 @@ behaves as it does is on the
 
 ## Writing to several tables from one sink
 
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#spanner-tables) explains why Spanner takes its table from each mutation instead of using the resolver-based pattern.
 The mutation names its table, so routing by record needs no option — just a serializer that decides.
 
 ```java
@@ -44,8 +45,9 @@ SpannerSink.<Event>builder()
         .build();
 ```
 
-The cell weights the sink reads at start-up cover every table of the database, so both tables are
-weighed correctly against the batch limit.
+At start-up, the sink reads index-aware cell weights for the database's visible tables, so both pre-existing tables in this example are weighed correctly against the batch limit.
+A table created after the writer opens, or hidden from the writer's database role, is counted without its index entries.
+Both tables must already exist because the sink does not create them.
 
 ## Deleting rows
 
