@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 
 /**
  * Reads rows from a Cloud Spanner database.
+ * <!-- javadoc-example file="JavadocSpannerExamples.java" tag="source" -->
  *
  * <pre>{@code
  * Source<Singer, ?, ?> source =

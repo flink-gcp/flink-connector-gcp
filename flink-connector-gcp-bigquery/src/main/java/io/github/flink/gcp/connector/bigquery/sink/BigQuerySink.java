@@ -42,13 +42,16 @@ import org.apache.flink.annotation.PublicEvolving;
  * with an {@link UnsupportedOperationException}.
  *
  * <p>Example:
+ * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="sink" -->
  *
  * <pre>{@code
  * Sink<MyEvent> sink =
  *         BigQuerySink.<MyEvent>builder()
  *                 .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
  *                 .destinationResolver(
- *                         (e, ctx) -> TableDestination.of("my-project", "my_dataset", e.tableName()))
+ *                         (e, ctx) ->
+ *                                 TableDestination.of(
+ *                                         "my-project", "my_dataset", e.tableName()))
  *                 .serializer(new MyEventProtoSerializer())
  *                 .build();
  * }</pre>

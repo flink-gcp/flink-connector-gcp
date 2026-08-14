@@ -33,12 +33,13 @@ import java.util.Objects;
 /**
  * What the batch source reads: either a query, or a table with its columns and key set, optionally
  * through an index.
+ * <!-- javadoc-example file="JavadocSpannerExamples.java" tag="read-operations" -->
  *
  * <pre>{@code
- * SpannerReadOperation.query(Statement.of("SELECT id, name FROM singers"))
- * SpannerReadOperation.read("singers", KeySet.all(), Arrays.asList("id", "name"))
+ * SpannerReadOperation.query(Statement.of("SELECT id, name FROM singers"));
+ * SpannerReadOperation.read("singers", KeySet.all(), Arrays.asList("id", "name"));
  * SpannerReadOperation.readUsingIndex(
- *         "singers", "singers_by_name", KeySet.all(), Arrays.asList("id", "name"))
+ *         "singers", "singers_by_name", KeySet.all(), Arrays.asList("id", "name"));
  * }</pre>
  *
  * <p>The two shapes are exclusive because Spanner's own API makes them so — {@code partitionQuery}

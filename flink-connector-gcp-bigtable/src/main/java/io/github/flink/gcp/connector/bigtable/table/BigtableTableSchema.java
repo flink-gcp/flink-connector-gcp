@@ -34,6 +34,9 @@ import java.util.Objects;
  * <p>The model is the HBase connector's, so that a table definition moves between the two with its
  * schema intact:
  *
+ * <p><b>Abbreviated, not compiled:</b> deployment-specific connector options are omitted.
+ * <!-- javadoc-example partial="deployment-specific connector options" -->
+ *
  * <pre>{@code
  * CREATE TABLE bt (
  *   rowkey STRING,

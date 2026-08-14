@@ -29,7 +29,8 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just verify-module <module>`: verify a module and its reactor dependencies; keep its `-am`.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
-- `just check-doc-snippets`: compile the source-backed Java examples rendered into the docs.
+- `just check-doc-snippets`: check and compile source-backed Java examples rendered in the docs
+  and public Javadoc.
 - `just lint`: lint scripts, workflows, rendered Markdown, and OpenTofu.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
@@ -51,6 +52,9 @@ green; use the clean-state procedures in that guide for such changes.
   `$maintain-doc-java-snippets`. New or materially changed runnable API guidance is source-backed;
   intentionally partial or pseudocode examples remain ordinary fenced blocks and must be
   described as abbreviated. Existing ordinary fences remain unvalidated until they are migrated.
+- Before adding or changing a public Javadoc code block, or for a Javadoc-specific
+  `just check-doc-snippets` failure, use `$maintain-javadoc-examples`. Runnable blocks map to exact
+  compiled backing regions; abbreviated blocks are visibly classified and explain their omission.
 - Option and metric inventories belong only in their reference/DataStream tables; use the matching
   `curate-*` skill when a checker fails.
 - Module `README.md` files are overviews: status table, minimal sample, docs link, and provenance.

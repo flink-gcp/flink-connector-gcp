@@ -33,6 +33,8 @@ on:
       # Source-backed Java examples live in an internal test-only module rather
       # than below docs/, so their push must run both compilation and rendering.
       - 'flink-connector-gcp-docs-validation/src/test/**'
+      # Public Javadoc blocks map to those sources through this checker.
+      - 'scripts/check-javadoc-examples.py'
       - 'pom.xml'
       - '**/pom.xml'
       - 'tools/**'
@@ -128,9 +130,9 @@ jobs:
       - name: Generate API reference
         run: just docs-javadoc
 
-      # The same tagged regions are mounted into Hugo below. See
-      # .agents/skills/maintain-doc-java-snippets/ when this fails.
-      - name: Compile Java snippets
+      # This also checks the exact source backing of runnable public Javadoc.
+      # See the maintain-doc-java-snippets and maintain-javadoc-examples skills.
+      - name: Check and compile Java snippets
         run: just check-doc-snippets
 
       # --panicOnWarning turns deprecations, unresolved relrefs and missing

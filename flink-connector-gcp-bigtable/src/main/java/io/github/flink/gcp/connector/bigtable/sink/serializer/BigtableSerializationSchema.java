@@ -34,11 +34,16 @@ import java.io.Serializable;
  * row accepts — {@code setCell}, {@code deleteCells}, {@code deleteFamily}, {@code deleteRow} — are
  * expressible, and one record may carry several of them. The mutations of one entry are applied
  * atomically; entries are not ordered against each other.
+ * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="serialization-schema" -->
  *
  * <pre>{@code
  * (record, context) ->
  *         RowMutationEntry.create(record.getId())
- *                 .setCell("cf", "payload", record.getTimestampMicros(), record.getBody());
+ *                 .setCell(
+ *                         "cf",
+ *                         "payload",
+ *                         record.getTimestampMicros(),
+ *                         record.getBody());
  * }</pre>
  *
  * <p><b>Cell timestamps decide what a replay does.</b> The sink is at-least-once, so a record may

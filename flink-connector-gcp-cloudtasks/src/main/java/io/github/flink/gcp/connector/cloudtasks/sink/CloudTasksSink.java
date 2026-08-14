@@ -32,17 +32,20 @@ import org.apache.flink.annotation.PublicEvolving;
  * the serializer, or handed to that handler.
  *
  * <p>Example:
+ * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="sink" -->
  *
  * <pre>{@code
  * Sink<OrderEvent> sink =
  *         CloudTasksSink.<OrderEvent>builder()
  *                 .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
  *                 .serializer(
- *                         CloudTasksSerializationSchema
- *                                 .httpTarget("https://api.example.com/v1/orders")
+ *                         CloudTasksSerializationSchema.httpTarget(
+ *                                         "https://api.example.com/v1/orders")
  *                                 .withBody(new MyEventJsonSerializationSchema())
- *                                 .withHeaders(e -> Map.of("Content-Type", "application/json"))
- *                                 .withOidcToken("dispatcher@my-project.iam.gserviceaccount.com"))
+ *                                 .withHeaders(
+ *                                         e -> Map.of("Content-Type", "application/json"))
+ *                                 .withOidcToken(
+ *                                         "dispatcher@my-project.iam.gserviceaccount.com"))
  *                 .build();
  * }</pre>
  */

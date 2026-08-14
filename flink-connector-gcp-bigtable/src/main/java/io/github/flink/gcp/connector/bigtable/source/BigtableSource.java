@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 
 /**
  * Reads rows from a Cloud Bigtable table.
+ * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="source" -->
  *
  * <pre>{@code
  * Source<Order, ?, ?> source =

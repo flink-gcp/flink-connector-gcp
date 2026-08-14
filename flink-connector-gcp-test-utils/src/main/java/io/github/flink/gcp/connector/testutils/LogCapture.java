@@ -42,6 +42,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * report of something already covered — and asserting it there buys little while coupling the test
  * to the message's wording, which is the cost that keeps this class from spreading.
  *
+ * <p><b>Abbreviated, not compiled:</b> the asserted message depends on the test scenario.
+ * <!-- javadoc-example partial="scenario-specific log assertion" -->
+ *
  * <pre>{@code
  * try (LogCapture capture = LogCapture.of(FailureHandlers.LogAndDrop.class)) {
  *     FailureHandler.logAndDrop().handle(element);

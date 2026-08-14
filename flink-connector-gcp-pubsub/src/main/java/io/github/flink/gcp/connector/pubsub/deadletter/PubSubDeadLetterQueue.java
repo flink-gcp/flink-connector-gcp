@@ -68,6 +68,7 @@ import java.util.concurrent.TimeoutException;
  * adding the {@code flink-connector-gcp-pubsub} artifact as a dependency. It does not go through
  * the Pub/Sub sink: it owns an SDK {@link Publisher} of its own, so a job that dead-letters is not
  * also a Pub/Sub sink job.
+ * <!-- javadoc-example file="JavadocPubSubExamples.java" tag="dead-letter-queue" -->
  *
  * <pre>{@code
  * BigQuerySink.<Order>builder()
@@ -76,7 +77,9 @@ import java.util.concurrent.TimeoutException;
  *         .failureHandler(
  *                 FailureHandler.sendToDeadLetterQueue(
  *                         PubSubDeadLetterQueue.builder()
- *                                 .topic(TopicDestination.of("my-project", "dead-letters"))
+ *                                 .topic(
+ *                                         TopicDestination.of(
+ *                                                 "my-project", "dead-letters"))
  *                                 .build()))
  *         .build();
  * }</pre>

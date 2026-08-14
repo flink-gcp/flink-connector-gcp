@@ -315,6 +315,7 @@ public final class ProtoSchemaOptions implements Serializable {
          * everywhere the annotations proto is either on the classpath or among the descriptor's
          * transitive dependencies; a descriptor that arrives with neither leaves the number as the
          * only available identity.
+         * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="json-option" -->
          *
          * <pre>{@code
          * ProtoSchemaOptions.builder().jsonFieldOption(MyAnnotations.json).build();
@@ -419,6 +420,7 @@ public final class ProtoSchemaOptions implements Serializable {
          * extension itself is not retained (it holds a descriptor and is not Java-serializable,
          * while these options travel in the job graph) — only its number and name. Additive, and
          * where two extensions claim one number the last call wins.
+         * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="geography-option" -->
          *
          * <pre>{@code
          * ProtoSchemaOptions.builder().geographyFieldOption(MyAnnotations.geography).build();

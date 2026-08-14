@@ -32,6 +32,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *
  * <p>A read through this API is charged for the bytes BigQuery scans to serve it, unlike the sink's
  * {@code FILE_LOADS} write path, which is free.
+ * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="source" -->
  *
  * <pre>{@code
  * Source<GenericRecord, ?, ?> source =

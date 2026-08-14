@@ -70,3 +70,8 @@ def check_skill_frontmatter():
 @pytest.fixture(scope="session")
 def check_java_license_headers():
     return load_script("check-java-license-headers.py")
+
+
+@pytest.fixture(scope="session")
+def check_javadoc_examples():
+    return load_script("check-javadoc-examples.py")
