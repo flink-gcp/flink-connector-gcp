@@ -16,6 +16,16 @@
 
 package io.github.flink.gcp.connector.docs;
 
+import com.google.cloud.bigquery.storage.v1.TableSchema;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.DescriptorProtos;
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.Empty;
+import com.google.protobuf.GeneratedMessage;
+import com.google.protobuf.Message;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+
 import java.time.Instant;
 
 final class BigQueryDocumentationTypes {
@@ -32,6 +42,69 @@ final class BigQueryDocumentationTypes {
 
         Instant createdAt() {
             return createdAt;
+        }
+    }
+
+    interface MyEvent {
+
+        String tableName();
+
+        String uuid();
+
+        Instant timestamp();
+    }
+
+    interface Order {}
+
+    interface MyMessage extends Message {}
+
+    static final class MyAnnotations {
+
+        private MyAnnotations() {}
+
+        static GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean> json;
+
+        static GeneratedMessage.GeneratedExtension<DescriptorProtos.FieldOptions, Boolean>
+                geography;
+    }
+
+    static final class MyEventProtoSerializer extends BigQueryProtoSerializer<MyEvent> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return TableSchema.getDefaultInstance();
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return Empty.getDescriptor();
+        }
+
+        @Override
+        public ByteString serialize(MyEvent element) {
+            return Empty.getDefaultInstance().toByteString();
+        }
+    }
+
+    static final class MyOrderProtoSerializer extends BigQueryProtoSerializer<Order> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return TableSchema.getDefaultInstance();
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return Empty.getDescriptor();
+        }
+
+        @Override
+        public ByteString serialize(Order element) {
+            return Empty.getDefaultInstance().toByteString();
         }
     }
 }

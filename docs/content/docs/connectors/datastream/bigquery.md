@@ -27,15 +27,7 @@ BigQuery sink for Apache Flink with a unified, `BigQueryIO`-style write API, pro
 
 One builder dispatches to a write-method implementation at job-graph construction time:
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
-                .destinationResolver(
-                        (e, ctx) -> TableDestination.of("my-project", "my_dataset", e.tableName()))
-                .serializer(new MyEventProtoSerializer())
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorOverview.java" tag="bigquery-connector-overview" >}}
 
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
@@ -161,13 +153,7 @@ does not need to change solely because the write method changes.
 By default every BigQuery and Cloud Storage client uses application-default credentials (ADC).
 Set `serviceAccountKeyFile(...)` to use one service-account JSON key file instead:
 
-```java
-BigQuerySink.<MyEvent>builder()
-        .destination(TableDestination.of("my-project", "my_dataset", "events"))
-        .serializer(new MyEventProtoSerializer())
-        .serviceAccountKeyFile("/var/run/secrets/bigquery/key.json")
-        .build();
-```
+{{< java-snippet file="BigQueryConnectorCredentials.java" tag="bigquery-connector-credentials-sink" >}}
 
 Only the path enters the job graph.
 The key file is read when a writer or committer first creates a client, so the JobManager does not
@@ -189,13 +175,7 @@ Emulator connections remain credential-free.
 
 Sources use the same `serviceAccountKeyFile(...)` spelling:
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .table(TableDestination.of("my-project", "my_dataset", "events"))
-        .deserializer(BigQueryRowDeserializer.genericRecord(schemaJson))
-        .serviceAccountKeyFile("/var/run/secrets/bigquery/key.json")
-        .build();
-```
+{{< java-snippet file="BigQueryConnectorCredentials.java" tag="bigquery-connector-credentials-source" >}}
 
 The configured identity applies to the Storage Read clients that create the read session and open
 its streams, and to the REST client that runs `query(...)` or `materializeViews()`.
@@ -254,28 +234,7 @@ All three built-in serializers reach this common protobuf boundary, so additiona
 The value provider receives the original input element: a protobuf message, an `IndexedRecord`, a
 JSON `String` or the custom serializer's input type.
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
-                .serializer(new MyEventProtoSerializer())
-                .additionalFields(
-                        AdditionalFields.<MyEvent>builder()
-                                .field(
-                                        AdditionalField.of(
-                                                "__uuid",
-                                                AdditionalFieldType.STRING,
-                                                AdditionalFieldNullPolicy.REQUIRED,
-                                                MyEvent::uuid))
-                                .field(
-                                        AdditionalField.of(
-                                                "__timestamp",
-                                                AdditionalFieldType.TIMESTAMP,
-                                                AdditionalFieldNullPolicy.NULLABLE,
-                                                MyEvent::timestamp))
-                                .build())
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorAdditionalPhysicalFields.java" tag="bigquery-connector-additional-physical-fields" >}}
 
 Declarations retain their order in the table schema, protobuf descriptor and emitted row.
 The column name must be a protobuf-compatible identifier and must not collide
@@ -516,11 +475,7 @@ them, so they come back as they were written.
 By default every non-repeated column is `NULLABLE`.
 `ProtoSchemaOptions.builder().deriveRequiredColumns()` reads each field's presence instead:
 
-```java
-ProtoMessageSerializer.of(
-        MyMessage.class,
-        ProtoSchemaOptions.builder().deriveRequiredColumns().build());
-```
+{{< java-snippet file="BigQueryConnectorProtoNullability.java" tag="bigquery-connector-proto-nullability" >}}
 
 | Field | Mode |
 |---|---|
@@ -594,12 +549,7 @@ JSON column.
 
 **By dotted field path**, when the mapping is a property of the pipeline:
 
-```java
-ProtoSchemaOptions.builder()
-        .jsonFieldPath("payload")
-        .jsonFieldPath("event.details")
-        .build();
-```
+{{< java-snippet file="BigQueryConnectorJsonColumns.java" tag="bigquery-connector-json-columns-paths" >}}
 
 Paths are the proto declared field names (snake_case, not the JSON names), joined from the root
 message. A path matching no field is rejected when the schema is derived, so a typo fails the job
@@ -623,16 +573,12 @@ message Event {
 
 When the generated extension class is on your classpath, pass it directly:
 
-```java
-ProtoSchemaOptions.builder().jsonFieldOption(MyAnnotations.json).build();
-```
+{{< java-snippet file="BigQueryConnectorJsonColumns.java" tag="bigquery-connector-json-columns-option" >}}
 
 Otherwise — a schema registry hands you descriptors but not the annotations artifact — the extension
 number alone works:
 
-```java
-ProtoSchemaOptions.builder().jsonFieldOptionNumber(50000).build();
-```
+{{< java-snippet file="BigQueryConnectorJsonColumns.java" tag="bigquery-connector-json-columns-option-number" >}}
 
 Both are additive, like `jsonFieldPath`, so a job whose messages come from several sources can name
 each annotation vocabulary it has to understand. Only one entry is kept per extension number:
@@ -706,10 +652,7 @@ documentation is explicit that schema auto-detection loads WKT as `STRING`.
 
 **By dotted field path**, on both derived serializers, under the same name:
 
-```java
-ProtoSchemaOptions.builder().geographyFieldPath("site.boundary").build();
-AvroSchemaOptions.builder().geographyFieldPath("site.boundary").build();
-```
+{{< java-snippet file="BigQueryConnectorGeographyColumns.java" tag="bigquery-connector-geography-columns-paths" >}}
 
 **By protobuf field option**, when the mapping is a property of the schema rather than of the
 pipeline — the same trade-off as for [JSON columns](#json-columns), and the same mechanism, so a
@@ -726,11 +669,7 @@ message Site {
 }
 ```
 
-```java
-ProtoSchemaOptions.builder().geographyFieldOption(MyAnnotations.geography).build();
-// or, when only the number is available:
-ProtoSchemaOptions.builder().geographyFieldOptionNumber(50006).build();
-```
+{{< java-snippet file="BigQueryConnectorGeographyColumns.java" tag="bigquery-connector-geography-columns-option" >}}
 
 Everything configured is unioned, so a field selected any of those ways is a `GEOGRAPHY` column. As
 with JSON, a field option **number matching no field is deliberately not an error** — one
@@ -794,13 +733,7 @@ one Avro writer schema for the whole job — as a `Schema` or as its JSON text, 
 from a schema registry or a configuration option — derives the BigQuery schema from it, and
 rewrites each record into the protobuf row the Storage Write API accepts.
 
-```java
-Sink<GenericRecord> sink =
-        BigQuerySink.<GenericRecord>builder()
-                .destinationResolver(myDestinationResolver)
-                .serializer(AvroRecordSerializer.of(schema))
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorAvroRecords.java" tag="bigquery-connector-avro-records-sink" >}}
 
 Records are accepted as `IndexedRecord`, so generated `SpecificRecord` classes work too. Values are
 read in whichever representation the record carries: a `GenericRecord` decoded without conversions
@@ -833,10 +766,7 @@ Avro's logical-type conversions holds `Instant`, `LocalDate`, `LocalTime`, `Loca
 `AvroSchemaOptions.builder().deriveRequiredColumns()` reads the Avro schema instead, deriving
 `REQUIRED` for any field that is not a `["null", T]` union:
 
-```java
-AvroRecordSerializer.of(
-        schema, AvroSchemaOptions.builder().deriveRequiredColumns().build());
-```
+{{< java-snippet file="BigQueryConnectorAvroRecords.java" tag="bigquery-connector-avro-records-required-columns" >}}
 
 This changes the derived schema — the one used for table auto-creation, for the write stream and for
 load jobs. `REPEATED` fields are unaffected, since a BigQuery `REPEATED` column cannot be `NULLABLE`;
@@ -922,13 +852,7 @@ types to convert.
 own, so unlike the protobuf and Avro serializers this one cannot derive the destination schema — it
 is supplied, in whichever form the surrounding code already holds:
 
-```java
-Sink<String> sink =
-        BigQuerySink.<String>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
-                .serializer(JsonDocumentSerializer.of(schema))
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorJsonRecords.java" tag="bigquery-connector-json-records-sink" >}}
 
 `of(...)` takes either the Storage API `TableSchema` the sink uses internally or the REST client's
 `Schema` — the type a table read back through `BigQuery.getTable(...)` gives you. That schema is the
@@ -986,9 +910,7 @@ wins, and which one is undefined.
 grounds that discarding data should be asked for. Ask for it when the source is a document stream
 nobody controls — a topic whose producers add fields ahead of the table being the usual case:
 
-```java
-JsonDocumentSerializer.of(schema, JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
-```
+{{< java-snippet file="BigQueryConnectorJsonRecords.java" tag="bigquery-connector-json-records-ignore-unknown-fields" >}}
 
 A record whose fields are *all* dropped as unknown produces a row with every column NULL rather than
 a failure — worth knowing if the destination has no `REQUIRED` column to catch it.
@@ -1189,18 +1111,7 @@ Schema changes are handled without a job restart on both Storage Write API metho
 
 **Connector-driven table schema updates** are opt-in via `schemaUpdateOptions(...)`:
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
-                .serializer(new MyEventProtoSerializer())
-                .schemaUpdateOptions(
-                        SchemaUpdateOptions.builder()
-                                .allowNewFields()
-                                .allowFieldRelaxation()
-                                .build())
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorStorageWriteApiConnections.java" tag="bigquery-connector-storage-write-api-connections" >}}
 
 When enabled and the serializer's schema evolves past the destination table's (detected through
 the fingerprint pre-check or a `SCHEMA_MISMATCH_EXTRA_FIELDS` append failure), the sink updates
@@ -1330,18 +1241,7 @@ handed to the failure policy, which are never appended and so never become visib
 [Error handling](#error-handling). A record the serializer skipped is never appended either, under
 any policy.
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
-                .serializer(new MyEventProtoSerializer())
-                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
-                .build();
-
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-env.enableCheckpointing(60_000); // EXACTLY_ONCE mode (the default)
-```
+{{< java-snippet file="BigQueryConnectorExactlyOnceBufferedStreams.java" tag="bigquery-connector-exactly-once-buffered-streams" >}}
 
 Method-specific settings live in `BufferedStreamOptions` (required for this write method,
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default),
@@ -1466,22 +1366,7 @@ loads them with BigQuery load jobs — free of streaming-insert cost, always exa
 execution loads everything at end of input; streaming execution loads each checkpoint's files
 (the checkpoint is the trigger, like Beam's streaming FILE_LOADS `triggeringFrequency` model):
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .writeMethod(WriteMethod.FILE_LOADS)
-                .destinationResolver(
-                        (e, ctx) -> TableDestination.of("my-project", "my_dataset", e.tableName()))
-                .serializer(new MyEventProtoSerializer())
-                .fileLoadsOptions(
-                        FileLoadsOptions.builder()
-                                .stagingPath("gs://my-staging-bucket/flink-loads")
-                                .build())
-                .build();
-
-env.setRuntimeMode(RuntimeExecutionMode.BATCH);
-// or: env.setRuntimeMode(RuntimeExecutionMode.STREAMING) with checkpointing enabled.
-```
+{{< java-snippet file="BigQueryConnectorFileLoads.java" tag="bigquery-connector-file-loads" >}}
 
 FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write method, rejected for
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
@@ -1835,14 +1720,7 @@ The record-failure policy is pluggable via `failureHandler(...)`, taking the sha
 ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
 repository):
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
-                .serializer(new MyEventProtoSerializer())
-                .failureHandler(FailureHandler.logAndDrop())
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorErrorHandling.java" tag="bigquery-connector-error-handling" >}}
 
 - `FailureHandler.failJob()` (default) — every explicit routing or row-level failure fails the ongoing write or checkpoint
 - `FailureHandler.logAndDrop()` — logs each failed record at WARN and drops it
@@ -1887,17 +1765,7 @@ Pub/Sub topic, and it sees failures through the shared `FailedElement` contract 
 serves every connector here**, including this one. It lives in the Pub/Sub module, so a BigQuery job
 dead-lettering this way adds `flink-connector-gcp-pubsub` as a dependency:
 
-```java
-BigQuerySink.<Order>builder()
-        .destination(TableDestination.of("my-project", "my_dataset", "orders"))
-        .serializer(new MyOrderProtoSerializer())
-        .failureHandler(
-                FailureHandler.sendToDeadLetterQueue(
-                        PubSubDeadLetterQueue.builder()
-                                .topic(TopicDestination.of("my-project", "dead-letters"))
-                                .build()))
-        .build();
-```
+{{< java-snippet file="BigQueryConnectorDeadLettering.java" tag="bigquery-connector-dead-lettering" >}}
 
 `PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
 publisher independently of this BigQuery sink's credentials.
@@ -1960,20 +1828,7 @@ configurable, via `BufferedStreamOptions`.
 finishes once the table has been read, which is what a dimension-table broadcast join needs. There
 is no runtime-mode guard, unlike `FILE_LOADS` on the sink side.
 
-```java
-Schema schema = new Schema.Parser().parse(
-        "{\"type\":\"record\",\"name\":\"Row\",\"fields\":["
-                + "{\"name\":\"id\",\"type\":\"long\"},"
-                + "{\"name\":\"name\",\"type\":\"string\"}]}");
-
-Source<GenericRecord, ?, ?> source =
-        BigQuerySource.<GenericRecord>builder()
-                .table(TableDestination.of("my-project", "my_dataset", "my_table"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(schema))
-                .build();
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "BigQuery");
-```
+{{< java-snippet file="BigQueryConnectorSource.java" tag="bigquery-connector-source" >}}
 
 **The public contracts place bytes-read accounting on `ReadRows`, not session creation.**
 BigQuery records [`scanned_bytes` on `ReadRows` audit entries](https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use)
@@ -2075,14 +1930,7 @@ with that error, and the connector adds a sentence naming `query(...)` — unles
 `query(...)` is the way round it, and the way to read anything else SQL can express — a join, an
 aggregate, a `FOR SYSTEM_TIME AS OF`:
 
-```java
-Source<GenericRecord, ?, ?> source =
-        BigQuerySource.<GenericRecord>builder()
-                .query("SELECT id, name FROM `my-project.my_dataset.my_view`")
-                .parentProject("my-project")
-                .deserializer(BigQueryRowDeserializer.genericRecord(schema))
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorQueryOrView.java" tag="bigquery-connector-query-or-view" >}}
 
 The query runs once, as an ordinary query job, from the enumerator's planning call — and once is
 enforced by the same checkpointed flag that stops a second read session, so a restore adopts the
@@ -2108,13 +1956,7 @@ the source then asks BigQuery once, at job start, what the configured name is, a
 or materialized — is read by generating `SELECT … FROM the_view` and reading its result. An ordinary
 table is read directly, exactly as without it.
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .table(TableDestination.of("my-project", "my_dataset", "active_accounts"))
-        .materializeViews()
-        .deserializer(BigQueryRowDeserializer.genericRecord(schema))
-        .build();
-```
+{{< java-snippet file="BigQueryConnectorViewMaterialization.java" tag="bigquery-connector-view-materialization" >}}
 
 Off by default for two reasons, and both are what the opt-in buys back. It costs a metadata call,
 and a source pointed at a table should not pay a round trip to be told it is a table — without it
@@ -2498,18 +2340,7 @@ default is in the [configuration reference]({{< relref "docs/reference/bigquery"
 is why they are what they are, taking them in turn, starting with `STORAGE_API_AT_LEAST_ONCE` on
 `DefaultStreamOptions` — optional on the builder, so an unconfigured sink runs on those defaults:
 
-```java
-Sink<MyEvent> sink =
-        BigQuerySink.<MyEvent>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
-                .serializer(new MyEventProtoSerializer())
-                .defaultStreamOptions(
-                        DefaultStreamOptions.builder()
-                                .maxInflightRequests(200)
-                                .maxConnectionsPerRegion(40)
-                                .build())
-                .build();
-```
+{{< java-snippet file="BigQueryConnectorTuning.java" tag="bigquery-connector-tuning" >}}
 
 The knobs configure three distinct layers.
 
