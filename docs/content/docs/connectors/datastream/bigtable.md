@@ -29,17 +29,7 @@ the [quickstart]({{< relref "docs/quickstart/bigtable" >}}); implementation stat
 the module
 [README](https://github.com/laughingman7743/flink-connector-gcp/tree/main/flink-connector-gcp-bigtable).
 
-```java
-Sink<OrderEvent> sink =
-        BigtableSink.<OrderEvent>builder()
-                .table(TableDestination.of("my-project", "my-instance", "orders"))
-                .serializer(
-                        (event, context) ->
-                                RowMutationEntry.create(event.id())
-                                        .setCell("cf", "payload", event.timestampMicros(),
-                                                event.body()))
-                .build();
-```
+{{< java-snippet file="BigtableConnectorOverview.java" tag="bigtable-connector-overview" >}}
 
 ## What this connector is for
 
@@ -67,6 +57,8 @@ and decision.
 ## API notes
 
 The record-to-mutation step is the whole public surface beyond the builder:
+
+The following signature excerpt omits its package declaration, imports, and Javadocs.
 
 ```java
 @PublicEvolving
@@ -143,6 +135,8 @@ record instead, so one sink writes to many — a table per tenant, a table per d
 the BigQuery, Pub/Sub and Cloud Tasks sinks take. The two setters write the same field, so the last
 one wins, and one of them is required.
 
+The following builder excerpt omits the application serializer supplied to `serializer(...)`.
+
 ```java
 Sink<OrderEvent> sink =
         BigtableSink.<OrderEvent>builder()
@@ -194,21 +188,7 @@ Off by default. `createDisposition(CREATE_IF_NEEDED)` opts in, and requires
 least one column family — the disposition says the sink *may* create, the options say *what*, and
 the builder rejects each without the other:
 
-```java
-BigtableSink.<OrderEvent>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .serializer(new OrderEventMutations())
-        .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
-        .tableCreateOptions(
-                TableCreateOptions.builder()
-                        .columnFamily(
-                                "cf",
-                                GcRule.union(
-                                        GcRule.maxVersions(1),
-                                        GcRule.maxAge(Duration.ofDays(30))))
-                        .build())
-        .build();
-```
+{{< java-snippet file="BigtableConnectorTableAutoCreation.java" tag="bigtable-connector-table-auto-creation" >}}
 
 Creation is **reactive**, the shape the
 [Pub/Sub sink]({{< relref "docs/connectors/datastream/pubsub" >}}#topic-auto-creation) uses: no
@@ -490,13 +470,7 @@ The policy is `failedMutationHandler(...)`, taking the shared `FailureHandler<Fa
 from `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
 connectors in this repository):
 
-```java
-BigtableSink.<OrderEvent>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .serializer(new OrderEventMutations())
-        .failedMutationHandler(FailureHandler.logAndDrop())
-        .build();
-```
+{{< java-snippet file="BigtableConnectorFailedMutationPolicy.java" tag="bigtable-connector-failed-mutation-policy" >}}
 
 - `FailureHandler.failJob()` (default) — every failed mutation fails the checkpoint
 - `FailureHandler.logAndDrop()` — logs each failed mutation at WARN and drops it
@@ -536,14 +510,7 @@ wholesale fails the job at that bound. It counts records rather than batches: a 
 
 Reads the rows of a table into a `DataStream`.
 
-```java
-Source<Order, ?, ?> source =
-        BigtableSource.<Order>builder()
-                .table(TableDestination.of("my-project", "my-instance", "orders"))
-                .deserializer(myDeserializer)
-                .prefix("2026-08-")
-                .build();
-```
+{{< java-snippet file="BigtableConnectorSource.java" tag="bigtable-connector-source" >}}
 
 API notes:
 
@@ -676,22 +643,7 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 `BigtableChangeStreamSource` is a separate FLIP-27 source because `ReadChangeStream` has a moving
 partition topology and continuation-token checkpoints rather than the bounded scan's row ranges.
 
-```java
-BigtableChangeStreamSource<ChangeStreamMutation> source =
-        BigtableChangeStreamSource.<ChangeStreamMutation>builder()
-                .table(TableDestination.of("my-project", "my-instance", "orders"))
-                .appProfileId("orders-change-stream")
-                .deserializer(new ChangeStreamMutationDeserializationSchema())
-                .startPosition(StartPosition.latest())
-                .familyIncludeList(List.of("orders", "audit"))
-                .qualifierExcludeList(List.of("orders:dGVtcG9yYXJ5"))
-                .maxConcurrentStreamsPerSubtask(4)
-                .build();
-
-DataStream<ChangeStreamMutation> changes =
-        env.fromSource(source, WatermarkStrategy.noWatermarks(), "bigtable-change-stream")
-                .setParallelism(3);
-```
+{{< java-snippet file="BigtableConnectorChangeStreamSource.java" tag="bigtable-connector-change-stream-source" >}}
 
 The example permits at most four open `ReadChangeStream` RPCs in each of three source subtasks.
 Its configured job-wide read capacity is therefore `3 * 4 = 12`.
@@ -715,14 +667,7 @@ Its Flink type information selects the connector serializer even when a later tr
 for `TypeInformation.of(ChangeStreamMutation.class)`.
 An explicit `.returns(...)` remains useful when a transformation erases its declared output type:
 
-```java
-ChangeStreamMutationDeserializationSchema mutations =
-        new ChangeStreamMutationDeserializationSchema();
-DataStream<ChangeStreamMutation> transformed =
-        env.fromSource(source, WatermarkStrategy.noWatermarks(), "bigtable-change-stream")
-                .map(mutation -> mutation)
-                .returns(mutations.getProducedType());
-```
+{{< java-snippet file="BigtableConnectorChangeStreamTypeInformation.java" tag="bigtable-connector-change-stream-type-information" >}}
 
 Family and qualifier filters project entries after a complete mutation crosses the service and
 reader protocol boundary, but before the application deserializer runs.

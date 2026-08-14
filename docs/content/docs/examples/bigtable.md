@@ -30,23 +30,7 @@ One `RowMutationEntry` may carry any number of mutations, and they apply to the 
 which is the one atomicity guarantee Bigtable offers, and the reason a record that updates several
 columns should build one entry rather than be split upstream:
 
-```java
-BigtableSink.<OrderEvent>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .serializer(
-                (event, context) -> {
-                    long timestampMicros = event.updatedAtMillis() * 1_000;
-                    RowMutationEntry entry = RowMutationEntry.create("order#" + event.id());
-                    entry.setCell("cf", "status", timestampMicros, event.status());
-                    entry.setCell("cf", "total", timestampMicros, event.totalCents());
-                    if (event.isCancelled()) {
-                        // Applied together with the two cells above, in one atomic mutation.
-                        entry.deleteCells("cf", "reserved_stock");
-                    }
-                    return entry;
-                })
-        .build();
-```
+{{< java-snippet file="BigtableExamplesSeveralCellsAndDelete.java" tag="bigtable-examples-several-cells-and-delete" >}}
 
 ## A table per day, from the record
 
@@ -55,29 +39,7 @@ The resolver names the table, while the serializer still builds the whole mutati
 The resolver runs once per record, so this map avoids reconstructing equal `TableDestination` values for repeated days.
 Equality rather than object identity keys the writer's batcher pool, so the cache is an allocation optimization rather than a correctness requirement.
 
-```java
-Map<LocalDate, TableDestination> byDay = new HashMap<>();
-
-BigtableSink.<OrderEvent>builder()
-        .destinationResolver(
-                (event, context) ->
-                        byDay.computeIfAbsent(
-                                event.day(),
-                                day ->
-                                        TableDestination.of(
-                                                "my-project", "my-instance", "orders-" + day)))
-        .serializer(
-                (event, context) ->
-                        RowMutationEntry.create(event.id())
-                                .setCell("cf", "payload", event.timestampMicros(), event.body()))
-        // A day's table stops receiving records once the day rolls over, and its batcher goes with
-        // it after this long. One hour is the default; this job knows its tables turn over faster.
-        .writerOptions(
-                BigtableWriterOptions.builder()
-                        .destinationIdleTimeout(Duration.ofMinutes(15))
-                        .build())
-        .build();
-```
+{{< java-snippet file="BigtableExamplesTablePerDay.java" tag="bigtable-examples-table-per-day" >}}
 
 The map is captured by the resolver's closure, so it has to reach the task manager: a `HashMap` built where the job is assembled travels fine, while an instance field of a class that is not serializable does not.
 Idle eviction closes the writer's batcher but does not remove entries from this resolver-owned map, so the example retains one entry per observed day.
@@ -88,6 +50,8 @@ Read that section beside a resolver because one schema serves every table the si
 
 Returning `null` writes nothing and is not a failure, so a filter whose condition is only known
 while building the mutation belongs here:
+
+The following lambda omits the enclosing `serializer(...)` setter and sink builder.
 
 ```java
 (event, context) ->
@@ -104,13 +68,7 @@ rejects as invalid. Everything else, an outage or a missing column family includ
 job; the [Bigtable connector]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling)
 page sets out why that line is where it is.
 
-```java
-BigtableSink.<OrderEvent>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .serializer(new OrderEventMutations())
-        .failedMutationHandler(FailureHandler.logAndDrop())
-        .build();
-```
+{{< java-snippet file="BigtableExamplesDroppingBadRows.java" tag="bigtable-examples-dropping-bad-rows" >}}
 
 A dead-letter destination is the same setter with
 `FailureHandler.sendToDeadLetterQueue(...)`. What arrives there is the serialized
@@ -123,17 +81,7 @@ The default byte bound is 64 MiB of unacknowledged entries. A pipeline whose row
 one running many subtasks per TaskManager — sets it explicitly, and lowering the batch element count
 shortens the delay before a mutation reaches the service at low volume:
 
-```java
-BigtableSink.<OrderEvent>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .serializer(new OrderEventMutations())
-        .writerOptions(
-                BigtableWriterOptions.builder()
-                        .maxInFlightBytes(16L * 1024 * 1024)
-                        .batchElementCount(50)
-                        .build())
-        .build();
-```
+{{< java-snippet file="BigtableExamplesBoundingMemory.java" tag="bigtable-examples-bounding-memory" >}}
 
 Raising `maxInFlightEntries` well past its default is the one direction that does not help: the
 client's own flow controller then becomes the binding limit, and it blocks the task thread rather
@@ -144,16 +92,7 @@ than yielding to the mailbox — see
 
 A prefix and an explicit range are the same thing said two ways, and both are repeatable:
 
-```java
-BigtableSource.<Order>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .deserializer(new OrderRows())
-        // Everything under one prefix, plus one range named outright. Overlapping ranges are
-        // merged rather than rejected, so nested prefixes cost nothing but are not read twice.
-        .prefix("2026-08-")
-        .rowRange("archive#2025-", "archive#2026-")
-        .build();
-```
+{{< java-snippet file="BigtableExamplesKeyRange.java" tag="bigtable-examples-key-range" >}}
 
 What a checkpoint carries is the range that is **left**: after emitting the row `2026-08-14#9`, the
 split covers `(2026-08-14#9, 2026-09-)`. That is what makes a restore resume rather than replay, and
@@ -165,28 +104,11 @@ What a filter excludes never leaves Bigtable, so it is the cheapest thing a scan
 is where every per-cell decision belongs, since the source has no separate knobs for families,
 qualifiers, timestamps or versions:
 
-```java
-BigtableSource.<Order>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .deserializer(new OrderRows())
-        .filter(
-                Filters.FILTERS.chain()
-                        .filter(Filters.FILTERS.family().exactMatch("cf"))
-                        .filter(Filters.FILTERS.qualifier().exactMatch("payload"))
-                        // The latest version of each cell only.
-                        .filter(Filters.FILTERS.limit().cellsPerColumn(1)))
-        .build();
-```
+{{< java-snippet file="BigtableExamplesServerFilter.java" tag="bigtable-examples-server-filter" >}}
 
 ## Reading through an application profile
 
-```java
-BigtableSource.<Order>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .deserializer(new OrderRows())
-        .appProfileId("analytics")
-        .build();
-```
+{{< java-snippet file="BigtableExamplesApplicationProfile.java" tag="bigtable-examples-application-profile" >}}
 
 A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost)
 profile is named here like any other. Two caveats come with one: its reads can be up to about 35
@@ -209,23 +131,11 @@ BIGTABLE_EMULATOR_HOST=localhost:8086 \
     cbt -project my-project -instance my-instance createtable orders families=cf
 ```
 
-```java
-BigtableSink.<OrderEvent>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .serializer(new OrderEventMutations())
-        .emulatorEndpoint("localhost:8086")
-        .build();
-```
+{{< java-snippet file="BigtableExamplesEmulatorSink.java" tag="bigtable-examples-emulator-sink" >}}
 
 The source reaches it the same way:
 
-```java
-BigtableSource.<Order>builder()
-        .table(TableDestination.of("my-project", "my-instance", "orders"))
-        .deserializer(new OrderRows())
-        .emulatorEndpoint("localhost:8086")
-        .build();
-```
+{{< java-snippet file="BigtableExamplesEmulatorSource.java" tag="bigtable-examples-emulator-source" >}}
 
 The project and instance ids are opaque path segments to the emulator; neither has to exist. It
 implements `MutateRows`, `ReadRows` and the table admin surface, which is enough to develop against
