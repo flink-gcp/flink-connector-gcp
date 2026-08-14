@@ -65,13 +65,24 @@ class RowDataSerializationSchemaTest {
         }
     }
 
-    private static TableHttpTarget target(Configuration config) {
-        return TableHttpTarget.from(config);
+    private static HttpTargetSpec target(Configuration config) {
+        return HttpTargetSpec.from(config);
     }
 
     private static Configuration target(String url) {
         Configuration config = new Configuration();
         config.set(CloudTasksConnectorOptions.HTTP_URL, url);
+        return config;
+    }
+
+    private static AppEngineTargetSpec appEngineTarget(
+            Configuration config, String bodyContentType) {
+        return AppEngineTargetSpec.from(config, bodyContentType);
+    }
+
+    private static Configuration appEngineTarget(String relativeUri) {
+        Configuration config = new Configuration();
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_RELATIVE_URI, relativeUri);
         return config;
     }
 
@@ -172,7 +183,7 @@ class RowDataSerializationSchemaTest {
                         encoder,
                         1,
                         new WritableMetadata[0],
-                        TableHttpTarget.from(config, "application/x-www-form-urlencoded"));
+                        HttpTargetSpec.from(config, "application/x-www-form-urlencoded"));
 
         Task task = schema.serialize(GenericRowData.of(str("ignored")));
 
@@ -192,7 +203,7 @@ class RowDataSerializationSchemaTest {
                         encoder,
                         1,
                         new WritableMetadata[] {WritableMetadata.HTTP_METHOD},
-                        TableHttpTarget.from(config, "application/x-www-form-urlencoded"));
+                        HttpTargetSpec.from(config, "application/x-www-form-urlencoded"));
 
         Task task = schema.serialize(GenericRowData.of(str("payload"), str(method.name())));
 
@@ -218,5 +229,134 @@ class RowDataSerializationSchemaTest {
                 .hasMessageContaining(nullEncoder.getClass().getName())
                 .hasMessageContaining("returned null")
                 .hasMessageContaining("serialization failure");
+    }
+
+    @Test
+    void appEngineMetadataOverridesFixedValuesAndTheFormatSeesOnlyPhysicalColumns()
+            throws Exception {
+        Configuration config = appEngineTarget("/fixed");
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_METHOD, HttpMethod.POST);
+        config.set(
+                CloudTasksConnectorOptions.APP_ENGINE_HEADERS,
+                java.util.Collections.singletonMap("X-Origin", "fixed"));
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_SERVICE, "fixed-service");
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_VERSION, "fixed-version");
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_INSTANCE, "fixed-instance");
+        RecordingEncoder encoder = new RecordingEncoder();
+        RowDataSerializationSchema schema =
+                new RowDataSerializationSchema(
+                        encoder,
+                        2,
+                        new WritableMetadata[] {
+                            WritableMetadata.RELATIVE_URI,
+                            WritableMetadata.HTTP_METHOD,
+                            WritableMetadata.HEADERS,
+                            WritableMetadata.APP_ENGINE_SERVICE,
+                            WritableMetadata.APP_ENGINE_VERSION,
+                            WritableMetadata.APP_ENGINE_INSTANCE,
+                            WritableMetadata.SCHEDULE_TIME,
+                            WritableMetadata.TASK_ID
+                        },
+                        appEngineTarget(config, "application/x-www-form-urlencoded"));
+        Instant scheduled = Instant.parse("2026-08-14T01:02:03.123456Z");
+
+        Task task =
+                schema.serialize(
+                        GenericRowData.of(
+                                str("order-1"),
+                                str("ready"),
+                                str("/row/tasks/1?source=table"),
+                                str("put"),
+                                headers(java.util.Collections.singletonMap("x-origin", "row")),
+                                str("row-service"),
+                                null,
+                                str(""),
+                                TimestampData.fromInstant(scheduled),
+                                str("dedupe-1")));
+
+        assertThat(encoder.calls).isOne();
+        assertThat(encoder.seen).isEqualTo("order-1|ready");
+        assertThat(task.getMessageTypeCase())
+                .isEqualTo(Task.MessageTypeCase.APP_ENGINE_HTTP_REQUEST);
+        assertThat(task.getAppEngineHttpRequest().getRelativeUri())
+                .isEqualTo("/row/tasks/1?source=table");
+        assertThat(task.getAppEngineHttpRequest().getHttpMethod()).isEqualTo(HttpMethod.PUT);
+        assertThat(task.getAppEngineHttpRequest().getBody().toStringUtf8())
+                .isEqualTo("order-1|ready");
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .containsOnly(
+                        org.assertj.core.api.Assertions.entry("x-origin", "row"),
+                        org.assertj.core.api.Assertions.entry(
+                                "Content-Type", "application/x-www-form-urlencoded"));
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getService())
+                .isEqualTo("row-service");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getVersion())
+                .isEqualTo("fixed-version");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getInstance()).isEmpty();
+        assertThat(task.getScheduleTime().getSeconds()).isEqualTo(scheduled.getEpochSecond());
+        assertThat(task.getScheduleTime().getNanos()).isEqualTo(scheduled.getNano());
+        assertThat(task.getName()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = HttpMethod.class,
+            names = {"POST", "PUT"})
+    void appEnginePostAndPutCarryTheEncodedBody(HttpMethod method) throws Exception {
+        Configuration config = appEngineTarget("/tasks");
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_METHOD, method);
+        RecordingEncoder encoder = new RecordingEncoder();
+        RowDataSerializationSchema schema =
+                new RowDataSerializationSchema(
+                        encoder, 1, new WritableMetadata[0], appEngineTarget(config, null));
+
+        Task task = schema.serialize(GenericRowData.of(str("payload")));
+
+        assertThat(encoder.calls).isOne();
+        assertThat(task.getAppEngineHttpRequest().getBody().toStringUtf8()).isEqualTo("payload");
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = HttpMethod.class,
+            names = {"GET", "HEAD", "DELETE", "PATCH", "OPTIONS"})
+    void appEngineBodylessMethodsDoNotInvokeTheFormat(HttpMethod method) throws Exception {
+        Configuration config = appEngineTarget("/tasks");
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_METHOD, method);
+        RecordingEncoder encoder = new RecordingEncoder();
+        RowDataSerializationSchema schema =
+                new RowDataSerializationSchema(
+                        encoder,
+                        1,
+                        new WritableMetadata[0],
+                        appEngineTarget(config, "application/x-www-form-urlencoded"));
+
+        Task task = schema.serialize(GenericRowData.of(str("ignored")));
+
+        assertThat(encoder.calls).isZero();
+        assertThat(task.getAppEngineHttpRequest().getBody()).isEmpty();
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .doesNotContainKey("Content-Type");
+    }
+
+    @Test
+    void appEngineMetadataRejectsReservedHeaders() {
+        RowDataSerializationSchema schema =
+                new RowDataSerializationSchema(
+                        new RecordingEncoder(),
+                        1,
+                        new WritableMetadata[] {WritableMetadata.HEADERS},
+                        appEngineTarget(appEngineTarget("/tasks"), null));
+
+        assertThatThrownBy(
+                        () ->
+                                schema.serialize(
+                                        GenericRowData.of(
+                                                str("payload"),
+                                                headers(
+                                                        java.util.Collections.singletonMap(
+                                                                "X-Google-Internal", "value")))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("set by Cloud Tasks and cannot be overridden");
     }
 }

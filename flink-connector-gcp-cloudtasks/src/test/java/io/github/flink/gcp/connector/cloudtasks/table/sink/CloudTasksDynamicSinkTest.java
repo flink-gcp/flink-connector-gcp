@@ -66,12 +66,12 @@ class CloudTasksDynamicSinkTest {
         }
     }
 
-    private static TableHttpTarget target(String url) {
+    private static HttpTargetSpec target(String url) {
         Configuration config = new Configuration();
         if (url != null) {
             config.set(CloudTasksConnectorOptions.HTTP_URL, url);
         }
-        return TableHttpTarget.from(config);
+        return HttpTargetSpec.from(config);
     }
 
     private static CloudTasksDynamicSink sink(String url) {
@@ -85,6 +85,24 @@ class CloudTasksDynamicSinkTest {
                 QueueDestination.of("project", "location", "queue"),
                 target(url),
                 urlMetadataNotNull,
+                CloudTasksWriterOptions.builder().build(),
+                null,
+                null,
+                null);
+    }
+
+    private static CloudTasksDynamicSink appEngineSink(
+            String relativeUri, boolean relativeUriMetadataNotNull) {
+        Configuration config = new Configuration();
+        if (relativeUri != null) {
+            config.set(CloudTasksConnectorOptions.APP_ENGINE_RELATIVE_URI, relativeUri);
+        }
+        return new CloudTasksDynamicSink(
+                PHYSICAL_TYPE,
+                new ConstantEncodingFormat(),
+                QueueDestination.of("project", "location", "queue"),
+                AppEngineTargetSpec.from(config, null),
+                relativeUriMetadataNotNull,
                 CloudTasksWriterOptions.builder().build(),
                 null,
                 null,
@@ -128,6 +146,75 @@ class CloudTasksDynamicSinkTest {
                                                         "target", DataTypes.STRING().nullable()))))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("STRING NOT NULL");
+    }
+
+    @Test
+    void listsAppEngineMetadataWithoutTheHttpUrl() {
+        assertThat(
+                        ((SupportsWritingMetadata) appEngineSink("/tasks", false))
+                                .listWritableMetadata())
+                .containsExactly(
+                        entry("relative-uri", DataTypes.STRING().nullable()),
+                        entry("http-method", DataTypes.STRING().nullable()),
+                        entry(
+                                "headers",
+                                DataTypes.MAP(
+                                                DataTypes.STRING().nullable(),
+                                                DataTypes.STRING().nullable())
+                                        .nullable()),
+                        entry("app-engine-service", DataTypes.STRING().nullable()),
+                        entry("app-engine-version", DataTypes.STRING().nullable()),
+                        entry("app-engine-instance", DataTypes.STRING().nullable()),
+                        entry("schedule-time", DataTypes.TIMESTAMP_LTZ(6).nullable()),
+                        entry("task-id", DataTypes.STRING().nullable()));
+    }
+
+    @Test
+    void aDynamicRelativeUriMustBeSelectedAndDeclaredNotNull() {
+        CloudTasksDynamicSink missing = appEngineSink(null, false);
+        assertThatThrownBy(
+                        () ->
+                                missing.applyWritableMetadata(
+                                        java.util.Collections.emptyList(), PHYSICAL_TYPE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("app-engine.relative-uri")
+                .hasMessageContaining("relative-uri");
+
+        CloudTasksDynamicSink nullable = appEngineSink(null, false);
+        assertThatThrownBy(
+                        () ->
+                                nullable.applyWritableMetadata(
+                                        java.util.Collections.singletonList("relative-uri"),
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("payload", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "target", DataTypes.STRING().nullable()))))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("STRING NOT NULL");
+    }
+
+    @Test
+    void rejectsWritableMetadataFromTheOtherTargetFamily() {
+        assertThatThrownBy(
+                        () ->
+                                appEngineSink("/tasks", false)
+                                        .applyWritableMetadata(
+                                                java.util.Collections.singletonList("url"),
+                                                PHYSICAL_TYPE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("does not belong")
+                .hasMessageContaining("url");
+
+        assertThatThrownBy(
+                        () ->
+                                sink("https://example.com")
+                                        .applyWritableMetadata(
+                                                java.util.Collections.singletonList(
+                                                        "app-engine-service"),
+                                                PHYSICAL_TYPE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("does not belong")
+                .hasMessageContaining("app-engine-service");
     }
 
     @Test

@@ -40,15 +40,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Table sink (`docs/adr/0107`)
 
-- `cloud-tasks` is insert-only and maps one table to one fixed queue. A generic Flink format sees
-  physical columns only; writable `url`, `http-method`, `headers`, `schedule-time` and `task-id`
-  metadata configure the task around the body.
-- Only POST/PUT/PATCH invoke the body format. Fixed request options are defaults and non-null row
-  metadata overrides them; header names compare case-insensitively. With no `http.url`, writable
-  `url` metadata must be declared `STRING NOT NULL` in the catalog schema.
+- `cloud-tasks` is insert-only and maps one table to one fixed queue. `target.type` defaults to
+  external HTTP and can select App Engine without translating between their protobuf request arms.
+  A generic Flink format sees physical columns only; writable target metadata configures the task
+  around the body.
+- HTTP POST/PUT/PATCH and App Engine POST/PUT invoke the body format. Fixed request options are
+  defaults and non-null row metadata overrides them; header names compare case-insensitively. With
+  no fixed address, the selected target's `url` or `relative-uri` metadata must be declared `STRING
+  NOT NULL` in the catalog schema. Wrong-family options and metadata are rejected.
 - Selecting `task-id` installs the existing sink-builder extractor — never name a task in the table
   serializer. API credentials, OIDC/OAuth dispatch tokens and network reachability remain three
-  separate concerns; App Engine targets remain a separate follow-up.
+  separate concerns. App Engine rejects dispatch-token options and exposes separate service,
+  version and instance metadata; queue-level routing override remains authoritative.
 - The built-in `form-urlencoded` format accepts only `STRING` and `ARRAY<STRING>`, preserves
   physical schema and array order, and owns `application/x-www-form-urlencoded` for body-carrying
   methods. Fixed and metadata headers may repeat that value but may not conflict with it.

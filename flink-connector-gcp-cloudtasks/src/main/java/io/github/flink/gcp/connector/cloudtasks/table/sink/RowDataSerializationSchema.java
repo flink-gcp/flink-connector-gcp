@@ -23,7 +23,6 @@ import org.apache.flink.table.data.utils.ProjectedRowData;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.tasks.v2.HttpMethod;
-import com.google.cloud.tasks.v2.HttpRequest;
 import com.google.cloud.tasks.v2.Task;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema;
@@ -33,7 +32,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.stream.IntStream;
 
-/** Builds HTTP-target tasks from a format-encoded physical row and writable metadata columns. */
+/** Builds target tasks from a format-encoded physical row and writable metadata columns. */
 @Internal
 final class RowDataSerializationSchema implements CloudTasksSerializationSchema<RowData> {
 
@@ -42,7 +41,7 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
     private final SerializationSchema<RowData> physical;
     private final int physicalArity;
     private final boolean hasMetadata;
-    private final RowDataToTaskMetadataConverter metadataConverter;
+    private final RowDataToTaskConverter taskConverter;
 
     @Nullable private transient ProjectedRowData projection;
 
@@ -50,14 +49,13 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
             SerializationSchema<RowData> physical,
             int physicalArity,
             WritableMetadata[] metadata,
-            TableHttpTarget target) {
+            TargetSpec target) {
         Preconditions.checkArgument(physicalArity >= 0, "physicalArity must not be negative");
         this.physical = Preconditions.checkNotNull(physical, "physical must not be null");
         this.physicalArity = physicalArity;
         this.hasMetadata =
                 Preconditions.checkNotNull(metadata, "metadata must not be null").length != 0;
-        this.metadataConverter =
-                new RowDataToTaskMetadataConverter(physicalArity, metadata, target);
+        this.taskConverter = target.converter(physicalArity, metadata);
     }
 
     @Override
@@ -67,14 +65,9 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
 
     @Override
     public Task serialize(RowData element) throws IOException {
-        Task.Builder task = metadataConverter.convert(element);
-        HttpRequest.Builder request = task.getHttpRequestBuilder();
-        HttpMethod method = request.getHttpMethod();
+        Task.Builder task = taskConverter.convert(element);
 
-        if (carriesBody(method)) {
-            if (metadataConverter.getBodyContentType() != null) {
-                request.putHeaders("Content-Type", metadataConverter.getBodyContentType());
-            }
+        if (carriesBody(task)) {
             byte[] payload = physical.serialize(hasMetadata ? projected(element) : element);
             if (payload == null) {
                 throw new IOException(
@@ -84,9 +77,7 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
                                 + " has no null in it, so this is a serialization failure rather"
                                 + " than the Cloud Tasks skip-record convention.");
             }
-            request.setBody(ByteString.copyFrom(payload));
-        } else {
-            request.clearBody();
+            setBody(task, ByteString.copyFrom(payload));
         }
         return task.build();
     }
@@ -100,7 +91,40 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
         return view.replaceRow(element);
     }
 
-    private static boolean carriesBody(HttpMethod method) {
-        return method == HttpMethod.POST || method == HttpMethod.PUT || method == HttpMethod.PATCH;
+    private static boolean carriesBody(Task.Builder task) {
+        switch (task.getMessageTypeCase()) {
+            case HTTP_REQUEST:
+                HttpMethod httpMethod = task.getHttpRequest().getHttpMethod();
+                return httpMethod == HttpMethod.POST
+                        || httpMethod == HttpMethod.PUT
+                        || httpMethod == HttpMethod.PATCH;
+            case APP_ENGINE_HTTP_REQUEST:
+                HttpMethod appEngineMethod = task.getAppEngineHttpRequest().getHttpMethod();
+                return appEngineMethod == HttpMethod.POST || appEngineMethod == HttpMethod.PUT;
+            default:
+                throw new IllegalStateException(
+                        "The Cloud Tasks table converter did not select a request target.");
+        }
+    }
+
+    private void setBody(Task.Builder task, ByteString payload) {
+        String contentType = taskConverter.getBodyContentType();
+        switch (task.getMessageTypeCase()) {
+            case HTTP_REQUEST:
+                if (contentType != null) {
+                    task.getHttpRequestBuilder().putHeaders("Content-Type", contentType);
+                }
+                task.getHttpRequestBuilder().setBody(payload);
+                return;
+            case APP_ENGINE_HTTP_REQUEST:
+                if (contentType != null) {
+                    task.getAppEngineHttpRequestBuilder().putHeaders("Content-Type", contentType);
+                }
+                task.getAppEngineHttpRequestBuilder().setBody(payload);
+                return;
+            default:
+                throw new IllegalStateException(
+                        "The Cloud Tasks table converter did not select a request target.");
+        }
     }
 }

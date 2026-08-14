@@ -39,8 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link RowDataToTaskMetadataConverter}. */
 class RowDataToTaskMetadataConverterTest {
 
-    private static TableHttpTarget target(Configuration config) {
-        return TableHttpTarget.from(config);
+    private static HttpTargetSpec target(Configuration config) {
+        return HttpTargetSpec.from(config);
     }
 
     private static Configuration target(String url) {
@@ -62,7 +62,7 @@ class RowDataToTaskMetadataConverterTest {
             Configuration config, WritableMetadata[] metadata, RowData row, String bodyContentType)
             throws IOException {
         return new RowDataToTaskMetadataConverter(
-                        1, metadata, TableHttpTarget.from(config, bodyContentType))
+                        1, metadata, HttpTargetSpec.from(config, bodyContentType))
                 .convert(row)
                 .build();
     }

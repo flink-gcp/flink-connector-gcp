@@ -656,7 +656,7 @@ committer metrics do not apply.
 | Pacing | None in the sink; owned by the queue |
 | Delivery | At-least-once, flush on checkpoint, stateless writer |
 | Failure policy | Job failure by default; pluggable per-task handler ([#207]({{< param BookRepo >}}/issues/207)) |
-| Table API / SQL | HTTP implemented in [#605]({{< param BookRepo >}}/issues/605); App Engine tracked by [#634]({{< param BookRepo >}}/issues/634) |
+| Table API / SQL | HTTP implemented in [#605]({{< param BookRepo >}}/issues/605); App Engine implemented in [#634]({{< param BookRepo >}}/issues/634) |
 
 ## Testing
 

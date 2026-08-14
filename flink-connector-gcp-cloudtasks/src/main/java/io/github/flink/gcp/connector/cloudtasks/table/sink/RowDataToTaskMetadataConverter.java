@@ -17,13 +17,9 @@
 package io.github.flink.gcp.connector.cloudtasks.table.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.ArrayData;
-import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.tasks.v2.HttpMethod;
 import com.google.cloud.tasks.v2.HttpRequest;
 import com.google.cloud.tasks.v2.OAuthToken;
 import com.google.cloud.tasks.v2.OidcToken;
@@ -33,21 +29,17 @@ import com.google.protobuf.Timestamp;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.Serializable;
-import java.time.Instant;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 
 /** Converts writable metadata columns and fixed target options to a bodyless task builder. */
 @Internal
-final class RowDataToTaskMetadataConverter implements Serializable {
+final class RowDataToTaskMetadataConverter implements RowDataToTaskConverter {
 
     private static final long serialVersionUID = 1L;
 
-    private final TableHttpTarget target;
+    private final HttpTargetSpec target;
     private final int urlIndex;
     private final int methodIndex;
     private final int headersIndex;
@@ -56,39 +48,35 @@ final class RowDataToTaskMetadataConverter implements Serializable {
     @Nullable private transient HttpRequest prototype;
 
     RowDataToTaskMetadataConverter(
-            int physicalArity, WritableMetadata[] metadata, TableHttpTarget target) {
+            int physicalArity, WritableMetadata[] metadata, HttpTargetSpec target) {
         Preconditions.checkArgument(physicalArity >= 0, "physicalArity must not be negative");
         WritableMetadata[] checkedMetadata =
                 Preconditions.checkNotNull(metadata, "metadata must not be null");
         this.target = Preconditions.checkNotNull(target, "target must not be null");
-        this.urlIndex = metadataIndex(physicalArity, checkedMetadata, WritableMetadata.URL);
-        this.methodIndex =
-                metadataIndex(physicalArity, checkedMetadata, WritableMetadata.HTTP_METHOD);
-        this.headersIndex = metadataIndex(physicalArity, checkedMetadata, WritableMetadata.HEADERS);
+        this.urlIndex = WritableMetadata.URL.position(physicalArity, checkedMetadata);
+        this.methodIndex = WritableMetadata.HTTP_METHOD.position(physicalArity, checkedMetadata);
+        this.headersIndex = WritableMetadata.HEADERS.position(physicalArity, checkedMetadata);
         this.scheduleTimeIndex =
-                metadataIndex(physicalArity, checkedMetadata, WritableMetadata.SCHEDULE_TIME);
+                WritableMetadata.SCHEDULE_TIME.position(physicalArity, checkedMetadata);
     }
 
-    Task.Builder convert(RowData element) throws IOException {
+    @Override
+    public Task.Builder convert(RowData element) throws IOException {
         Task.Builder task = Task.newBuilder();
         HttpRequest.Builder request = task.getHttpRequestBuilder().mergeFrom(prototype());
         request.setUrl(url(element));
-        request.setHttpMethod(method(element));
+        request.setHttpMethod(
+                RowDataMetadataReader.readMethod(element, methodIndex, target.getMethod()));
         applyHeaders(element, request);
-
-        if (scheduleTimeIndex >= 0 && !element.isNullAt(scheduleTimeIndex)) {
-            TimestampData value = element.getTimestamp(scheduleTimeIndex, 6);
-            Instant instant = value.toInstant();
-            task.setScheduleTime(
-                    Timestamp.newBuilder()
-                            .setSeconds(instant.getEpochSecond())
-                            .setNanos(instant.getNano()));
+        Timestamp scheduleTime = RowDataMetadataReader.readScheduleTime(element, scheduleTimeIndex);
+        if (scheduleTime != null) {
+            task.setScheduleTime(scheduleTime);
         }
         return task;
     }
 
     @Nullable
-    String getBodyContentType() {
+    public String getBodyContentType() {
         return target.getBodyContentType();
     }
 
@@ -97,7 +85,7 @@ final class RowDataToTaskMetadataConverter implements Serializable {
         if (urlIndex >= 0 && !element.isNullAt(urlIndex)) {
             value = element.getString(urlIndex).toString();
         }
-        if (value == null || !TableHttpTarget.isAbsoluteHttpUrl(value)) {
+        if (value == null || !HttpTargetSpec.isAbsoluteHttpUrl(value)) {
             throw new IOException(
                     "The Cloud Tasks target URL must be an absolute http:// or https:// URL, but"
                             + " the row resolved to '"
@@ -107,60 +95,22 @@ final class RowDataToTaskMetadataConverter implements Serializable {
         return value;
     }
 
-    private HttpMethod method(RowData element) throws IOException {
-        if (methodIndex < 0 || element.isNullAt(methodIndex)) {
-            return target.getMethod();
-        }
-        String value = element.getString(methodIndex).toString();
-        try {
-            HttpMethod method = HttpMethod.valueOf(value.toUpperCase(Locale.ROOT));
-            if (method == HttpMethod.HTTP_METHOD_UNSPECIFIED || method == HttpMethod.UNRECOGNIZED) {
-                throw new IllegalArgumentException();
-            }
-            return method;
-        } catch (IllegalArgumentException e) {
-            throw new IOException(
-                    "The 'http-method' metadata value '"
-                            + value
-                            + "' is not one of POST, GET, HEAD, PUT, DELETE, PATCH or OPTIONS.",
-                    e);
-        }
-    }
-
     private void applyHeaders(RowData element, HttpRequest.Builder request) throws IOException {
-        if (headersIndex < 0 || element.isNullAt(headersIndex)) {
+        Map<String, String> rowHeaders =
+                RowDataMetadataReader.readHeaders(element, headersIndex, "HTTP");
+        if (rowHeaders.isEmpty()) {
             return;
         }
-        MapData map = element.getMap(headersIndex);
-        ArrayData keys = map.keyArray();
-        ArrayData values = map.valueArray();
         Map<String, String> requestHeaderNames = new LinkedHashMap<>();
         for (String name : request.getHeadersMap().keySet()) {
             requestHeaderNames.put(name.toLowerCase(Locale.ROOT), name);
         }
-        Set<String> rowHeaderNames = new HashSet<>();
-        for (int i = 0; i < keys.size(); i++) {
-            if (keys.isNullAt(i) || values.isNullAt(i)) {
-                throw new IOException(
-                        "A Cloud Tasks HTTP header has a null "
-                                + (keys.isNullAt(i) ? "name" : "value")
-                                + ", which an HTTP request cannot represent.");
-            }
-            String name = keys.getString(i).toString();
-            String value = values.getString(i).toString();
-            if (name.isBlank()) {
-                throw new IOException("A Cloud Tasks HTTP header has a blank name.");
-            }
+        for (Map.Entry<String, String> header : rowHeaders.entrySet()) {
+            String name = header.getKey();
+            String value = header.getValue();
             String normalized = name.toLowerCase(Locale.ROOT);
-            if (!rowHeaderNames.add(normalized)) {
-                throw new IOException(
-                        "Cloud Tasks HTTP header metadata contains the case-insensitive duplicate"
-                                + " name '"
-                                + name
-                                + "'.");
-            }
             if (target.getBodyContentType() != null && "content-type".equals(normalized)) {
-                if (!TableHttpTarget.sameContentType(target.getBodyContentType(), value)) {
+                if (!HttpTargetSpec.sameContentType(target.getBodyContentType(), value)) {
                     throw new IOException(
                             "Cloud Tasks HTTP header metadata contains Content-Type '"
                                     + value
@@ -209,15 +159,5 @@ final class RowDataToTaskMetadataConverter implements Serializable {
             prototype = built;
         }
         return built;
-    }
-
-    private static int metadataIndex(
-            int physicalArity, WritableMetadata[] metadata, WritableMetadata wanted) {
-        for (int i = 0; i < metadata.length; i++) {
-            if (metadata[i] == wanted) {
-                return physicalArity + i;
-            }
-        }
-        return -1;
     }
 }

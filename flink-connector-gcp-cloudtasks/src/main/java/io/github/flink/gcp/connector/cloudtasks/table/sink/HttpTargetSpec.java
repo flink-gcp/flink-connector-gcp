@@ -19,13 +19,13 @@ package io.github.flink.gcp.connector.cloudtasks.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.tasks.v2.HttpMethod;
 import io.github.flink.gcp.connector.cloudtasks.table.CloudTasksConnectorOptions;
 
 import javax.annotation.Nullable;
 
-import java.io.Serializable;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Collections;
@@ -36,7 +36,7 @@ import java.util.Objects;
 
 /** Validated fixed HTTP request values used by the table serializer. */
 @Internal
-public final class TableHttpTarget implements Serializable {
+public final class HttpTargetSpec extends TargetSpec {
 
     private static final long serialVersionUID = 1L;
 
@@ -49,7 +49,7 @@ public final class TableHttpTarget implements Serializable {
     @Nullable private final String oauthServiceAccountEmail;
     @Nullable private final String oauthScope;
 
-    private TableHttpTarget(
+    private HttpTargetSpec(
             @Nullable String url,
             HttpMethod method,
             Map<String, String> headers,
@@ -69,12 +69,12 @@ public final class TableHttpTarget implements Serializable {
     }
 
     /** Maps and validates the HTTP-related table options. */
-    public static TableHttpTarget from(ReadableConfig config) {
+    public static HttpTargetSpec from(ReadableConfig config) {
         return from(config, null);
     }
 
     /** Maps HTTP options and reserves Content-Type when the body format owns one. */
-    public static TableHttpTarget from(ReadableConfig config, @Nullable String bodyContentType) {
+    public static HttpTargetSpec from(ReadableConfig config, @Nullable String bodyContentType) {
         String url = config.getOptional(CloudTasksConnectorOptions.HTTP_URL).orElse(null);
         if (url != null && !isAbsoluteHttpUrl(url)) {
             throw new ValidationException(
@@ -115,7 +115,7 @@ public final class TableHttpTarget implements Serializable {
                                 header.getKey()));
             }
             if (bodyContentType != null && "content-type".equals(normalized)) {
-                if (!sameContentType(bodyContentType, header.getValue())) {
+                if (!TargetSpec.sameContentType(bodyContentType, header.getValue())) {
                     throw new ValidationException(
                             String.format(
                                     "Option '%s' contains Content-Type '%s', which conflicts with"
@@ -156,7 +156,7 @@ public final class TableHttpTarget implements Serializable {
                 oauthEmail,
                 CloudTasksConnectorOptions.HTTP_OAUTH_SCOPE.key(),
                 CloudTasksConnectorOptions.HTTP_OAUTH_SERVICE_ACCOUNT_EMAIL.key());
-        return new TableHttpTarget(
+        return new HttpTargetSpec(
                 url,
                 method,
                 headers,
@@ -218,10 +218,6 @@ public final class TableHttpTarget implements Serializable {
         return bodyContentType;
     }
 
-    static boolean sameContentType(String expected, String actual) {
-        return expected.equalsIgnoreCase(actual.trim());
-    }
-
     @Nullable
     String getOidcServiceAccountEmail() {
         return oidcServiceAccountEmail;
@@ -243,6 +239,32 @@ public final class TableHttpTarget implements Serializable {
     }
 
     @Override
+    Map<String, DataType> writableMetadata() {
+        return WritableMetadata.listHttp();
+    }
+
+    @Override
+    WritableMetadata addressMetadata() {
+        return WritableMetadata.URL;
+    }
+
+    @Override
+    String addressOptionKey() {
+        return CloudTasksConnectorOptions.HTTP_URL.key();
+    }
+
+    @Override
+    @Nullable
+    String fixedAddress() {
+        return url;
+    }
+
+    @Override
+    RowDataToTaskConverter converter(int physicalArity, WritableMetadata[] metadata) {
+        return new RowDataToTaskMetadataConverter(physicalArity, metadata, this);
+    }
+
+    @Override
     public boolean equals(Object o) {
         if (this == o) {
             return true;
@@ -250,7 +272,7 @@ public final class TableHttpTarget implements Serializable {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        TableHttpTarget that = (TableHttpTarget) o;
+        HttpTargetSpec that = (HttpTargetSpec) o;
         return Objects.equals(url, that.url)
                 && method == that.method
                 && headers.equals(that.headers)

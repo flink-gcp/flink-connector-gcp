@@ -26,9 +26,9 @@ The `cloud-tasks` table connector is a sink provided by the
 `flink-connector-gcp-cloudtasks` module.
 It maps onto the [DataStream sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}), which
 documents checkpoint behavior, retries, task naming and queue pacing.
-This page defines how SQL rows become HTTP requests.
+This page defines how SQL rows become external HTTP or App Engine requests.
 
-Cloud Tasks is an HTTP dispatch queue rather than an API-specific client.
+Cloud Tasks is a request dispatch queue rather than an API-specific client.
 The target API therefore decides whether a request uses JSON, another body format, a query string,
 or no body at all.
 SQL represents that split with a Flink format for the body and writable metadata for the rest of
@@ -66,6 +66,8 @@ FROM staged_orders;
 
 The JSON format sees only `order_id` and `amount`.
 The three metadata columns configure the request outside that body.
+Because `target.type` defaults to `http`, this DDL remains compatible with tables created before
+App Engine target support.
 
 ## Getting the connector onto the classpath
 
@@ -98,7 +100,9 @@ The connector does not interpret bytes from those generic formats, so set the ma
 `Content-Type` header for the target API.
 
 The module also provides the `form-urlencoded` format for
-`application/x-www-form-urlencoded` POST, PUT and PATCH bodies.
+`application/x-www-form-urlencoded` bodies.
+External HTTP requests carry those bodies under POST, PUT and PATCH, while App Engine requests
+carry them under POST and PUT.
 It accepts only these physical SQL column types:
 
 | Physical SQL type | Form representation |
@@ -122,7 +126,7 @@ field, and a null array element fails the row because a form cannot represent it
 Writable metadata columns are projected out before encoding and never become form fields.
 
 The form format adds `Content-Type: application/x-www-form-urlencoded` automatically.
-You do not need to set that header in `http.headers` or metadata.
+You do not need to set that header in the selected target's fixed headers or in metadata.
 An equivalent value is canonicalized, while a different value or a value with media-type parameters
 is rejected as a conflict.
 
@@ -322,10 +326,10 @@ The DataStream API is another option when the custom transformation is easier to
 
 ### Methods without a body
 
-Only `POST`, `PUT` and `PATCH` carry the encoded body because those are the only methods for which
-Cloud Tasks accepts an `HttpRequest.body`.
-`GET`, `HEAD`, `DELETE` and `OPTIONS` do not invoke the format for that row and create a task with no
-body.
+External HTTP requests carry the encoded body only under `POST`, `PUT` and `PATCH`.
+App Engine requests carry it only under `POST` and `PUT`.
+Every other method allowed by the selected protobuf request type leaves the body empty and does not
+invoke the format for that row.
 
 For a GET API, construct the query string as part of `http.url` or the `url` metadata column.
 For example:
@@ -360,17 +364,60 @@ where the boundary and part encodings can be controlled explicitly.
 
 ### Writable metadata
 
-| Metadata key | Type | Null behavior and precedence |
-|---|---|---|
-| `url` | `STRING` | A non-null value overrides `http.url`. If `http.url` is absent, this metadata column is required and must be declared `STRING NOT NULL` so every row has a target. The value must be an absolute `http://` or `https://` URL |
-| `http-method` | `STRING` | A non-null value overrides `http.method`, case-insensitively. Accepted values are `POST`, `GET`, `HEAD`, `PUT`, `DELETE`, `PATCH` and `OPTIONS` |
-| `headers` | `MAP<STRING, STRING>` | A null map adds no row headers. Row entries override fixed headers by case-insensitive name. A null or blank name, a null value, or duplicate case-insensitive names fail the record |
-| `schedule-time` | `TIMESTAMP_LTZ(6)` | A non-null value becomes the task schedule time with microsecond precision. Null leaves the service default |
-| `task-id` | `STRING` | Selecting this column enables named tasks for the entire sink. Every row must then supply a non-null, non-empty value. The sink hashes it with SHA-256 before composing the task name; a remembered duplicate is success |
+| Metadata key | Target | Type | Null behavior and precedence |
+|---|---|---|---|
+| `url` | HTTP | `STRING` | A non-null value overrides `http.url`. If `http.url` is absent, this metadata column is required and must be declared `STRING NOT NULL` so every row has a target. The value must be an absolute `http://` or `https://` URL |
+| `relative-uri` | App Engine | `STRING` | A non-null value overrides `app-engine.relative-uri`. If that option is absent, this metadata column is required and must be declared `STRING NOT NULL`. The value is empty for the root path, or begins with `/` and contains a path and optional query only |
+| `http-method` | Both | `STRING` | A non-null value overrides `http.method` or `app-engine.method`, case-insensitively. Accepted values are `POST`, `GET`, `HEAD`, `PUT`, `DELETE`, `PATCH` and `OPTIONS` |
+| `headers` | Both | `MAP<STRING, STRING>` | A null map adds no row headers. Row entries override the selected target's fixed headers by case-insensitive name. A null or blank name, a null value, or duplicate case-insensitive names fail the record. App Engine also rejects headers owned by Cloud Tasks or App Engine |
+| `app-engine-service` | App Engine | `STRING` | A non-null value overrides `app-engine.service`. An empty string clears the fixed selector |
+| `app-engine-version` | App Engine | `STRING` | A non-null value overrides `app-engine.version`. An empty string clears the fixed selector |
+| `app-engine-instance` | App Engine | `STRING` | A non-null value overrides `app-engine.instance`. An empty string clears the fixed selector; a non-empty instance requires a manually scaled service |
+| `schedule-time` | Both | `TIMESTAMP_LTZ(6)` | A non-null value becomes the task schedule time with microsecond precision. Null leaves the service default |
+| `task-id` | Both | `STRING` | Selecting this column enables named tasks for the entire sink. Every row must then supply a non-null, non-empty value. The sink hashes it with SHA-256 before composing the task name; a remembered duplicate is success |
 
 Metadata is appended after the physical columns before the runtime serializer receives a row.
 The connector projects the physical prefix before invoking the format, so request metadata never
 appears in JSON, CSV or another body by accident.
+The sink advertises only metadata belonging to the selected target family, so `url` cannot be used
+with App Engine and the App Engine address and routing keys cannot be used with HTTP.
+
+## App Engine targets
+
+Set `target.type` to `app-engine` for an App Engine handler in the queue's project and region.
+The connector creates the task's `AppEngineHttpRequest` arm rather than translating routing into an
+external URL.
+Task-level service, version and instance selectors are independent, and a queue-level
+`appEngineRoutingOverride` remains authoritative when the queue defines one.
+
+```sql
+CREATE TABLE app_engine_tasks (
+  payload        STRING,
+  target_path    STRING NOT NULL METADATA FROM 'relative-uri',
+  service_name   STRING          METADATA FROM 'app-engine-service',
+  version_name   STRING          METADATA FROM 'app-engine-version',
+  instance_name  STRING          METADATA FROM 'app-engine-instance',
+  dedupe_key     STRING          METADATA FROM 'task-id'
+) WITH (
+  'connector' = 'cloud-tasks',
+  'project' = 'my-project',
+  'location' = 'asia-northeast1',
+  'queue' = 'app-engine-orders',
+  'target.type' = 'app-engine',
+  'app-engine.method' = 'POST',
+  'app-engine.headers.Content-Type' = 'application/json',
+  'format' = 'json'
+);
+
+INSERT INTO app_engine_tasks
+VALUES ('ready', '/tasks/42?source=sql', 'worker', 'v2', CAST(NULL AS STRING), 'order-42');
+```
+
+An empty or absent routing value lets App Engine choose its default service, version and an
+available instance.
+Instance routing is valid only for a manually scaled service.
+Reserved headers including `Host`, `Content-Length`, `X-Google-*` and `X-AppEngine-*` are set by
+Cloud Tasks or App Engine and cannot be overridden.
 
 ## Authentication has two independent identities
 
@@ -408,9 +455,9 @@ Use OAuth for Google API endpoints on `*.googleapis.com` that require an access 
 OIDC and OAuth are mutually exclusive because the Cloud Tasks request stores them in one protobuf
 `oneof`.
 
-The separate App Engine target type, `AppEngineHttpRequest`, has routing and regional behavior that
-does not fit this HTTP metadata contract and is tracked in
-[#608]({{< param BookRepo >}}/issues/608).
+App Engine targets do not accept the `http.oidc.*` or `http.oauth.*` options.
+Cloud Tasks dispatches them through the same-project, same-region App Engine integration instead
+of attaching an external HTTP authorization token.
 
 ## Delivery guarantees and task identity
 
@@ -440,8 +487,9 @@ The queue is fixed for a table.
 SQL exposes no dynamic queue metadata and never creates or configures a queue.
 Rate limits, dispatch concurrency and delivery retries remain queue configuration.
 
-An option left out leaves the corresponding DataStream builder setting at its existing default,
-except `http.method`, whose SQL default is explicitly `POST`.
+An option left out leaves the corresponding DataStream setting at its existing default, except
+`target.type`, `http.method` and `app-engine.method`, whose SQL defaults are `http`, `POST` and
+`POST` respectively.
 
 ### Queue, body and writer identity
 
@@ -451,6 +499,7 @@ except `http.method`, whose SQL default is explicitly `POST`.
 | `location` | String | **required** | the location component of `QueueDestination.of(...)` |
 | `queue` | String | **required** | the queue component of `QueueDestination.of(...)` |
 | `format` | String | **required** | serialization format discovery for physical columns; `form-urlencoded` provides the built-in form encoding described above |
+| `target.type` | `http` \| `app-engine` | `http` | selects the external HTTP or App Engine protobuf request arm |
 | `service-account-key-file` | String | application-default credentials | `CloudTasksSinkBuilder.serviceAccountKeyFile(...)` |
 | `emulator-endpoint` | String | production Cloud Tasks | `CloudTasksSinkBuilder.emulatorEndpoint(...)`; plaintext and no credentials |
 
@@ -469,6 +518,21 @@ Identity where the deployment supports one.
 | `http.oidc.audience` | String | target URL | OIDC audience; requires the OIDC service account |
 | `http.oauth.service-account-email` | String | no OAuth token | OAuth token service account |
 | `http.oauth.scope` | String | Cloud Tasks default | OAuth scope; requires the OAuth service account |
+
+Every explicitly configured `http.*` option is rejected when `target.type` is `app-engine`.
+
+### App Engine request defaults
+
+| Option | Type | Default | Maps to |
+|---|---|---|---|
+| `app-engine.relative-uri` | String | the non-null `relative-uri` metadata column | default path and optional query |
+| `app-engine.method` | `POST` \| `GET` \| `HEAD` \| `PUT` \| `DELETE` \| `PATCH` \| `OPTIONS` | `POST` | default request method; only POST and PUT carry a body |
+| `app-engine.headers` | String map | empty | default request headers; use prefixed entries such as `app-engine.headers.Content-Type` or one packed map, not both |
+| `app-engine.service` | String | App Engine default | default task-level service selector |
+| `app-engine.version` | String | App Engine default | default task-level version selector |
+| `app-engine.instance` | String | an available instance | default task-level instance selector; requires manual scaling |
+
+Every explicitly configured `app-engine.*` option is rejected when `target.type` is `http`.
 
 ### Writer tuning
 
