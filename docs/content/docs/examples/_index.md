@@ -29,6 +29,7 @@ page, linked from each section.
 
 | Page | Covers |
 |---|---|
+| [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) | The shared resolver contract, per-destination resources, idle eviction, auto-creation and Pub/Sub ordering across all five sinks |
 | [BigQuery]({{< relref "docs/examples/bigquery" >}}) | A table per day from the event timestamp, both exactly-once write methods and how to redeploy them, table auto-creation |
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | A topic per record, topic and subscription auto-creation, the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
@@ -39,20 +40,10 @@ Two things cut across most of them, and are stated once here rather than five ti
 
 ## Dynamic per-record destinations share one shape
 
-The BigQuery, Pub/Sub and Cloud Tasks sinks resolve their destination per record the same way — a
-`destinationResolver` in place of the fixed `destination` / `topic` / `queue` — so one sink instance
-fans out across tables, topics or queues, and what changes between them is only the destination
-type. The Bigtable sink joined them with [#232]({{< param BookRepo >}}/issues/232), where a
-destination costs a batcher rather than only a map entry — its page says what that means.
-The Spanner sink is the one that does not: it is fixed to a database, and takes each
-write's table from the mutation its serializer returns rather than from a resolver.
-
-**The resolver runs once per record on the write path.** That is the constraint every example is
-built around: it must be cheap, deterministic, and it should hand back cached destination instances
-rather than allocating one per record, because destination identity is what the sinks key their
-per-destination state on. How much that costs differs — a BigQuery destination holds a stream
-writer and a Pub/Sub topic holds an SDK publisher, while a Cloud Tasks queue holds nothing at all —
-which each page says under its own example.
+The [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) guide expands this
+shared shape into one implementation path for all five sinks.
+It covers the resolver contract, Spanner's mutation-inherent table routing, destination identity,
+resource lifetimes, idle eviction, auto-creation and Pub/Sub ordering.
 
 ## An emulator is a convenience, not an authority
 
