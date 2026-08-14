@@ -168,7 +168,7 @@ def test_module_readme_is_ignored_before_module_matching(fake_repo, ci_maven_arg
         # scans them, so they buy `-pl .` rather than nothing (#253).
         "scripts/ci-maven-args.py",
         "scripts/tests/test_ci_gate.py",
-        "scripts/option-docs.toml",
+        "scripts/config/option-docs.toml",
         "pyproject.toml",
         "uv.lock",
     ],

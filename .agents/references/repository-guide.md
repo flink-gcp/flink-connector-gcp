@@ -101,7 +101,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `ConfigOption` key must be named in a table whose **first column header is exactly `Option`** —
   that header *is* the opt-in, which is what keeps the check off the metadata, type-mapping and
   policy tables the same pages carry — and every option those tables name must exist. Modules are
-  mapped to pages in `scripts/option-docs.toml`, not classes, so a **new** `*Options` class is
+  mapped to pages in `scripts/config/option-docs.toml`, not classes, so a **new** `*Options` class is
   required to appear from the moment it exists. A public builder whose file matches no
   `SOURCE_GLOBS` pattern — one named for what it *is*, as `PubSubDeadLetterQueue` is — is
   reached by naming it in that module's `sources` list, and **a public builder no mapping

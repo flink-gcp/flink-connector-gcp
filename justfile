@@ -416,7 +416,7 @@ check-flink-api-tiers:
 # take, in both directions: every builder setter and every Table API
 # ConfigOption must be named in a table whose first column is `Option`, and
 # every option those tables name must exist. Mappings, the four exempt bulk
-# overloads and the three FactoryUtil keys live in scripts/option-docs.toml.
+# overloads and the three FactoryUtil keys live in scripts/config/option-docs.toml.
 #
 # The pages are hand-written rather than generated (issue #89): their tables
 # group knobs and carry defaults the sources do not hold, since an unset knob's

@@ -15,7 +15,7 @@
 # limitations under the License.
 """Hold the configuration reference to the options the connectors actually take (issue #89).
 
-Two directions, both required, for each mapping in scripts/option-docs.toml:
+Two directions, both required, for each mapping in scripts/config/option-docs.toml:
 
 * **Coverage** — every public builder setter of a module's `*Options` /
   `*SinkBuilder` / `*SourceBuilder` classes, plus any class its `sources` list
@@ -63,7 +63,7 @@ except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
     )
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = Path(__file__).resolve().parent / "option-docs.toml"
+CONFIG = Path(__file__).resolve().parent / "config" / "option-docs.toml"
 
 # The three source shapes a module's builder options live in. A class named for
 # what it *is* rather than for the options it takes is reached by a `sources`
