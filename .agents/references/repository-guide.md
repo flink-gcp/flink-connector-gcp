@@ -56,20 +56,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   recipe via WIF; locally the variables come from the uncommitted `.env`, which a fresh
   worktree does not have — run `just worktree-env` once there to symlink the main checkout's
   copy (#156; the same link also carries `just tofu`'s credentials)
-- `just sweep-e2e [--dry-run]` — deletes the instances an E2E run abandoned (#246, #224), for
-  every service whose gated suite provisions one: Bigtable and Spanner. Each suite's
-  `Abstract*RealGcpITCase` sweeps at the start of a gated class, but only the weekly
-  E2E workflow schedules one, so a run whose teardown never executed leaves an
-  instance standing (~**$109** for a Bigtable node until the next weekly run, an order of
-  magnitude less for a 100-processing-unit Spanner instance); `sweep-e2e.yaml` runs this daily,
-  which is what bounds that number. Per service, the
-  instance prefix and the two-hour threshold are **read out of the Java source** (a second copy
-  would go stale silently), and both greps plus the gcloud listing are hard errors, because a
-  sweep that matches nothing looks exactly like a sweep with nothing to do. **One script rather
-  than a recipe line per service**, because `just` stops at its first failing line: two lines
-  would let one service's delete failure skip the other's sweep entirely, so `scripts/sweep-e2e.sh`
-  sweeps each independently and reports the worst status. The listing failure is checked
-  explicitly rather than left to `set -e`, which the per-service function no longer sees
+- `just sweep-e2e [--dry-run]` — returns its three billed E2E fixture types to their idle state
+  after a hard cancellation: stale Bigtable and Spanner instances are deleted, and the fixed Cloud
+  Tasks App Engine version is stopped. It reads the owned identifiers and thresholds from source,
+  treats an unreadable source or listing as an error, attempts every service independently and
+  reports the worst status. The daily schedule, source-derived values, shell failure boundaries
+  and billing-account boundary are recorded in ADR-0119
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
@@ -96,37 +88,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   Runs as its own `verify.yaml` job, not in `lint.yaml` and not inside `just lint` (ADR-0058),
   and it downloads the sources jars (into `target/flink-api-tiers/`) while `just lint` stays
   offline — the rule that also put `check-skill-frontmatter` in `verify.yaml`
-- `just check-option-docs` — holds `docs/content/docs/reference/` to the options the connectors
-  actually take (#89), both directions: every public builder setter and every Table API
-  `ConfigOption` key must be named in a table whose **first column header is exactly `Option`** —
-  that header *is* the opt-in, which is what keeps the check off the metadata, type-mapping and
-  policy tables the same pages carry — and every option those tables name must exist. Modules are
-  mapped to pages in `scripts/config/option-docs.toml`, not classes, so a **new** `*Options` class is
-  required to appear from the moment it exists. A public builder whose file matches no
-  `SOURCE_GLOBS` pattern — one named for what it *is*, as `PubSubDeadLetterQueue` is — is
-  reached by naming it in that module's `sources` list, and **a public builder no mapping
-  reaches is itself a failure** (#328), which is what keeps that explicit list from being the
-  silent class-by-class mapping the config's own comment argues against; `@Internal` is its
-  only exemption, read off the file's first top-level type. Widening the globs instead was
-  measured and declined — the record is the comment above `SOURCE_GLOBS`. Two allowlists,
-  pointing opposite ways —
-  `[exempt]` is a setter with no row, `[extra]` a row with no setter — and **an entry that
-  never fires fails**, as a stale one does in `flink-api-tiers.toml`. The pages are
-  **hand-written, not generated**: their tables group knobs and carry defaults the sources do
-  not hold. Its own `verify.yaml` job (ADR-0058). **How to respond to each failure is
-  `.agents/skills/curate-option-docs/`.** What the check does *not* do: it compares the set of
-  options, not their values, so a changed default has to be edited in the same commit
-- `just check-metric-docs` — the same shape of check for the **metrics tables on the DataStream
-  pages** (#296). Both directions, per module in `scripts/config/metric-docs.toml`: every name in a
-  connector's `*MetricNames` inventory must appear in a table whose **first column header is
-  exactly `Metric`**, with the Type column leading `counter` or `gauge` as the source registers
-  it, and every name those tables carry must be registered, a `base.metrics` subgroup template
-  the module wires, or **marked `(Flink standard)` in the Type cell** (the marker is guarded).
-  Three inventory-integrity rules ride along, plus the mechanical half of the #280 naming rule
-  (no `num`-prefixed name). Both allowlists are empty today, and an entry that never fires
-  fails. Its own `verify.yaml` job (ADR-0058). **How to respond to each failure is
-  `.agents/skills/curate-metric-docs/`.** What it does *not* check: Meaning cells and the prose
-  around the tables, so a rename still sweeps those by hand — in the same commit
+- `just check-option-docs` — holds the hand-written option reference to public builder setters and
+  Table API keys in both directions. A first-column `Option` header opts a table in; module mappings
+  catch new option classes, explicit `sources` reach exceptional builder names, `[exempt]` and
+  `[extra]` point in opposite directions, and an entry that never fires fails. It compares names,
+  not defaults or meanings, so those still move with the source change. Its own `verify.yaml` job
+  is recorded in ADR-0058; the checker design is ADR-0116, and every failure routes through
+  `.agents/skills/curate-option-docs/`
+- `just check-metric-docs` — holds DataStream `Metric` tables to each connector's inventory in both
+  directions, including registration kind, source-derived subgroup templates, guarded
+  `(Flink standard)` rows and the mechanical `num`-prefix rule. It does not check Meaning cells,
+  prose or the event/state naming judgment, so a rename still sweeps those by hand. Its own
+  `verify.yaml` job is recorded in ADR-0058; the checker design is ADR-0117, and every failure
+  routes through `.agents/skills/curate-metric-docs/`
 - `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
   (#245; ADR-0065 records both failure directions): the `@EnabledIfEnvironmentVariable` the E2E
   suite is *discovered* by, and the `@Tag("gated")` that keeps the class out of every ordinary
@@ -141,18 +115,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   configured — the script's docstring is the specification.
   `just ci-maven-args --diff origin/main` reproduces by hand what a pull request with the
   current branch's committed diff would build
-- `just test-scripts` — pytest over `scripts/`, through the uv project at the repository root
-  (`pyproject.toml` + committed `uv.lock`; uv itself pinned in `mise.toml`). Runs as
-  lint.yaml's `script_tests` job. A new `scripts/*.py` checker owes its tests here, alongside
-  the curate-* skill the checker rule already demands — a skill being owed for *judgment*,
-  which is why `check-gated-tags` and `check-skill-frontmatter` have tests here and no skill.
-  **A checker's tests are synthetic — a tree built in `tmp_path` with `ROOT`/`CONFIG`/`SOURCES`
-  monkeypatched onto it — never assertions against the real repository**, which is what keeps
-  lint.yaml's paths filter from having to grow to every input those checkers read.
-  `test_ci_maven_args.py`'s real-repo CLI layer is the exception that names its own inputs in
-  that filter (the poms, the `NOTICE.template`s). The direction the tests are aimed at is a
-  checker quietly finding *less* than it should — that reads exactly like a clean tree — so
-  each rule is pinned by a case that fails when the rule is removed
+- `just test-scripts` — runs `scripts/tests` through the root non-package uv project and committed
+  lockfile. Checker tests build synthetic trees and pin the false-green direction with a case that
+  fails when each rule is removed; `test_ci_maven_args.py`'s real-repository CLI layer is the named
+  exception whose inputs appear in `lint.yaml`. A new Python checker owes tests here and a
+  curate-* skill only when its failures require judgment. ADR-0118 records the project shape,
+  fixture boundary and mutation evidence
 - `just check-java-license-headers` — every Java source starts with a complete copyright-bearing
   or ASF Apache-2.0 header. RAT identifies the licence family from a distinctive line and remains
   the whole-tree coverage; this check closes the narrower completeness gap with no allowlist or
