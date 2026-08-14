@@ -17,14 +17,15 @@ limitations under the License.
 # ADR-0101: The Spanner Change Streams reader bounds asynchronous partition queries
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13
+- Date: 2026-08-12; revised 2026-08-14
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
   [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
   [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551),
   [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554),
   [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581),
-  [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635)
+  [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635),
+  [#647](https://github.com/laughingman7743/flink-connector-gcp/issues/647)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -75,6 +76,10 @@ Each Java regular expression fully matches the Spanner-reported table name or a 
 Include and exclude lists are mutually exclusive within each scope.
 Column projection retains primary keys and their type descriptors, and removes every other rejected column consistently from `columnTypes` and each mod's old and new value objects.
 The projection uses only the current record's metadata, preserves absent values separately from explicit JSON `null`, and never consults a historical schema.
+The reader determines once at construction whether any table or column list is configured.
+When all four lists are empty, it passes the decoded `DataChangeRecord` directly to the deserializer without evaluating the filter or allocating a filter result.
+`skipMessagesWithoutChange` alone does not activate filtering because no projection can remove a change without a column filter.
+When an active column filter retains every column in the record's metadata, the filter returns the original record before parsing or rebuilding its mod value JSON.
 
 A table-filtered record does not call the deserializer.
 A record whose reported non-key values are all removed is delivered with empty projected value objects by default.
@@ -99,6 +104,7 @@ The source emits commit timestamps and the coordinator frontier through Flink's 
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
 Reader and coordinator tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, complete-ledger watermarks, child-before-finish ordering, query failure, and bounded completion.
 Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
+They also cover disabled and skip-only activation, job-graph serialization, direct delivery of the original record instance, and unchanged progress and counters on the direct path.
 Serializer tests obtain the type through `TypeInformation.of`, round-trip every record field and projected collections, and reject an unknown serializer snapshot version without opening JDK modules.
 Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
 The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, proves a later scale-in preserves the positions of four queued splits, and observes a non-regressing source watermark after each restore.

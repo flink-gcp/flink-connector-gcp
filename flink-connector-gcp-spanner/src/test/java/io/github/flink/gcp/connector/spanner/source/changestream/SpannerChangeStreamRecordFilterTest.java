@@ -29,6 +29,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SpannerChangeStreamRecordFilterTest {
 
     @Test
+    void onlyConfiguredTableOrColumnPatternsActivateFiltering() {
+        assertThat(SpannerChangeStreamRecordFilter.none().hasFilters()).isFalse();
+        assertThat(filter(null, null, null, null, true).hasFilters()).isFalse();
+
+        assertThat(filter("orders", null, null, null, false).hasFilters()).isTrue();
+        assertThat(filter(null, "orders", null, null, false).hasFilters()).isTrue();
+        assertThat(filter(null, null, "orders\\.status", null, false).hasFilters()).isTrue();
+        assertThat(filter(null, null, null, "orders\\.secret", false).hasFilters()).isTrue();
+    }
+
+    @Test
     void tablePatternsUseFullMatchForIncludeAndExcludeLists() {
         DataChangeRecord orders = record("orders", columns(id()), mods("{\"status\":\"open\"}"));
         DataChangeRecord archive =
@@ -115,6 +126,18 @@ class SpannerChangeStreamRecordFilterTest {
                 .contains("{\"status\":\"open\"}");
         assertThat(filter.filter(audit).getRecord().getMods().get(0).getNewValuesJson())
                 .contains("{}");
+    }
+
+    @Test
+    void columnPatternThatKeepsEveryReportedColumnReturnsTheOriginalRecord() {
+        DataChangeRecord record =
+                record(
+                        "orders",
+                        columns(id(), column("status", "{\"code\":\"STRING\"}", false, 2)),
+                        mods("{\"status\":\"open\"}"));
+
+        assertThat(filter(null, null, "orders\\..*", null, false).filter(record).getRecord())
+                .isSameAs(record);
     }
 
     @Test

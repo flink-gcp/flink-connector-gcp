@@ -74,6 +74,13 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
         this.skipMessagesWithoutChange = skipMessagesWithoutChange;
     }
 
+    public boolean hasFilters() {
+        return !tableIncludeList.isEmpty()
+                || !tableExcludeList.isEmpty()
+                || !columnIncludeList.isEmpty()
+                || !columnExcludeList.isEmpty();
+    }
+
     public Result filter(DataChangeRecord record) {
         Preconditions.checkNotNull(record, "record must not be null");
         if (!included(record.getTableName(), tableIncludeList, tableExcludeList)) {
@@ -84,27 +91,43 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
         }
 
         String tableName = record.getTableName();
-        Set<String> primaryKeys = new HashSet<>();
-        List<DataChangeRecord.ColumnType> columnTypes = new ArrayList<>();
+        List<DataChangeRecord.ColumnType> sourceColumnTypes = record.getColumnTypes();
+        List<DataChangeRecord.ColumnType> columnTypes = null;
         long removedOccurrences = 0;
-        for (DataChangeRecord.ColumnType columnType : record.getColumnTypes()) {
-            if (columnType.isPrimaryKey()) {
-                primaryKeys.add(columnType.getName());
-            }
+        for (int index = 0; index < sourceColumnTypes.size(); index++) {
+            DataChangeRecord.ColumnType columnType = sourceColumnTypes.get(index);
             if (columnType.isPrimaryKey() || includedColumn(tableName, columnType.getName())) {
-                columnTypes.add(columnType);
+                if (columnTypes != null) {
+                    columnTypes.add(columnType);
+                }
             } else {
+                if (columnTypes == null) {
+                    columnTypes = new ArrayList<>(sourceColumnTypes.size() - 1);
+                    columnTypes.addAll(sourceColumnTypes.subList(0, index));
+                }
                 removedOccurrences++;
             }
         }
+        if (columnTypes == null) {
+            return Result.deliver(record, 0);
+        }
 
-        List<Mod> mods = new ArrayList<>(record.getMods().size());
+        Set<String> primaryKeys = new HashSet<>();
+        for (int index = 0; index < sourceColumnTypes.size(); index++) {
+            DataChangeRecord.ColumnType columnType = sourceColumnTypes.get(index);
+            if (columnType.isPrimaryKey()) {
+                primaryKeys.add(columnType.getName());
+            }
+        }
+        List<Mod> sourceMods = record.getMods();
+        List<Mod> mods = new ArrayList<>(sourceMods.size());
         long originalNonKeyOccurrences = 0;
         long retainedNonKeyOccurrences = 0;
-        for (Mod mod : record.getMods()) {
-            ValueProjection newValues =
+        for (int index = 0; index < sourceMods.size(); index++) {
+            Mod mod = sourceMods.get(index);
+            ValueProjectionResult newValues =
                     projectValue(mod.getNewValuesJson().orElse(null), tableName, primaryKeys);
-            ValueProjection oldValues =
+            ValueProjectionResult oldValues =
                     projectValue(mod.getOldValuesJson().orElse(null), tableName, primaryKeys);
             removedOccurrences += newValues.removedOccurrences + oldValues.removedOccurrences;
             originalNonKeyOccurrences +=
@@ -119,9 +142,6 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
                 && retainedNonKeyOccurrences == 0) {
             return Result.skippedWithoutChange();
         }
-        if (removedOccurrences == 0) {
-            return Result.deliver(record, 0);
-        }
         return Result.deliver(copy(record, columnTypes, mods), removedOccurrences);
     }
 
@@ -129,14 +149,14 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
         return included(tableName + "." + columnName, columnIncludeList, columnExcludeList);
     }
 
-    private ValueProjection projectValue(
+    private ValueProjectionResult projectValue(
             @Nullable String json, String tableName, Set<String> primaryKeys) {
         if (json == null) {
-            return ValueProjection.absent();
+            return ValueProjectionResult.absent();
         }
         JsonElement value = JsonParser.parseString(json);
         if (value.isJsonNull()) {
-            return ValueProjection.explicitNull();
+            return ValueProjectionResult.explicitNull();
         }
         Preconditions.checkArgument(
                 value.isJsonObject(),
@@ -160,7 +180,7 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
                 removedOccurrences++;
             }
         }
-        return new ValueProjection(
+        return new ValueProjectionResult(
                 retained.toString(),
                 originalNonKeyOccurrences,
                 retainedNonKeyOccurrences,
@@ -170,15 +190,15 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
     private static boolean included(
             String identifier, List<Pattern> includes, List<Pattern> excludes) {
         if (!includes.isEmpty()) {
-            for (Pattern pattern : includes) {
-                if (pattern.matcher(identifier).matches()) {
+            for (int index = 0; index < includes.size(); index++) {
+                if (includes.get(index).matcher(identifier).matches()) {
                     return true;
                 }
             }
             return false;
         }
-        for (Pattern pattern : excludes) {
-            if (pattern.matcher(identifier).matches()) {
+        for (int index = 0; index < excludes.size(); index++) {
+            if (excludes.get(index).matcher(identifier).matches()) {
                 return false;
             }
         }
@@ -215,6 +235,11 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
     @Internal
     public static final class Result {
 
+        private static final Result TABLE_FILTERED =
+                new Result(Disposition.TABLE_FILTERED, null, 0);
+        private static final Result SKIPPED_WITHOUT_CHANGE =
+                new Result(Disposition.SKIPPED_WITHOUT_CHANGE, null, 0);
+
         public enum Disposition {
             DELIVER,
             TABLE_FILTERED,
@@ -239,11 +264,11 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
         }
 
         private static Result tableFiltered() {
-            return new Result(Disposition.TABLE_FILTERED, null, 0);
+            return TABLE_FILTERED;
         }
 
         private static Result skippedWithoutChange() {
-            return new Result(Disposition.SKIPPED_WITHOUT_CHANGE, null, 0);
+            return SKIPPED_WITHOUT_CHANGE;
         }
 
         public Disposition getDisposition() {
@@ -259,14 +284,19 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
         }
     }
 
-    private static final class ValueProjection {
+    private static final class ValueProjectionResult {
+
+        private static final ValueProjectionResult ABSENT =
+                new ValueProjectionResult(null, 0, 0, 0);
+        private static final ValueProjectionResult EXPLICIT_NULL =
+                new ValueProjectionResult("null", 0, 0, 0);
 
         @Nullable private final String json;
         private final long originalNonKeyOccurrences;
         private final long retainedNonKeyOccurrences;
         private final long removedOccurrences;
 
-        private ValueProjection(
+        private ValueProjectionResult(
                 @Nullable String json,
                 long originalNonKeyOccurrences,
                 long retainedNonKeyOccurrences,
@@ -277,12 +307,12 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
             this.removedOccurrences = removedOccurrences;
         }
 
-        private static ValueProjection absent() {
-            return new ValueProjection(null, 0, 0, 0);
+        private static ValueProjectionResult absent() {
+            return ABSENT;
         }
 
-        private static ValueProjection explicitNull() {
-            return new ValueProjection("null", 0, 0, 0);
+        private static ValueProjectionResult explicitNull() {
+            return EXPLICIT_NULL;
         }
     }
 }
