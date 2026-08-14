@@ -36,31 +36,7 @@ gcloud spanner databases create orders-db --instance=my-instance \
     --ddl='CREATE TABLE Orders (OrderId STRING(64) NOT NULL, Total INT64) PRIMARY KEY (OrderId)'
 ```
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-// Not optional: the sink is at-least-once only with checkpointing, which is what makes Flink wait
-// for the batch to be applied before the barrier passes.
-env.enableCheckpointing(60_000);
-
-env.fromData("a-1", "a-2")
-        .sinkTo(
-                SpannerSink.<String>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-                        .serializer(
-                                (element, context) ->
-                                        // insertOrUpdate, not insert: the sink is at-least-once
-                                        // and Spanner's batch write has no replay protection, so
-                                        // a record can arrive twice. An upsert makes that a
-                                        // no-op; an insert makes it a routed failure.
-                                        Mutation.newInsertOrUpdateBuilder("Orders")
-                                                .set("OrderId").to("order#" + element)
-                                                .set("Total").to(element.length())
-                                                .build())
-                        .build());
-
-env.execute("spanner-quickstart");
-```
+{{< java-snippet file="SpannerQuickstartWrite.java" tag="spanner-quickstart-write" >}}
 
 Read the rows back:
 
@@ -80,32 +56,7 @@ has the table of which operations are idempotent.
 The source reads the database at one snapshot and finishes. Spanner decides how the read is divided;
 the job supplies no split column and no bounds.
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
-Source<Long, ?, ?> source =
-        SpannerSource.<Long>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-                .readOperation(
-                        SpannerReadOperation.query(
-                                Statement.of("SELECT OrderId FROM Orders")))
-                .deserializer(
-                        new SpannerStructDeserializationSchema<Long>() {
-                            @Override
-                            public void deserialize(Struct row, Collector<Long> out) {
-                                out.collect(row.getLong("OrderId"));
-                            }
-
-                            @Override
-                            public TypeInformation<Long> getProducedType() {
-                                return TypeInformation.of(Long.class);
-                            }
-                        })
-                .build();
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders").print();
-env.execute("spanner-read-quickstart");
-```
+{{< java-snippet file="SpannerQuickstartRead.java" tag="spanner-quickstart-read" >}}
 
 The identity running the job needs `spanner.sessions.create`, `spanner.databases.select` and the
 partitioned-read permissions `spanner.databases.partitionQuery` and `spanner.databases.partitionRead`

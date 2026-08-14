@@ -32,18 +32,7 @@ behaves as it does is on the
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#spanner-tables) explains why Spanner takes its table from each mutation instead of using the resolver-based pattern.
 The mutation names its table, so routing by record needs no option — just a serializer that decides.
 
-```java
-SpannerSink.<Event>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
-        .serializer(
-                (event, context) ->
-                        Mutation.newInsertOrUpdateBuilder(
-                                        event.isAudit() ? "AuditEvents" : "Events")
-                                .set("EventId").to(event.getId())
-                                .set("Body").to(event.getBody())
-                                .build())
-        .build();
-```
+{{< java-snippet file="SpannerExamplesSeveralTables.java" tag="spanner-examples-several-tables" >}}
 
 At start-up, the sink reads index-aware cell weights for the database's visible tables, so both pre-existing tables in this example are weighed correctly against the batch limit.
 A table created after the writer opens, or hidden from the writer's database role, is counted without its index entries.
@@ -53,12 +42,7 @@ Both tables must already exist because the sink does not create them.
 
 A delete is a mutation like any other, so a stream of keys is a stream of deletes.
 
-```java
-SpannerSink.<String>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-        .serializer((orderId, context) -> Mutation.delete("Orders", Key.of(orderId)))
-        .build();
-```
+{{< java-snippet file="SpannerExamplesDeletingRows.java" tag="spanner-examples-deleting-rows" >}}
 
 Deletes are idempotent, so a replayed record is harmless. A delete over a key *range* is also
 possible — note that the sink counts it as a single row against `maxBatchCells`, because nothing on
@@ -69,22 +53,13 @@ the client side can know how many rows a range matches.
 Returning `null` skips the record: it is written nowhere, is not a failure, and is counted by
 `recordsSkipped`.
 
-```java
-SpannerSink.<Event>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
-        .serializer(
-                (event, context) ->
-                        event.isHeartbeat()
-                                ? null
-                                : Mutation.newInsertOrUpdateBuilder("Events")
-                                        .set("EventId").to(event.getId())
-                                        .build())
-        .build();
-```
+{{< java-snippet file="SpannerExamplesSkippingRecords.java" tag="spanner-examples-skipping-records" >}}
 
 ## Dropping refused mutations instead of failing the job
 
 By default the first refused mutation fails the job. `failedMutationHandler` changes that.
+
+The following builder fragment omits the application serializer supplied to `serializer(...)`.
 
 ```java
 SpannerSink.<Event>builder()
@@ -98,6 +73,8 @@ SpannerSink.<Event>builder()
 and `INVALID_ARGUMENT` do — a `NOT NULL` violation, an over-long value, a foreign key or a `CHECK`
 constraint all fail the job instead. That default is deliberate, and it is also an option:
 
+The following setter fragment omits the enclosing sink builder.
+
 ```java
 .constraintViolationPolicy(ConstraintViolationPolicy.ROUTE_TO_FAILURE_HANDLER)
 ```
@@ -109,6 +86,8 @@ when a refusal would mean your column mapping is wrong. The
 lists every case, and says why the default is what it is.
 
 A handler taking the connector's own type sees the mutation itself:
+
+The following handler fragment omits the enclosing sink builder and logger declaration.
 
 ```java
 .failedMutationHandler(
@@ -131,6 +110,8 @@ raising one alone often changes nothing; `maxBatchCells` and `maxBatchBytes` are
 for. Setting `maxBatchMutations` above `maxBatchCells` writes a warning to the log of wherever the
 job's `main` runs, because the cell cap is then reached first and the mutation cap can never take
 effect.
+
+The following builder fragment omits the application serializer supplied to `serializer(...)`.
 
 ```java
 SpannerSink.<Event>builder()
@@ -158,17 +139,7 @@ A table read takes a key set and a column list, and is the cheapest shape when t
 a contiguous range of the primary key. There is no SQL to be root-partitionable, so nothing about
 the read can be refused for being undistributable.
 
-```java
-SpannerSource.<Order>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-        .readOperation(
-                SpannerReadOperation.read(
-                        "Orders",
-                        KeySet.range(KeyRange.closedOpen(Key.of(1_000L), Key.of(2_000L))),
-                        Arrays.asList("OrderId", "Total")))
-        .deserializer(new OrderDeserializer())
-        .build();
-```
+{{< java-snippet file="SpannerExamplesKeyRange.java" tag="spanner-examples-key-range" >}}
 
 `SpannerReadOperation.readUsingIndex("Orders", "OrdersByCustomer", keys, columns)` reads the same
 way through a secondary index, with the key set interpreted in the *index's* key space.
@@ -179,35 +150,14 @@ Data Boost serves the read from compute that is not the instance's. The caller n
 `spanner.databases.useDataBoost` on the database, the read is billed separately, and its
 concurrency has a quota of its own.
 
-```java
-SpannerSource.<Order>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-        .readOperation(
-                SpannerReadOperation.query(
-                        Statement.of("SELECT OrderId, Total FROM Orders WHERE Total > 100")))
-        .deserializer(new OrderDeserializer())
-        .dataBoostEnabled(true)
-        // Both are hints. Asking for one partition per subtask is reasonable; getting a different
-        // number is normal, and the enumerator warns when the plan is smaller than the parallelism.
-        .maxPartitions(env.getParallelism())
-        .build();
-```
+{{< java-snippet file="SpannerExamplesDataBoost.java" tag="spanner-examples-data-boost" >}}
 
 ## Reading at a fixed timestamp
 
 Reading two tables at the same timestamp makes their contents consistent with each other, which a
 job joining them usually wants.
 
-```java
-Timestamp readAt = Timestamp.parseTimestamp("2026-08-10T00:00:00Z");
-
-SpannerSource.<Order>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-        .readOperation(SpannerReadOperation.query(Statement.of("SELECT OrderId FROM Orders")))
-        .deserializer(new OrderDeserializer())
-        .timestampBound(TimestampBound.ofReadTimestamp(readAt))
-        .build();
-```
+{{< java-snippet file="SpannerExamplesFixedTimestamp.java" tag="spanner-examples-fixed-timestamp" >}}
 
 The timestamp has to lie inside the database's `version_retention_period` — an hour by default, up
 to a week — or the data behind it is gone. `TimestampBound.ofExactStaleness(...)` is the other
@@ -219,22 +169,7 @@ only on a single-use transaction.
 Emitting nothing from a source deserializer skips the row.
 `recordsSkipped` counts each such input row once.
 
-```java
-new SpannerStructDeserializationSchema<Order>() {
-    @Override
-    public void deserialize(Struct row, Collector<Order> out) {
-        // Rows the query could not exclude, filtered before they cost anything downstream.
-        if (!row.isNull("Total")) {
-            out.collect(new Order(row.getLong("OrderId"), row.getBigDecimal("Total")));
-        }
-    }
-
-    @Override
-    public TypeInformation<Order> getProducedType() {
-        return TypeInformation.of(Order.class);
-    }
-};
-```
+{{< java-snippet file="SpannerExamplesSkippingRows.java" tag="spanner-examples-skipping-rows" >}}
 
 A row you could not read is a different thing: throw, and the job fails rather than losing it.
 Collector calls must be synchronous, must emit non-null records, and must not continue after
@@ -281,19 +216,7 @@ Use `TIMESTAMP_LTZ(3)` plus `WATERMARK FOR commit_timestamp AS SOURCE_WATERMARK(
 Table and column filters run after the connector decodes Spanner's record and before the user deserializer runs.
 Each Java regular expression matches a complete table name or `table.column` identifier.
 
-```java
-SpannerChangeStreamSource<OrderChange> source =
-        SpannerChangeStreamSource.<OrderChange>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-                .changeStreamName("all_changes")
-                .deserializer(new OrderChangeDeserializer())
-                .startPosition(StartPosition.latest())
-                .tableIncludeList(List.of("orders", "order_items"))
-                .columnExcludeList(
-                        List.of("orders\\.internal_note", "order_items\\.debug_payload"))
-                .skipMessagesWithoutChange(false)
-                .build();
-```
+{{< java-snippet file="SpannerExamplesChangeStreamFilters.java" tag="spanner-examples-change-stream-filters" >}}
 
 Primary keys remain in `keys` and `columnTypes` even when a column expression matches them.
 The default above delivers a record whose projected old and new values are empty.
@@ -308,6 +231,8 @@ Restrict the Change Stream's DDL watch definition when exclusion must happen ins
 docker run -p 9010:9010 -p 9020:9020 gcr.io/cloud-spanner-emulator/emulator:1.5.56
 ```
 
+The following builder fragment omits the application serializer supplied to `serializer(...)`.
+
 ```java
 SpannerSink.<Event>builder()
         .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
@@ -318,14 +243,7 @@ SpannerSink.<Event>builder()
 
 The source takes the same option:
 
-```java
-SpannerSource.<Order>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-        .readOperation(SpannerReadOperation.query(Statement.of("SELECT OrderId FROM Orders")))
-        .deserializer(new OrderDeserializer())
-        .emulatorEndpoint("localhost:9010")
-        .build();
-```
+{{< java-snippet file="SpannerExamplesEmulatorSource.java" tag="spanner-examples-emulator-source" >}}
 
 Setting the endpoint also stops the client looking for credentials. Pin an image at **v1.5.31 or
 newer**: the emulator implements the `BatchWrite` RPC this sink writes with only from that release,
