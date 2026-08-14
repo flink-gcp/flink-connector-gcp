@@ -40,7 +40,7 @@ Sink<MyEvent> sink =
                 .destinationResolver(
                         (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
                 .serializer(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.dataOnly(new MyEventSerializationSchema())
                                 .withAttributes(e -> Map.of("source", e.source()))
                                 .withOrderingKey(MyEvent::deviceId))
                 .publisherOptions(
