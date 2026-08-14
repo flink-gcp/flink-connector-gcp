@@ -37,9 +37,11 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceConfig;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 
 import javax.annotation.Nullable;
 
@@ -93,6 +95,7 @@ public final class BigtableChangeStreamReader<T>
                 config.getResumeFallback(),
                 config.getEndTime(),
                 config.getMaxConcurrentStreamsPerSubtask(),
+                config.getMutationFilter(),
                 new BigtableChangeStreamReaderMetrics(context.metricGroup()));
     }
 
@@ -100,15 +103,37 @@ public final class BigtableChangeStreamReader<T>
     BigtableChangeStreamReader(
             SourceReaderContext context,
             TableDestination table,
-            io.github.flink.gcp.connector.bigtable.source.serializer
-                                    .BigtableChangeStreamDeserializationSchema<
-                            T>
-                    deserializer,
+            BigtableChangeStreamDeserializationSchema<T> deserializer,
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
             Optional<StartPosition> resumeFallback,
             @Nullable Instant endTime,
             int maximumStreams,
+            BigtableChangeStreamReaderMetrics metrics) {
+        this(
+                context,
+                table,
+                deserializer,
+                opener,
+                restoreResolver,
+                resumeFallback,
+                endTime,
+                maximumStreams,
+                BigtableChangeStreamMutationFilter.none(),
+                metrics);
+    }
+
+    @VisibleForTesting
+    BigtableChangeStreamReader(
+            SourceReaderContext context,
+            TableDestination table,
+            BigtableChangeStreamDeserializationSchema<T> deserializer,
+            ChangeStreamOpener opener,
+            ChangeStreamRestoreResolver restoreResolver,
+            Optional<StartPosition> resumeFallback,
+            @Nullable Instant endTime,
+            int maximumStreams,
+            BigtableChangeStreamMutationFilter mutationFilter,
             BigtableChangeStreamReaderMetrics metrics) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.table = Preconditions.checkNotNull(table, "table must not be null");
@@ -121,7 +146,9 @@ public final class BigtableChangeStreamReader<T>
         Preconditions.checkArgument(maximumStreams > 0, "maximumStreams must be positive");
         this.maximumStreams = maximumStreams;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
-        emitter = new BigtableChangeStreamRecordEmitter<>(deserializer, context, metrics);
+        emitter =
+                new BigtableChangeStreamRecordEmitter<>(
+                        deserializer, mutationFilter, context, metrics);
         handover = new ArrayBlockingQueue<>(maximumStreams);
     }
 

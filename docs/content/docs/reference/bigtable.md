@@ -178,5 +178,10 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position after clearing its stale token. Without it, an expired restore fails |
 | `endTime` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
 | `maxConcurrentStreamsPerSubtask` | `2` | Bounds open `ReadChangeStream` RPCs in each source subtask. Source parallelism multiplied by this value is configured job-wide read capacity, not a Bigtable quota |
+| `familyIncludeList` | empty | Retains mutation entries whose family name fully matches at least one Java regular expression. Mutually exclusive with `familyExcludeList` |
+| `familyExcludeList` | empty | Removes mutation entries whose family name fully matches any Java regular expression. Mutually exclusive with `familyIncludeList` |
+| `qualifierIncludeList` | empty | Retains qualified mutation entries whose `family:qualifierBase64` identifier fully matches at least one Java regular expression. The qualifier uses canonical padded RFC 4648 standard Base64. Mutually exclusive with `qualifierExcludeList` |
+| `qualifierExcludeList` | empty | Removes qualified mutation entries whose `family:qualifierBase64` identifier fully matches any Java regular expression. Family-delete entries have no qualifier and use only the family filter. Mutually exclusive with `qualifierIncludeList` |
+| `skipMessagesWithoutChange` | `false` | Skips deserialization when filtering removes every entry. The default delivers the mutation with an empty entry list |
 
 There is no emulator option because the Bigtable emulator implements neither change-stream RPC.

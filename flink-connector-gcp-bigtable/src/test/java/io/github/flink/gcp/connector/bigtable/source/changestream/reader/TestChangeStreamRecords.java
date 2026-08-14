@@ -44,6 +44,17 @@ final class TestChangeStreamRecords {
         return (ChangeStreamMutation) builder.finishChangeStreamMutation(token, watermark);
     }
 
+    static ChangeStreamMutation mutationWithThreeEntries(
+            Instant commit, Instant watermark, String token) {
+        ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
+                new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
+        builder.startUserMutation(ByteString.copyFromUtf8("row"), "cluster", commit, 0);
+        builder.deleteFamily("family-1");
+        builder.deleteFamily("family-2");
+        builder.deleteFamily("family-3");
+        return (ChangeStreamMutation) builder.finishChangeStreamMutation(token, watermark);
+    }
+
     static ChangeStreamMutation garbageCollectionMutation(
             Instant commit, Instant watermark, String token) {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =

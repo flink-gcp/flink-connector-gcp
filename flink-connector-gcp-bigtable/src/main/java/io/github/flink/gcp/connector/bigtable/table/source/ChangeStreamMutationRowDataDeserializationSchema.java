@@ -24,7 +24,7 @@ import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 
 import java.io.IOException;

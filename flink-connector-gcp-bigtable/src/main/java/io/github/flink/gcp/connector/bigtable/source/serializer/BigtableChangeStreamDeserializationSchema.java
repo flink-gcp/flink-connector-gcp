@@ -22,7 +22,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.util.Collector;
 
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -43,7 +43,7 @@ public interface BigtableChangeStreamDeserializationSchema<T>
     /**
      * Deserializes one mutation.
      *
-     * @param mutation the mutation from Bigtable
+     * @param mutation the complete connector-owned mutation from Bigtable
      * @param out the collector for non-null output records; it is valid only for this synchronous
      *     call and must not be retained
      * @throws IOException if the mutation cannot be deserialized

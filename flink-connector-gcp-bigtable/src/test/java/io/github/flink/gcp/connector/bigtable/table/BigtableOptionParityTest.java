@@ -173,9 +173,30 @@ class BigtableOptionParityTest {
 
     /** Change Streams builder setters supplied structurally rather than by one option. */
     private static final Map<String, String> CHANGE_STREAM_SOURCE_BUILDER_NO_DDL =
-            Collections.singletonMap(
-                    "deserializer",
-                    "the table layer supplies the generic mutation-envelope RowData converter");
+            changeStreamSourceBuilderExemptions();
+
+    private static Map<String, String> changeStreamSourceBuilderExemptions() {
+        Map<String, String> map = new LinkedHashMap<>();
+        map.put(
+                "deserializer",
+                "the table layer supplies the generic mutation-envelope RowData converter");
+        map.put(
+                "familyIncludeList",
+                "entry projection belongs to the DataStream mutation API, not the Table changelog");
+        map.put(
+                "familyExcludeList",
+                "entry projection belongs to the DataStream mutation API, not the Table changelog");
+        map.put(
+                "qualifierIncludeList",
+                "entry projection belongs to the DataStream mutation API, not the Table changelog");
+        map.put(
+                "qualifierExcludeList",
+                "entry projection belongs to the DataStream mutation API, not the Table changelog");
+        map.put(
+                "skipMessagesWithoutChange",
+                "empty projected mutations belong to the DataStream mutation API, not the Table changelog");
+        return Collections.unmodifiableMap(map);
+    }
 
     /** {@code TableCreateOptions.Builder}: the one setter, which the DDL feeds structurally. */
     private static final Map<String, String> TABLE_CREATE_NO_DDL =

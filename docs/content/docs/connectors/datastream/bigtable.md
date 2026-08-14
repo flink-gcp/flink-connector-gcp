@@ -683,6 +683,8 @@ BigtableChangeStreamSource<ChangeStreamMutation> source =
                 .appProfileId("orders-change-stream")
                 .deserializer(new ChangeStreamMutationDeserializationSchema())
                 .startPosition(StartPosition.latest())
+                .familyIncludeList(List.of("orders", "audit"))
+                .qualifierExcludeList(List.of("orders:dGVtcG9yYXJ5"))
                 .maxConcurrentStreamsPerSubtask(4)
                 .build();
 
@@ -700,9 +702,18 @@ Increasing source parallelism can reduce the reads and resource use in one subta
 Adding slots or TaskManagers alone does not change partition concurrency when source parallelism stays fixed.
 A parallelism change takes effect through a checkpoint or savepoint restart, when Flink redistributes the checkpointed partition splits.
 
-The built-in schema supplies a serializer for the SDK's immutable mutation model. A transformation
-that still emits `ChangeStreamMutation` can make Flink infer the SDK class as a generic type and
-fall back to Kryo. Preserve the schema's produced type across that boundary:
+The source converts the client library's internal record into the connector-owned immutable
+`ChangeStreamMutation` before invoking the deserializer.
+With output filters, only retained SDK entries are converted; an explicitly skipped empty
+projection is not materialized as a public mutation.
+With no output filter, filter evaluation is bypassed, although the public-model conversion still
+occurs.
+The model preserves the row key, mutation type, source cluster, commit timestamp, tie breaker,
+continuation token, estimated low watermark, and every ordered `SetCell`, `DeleteCells`,
+`DeleteFamily`, `AddToCell`, and `MergeToCell` entry returned by java-bigtable 2.80.0.
+Its Flink type information selects the connector serializer even when a later transformation asks
+for `TypeInformation.of(ChangeStreamMutation.class)`.
+An explicit `.returns(...)` remains useful when a transformation erases its declared output type:
 
 ```java
 ChangeStreamMutationDeserializationSchema mutations =
@@ -712,6 +723,29 @@ DataStream<ChangeStreamMutation> transformed =
                 .map(mutation -> mutation)
                 .returns(mutations.getProducedType());
 ```
+
+Family and qualifier filters project entries after a complete mutation crosses the service and
+reader protocol boundary, but before the application deserializer runs.
+They do not reduce `ReadChangeStream` network traffic.
+Each Java regular expression uses full-match semantics.
+A qualifier expression matches `family:qualifierBase64`, where `qualifierBase64` is canonical
+padded RFC 4648 standard Base64; for example, qualifier bytes `temporary` become
+`dGVtcG9yYXJ5`.
+Family-delete entries have no qualifier and are governed only by the family filter.
+Include and exclude lists are mutually exclusive within each dimension, while a family filter and
+a qualifier filter compose by intersection.
+
+Filtering preserves entry order and every mutation-level field.
+If it removes every entry, the default delivers the mutation with an empty entry list so the
+atomic row mutation remains observable.
+`skipMessagesWithoutChange(true)` instead bypasses the deserializer for that mutation.
+Both dispositions advance the continuation token and estimated low watermark, so filtering does
+not change checkpoint, restore, partition-transition, or heartbeat progress.
+The filter configuration belongs to the submitted source, not to checkpointed split state.
+A failure restart of the same job keeps that configuration, while a newly submitted job restoring
+a savepoint applies its new filter configuration to the restored split progress.
+These entry-projection setters belong to the DataStream mutation API and have no Table API or SQL
+option; SQL Change Streams preserve their documented envelope or selected-cell changelog contract.
 
 The application profile is required and must use single-cluster routing. The Bigtable emulator
 does not implement Change Streams, so this builder deliberately has no emulator option.
@@ -861,6 +895,8 @@ Registered on the source reader's and the split enumerator's metric groups:
 | `changeStreamCloseStreamsRead` | counter | `CloseStream` records this subtask received |
 | `changeStreamUserMutationsRead` | counter | user-initiated mutations this subtask received |
 | `changeStreamGarbageCollectionMutationsRead` | counter | garbage-collection mutations this subtask received |
+| `changeStreamMutationEntriesFiltered` | counter | mutation entries removed by configured family or qualifier output filters |
+| `changeStreamRecordsSkippedWithoutChange` | counter | mutations whose every entry was filtered and whose deserializer was bypassed because `skipMessagesWithoutChange(true)` was configured |
 | `partitionLowWatermarkMillis` | gauge | minimum checkpointed low watermark across every active and queued partition assigned to this subtask, as epoch milliseconds |
 | `recordsSkipped` | counter | rows or change-stream mutations the deserializer emitted no record for |
 | `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |

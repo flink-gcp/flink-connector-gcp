@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
@@ -45,6 +46,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     @Nullable final StartPosition resumeFallback;
     @Nullable final Instant endTime;
     final int maxConcurrentStreamsPerSubtask;
+    final BigtableChangeStreamMutationFilter mutationFilter;
     final ChangeStreamOpener opener;
     final ChangeStreamRestoreResolver restoreResolver;
     @Nullable final ChangeStreamCoordinatorClient coordinatorClient;
@@ -58,6 +60,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             Optional<StartPosition> resumeFallback,
             @Nullable Instant endTime,
             int maxConcurrentStreamsPerSubtask,
+            BigtableChangeStreamMutationFilter mutationFilter,
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
             @Nullable ChangeStreamCoordinatorClient coordinatorClient) {
@@ -69,6 +72,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.resumeFallback = resumeFallback.orElse(null);
         this.endTime = endTime;
         this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
+        this.mutationFilter = mutationFilter;
         this.opener = opener;
         this.restoreResolver = restoreResolver;
         this.coordinatorClient = coordinatorClient;
@@ -95,6 +99,10 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
 
     public int getMaxConcurrentStreamsPerSubtask() {
         return maxConcurrentStreamsPerSubtask;
+    }
+
+    public BigtableChangeStreamMutationFilter getMutationFilter() {
+        return mutationFilter;
     }
 
     public ChangeStreamOpener getOpener() {

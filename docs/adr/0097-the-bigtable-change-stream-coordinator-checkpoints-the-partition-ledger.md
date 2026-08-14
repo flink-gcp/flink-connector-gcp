@@ -17,11 +17,12 @@ limitations under the License.
 # ADR-0097: The Bigtable Change Streams coordinator checkpoints the partition ledger
 
 - Status: Accepted
-- Date: 2026-08-11
+- Date: 2026-08-11 (revised 2026-08-14)
 - Issues: [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
   [#510](https://github.com/laughingman7743/flink-connector-gcp/issues/510),
   [#532](https://github.com/laughingman7743/flink-connector-gcp/issues/532),
-  [#533](https://github.com/laughingman7743/flink-connector-gcp/issues/533)
+  [#533](https://github.com/laughingman7743/flink-connector-gcp/issues/533),
+  [#586](https://github.com/laughingman7743/flink-connector-gcp/issues/586)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -38,9 +39,10 @@ no single coordinator. FLIP-27 already has one. Adding Beam's metadata table her
 second mutable recovery system beside Flink checkpoints and would make a new external resource part
 of every job's correctness.
 
-The java-bigtable methods and models used by this protocol carry `@InternalApi("Intended for use by
-the BigtableIO in apache/beam only.")` in 2.80.0. They are nevertheless the client library's only
-typed entry points to these RPCs. The acceptance is the same shape as ADR-0041: the annotation and
+The java-bigtable methods, query and mutation records, and mutation entry types used by this
+protocol carry `@InternalApi("Intended for use by the BigtableIO in apache/beam only.")` in 2.80.0;
+the aggregate `Value` model is `@BetaApi`. They are nevertheless the client library's only typed
+entry points to these RPCs. The acceptance is the same shape as ADR-0041: the annotations and
 surface are checked facts, reread on a client upgrade, rather than an accidental dependency.
 
 ## Decision
@@ -72,11 +74,27 @@ negative or positive infinity in this API, but their protobuf oneof cases must s
 connector's general-purpose range copy normalizes an empty key to an unbounded model value, so it
 remains safe for internal range algebra and is deliberately not the SDK representation.
 
-The built-in `ChangeStreamMutationDeserializationSchema` supplies a dedicated Flink serializer.
-The SDK model is immutable and implements Java serialization, but Flink otherwise chooses
-reflective Kryo, whose collection serializer tries to add entries to the model's immutable list.
-Copies can therefore retain the immutable instance, while network edges use the model's declared
-Java-serialization contract.
+The reader evaluates output filters against each complete SDK mutation and converts only retained
+entries into the connector-owned immutable `ChangeStreamMutation` before application
+deserialization.
+The public model carries every mutation-level field and an ordered typed representation of the
+five entry kinds and three aggregate value kinds exposed by java-bigtable 2.80.0.
+Unknown SDK entry or value subtypes fail before any partial mutation reaches the application.
+The connector-owned model has tagged Flink serialization and type information, so public output
+does not depend on the SDK's Apache-Beam-only `@InternalApi` record model or reflective Kryo.
+
+Family and qualifier regular expressions select SDK entries with full-match semantics.
+Qualified-column expressions match `family:` plus canonical padded RFC 4648 standard Base64, and
+family deletes use only the family filter because they have no qualifier.
+Filtering runs after the service has delivered the complete atomic mutation and does not reduce
+RPC traffic.
+An empty projection is delivered by default; the explicit skip flag bypasses deserialization while
+still advancing the continuation token and estimated low watermark.
+When no entry filter is configured, the reader bypasses filter evaluation and its projection result
+allocation, but the SDK-to-public-model conversion remains the cost of removing the unstable SDK
+type from the public SPI.
+When an explicit skip removes every entry, the reader advances directly from SDK metadata without
+materializing the public mutation or any public entry/value/range object.
 
 ## Evidence
 
@@ -94,8 +112,8 @@ Java-serialization contract.
   `ChangeStreamContinuationToken.create` as `IllegalStateException: Start is unbounded`; all
   connector-created SDK ranges therefore share the same boundary conversion.
 - After that fix, the live stream emitted a service mutation but default Kryo copying failed with
-  `UnsupportedOperationException` while rebuilding its immutable `entries`; the built-in schema's
-  serializer now round-trips an SDK mutation without reflective collection access.
+  `UnsupportedOperationException` while rebuilding its immutable `entries`; #586 replaces that
+  public SDK output with the connector-owned tagged representation.
 - The following live run completed a checkpoint and entered the fixture's controlled failure. Its
   generic `RichMapFunction` then erased the schema's output type before the collect network edge;
   the gated fixture now declares that output type explicitly so recovery uses the same serializer.
@@ -105,6 +123,10 @@ Java-serialization contract.
   seconds. The instance returned `NOT_FOUND` immediately after teardown.
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
   prove restore does not generate new initial partitions, prove many parents require only bounded neighboring coverage checks, and prove expired coordinator-held state fails unless fallback was opted in.
+- Deterministic tests cover all 2.80.0 entry and value kinds, full-match family and qualified-column
+  filtering, default-empty and explicit-skip dispositions, source serialization, metrics, and
+  progress through filtered mutations. No new service behavior is assumed, so #586 requires no
+  additional real-GCP acceptance run.
 
 ## Alternatives declined
 
@@ -117,6 +139,11 @@ Java-serialization contract.
 - **Require admin metadata permission.** The routing preflight is diagnostic rather than part of
   the data protocol; denying a principal that can read changes would turn an improved message into
   a new permission requirement.
+- **Keep the raw SDK mutation as a public escape hatch.** That would preserve the unstable type
+  dependency the connector-owned model removes and would make filter output semantics differ by
+  deserializer choice.
+- **Push the filters into the service request.** `ReadChangeStream` returns complete logical
+  mutations and exposes no equivalent family or qualifier predicate in the pinned client.
 
 ## Consequences
 
@@ -125,3 +152,6 @@ ADR-0080: a continuous source must know which ranges are live before it can find
 The final implementation phase adds that reconciler and checkpoints its timers in the same state.
 The emulator covers none of these RPCs, so deterministic tests use hand-written seams and the final
 protocol proof runs against gated real Bigtable.
+Output filters do not alter the partition ledger or checkpoint format.
+Operators can distinguish removed entries from explicitly skipped empty projections through the
+two Change Streams reader counters.

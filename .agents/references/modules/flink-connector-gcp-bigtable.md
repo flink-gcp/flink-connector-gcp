@@ -225,10 +225,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **A merge target waits for coverage, not a token count.** Every `CloseStream` contributes a token
   whose own partition range names its parent; only a coalesced set covering the entire target can
   become one split with the full token list. A split is the same rule's one-token case.
-- **The native SDK surface is accepted deliberately.** `GenerateInitialChangeStreamPartitions`,
-  `ReadChangeStream`, `ReadChangeStreamQuery` and the record models carry an Apache-Beam-only
-  `@InternalApi` annotation in the pinned client. Reread that fact on every client upgrade, as
-  ADR-0041 requires for the sink's checked SDK facts.
+- **The native SDK surface stops at the reader boundary.** `GenerateInitialChangeStreamPartitions`,
+  `ReadChangeStream`, `ReadChangeStreamQuery`, `ChangeStreamMutation`, and its entry types carry an
+  Apache-Beam-only `@InternalApi` annotation in the pinned client; its aggregate `Value` model is
+  `@BetaApi`. The reader inspects complete SDK mutations, converts only retained entries to the
+  connector-owned public model, and exposes no public raw-SDK escape. With no entry filters it
+  bypasses filter evaluation but still performs the public-model conversion. Reread the input
+  surface on every client upgrade and extend the fail-closed converter for every new entry or value
+  subtype before accepting it.
 - **The application profile is required and single-cluster.** Preflight rejects a visible
   multi-cluster policy; missing permission to read profile metadata does not add a new requirement,
   and the reader translates the service rejection instead. Start-position and restore-expiry
@@ -238,10 +242,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   requires the protobuf boundary oneof to be set. `RowRanges.copyOf` intentionally normalizes the
   empty key for internal algebra, so the reader reconstructs the explicit boundary pair before
   building either a `ReadChangeStream` request or an SDK continuation token (#533).
-- **The built-in raw-mutation deserializer supplies its own serializer.** SDK mutations contain
-  immutable collection implementations that Flink's reflective Kryo path cannot copy. The
-  `ChangeStreamMutationDeserializationSchema` therefore treats the immutable model as copy-safe and
-  uses its Java-serialization contract for network boundaries (#533).
+- **The connector-owned mutation supplies its own tagged serializer.** It preserves all mutation
+  metadata and the ordered typed entries and values in the pinned 2.80.0 input model. Its `@TypeInfo`
+  annotation keeps later `TypeInformation.of(ChangeStreamMutation.class)` calls on that serializer
+  instead of reflective Kryo (#533, #586).
+- **Entry filters are output projection, not an RPC predicate.** Family and qualified-column regexes
+  run on the complete SDK mutation before retained entries are converted for the user deserializer.
+  Qualified columns match `family:` plus canonical padded standard Base64; family deletes bypass
+  qualifier filters. An empty projection is delivered by default or bypasses conversion and
+  deserialization under the explicit skip flag, while both paths advance token and low-watermark
+  state and report removed entries (#586).
 - **Concurrency is a reader-subtask bound, not a service quota** (`docs/adr/0103`). The enumerator
   assigns the absolute free-slot count a reader advertises; the reader keeps excess restored or
   successor splits in FIFO order and rotates at emitted heartbeats. Each active read has at most

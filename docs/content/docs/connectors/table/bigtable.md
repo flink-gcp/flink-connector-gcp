@@ -312,8 +312,8 @@ microseconds.
 Delete bounds use `OPEN`, `CLOSED`, or `UNBOUNDED`, and an unbounded endpoint has a null micros
 field.
 Fields that do not apply to an entry kind are null.
-If a later client library introduces an entry or value subtype the converter does not know, the
-job fails with that subtype's class name instead of emitting an incomplete row.
+If a later client library introduces an entry or value subtype the SDK converter does not know, the
+job fails with that subtype's class name before emitting an incomplete mutation.
 
 `UNNEST` expands the ordered entry array for relational processing:
 
@@ -939,7 +939,7 @@ a service RPC to prove credential injection: unit and runtime-boundary tests par
 inspect every affected client settings family.
 
 Change Streams metadata and `UNNEST(entries)` are covered without a service: converter tests use
-SDK mutation models directly, planner tests select and cast metadata, and the existing
+the connector-owned mutation model directly, planner tests select and cast metadata, and the existing
 `flink-sql-connector-gcp-bigtable` uber-jar plans the same DDL through its discovered `bigtable`
 factory.
 Selected-cell tests drive the strict mutation classifier and row assembly directly, while a

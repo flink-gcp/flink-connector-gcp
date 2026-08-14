@@ -18,16 +18,8 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.bigtable.data.v2.models.AddToCell;
-import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
-import com.google.cloud.bigtable.data.v2.models.DeleteCells;
-import com.google.cloud.bigtable.data.v2.models.DeleteFamily;
-import com.google.cloud.bigtable.data.v2.models.Entry;
-import com.google.cloud.bigtable.data.v2.models.MergeToCell;
-import com.google.cloud.bigtable.data.v2.models.Range;
-import com.google.cloud.bigtable.data.v2.models.SetCell;
-import com.google.cloud.bigtable.data.v2.models.Value;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 
 import javax.annotation.Nullable;
 
@@ -87,9 +79,10 @@ final class SelectedCellMutationClassifier implements Serializable {
         boolean deleted = false;
         @Nullable ByteString value = null;
 
-        for (Entry entry : mutation.getEntries()) {
-            if (entry instanceof DeleteCells) {
-                DeleteCells delete = (DeleteCells) entry;
+        for (ChangeStreamMutation.Entry entry : mutation.getEntries()) {
+            if (entry instanceof ChangeStreamMutation.DeleteCellsEntry) {
+                ChangeStreamMutation.DeleteCellsEntry delete =
+                        (ChangeStreamMutation.DeleteCellsEntry) entry;
                 if (!isSelected(delete.getFamilyName(), delete.getQualifier())) {
                     continue;
                 }
@@ -106,8 +99,9 @@ final class SelectedCellMutationClassifier implements Serializable {
                 deleted = true;
                 continue;
             }
-            if (entry instanceof DeleteFamily) {
-                DeleteFamily delete = (DeleteFamily) entry;
+            if (entry instanceof ChangeStreamMutation.DeleteFamilyEntry) {
+                ChangeStreamMutation.DeleteFamilyEntry delete =
+                        (ChangeStreamMutation.DeleteFamilyEntry) entry;
                 if (!family.equals(delete.getFamilyName())) {
                     continue;
                 }
@@ -120,8 +114,8 @@ final class SelectedCellMutationClassifier implements Serializable {
                 deleted = true;
                 continue;
             }
-            if (entry instanceof SetCell) {
-                SetCell set = (SetCell) entry;
+            if (entry instanceof ChangeStreamMutation.SetCellEntry) {
+                ChangeStreamMutation.SetCellEntry set = (ChangeStreamMutation.SetCellEntry) entry;
                 if (!isSelected(set.getFamilyName(), set.getQualifier())) {
                     continue;
                 }
@@ -134,24 +128,26 @@ final class SelectedCellMutationClassifier implements Serializable {
                 value = set.getValue();
                 continue;
             }
-            if (entry instanceof AddToCell) {
-                AddToCell add = (AddToCell) entry;
-                if (couldSelect(add.getFamily(), add.getQualifier())) {
+            if (entry instanceof ChangeStreamMutation.AddToCellEntry) {
+                ChangeStreamMutation.AddToCellEntry add =
+                        (ChangeStreamMutation.AddToCellEntry) entry;
+                if (couldSelect(add.getFamilyName(), add.getQualifier())) {
                     validateHeader(mutation);
                     throw protocolFailure("AddToCell cannot encode a complete logical row");
                 }
                 continue;
             }
-            if (entry instanceof MergeToCell) {
-                MergeToCell merge = (MergeToCell) entry;
-                if (couldSelect(merge.getFamily(), merge.getQualifier())) {
+            if (entry instanceof ChangeStreamMutation.MergeToCellEntry) {
+                ChangeStreamMutation.MergeToCellEntry merge =
+                        (ChangeStreamMutation.MergeToCellEntry) entry;
+                if (couldSelect(merge.getFamilyName(), merge.getQualifier())) {
                     validateHeader(mutation);
                     throw protocolFailure("MergeToCell cannot encode a complete logical row");
                 }
                 continue;
             }
             throw protocolFailure(
-                    "the SDK returned an unknown mutation entry type "
+                    "the connector returned an unknown mutation entry type "
                             + entry.getClass().getName());
         }
 
@@ -165,17 +161,17 @@ final class SelectedCellMutationClassifier implements Serializable {
         return family.equals(entryFamily) && qualifier.equals(entryQualifier);
     }
 
-    private boolean couldSelect(String entryFamily, Value entryQualifier) {
+    private boolean couldSelect(String entryFamily, ChangeStreamMutation.Value entryQualifier) {
         if (!family.equals(entryFamily)) {
             return false;
         }
-        return !(entryQualifier instanceof Value.RawValue)
-                || qualifier.equals(((Value.RawValue) entryQualifier).getValue());
+        return !(entryQualifier instanceof ChangeStreamMutation.RawValue)
+                || qualifier.equals(((ChangeStreamMutation.RawValue) entryQualifier).getValue());
     }
 
-    private static boolean isUnbounded(Range.TimestampRange range) {
-        return range.getStartBound() == Range.BoundType.UNBOUNDED
-                && range.getEndBound() == Range.BoundType.UNBOUNDED;
+    private static boolean isUnbounded(ChangeStreamMutation.TimestampRange range) {
+        return range.getStart().getType() == ChangeStreamMutation.BoundType.UNBOUNDED
+                && range.getEnd().getType() == ChangeStreamMutation.BoundType.UNBOUNDED;
     }
 
     private void validateHeader(ChangeStreamMutation mutation) throws IOException {
