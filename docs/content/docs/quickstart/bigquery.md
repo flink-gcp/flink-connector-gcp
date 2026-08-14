@@ -28,50 +28,7 @@ copying verbatim; the other connectors' pages show only the job.
 
 ## Write a stream to a table
 
-```java
-package example;
-
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-
-import com.google.cloud.bigquery.Field;
-import com.google.cloud.bigquery.Schema;
-import com.google.cloud.bigquery.StandardSQLTypeName;
-import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
-import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
-
-public class BigQueryQuickstart {
-
-    public static void main(String[] args) throws Exception {
-        // JSON carries no schema, so this one is supplied rather than derived. Serializers for
-        // input that does carry a schema — protobuf messages and Avro records — derive it.
-        Schema schema =
-                Schema.of(
-                        Field.of("order_id", StandardSQLTypeName.STRING),
-                        Field.of("amount", StandardSQLTypeName.INT64));
-
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-        // Not optional. Every sink here is at-least-once *only* with checkpointing: the checkpoint
-        // is what makes Flink flush what the Google client libraries are still holding, so without
-        // it those records are lost on failure.
-        env.enableCheckpointing(60_000);
-
-        env.fromData(
-                        "{\"order_id\":\"a-1\",\"amount\":10}",
-                        "{\"order_id\":\"a-2\",\"amount\":20}")
-                .sinkTo(
-                        BigQuerySink.<String>builder()
-                                .destination(
-                                        TableDestination.of("my-project", "my_dataset", "orders"))
-                                .serializer(JsonDocumentSerializer.of(schema))
-                                .build());
-
-        env.execute("bigquery-quickstart");
-    }
-}
-```
+{{< java-snippet file="BigQueryQuickstartWrite.java" tag="bigquery-quickstart-write" >}}
 
 The dataset must exist; the table need not, because the default create disposition is
 `CREATE_IF_NEEDED` and the schema above is what it is created from. The default write method is
@@ -91,24 +48,7 @@ protobuf and Avro serializers for input that is not JSON.
 The other direction is a bounded source over the Storage Read API. It finishes when the table has
 been read, so it works both as a batch input and as the dimension side of a join in a streaming job.
 
-```java
-Schema readerSchema = new Schema.Parser().parse(
-        "{\"type\":\"record\",\"name\":\"Person\",\"fields\":["
-                + "{\"name\":\"id\",\"type\":\"long\"},"
-                + "{\"name\":\"name\",\"type\":\"string\"}]}");
-
-Source<GenericRecord, ?, ?> source =
-        BigQuerySource.<GenericRecord>builder()
-                .table(TableDestination.of("my-project", "my_dataset", "people"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-                .selectedFields("id", "name")
-                .rowRestriction("id > 1000")
-                .build();
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "BigQuery")
-        .map(row -> row.get("name").toString())
-        .print();
-```
+{{< java-snippet file="BigQueryQuickstartRead.java" tag="bigquery-quickstart-read" >}}
 
 `Schema` here is Avro's, not the REST client's: rows arrive as Avro, and the schema you pass is what
 they are read *into* — naming the columns you want with their natural types is enough, since Avro's
