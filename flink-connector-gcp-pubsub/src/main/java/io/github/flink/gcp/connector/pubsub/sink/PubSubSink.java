@@ -37,7 +37,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *         PubSubSink.<MyEvent>builder()
  *                 .destinationResolver(
  *                         (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
- *                 .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+ *                 .serializer(PubSubSerializationSchema.dataOnly(new MyEventSerializationSchema()))
  *                 .build();
  * }</pre>
  */
