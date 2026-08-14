@@ -26,10 +26,9 @@ Starting from the [BigQuery quickstart]({{< relref "docs/quickstart/bigquery" >}
 
 ## A table per day
 
-The writer context carries the record's event timestamp, which is what makes time-based routing
-expressible without the record having to carry the routing key itself. The
-[resolver contract]({{< relref "docs/examples" >}}#dynamic-per-record-destinations-share-one-shape)
-is what the caching here is for.
+The writer context carries the record's event timestamp, which makes time-based routing expressible without the record carrying the routing key.
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#bigquery-tables) defines the shared resolver contract and compares its resource lifetime with the other sinks.
+This resolver caches one destination per UTC day and falls back to the record's own timestamp when the writer context has none.
 
 ```java
 public class DailyTableResolver implements DestinationResolver<OrderEvent> {
@@ -76,11 +75,9 @@ BigQuerySink.<OrderEvent>builder()
 ```
 
 Two things need planning when a resolver keeps producing new destinations.
-Each active destination holds its own stream writer, so `DefaultStreamOptions` and
-`BufferedStreamOptions` both expose `destinationIdleTimeout` (one hour by default) to bound local
-per-destination state in a long-lived job.
-Every new table is also created on its first record under the default create disposition, so
-[table auto-creation](#table-auto-creation) applies to every day this produces, not only the first.
+The default-stream and buffered-stream methods hold one writer per active destination, so `DefaultStreamOptions` and `BufferedStreamOptions` expose `destinationIdleTimeout` (one hour by default) to bound that local state.
+FILE_LOADS has no destination idle timeout and retains each destination's conversion state until the writer closes, although it finishes the open staging file at every commit preparation.
+Every new table is also created on its first record under the default create disposition, so [table auto-creation](#table-auto-creation) applies to every day this produces, not only the first.
 
 ## Exactly-once
 

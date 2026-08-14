@@ -26,8 +26,11 @@ Starting from the [Cloud Pub/Sub quickstart]({{< relref "docs/quickstart/pubsub"
 
 ## A topic per record
 
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#pubsub-topics) explains the shared resolver contract and the ordering boundary for a dynamically selected topic.
+
 ```java
 env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
+        .keyBy(OrderEvent::customerId)
         .sinkTo(
                 PubSubSink.<OrderEvent>builder()
                         .destinationResolver(
@@ -36,17 +39,20 @@ env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
                         .serializer(
                                 PubSubSerializationSchema.dataOnly(new OrderEventSchema())
                                         .withOrderingKey(OrderEvent::customerId))
+                        .publisherOptions(
+                                PubSubPublisherOptions.builder()
+                                        .enableMessageOrdering(true)
+                                        .build())
                         .build());
 ```
 
-A lambda is fine where the destination set is small: `TopicDestination` is pure identity, so the
-allocation is a few fields. Cache it as the
-[BigQuery example]({{< relref "docs/examples/bigquery" >}}#a-table-per-day) does when the resolver
-is doing real work to produce the name.
+A lambda is fine where the destination set is small: `TopicDestination` is pure identity, so the allocation is a few fields.
+Cache it as the [BigQuery example]({{< relref "docs/examples/bigquery" >}}#a-table-per-day) does when the resolver is doing real work to produce the name.
 
-Each distinct topic gets its own SDK publisher, owned by the writer and closed with it. Ordering,
-when enabled, is per key *within one topic* and holds per writer subtask — route same-key records
-to the same subtask with `keyBy` for end-to-end order.
+Each distinct topic gets its own SDK publisher, owned by the writer and closed with it.
+`enableMessageOrdering(true)` is required because the writer rejects a serialized ordering key while ordering is disabled.
+The `keyBy` call routes one customer's records to one sink subtask, and the resolver must keep that customer on one topic.
+Pub/Sub preserves a separate sequence when the same key moves to another topic or writer subtask.
 
 ## Topics, on the sink
 

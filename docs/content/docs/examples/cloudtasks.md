@@ -26,6 +26,8 @@ Starting from the [Cloud Tasks quickstart]({{< relref "docs/quickstart/cloudtask
 
 ## Sharding across queues
 
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#cloud-tasks-queues) places this sharding pattern in the shared resolver contract.
+
 ```java
 CloudTasksSink.<OrderEvent>builder()
         .destinationResolver(
@@ -40,16 +42,13 @@ CloudTasksSink.<OrderEvent>builder()
         .build();
 ```
 
-Of the three sinks this is the one where per-record destinations cost nothing: Cloud Tasks has no
-per-destination connection or stream, so a single client serves every queue and there is no
-per-queue state to cache or evict — unlike a BigQuery table's stream writer or a Pub/Sub topic's
-publisher.
+A single Cloud Tasks client serves every queue, and the sink creates no per-queue client, stream, publisher or batcher to cache or evict.
+When `CloudTasksWriterOptions.builder().perDestinationMetrics(true).build()` is supplied through `writerOptions(...)`, each queue with a recorded send or failure registers counters that remain for the task lifetime because Flink cannot unregister metrics.
+That optional metric registry state is separate from service-client state.
 
-Sharding this way is how a pipeline exceeds the per-queue throughput ceiling. The aggregate limits,
-and why they rarely matter for the workload this connector exists for — one throttling *down* to a
-third-party rate limit never approaches them — are on the
-[Cloud Tasks connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) page. All the
-queues must exist; the sink creates none of them.
+Sharding this way is how a pipeline exceeds the per-queue throughput ceiling.
+The aggregate limits, and why they rarely matter for the workload this connector exists for, are on the [Cloud Tasks connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) page.
+All the queues must exist; the sink creates none of them.
 
 ## Running against the emulator
 

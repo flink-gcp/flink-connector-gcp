@@ -50,9 +50,10 @@ BigtableSink.<OrderEvent>builder()
 
 ## A table per day, from the record
 
-The resolver names the table; the serializer still builds the whole mutation. Cache the
-destinations, because the resolver runs once per record and `TableDestination` is what the writer
-keys its batcher pool on:
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#bigtable-tables) defines the shared resolver contract and compares the batcher's lifetime with the other sinks.
+The resolver names the table, while the serializer still builds the whole mutation.
+The resolver runs once per record, so this map avoids reconstructing equal `TableDestination` values for repeated days.
+Equality rather than object identity keys the writer's batcher pool, so the cache is an allocation optimization rather than a correctness requirement.
 
 ```java
 Map<LocalDate, TableDestination> byDay = new HashMap<>();
@@ -78,12 +79,10 @@ BigtableSink.<OrderEvent>builder()
         .build();
 ```
 
-The map is captured by the resolver's closure, so it has to reach the task manager: a `HashMap`
-built where the job is assembled travels fine, an instance field of a class that is not
-serializable does not. Every table the resolver can name must already exist unless the sink is
-opted into [auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation)
-— worth reading first beside a resolver, since one schema serves every table the sink creates and a
-resolver keyed on something unbounded creates one table per value.
+The map is captured by the resolver's closure, so it has to reach the task manager: a `HashMap` built where the job is assembled travels fine, while an instance field of a class that is not serializable does not.
+Idle eviction closes the writer's batcher but does not remove entries from this resolver-owned map, so the example retains one entry per observed day.
+Every table the resolver can name must already exist unless the sink is opted into [auto-creation]({{< relref "docs/connectors/datastream/bigtable" >}}#table-auto-creation).
+Read that section beside a resolver because one schema serves every table the sink creates, and a resolver keyed on something unbounded creates one table per value.
 
 ## Skipping records instead of filtering upstream
 
