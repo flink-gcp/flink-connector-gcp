@@ -175,5 +175,13 @@ limitations under the License.
             <artifactId>flink-csv</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- Avro is not built into the SQL distribution. Test scope supplies the generic
+                 format and its transitive runtime so the worked binary-body example runs through
+                 the same SerializationFormatFactory path as the sink. -->
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-avro</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

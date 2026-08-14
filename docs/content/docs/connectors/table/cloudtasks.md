@@ -98,6 +98,8 @@ the factory registrations. A Maven or Gradle DataStream job should instead depen
 Avro or `raw` where its schema requirements are met.
 The connector does not interpret bytes from those generic formats, so set the matching
 `Content-Type` header for the target API.
+The [worked request-body examples]({{< relref "docs/examples/cloudtasks" >}}#table-api-request-bodies)
+show their SQL input and exact JSON, CSV, raw and Avro bytes.
 
 The module also provides the `form-urlencoded` format for
 `application/x-www-form-urlencoded` bodies.

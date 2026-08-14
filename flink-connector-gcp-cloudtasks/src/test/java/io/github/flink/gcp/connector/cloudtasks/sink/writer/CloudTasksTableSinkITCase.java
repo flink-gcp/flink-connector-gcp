@@ -22,8 +22,13 @@ import org.apache.flink.table.api.TableEnvironment;
 import com.google.cloud.tasks.v2.HttpMethod;
 import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericDatumReader;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.io.DecoderFactory;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 
@@ -31,6 +36,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** SQL-to-emulator acceptance tests for the Cloud Tasks table sink. */
 class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
+
+    private static RecordedRequest awaitFirstRequest(String path) throws InterruptedException {
+        List<RecordedRequest> requests = awaitRequests(path, 1);
+        assertThat(requests).as("requests dispatched to %s", path).isNotEmpty();
+        return requests.get(0);
+    }
 
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.inBatchMode());
@@ -141,6 +152,180 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
     }
 
     @Test
+    void documentedNestedJsonRequestDispatchesExactUtf8Bytes() throws Exception {
+        QueueDestination queue = createQueue("table-json-example");
+        String path = "/table-json-example";
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE json_tasks (\n"
+                        + "  order_id STRING,\n"
+                        + "  customer ROW<name STRING, city STRING>,\n"
+                        + "  items ARRAY<ROW<sku STRING, quantity INT>>,\n"
+                        + "  attributes MAP<STRING, STRING>,\n"
+                        + "  note STRING,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + queueOptions(queue)
+                        + ",\n"
+                        + "  'http.url' = '"
+                        + targetUrl(path)
+                        + "',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'application/json',\n"
+                        + "  'json.encode.ignore-null-fields' = 'false'\n"
+                        + ")");
+
+        tEnv.executeSql(
+                        "INSERT INTO json_tasks VALUES ("
+                                + "'o-42', "
+                                + "CAST(ROW('Alice \"A\"', '東京') AS "
+                                + "ROW<name STRING, city STRING>), "
+                                + "ARRAY["
+                                + "CAST(ROW('book', 2) AS ROW<sku STRING, quantity INT>), "
+                                + "CAST(ROW('pen', 1) AS ROW<sku STRING, quantity INT>)], "
+                                + "MAP['priority', 'high'], "
+                                + "CAST(NULL AS STRING), "
+                                + "MAP['X-Trace-Id', 'trace-42'])")
+                .await();
+
+        RecordedRequest request = awaitFirstRequest(path);
+        String expected =
+                "{\"order_id\":\"o-42\","
+                        + "\"customer\":{\"name\":\"Alice \\\"A\\\"\",\"city\":\"東京\"},"
+                        + "\"items\":[{\"sku\":\"book\",\"quantity\":2},"
+                        + "{\"sku\":\"pen\",\"quantity\":1}],"
+                        + "\"attributes\":{\"priority\":\"high\"},\"note\":null}";
+        assertThat(request.method).isEqualTo("POST");
+        assertThat(request.bodyBytes).containsExactly(expected.getBytes(StandardCharsets.UTF_8));
+        assertThat(request.header("content-type")).isEqualTo("application/json");
+        assertThat(request.header("x-trace-id")).isEqualTo("trace-42");
+    }
+
+    @Test
+    void documentedCsvRequestDispatchesExactUtf8Bytes() throws Exception {
+        QueueDestination queue = createQueue("table-csv-example");
+        String path = "/table-csv-example";
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE csv_tasks (\n"
+                        + "  order_id STRING,\n"
+                        + "  note STRING,\n"
+                        + "  missing_value STRING,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + queueOptions(queue, "csv")
+                        + ",\n"
+                        + "  'http.url' = '"
+                        + targetUrl(path)
+                        + "',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'text/csv; charset=UTF-8',\n"
+                        + "  'csv.field-delimiter' = '|',\n"
+                        + "  'csv.quote-character' = '\"',\n"
+                        + "  'csv.null-literal' = 'NULL'\n"
+                        + ")");
+
+        tEnv.executeSql(
+                        "INSERT INTO csv_tasks SELECT '42', "
+                                + "U&'line 1 | \"quoted\"\\000Aline 2', "
+                                + "CAST(NULL AS STRING), "
+                                + "MAP['X-Trace-Id', 'trace-42']")
+                .await();
+
+        RecordedRequest request = awaitFirstRequest(path);
+        String expected = "\"42\"|\"line 1 | \"\"quoted\"\"\nline 2\"|NULL";
+        assertThat(request.bodyBytes).containsExactly(expected.getBytes(StandardCharsets.UTF_8));
+        assertThat(request.header("content-type")).isEqualTo("text/csv; charset=UTF-8");
+        assertThat(request.header("x-trace-id")).isEqualTo("trace-42");
+    }
+
+    @Test
+    void documentedRawRequestDispatchesExactUtf16BeBytes() throws Exception {
+        QueueDestination queue = createQueue("table-raw-example");
+        String path = "/table-raw-example";
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE raw_tasks (\n"
+                        + "  body STRING,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + queueOptions(queue, "raw")
+                        + ",\n"
+                        + "  'http.url' = '"
+                        + targetUrl(path)
+                        + "',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'text/plain; charset=UTF-16BE',\n"
+                        + "  'raw.charset' = 'UTF-16BE'\n"
+                        + ")");
+
+        tEnv.executeSql("INSERT INTO raw_tasks VALUES (" + "'東京', MAP['X-Trace-Id', 'trace-42'])")
+                .await();
+
+        RecordedRequest request = awaitFirstRequest(path);
+        assertThat(request.bodyBytes)
+                .containsExactly((byte) 0x67, (byte) 0x71, (byte) 0x4E, (byte) 0xAC);
+        assertThat(request.header("content-type")).isEqualTo("text/plain; charset=UTF-16BE");
+        assertThat(request.header("x-trace-id")).isEqualTo("trace-42");
+    }
+
+    @Test
+    void documentedAvroRequestDispatchesExactBinaryDatum() throws Exception {
+        QueueDestination queue = createQueue("table-avro-example");
+        String path = "/table-avro-example";
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE avro_tasks (\n"
+                        + "  order_id STRING NOT NULL,\n"
+                        + "  quantity INT NOT NULL,\n"
+                        + "  gift BOOLEAN NOT NULL,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + queueOptions(queue, "avro")
+                        + ",\n"
+                        + "  'http.url' = '"
+                        + targetUrl(path)
+                        + "',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'application/octet-stream',\n"
+                        + "  'avro.encoding' = 'binary'\n"
+                        + ")");
+
+        tEnv.executeSql(
+                        "INSERT INTO avro_tasks VALUES ("
+                                + "'o-7', 3, TRUE, MAP['X-Trace-Id', 'trace-7'])")
+                .await();
+
+        RecordedRequest request = awaitFirstRequest(path);
+        assertThat(request.bodyBytes)
+                .containsExactly(
+                        (byte) 0x06,
+                        (byte) 0x6F,
+                        (byte) 0x2D,
+                        (byte) 0x37,
+                        (byte) 0x06,
+                        (byte) 0x01);
+        assertThat(request.header("content-type")).isEqualTo("application/octet-stream");
+        assertThat(request.header("x-trace-id")).isEqualTo("trace-7");
+
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"record\","
+                                        + "\"namespace\":\"org.apache.flink.avro.generated\","
+                                        + "\"fields\":["
+                                        + "{\"name\":\"order_id\",\"type\":\"string\"},"
+                                        + "{\"name\":\"quantity\",\"type\":\"int\"},"
+                                        + "{\"name\":\"gift\",\"type\":\"boolean\"}]}");
+        GenericRecord decoded =
+                new GenericDatumReader<GenericRecord>(schema)
+                        .read(null, DecoderFactory.get().binaryDecoder(request.bodyBytes, null));
+        assertThat(decoded.get("order_id").toString()).isEqualTo("o-7");
+        assertThat(decoded.get("quantity")).isEqualTo(3);
+        assertThat(decoded.get("gift")).isEqualTo(true);
+    }
+
+    @Test
     void sqlPostDispatchesTheFormFormatsHeaderAndExactUtf8Bytes() throws Exception {
         QueueDestination queue = createQueue("table-form-post");
         String path = "/table-form-post";
@@ -164,7 +349,7 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
                                 + " CAST(NULL AS STRING))")
                 .await();
 
-        RecordedRequest request = awaitRequests(path, 1).get(0);
+        RecordedRequest request = awaitFirstRequest(path);
         String expected =
                 "customer_name=%E6%9D%B1%E4%BA%AC+%2B%26%3D"
                         + "&tags=one+two&tags=a%2Bb&empty_value=";
