@@ -15,7 +15,7 @@
 # limitations under the License.
 """Hold the metrics tables to what the connectors actually register (issue #296).
 
-Two directions, both required, for each mapping in scripts/metric-docs.toml:
+Two directions, both required, for each mapping in scripts/config/metric-docs.toml:
 
 * **Coverage** — every metric name a module's `*MetricNames` inventory declares
   is named in a `Metric`-headed table row on that module's page, with the row's
@@ -75,7 +75,7 @@ except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
     )
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = Path(__file__).resolve().parent / "metric-docs.toml"
+CONFIG = Path(__file__).resolve().parent / "config" / "metric-docs.toml"
 
 # The per-connector inventory classes issue #280 introduced: every name the
 # connector registers, as `static final String` constants.

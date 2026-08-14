@@ -16,7 +16,7 @@ registration site, or a DataStream page's metrics section. It is offline and tak
 
 ## The config file, in one paragraph
 
-`scripts/metric-docs.toml` has four tables and they do different jobs:
+`scripts/config/metric-docs.toml` has four tables and they do different jobs:
 
 | Table | Direction | Answers |
 |---|---|---|

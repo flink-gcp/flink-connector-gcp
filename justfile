@@ -435,7 +435,7 @@ check-option-docs:
 # with the Type column matching the counter/gauge registration, and every name
 # those tables carry must be registered, a subgroup template the module wires,
 # or marked `(Flink standard)`. Mappings and the two base.metrics subgroup
-# sources live in scripts/metric-docs.toml. Also holds the mechanical half of
+# sources live in scripts/config/metric-docs.toml. Also holds the mechanical half of
 # the #280 naming rule: no name registered here takes Flink's `num` prefix.
 # Offline and stdlib-only, but a verify.yaml job rather than part of `just lint`,
 # for check-option-docs's reason: its inputs include every Java main source,

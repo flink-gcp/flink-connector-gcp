@@ -117,7 +117,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `.agents/skills/curate-option-docs/`.** What the check does *not* do: it compares the set of
   options, not their values, so a changed default has to be edited in the same commit
 - `just check-metric-docs` — the same shape of check for the **metrics tables on the DataStream
-  pages** (#296). Both directions, per module in `scripts/metric-docs.toml`: every name in a
+  pages** (#296). Both directions, per module in `scripts/config/metric-docs.toml`: every name in a
   connector's `*MetricNames` inventory must appear in a table whose **first column header is
   exactly `Metric`**, with the Type column leading `counter` or `gauge` as the source registers
   it, and every name those tables carry must be registered, a `base.metrics` subgroup template
