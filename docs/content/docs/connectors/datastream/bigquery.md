@@ -48,9 +48,9 @@ whether its ingestion price and capacity model fit the workload.
 | | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` | `FILE_LOADS` |
 |---|---|---|---|
 | Best fit | Low-latency streaming where downstream processing can tolerate or remove duplicates | Low-latency streaming or batch jobs that require exactly-once delivery | Streaming or batch jobs that accept minute-level visibility to avoid volume-based Storage Write API ingestion pricing |
-| Visibility | Rows are queryable after `AppendRows` succeeds; batching and an in-flight request limit decide the delay | Rows are queryable when the synchronous `FlushRows` commit completes: per checkpoint in streaming, or at end of input in batch | Rows are queryable when the synchronous load or final copy completes: per checkpoint in streaming, or at end of input in batch |
-| Delivery | At least once | Exactly once while Flink state is retained | Exactly once through deterministic load jobs while Flink state and staged objects are retained |
-| Ingestion price | Volume-based Storage Write API pricing | Volume-based Storage Write API pricing | Batch loading is free on the shared slot pool; Cloud Storage, cross-region transfer, and dedicated `PIPELINE` reservations can still incur charges |
+| Visibility | Rows are queryable after `AppendRows` succeeds; batching and an in-flight request limit decide the delay | Rows are queryable when the synchronous `FlushRows` commit completes: per checkpoint in streaming, or at end of input in batch | Rows are queryable when the synchronous load, final copy, or `WRITE_TRUNCATE_DATA` terminal query completes: per checkpoint in streaming, or at end of input in batch |
+| Delivery | At least once | Exactly once while Flink state is retained | Exactly once through deterministic BigQuery jobs while Flink state and staged objects are retained |
+| Ingestion price | Volume-based Storage Write API pricing | Volume-based Storage Write API pricing | Batch loading is free on the shared slot pool; a combined `WRITE_TRUNCATE_DATA` commit adds query processing, and Cloud Storage, cross-region transfer, and dedicated `PIPELINE` reservations can still incur charges |
 | Capacity | Per-project Storage Write API throughput and connection quotas | The same throughput quota, plus application-created stream quotas | Free shared slots with no capacity or throughput guarantee; dedicated `PIPELINE` slots are optional |
 | Slow-path effect | A full in-flight window slows the writer, and checkpoint flush waits for pending appends | Append backpressure slows the writer, and a slow `FlushRows` commit delays the next checkpoint | Staging I/O slows the writer, and a slow load lengthens checkpoint completion |
 | Destinations | Fixed or dynamic | Fixed or dynamic | Fixed or dynamic |
@@ -66,6 +66,8 @@ described in [Exactly-once](#exactly-once-buffered-streams).
 `FILE_LOADS` uses BigQuery's free shared pool for batch loading, whose available capacity and
 throughput are not guaranteed.
 A deployment that needs predictable load-job capacity can assign paid `PIPELINE` slots instead.
+The `WRITE_TRUNCATE_DATA` exception and its query cost are described under
+[File loads](#file-loads).
 See Google's [batch-loading capacity and pricing](https://cloud.google.com/bigquery/docs/batch-loading-data#load_job_capacity)
 and the connector's [File loads](#file-loads) section for its quota guard, staging formats and
 recovery contract.
@@ -147,8 +149,9 @@ Changing from `FILE_LOADS` to a Storage Write API method is not only a `WriteMet
   default-stream flushing or buffered-stream visibility and recovery.
 - **Resources and permissions**: remove staging-bucket and temporary-table dependencies, grant the
   Storage Write API permissions, and account for volume-based ingestion charges and write quotas.
-- **Write behavior**: Storage Write API methods always append, so `WRITE_TRUNCATE`, `WRITE_EMPTY`,
-  staging formats, cleanup rules and load-job polling no longer apply.
+- **Write behavior**: Storage Write API methods always append, so `WRITE_TRUNCATE`,
+  `WRITE_TRUNCATE_DATA`, `WRITE_EMPTY`, staging formats, cleanup rules and job polling no longer
+  apply.
 
 All three methods support fixed and dynamic destinations, so an existing `destinationResolver(...)`
 does not need to change solely because the write method changes.
@@ -321,8 +324,9 @@ Why the policy runs this way:
 - **`REQUIRED` is the mode additive schema evolution cannot introduce.** It cannot be added to an
   existing schema, so a reconciled `REQUIRED` column only appears when the connector creates the
   table. Relaxing one afterwards needs `allowFieldRelaxation`, which is off by default. The exception
-  is `FILE_LOADS` with `WRITE_TRUNCATE`, which replaces the schema instead of evolving it. Defaulting
-  to the irreversible choice is the wrong way round.
+  is `FILE_LOADS` with `WRITE_TRUNCATE`, which replaces the schema instead of evolving it.
+  `WRITE_TRUNCATE_DATA` keeps the existing schema and constraints.
+  Defaulting to the irreversible choice is the wrong way round.
 - **The protobuf mapping is the normative one**, which is why Avro follows it rather than the other
   way round: every write path goes through a protobuf row — `STORAGE_API_*` writes protobuf
   directly, the Avro and JSON serializers convert into one, and File loads converts that same row
@@ -925,8 +929,9 @@ existing tables are never modified.
 
 For additive writes, creation is the **only** moment a `REQUIRED` column can appear: BigQuery cannot
 add one to an existing schema. So the serializer's [column modes](#column-modes) are decided here,
-durably, and relaxing a column afterwards is a schema update rather than an edit. `FILE_LOADS` with
-`WRITE_TRUNCATE` is different because it replaces the schema wholesale.
+durably, and relaxing a column afterwards is a schema update rather than an edit.
+`FILE_LOADS` with `WRITE_TRUNCATE` is different because it replaces the schema wholesale, while
+`WRITE_TRUNCATE_DATA` replaces only the data and preserves the existing schema and constraints.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 
@@ -1036,7 +1041,7 @@ Each write method applies that policy at a boundary that preserves its delivery 
 |---|---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | When the serializer fingerprint changes or an append reports a schema mismatch | Reconcile the live table through the REST API, rebuild the default-stream writer with the current descriptor and re-append; a lost append response can produce a duplicate, as allowed by at-least-once delivery |
 | `STORAGE_API_EXACTLY_ONCE` | When the serializer fingerprint changes or an append reports a schema mismatch | Drain rows encoded with the old descriptor, reconcile the live table, then reopen the local appender on the same buffered stream at the same next offset; the remote stream and checkpoint state do not change |
-| `FILE_LOADS` | Once per destination before the first load of each batch run or streaming checkpoint | Reconcile the live table and put that schema on every load job; `WRITE_APPEND` also carries BigQuery's native `ALLOW_FIELD_*` options, `WRITE_EMPTY` uses the connector's pre-load reconciliation, and `WRITE_TRUNCATE` replaces the schema wholesale |
+| `FILE_LOADS` | Once per destination before the first load of each batch run or streaming checkpoint | Reconcile the live table and put that schema on every load job; `WRITE_APPEND` and `WRITE_TRUNCATE_DATA` also carry BigQuery's native `ALLOW_FIELD_*` options, `WRITE_EMPTY` uses the connector's pre-load reconciliation, `WRITE_TRUNCATE_DATA` preserves the live schema and constraints, and `WRITE_TRUNCATE` replaces the schema wholesale |
 
 With schema updates disabled, the Storage Write API methods fail a schema-mismatch append.
 `FILE_LOADS` instead makes the live table schema win and warns once per destination; a staged field absent from that schema is ignored by BigQuery.
@@ -1058,6 +1063,7 @@ Reconciliation then compares that desired schema with the live table.
 | The table field is `REQUIRED` and the desired field is `NULLABLE` | It stays `REQUIRED` unless `allowFieldRelaxation()` is enabled; after relaxation it is `NULLABLE` |
 | The table field is `NULLABLE` and the desired field is `REQUIRED` | It stays `NULLABLE`; additive reconciliation never tightens modes |
 | `FILE_LOADS` uses `WRITE_TRUNCATE` | Reconciliation is bypassed and the desired schema replaces the table schema, including its modes |
+| `FILE_LOADS` uses `WRITE_TRUNCATE_DATA` | The live schema and constraints are preserved; enabled schema-update options may still add fields or relax modes before the data replacement |
 
 The row-level consequence is independent of how the mismatch arose.
 A row that omits a field while the live table still declares it `REQUIRED` is rejected by the Storage Write API, or fails the whole `FILE_LOADS` load job.
@@ -1380,8 +1386,9 @@ env.setRuntimeMode(RuntimeExecutionMode.BATCH);
 
 FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write method, rejected for
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
-`WRITE_TRUNCATE` for atomic batch reloads, `WRITE_EMPTY`), `tempDataset`, the streaming guard
-`minCheckpointInterval`, and the committer's two backoff schedules (`loadJobPoll*` for load-job
+`WRITE_TRUNCATE` for batch reloads that replace the table schema, `WRITE_TRUNCATE_DATA` for batch
+reloads that preserve schema and constraints, or `WRITE_EMPTY`), `tempDataset`, the streaming guard
+`minCheckpointInterval`, and the committer's two backoff schedules (`loadJobPoll*` for job
 completion polling, `schemaReconcile*` for the etag-race reconcile) — all described below.
 
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
@@ -1391,24 +1398,37 @@ buffer *is* GCS. Files roll at `maxStagingFileBytes` (16 MiB, discussed below). 
 topology routes every subtask's
 committables to a single committer subtask (in streaming through a stage that stamps each
 committable with its checkpoint id), and that committer — the actual commit — groups the staged
-files by destination table *and staging format*. A destination whose format groups each fit one
-job uses direct loads. If any group overflows, every group for that destination uses partition
-loads followed by one combined final copy. More than 1,200 partition tables are first reduced
-through deterministic intermediate copy levels. Independent jobs are submitted and awaited in
-waves of at most 50,000, while each copy level completes before the next begins: once at end of
-input in batch, once per completed checkpoint in streaming.
+files by destination table *and staging format*.
+A destination with one format group that fits one job uses a direct load.
+Append and empty dispositions retain that direct behavior for multiple fitting format groups.
+Replacement dispositions combine multiple formats through temporary tables even when every group
+fits, so a transitional format change cannot expose a partially replaced table.
+If any group overflows, every group for that destination uses partition loads followed by one
+combined final action.
+More than 1,200 partition tables are first reduced through deterministic intermediate copy levels.
+The final action is a copy for ordinary dispositions and `WRITE_TRUNCATE`; for
+`WRITE_TRUNCATE_DATA`, it is an aggregate temporary-table copy followed by one terminal query that
+atomically replaces only the destination data.
+Independent load and copy jobs are submitted and awaited in waves of at most 50,000.
+Each copy level completes before the next begins: once at end of input in batch, once per completed
+checkpoint in streaming.
+Batch-only interactive terminal queries use waves of at most 1,000.
 Before its first load of a run, each destination is
 **reconciled against the live table** through the REST API — a missing table is created (schema
 from the serializer, partitioning/clustering from `tableCreateOptions(...)`; `CREATE_NEVER` fails
 with a client-side error instead), and the schema the load jobs then carry explicitly
 (`useAvroLogicalTypes`) is the live table's, unioned with the serializer's when
 schema updates are enabled (under `WRITE_TRUNCATE` it is the serializer's as-is — the load
-replaces the table schema wholesale; see below). One reconciliation per destination per run,
+replaces the table schema wholesale; `WRITE_TRUNCATE_DATA` instead keeps the live schema and
+constraints). One reconciliation per destination per run,
 whatever the partition count; the credentials therefore need `bigquery.tables.get` (plus
 `bigquery.tables.create` / `bigquery.tables.update` for what the final-table configuration
-enables). Overflow also introduces temporary tables as copy sources. In addition to the normal
-FILE_LOADS job and final-destination permissions, their dataset must allow table creation and
-writes (`bigquery.tables.create`, `bigquery.tables.updateData`) and copy reads
+enables).
+Every FILE_LOADS execution also needs `bigquery.jobs.create` on the job project to submit its load,
+copy and terminal query jobs.
+Overflow also introduces temporary tables as copy sources.
+In addition to the final-destination permissions, their dataset must allow table creation and
+writes (`bigquery.tables.create`, `bigquery.tables.updateData`) and copy or query reads
 (`bigquery.tables.get`, `bigquery.tables.getData`), even under `CREATE_NEVER`; eager cleanup also
 needs `bigquery.tables.delete` instead of leaving expiration to remove the tables.
 [BigQuery Data Editor](https://docs.cloud.google.com/bigquery/docs/managing-tables#roles_to_copy_tables_and_partitions)
@@ -1426,12 +1446,14 @@ topology at that point are not guaranteed to be processed before the job termina
 built, because were it to resolve to streaming with checkpointing disabled, no trigger would ever
 come and files would stage forever. Streaming additionally requires, also checked at graph
 construction: checkpointing enabled (the checkpoint is the load trigger),
-`WriteDisposition.WRITE_APPEND` (truncating/rejecting per checkpoint is meaningless), and a
+`WriteDisposition.WRITE_APPEND` (replacing/rejecting per checkpoint is meaningless), and a
 checkpoint interval compatible with BigQuery's [daily limits](https://docs.cloud.google.com/bigquery/quotas#load_jobs).
 BigQuery permits 1,500 load jobs per table per day, and a standard destination table permits 1,500
 modifications from load, copy and query jobs combined.
 Each checkpoint consumes at least one destination-table modification: one direct load in the
-common case, or one final copy after overflow partition loads and any intermediate copies:
+common case, or one final copy after overflow partition loads and any intermediate copies.
+Data-replacement dispositions are batch-only, so terminal queries never contribute to this
+streaming calculation:
 
 | Checkpoint interval | Destination-table modifications per day |
 |---|---|
@@ -1533,33 +1555,42 @@ band, so the threshold never fires. These numbers are one measurement of a servi
 change, not a guarantee.
 
 **One exception to one-job-per-table.** A load job carries exactly one source format, so the
-committables of a destination are grouped by format as well. Normally they all share one and this
-changes nothing. The case that does not is transitional: the first commit after the staging format
-changes — including the upgrade that introduced the format at all, where committables already in
-committer state were written as Avro — sees both, and that commit issues **two load jobs for the
-one table** when both groups fit their jobs, losing the single-job atomicity for it alone. If either
-group overflows, all groups instead use temporary tables and one combined final copy, preceded by
-intermediate copy levels when the destination has more than 1,200 leaves. The alternatives
-to separate direct loads are worse: draining the old format first would need the writer to know
-what is still in committer state, which it cannot, and refusing the mix would wedge the restart
-that produced it. Job ids stay deterministic without help, since they hash the source URI list and
-the two formats' files are different objects.
+committables of a destination are grouped by format as well.
+Normally they all share one and this changes nothing.
+The transitional commit after a staging-format change can contain both old and new formats.
+Under `WRITE_APPEND` or `WRITE_EMPTY`, fitting groups still use separate direct load jobs; append
+retains both groups, while empty keeps BigQuery's existing failure behavior if the first load made
+the destination non-empty.
+Under `WRITE_TRUNCATE` or `WRITE_TRUNCATE_DATA`, all groups instead load temporary tables and share
+one final replacement action, even when no group individually overflows.
+This avoids one direct truncate erasing rows loaded by the other format.
+Draining the old format first would need the writer to know what is still in committer state, which
+it cannot, and refusing the mix would wedge the restart that produced it.
+Job ids stay deterministic without help, since they hash the source URI list and the two formats'
+files are different objects.
 
 **Per-load-job limits.** In either execution mode, if any format group for a table exceeds one load
 job's limits (10,000 source URIs / 11 TiB), all groups for that table are loaded partition-wise
 into **leaf temporary tables** (`WRITE_TRUNCATE`, so retries are idempotent). Up to 1,200 leaves
-feed the final atomic copy directly. A larger set is grouped in deterministic source order into
+feed the final atomic action directly. A larger set is grouped in deterministic source order into
 copy jobs of at most 1,200 sources. Each group of two or more becomes an intermediate temporary
 table, while a final singleton is carried to the next level without an unnecessary copy. Every
 level completes before a job that reads it is submitted, and only the final copy appends to or
-overwrites the destination. Streaming names include the checkpoint id, and every intermediate name
+overwrites the destination for ordinary dispositions.
+For `WRITE_TRUNCATE_DATA`, the last copy instead creates one aggregate temporary table and a
+standard-SQL `SELECT *` query writes that aggregate to the existing destination with BigQuery's
+`WRITE_TRUNCATE_DATA` disposition.
+Streaming names include the checkpoint id, and every intermediate name
 and job id also includes deterministic level, group and source identity, so a retry reconstructs
 the same hierarchy.
 
 The connector builds and validates the complete plan before it reconciles a destination table or
 submits a job. One commit may plan at most 100,000 load jobs and 100,000 copy jobs, matching
-BigQuery's project-wide daily quotas. Independent jobs run in deterministic waves of at most
-50,000, matching the per-project, per-region pending-job limit. These checks prove that the plan
+BigQuery's project-wide daily quotas. Independent load and copy jobs run in deterministic waves of
+at most 50,000, matching the per-project, per-region pending-job limit.
+Interactive `WRITE_TRUNCATE_DATA` terminal queries run in waves of at most 1,000, matching their
+per-project, per-region queued-query limit.
+These checks prove that the plan
 alone fits the published bounds; they cannot reserve quota already consumed by other workloads or
 failed attempts. Increase `maxStagingFileBytes`, reduce the volume per batch/checkpoint, or lengthen
 the checkpoint interval when a plan approaches either ceiling.
@@ -1569,29 +1600,51 @@ temporary and final datasets must be in the same BigQuery location. A dedicated 
 with a default table expiration is recommended so leaf and intermediate tables orphaned by hard
 failures are garbage-collected. Copy jobs support no schema update options and require matching
 schemas, so all leaves are loaded with the same reconciled schema and intermediate copies inherit
-it. The final table stays unchanged if a leaf load or intermediate copy fails. A failed or
+it. The final table stays unchanged if a leaf load, intermediate copy, aggregate copy, or terminal
+query fails. A failed or
 abandoned run retains all temporary tables and staged objects for retry; only a successful final
-copy starts best-effort cleanup.
+action starts best-effort cleanup.
 
-Overflow up to 1,200 leaves adds one copy job. A larger hierarchy adds one copy for each combined
-group at each level, plus the final copy, and keeps both the leaf data and the intermediate copies
-until success. The existing temporary-dataset permissions cover the additional tables and copies;
-no new IAM permission is required. Every intermediate consumes one modification of its own
-temporary table, while only the final copy consumes a modification of the user destination. Copy
-jobs count toward BigQuery's project-wide 100,000-copy-job daily quota, and the final copy counts
-toward the same 1,500 daily modifications for a standard destination table. Monitor both load and
-copy usage, set temporary-table expiration and a staging-bucket lifecycle rule, and prefer larger
-staging files or smaller commits before operating near these service boundaries.
+Overflow up to 1,200 leaves adds one copy job for an ordinary disposition.
+A larger hierarchy adds one copy for each combined group at each level, plus the final copy, and
+keeps both the leaf data and the intermediate copies until success.
+`WRITE_TRUNCATE_DATA` adds an aggregate copy and one terminal query instead of copying directly to
+the destination.
+The same `bigquery.jobs.create`, `bigquery.tables.getData`, and
+`bigquery.tables.updateData` permissions cover that query, so it needs no connector-specific IAM
+grant beyond the documented FILE_LOADS permissions.
+Every intermediate and aggregate consumes one modification of its own temporary table, while only
+the final copy or query consumes a modification of the user destination.
+Copy jobs count toward BigQuery's project-wide 100,000-copy-job daily quota, and the final action
+counts toward the same 1,500 daily modifications for a standard destination table.
+
+A direct `WRITE_TRUNCATE_DATA` load uses no query processing.
+The combined path's terminal `SELECT *` scans every column of the aggregate temporary table.
+On-demand query pricing charges the logical bytes processed, with BigQuery's 10 MB minimum per
+query and per referenced table; capacity-based projects consume assigned slots instead.
+Measured against real BigQuery on 2026-08-14, a terminal query over two `INT64` rows reported 16
+bytes processed, 10,485,760 bytes billed, no cache hit and 1,300 slot-ms.
+That tiny-table observation proves the query is billable work and the minimum applies; it is not a
+throughput or slot-sizing estimate.
+The connector does not set `maximumBytesBilled`, so project custom quotas and BigQuery's default
+200 TiB per-project daily on-demand query quota remain the spending boundary; administrators can
+change that quota.
+Monitor load, copy, query, and destination-table modification usage, set temporary-table expiration
+and a staging-bucket lifecycle rule, and prefer larger staging files or smaller commits before
+operating near these service boundaries.
 
 **Schema evolution.** The `schemaUpdateOptions(...)` flags drive the pre-load reconciliation:
 when they allow it, the live schema is unioned with the serializer's and the table updated via
 the REST API before any load — the same union rules as [Schema evolution](#schema-evolution) on
 the Storage Write API path (new columns arrive `NULLABLE`, relaxation needs
 `allowFieldRelaxation()`, retried etag-conditioned updates). The load jobs then carry the already
-reconciled schema; on `WRITE_APPEND` jobs the native
+reconciled schema; on `WRITE_APPEND` and `WRITE_TRUNCATE_DATA` jobs the native
 `ALLOW_FIELD_ADDITION`/`ALLOW_FIELD_RELAXATION` options are still set as belt-and-braces against
-schema changes made externally mid-run. With `WRITE_TRUNCATE` there is nothing to reconcile — the
-loaded schema replaces the table schema wholesale. With updates **disabled**, the live table's
+schema changes made externally mid-run.
+The `WRITE_TRUNCATE_DATA` terminal query carries the same enabled native options and preserves the
+destination schema and constraints.
+With `WRITE_TRUNCATE` there is nothing to reconcile — the loaded schema replaces the table schema
+wholesale. With updates **disabled**, the live table's
 schema wins outright: the serializer's differences are not applied, and — measured against real
 BigQuery — a staged field the table lacks is then **silently ignored by the load**, the
 remaining columns loading normally (the committer logs a warning naming the field, once per
@@ -2284,8 +2337,9 @@ retry itself; it names the stream, the attempt and the backoff.
 
 It is what turns "this checkpoint took a while" into "this checkpoint issued *N* load jobs", against
 the daily load-job and destination-table modification limits that shape `minCheckpointInterval`
-(see [File loads](#file-loads)). Only load jobs are counted: the overflow path's copy jobs do not
-appear in this metric. The FILE_LOADS committer runs on **one subtask** (its pre-commit
+(see [File loads](#file-loads)). Only load jobs are counted: the overflow path's copy jobs and
+`WRITE_TRUNCATE_DATA` terminal queries do not appear in this metric. The FILE_LOADS committer runs
+on **one subtask** (its pre-commit
 topology ends in `global()`), so this counter is the whole job's load-job rate rather than one
 subtask's share.
 

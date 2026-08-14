@@ -21,8 +21,8 @@ limitations under the License.
   2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
   (2026-08-08); load-job grouping refined by [#284] (2026-08-08); job locations revised by
   [#491] (2026-08-10); streaming overflow revised by [#72] (2026-08-13); hierarchical overflow
-  revised by [#598] (2026-08-13)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598]
+  revised by [#598] (2026-08-13); data-only replacement revised by [#646] (2026-08-14)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -35,14 +35,16 @@ limitations under the License.
   in the committable rather than being read from configuration at commit time, because a
   committable recovered from state has to be loaded as the format its file was *actually* written
   in — and a load job carries exactly one. So `LoadJobOrchestrator` keys on `(destination,
-  format)`, which changes nothing for a commit whose committables share a format, and issues **two
-  load jobs for one table** for the transitional commit that does not: the first after the format
-  changes, including the upgrade that introduced the format at all, where committables already in
-  committer state are Avro. The one-job-per-table property and its atomicity do not hold for that
-  commit. Draining the old format first was rejected — the writer cannot see what is in committer
-  state — as was refusing the mix, which would wedge the restart that produced it. The job ids need
-  no format segment: they already hash the source URI list, and the two formats' files are distinct
-  objects. The committable serializer is version 3 and **migrates** version 2 — the layout `main` has
+  format)`, which changes nothing for a commit whose committables share a format.
+  The transitional commit after the format changes can contain both old and new formats.
+  `WRITE_APPEND` and `WRITE_EMPTY` keep separate direct loads when both groups fit, preserving their
+  previous behavior.
+  `WRITE_TRUNCATE` and `WRITE_TRUNCATE_DATA` instead load both groups into temporary tables and use
+  one combined final replacement, so a direct truncate cannot erase the other format's rows.
+  Draining the old format first was rejected — the writer cannot see what is in committer state —
+  as was refusing the mix, which would wedge the restart that produced it.
+  The job ids need no format segment: they already hash the source URI list, and the two formats'
+  files are distinct objects. The committable serializer is version 3 and **migrates** version 2 — the layout `main` has
   produced since [#69], all Avro by construction — where it still rejects version 1, which predates
   [#69] and never survived a job.
 - **Load jobs run in the committer** behind a pre-commit topology (`SupportsPreCommitTopology`)
@@ -52,9 +54,12 @@ limitations under the License.
   final streaming batch was lost — while committer commits ride the final-checkpoint wait and
   the framework's committer state. Independent jobs are submitted and awaited in deterministic
   waves of at most 50,000, keeping one connector run within BigQuery's per-project, per-region
-  pending-job limit. Cleanup is best-effort on success only; a staging bucket lifecycle rule is
-  the documented mitigation for orphans.
-- **Overflow keeps one final copy through a deterministic hierarchy** ([#598]). Each load
+  pending-job limit.
+  The `WRITE_TRUNCATE_DATA` terminal queries are interactive and use waves of at most 1,000,
+  matching their narrower queued-query limit.
+  Cleanup is best-effort on success only; a staging bucket lifecycle rule is the documented
+  mitigation for orphans.
+- **Overflow keeps one deterministic copy hierarchy before its final action** ([#598]). Each load
   partition first lands in an idempotent leaf temporary table. Up to 1,200 leaves feed the final
   copy unchanged. A larger set is grouped in source order into copy jobs of at most 1,200 sources;
   each group of two or more becomes an intermediate temporary table, while a final singleton is
@@ -62,8 +67,25 @@ limitations under the License.
   submitted, and only the final level writes the destination. Every intermediate uses
   `CREATE_IF_NEEDED` plus `WRITE_TRUNCATE`, so the existing deterministic job re-attachment also
   makes a retry idempotent. Names and ids hash their ordered inputs and include the hierarchy level,
-  group and checkpoint attribution. Leaf and intermediate tables remain until the final copy
-  succeeds, then join the existing best-effort cleanup.
+  group and checkpoint attribution.
+  Leaf and intermediate tables remain until the final action succeeds, then join the existing
+  best-effort cleanup.
+- **`WRITE_TRUNCATE_DATA` is a batch-only data replacement that preserves destination metadata**
+  ([#646]).
+  BigQuery load and query jobs support this disposition, but copy jobs do not.
+  A destination that fits one load job therefore uses it directly.
+  Overflow and mixed-format replacement first use only `WRITE_TRUNCATE` loads and copies to build a
+  deterministic aggregate temporary table, then run one standard-SQL `SELECT *` query into the
+  existing destination with `CREATE_NEVER` and `WRITE_TRUNCATE_DATA`.
+  The query preserves the destination schema and constraints atomically; enabled native
+  `ALLOW_FIELD_ADDITION` and `ALLOW_FIELD_RELAXATION` options still travel on both direct loads and
+  the terminal query.
+  A terminal failure retains staged objects and every temporary table for deterministic re-attach.
+  The query adds no new connector-specific IAM permission beyond the FILE_LOADS read/write/job
+  permissions, but it scans all aggregate columns and therefore consumes query bytes or capacity
+  slots, queued-query quota, and one destination-table modification.
+  The connector deliberately sets no `maximumBytesBilled`; project query quotas remain the
+  operator's spending boundary.
 - **The complete job graph is bounded and validated before side effects** ([#598]). One commit may
   plan at most 100,000 load jobs and 100,000 copy jobs, matching BigQuery's project-wide daily
   quotas. The planner constructs every copy with at most 1,200 sources before schema reconciliation,
@@ -197,3 +219,4 @@ limitations under the License.
 [#380]: https://github.com/laughingman7743/flink-connector-gcp/issues/380
 [#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491
 [#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598
+[#646]: https://github.com/laughingman7743/flink-connector-gcp/issues/646

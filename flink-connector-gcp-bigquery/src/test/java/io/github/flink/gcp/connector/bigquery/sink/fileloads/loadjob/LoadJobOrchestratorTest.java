@@ -263,11 +263,11 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
-    void oneDestinationInTwoFormatsBecomesTwoLoadJobs() throws IOException {
+    void writeAppendKeepsTwoFormatsAsTwoDirectLoadJobs() throws IOException {
         // The transitional commit: committables written before the staging format changed are
         // still in committer state alongside new ones. A load job carries exactly one format, so
-        // the destination cannot be loaded by a single job here — and the alternative, refusing
-        // the mix, would wedge the restart that produced it.
+        // append cannot mix them in a single job here — and the alternative, refusing the mix,
+        // would wedge the restart that produced it.
         Harness harness = Harness.plain();
 
         harness.orchestrator.run(
@@ -295,6 +295,41 @@ class LoadJobOrchestratorTest {
         // Deterministic ids still discriminate without the format being in them: the id hashes
         // the source URI list, and the two sets are disjoint.
         assertThat(harness.runner.loads.keySet()).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void writeTruncateCombinesTwoFormatsBeforeReplacingTheDestination() throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE)
+                                .build(),
+                        builder -> {});
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "avro", 10, StagingFormat.AVRO),
+                        file(T1, "parquet", 10, StagingFormat.PARQUET)));
+
+        assertThat(harness.runner.loads.values())
+                .hasSize(2)
+                .allSatisfy(
+                        load -> {
+                            assertThat(load.getDestination()).isNotEqualTo(T1);
+                            assertThat(load.getWriteDisposition())
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+                        });
+        assertThat(harness.runner.copies.values())
+                .singleElement()
+                .satisfies(
+                        copy -> {
+                            assertThat(copy.getDestination()).isEqualTo(T1);
+                            assertThat(copy.getSourceTables()).hasSize(2);
+                            assertThat(copy.getWriteDisposition())
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+                        });
+        assertThat(harness.runner.queries).isEmpty();
     }
 
     @Test
@@ -349,6 +384,66 @@ class LoadJobOrchestratorTest {
                 .satisfies(
                         spec ->
                                 assertThat(spec.getSchemaUpdateOptions())
+                                        .containsExactlyInAnyOrder(
+                                                JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
+                                                JobInfo.SchemaUpdateOption.ALLOW_FIELD_RELAXATION));
+    }
+
+    @Test
+    void writeTruncateDataDirectLoadPreservesTheLiveSchemaWhenUpdatesAreDisabled()
+            throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                                .build(),
+                        builder -> {});
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        load -> {
+                            assertThat(load.getDestination()).isEqualTo(T1);
+                            assertThat(load.getWriteDisposition())
+                                    .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE_DATA);
+                            assertThat(load.getSchema().getFields())
+                                    .extracting(Field::getName)
+                                    .containsExactly("f1");
+                            assertThat(load.getSchemaUpdateOptions()).isEmpty();
+                        });
+        assertThat(harness.tableAdmin.schemaUpdates).isEmpty();
+        assertThat(harness.runner.copies).isEmpty();
+        assertThat(harness.runner.queries).isEmpty();
+    }
+
+    @Test
+    void writeTruncateDataDirectLoadCarriesExplicitSchemaUpdates() throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                                .build(),
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder()
+                                                .allowNewFields()
+                                                .allowFieldRelaxation()
+                                                .build()));
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.schemaUpdates).containsExactly(T1);
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        load ->
+                                assertThat(load.getSchemaUpdateOptions())
                                         .containsExactlyInAnyOrder(
                                                 JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION,
                                                 JobInfo.SchemaUpdateOption.ALLOW_FIELD_RELAXATION));
@@ -466,6 +561,116 @@ class LoadJobOrchestratorTest {
         assertThat(harness.runner.deletedTables)
                 .containsExactlyInAnyOrderElementsOf(copy.getSourceTables());
         assertThat(harness.storage.getDeleted()).hasSize(3);
+    }
+
+    @Test
+    void writeTruncateDataOverflowUsesAnAggregateCopyAndOneTerminalQuery() throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        List<FileLoadsCommittable> files =
+                List.of(file(T1, "a", 6L << 40), file(T1, "b", 6L << 40));
+        Harness harness =
+                new Harness(
+                        options,
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+        harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+
+        harness.orchestrator.run(files);
+
+        assertThat(harness.runner.loads.values())
+                .hasSize(2)
+                .allSatisfy(
+                        load ->
+                                assertThat(load.getWriteDisposition())
+                                        .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE));
+        CopyJobSpec aggregateCopy =
+                harness.runner.copies.values().stream().findFirst().orElseThrow();
+        assertThat(aggregateCopy.getDestination()).isNotEqualTo(T1);
+        assertThat(aggregateCopy.getDestination().getTable()).endsWith("_aggregate");
+        assertThat(aggregateCopy.getCreateDisposition())
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(aggregateCopy.getWriteDisposition())
+                .isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+        assertThat(harness.runner.queries.values())
+                .singleElement()
+                .satisfies(
+                        query -> {
+                            assertThat(query.getSourceTable())
+                                    .isEqualTo(aggregateCopy.getDestination());
+                            assertThat(query.getDestination()).isEqualTo(T1);
+                            assertThat(query.getSchemaUpdateOptions())
+                                    .containsExactly(
+                                            JobInfo.SchemaUpdateOption.ALLOW_FIELD_ADDITION);
+                        });
+        String copyJobId = harness.runner.copies.keySet().iterator().next();
+        String queryJobId = harness.runner.queries.keySet().iterator().next();
+        assertThat(queryJobId).startsWith("flink-bq-query-" + FLINK_JOB_ID);
+        assertThat(harness.runner.events.indexOf("await:" + copyJobId))
+                .isLessThan(harness.runner.events.indexOf("submit-query:" + queryJobId));
+        assertThat(harness.runner.deletedTables)
+                .contains(aggregateCopy.getDestination())
+                .hasSize(3);
+
+        Harness retry =
+                new Harness(
+                        options,
+                        builder ->
+                                builder.schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build()));
+        retry.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
+        retry.orchestrator.run(files);
+        assertThat(retry.runner.loads.keySet()).isEqualTo(harness.runner.loads.keySet());
+        assertThat(retry.runner.copies.keySet()).isEqualTo(harness.runner.copies.keySet());
+        assertThat(retry.runner.queries.keySet()).isEqualTo(harness.runner.queries.keySet());
+    }
+
+    @Test
+    void writeTruncateDataCombinesTwoSmallFormatsThroughTheTerminalQuery() throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                                .build(),
+                        builder -> {});
+
+        harness.orchestrator.run(
+                List.of(
+                        file(T1, "avro", 10, StagingFormat.AVRO),
+                        file(T1, "parquet", 10, StagingFormat.PARQUET)));
+
+        assertThat(harness.runner.loads).hasSize(2);
+        assertThat(harness.runner.copies).hasSize(1);
+        assertThat(harness.runner.queries).hasSize(1);
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(load -> assertThat(load.getDestination()).isNotEqualTo(T1));
+    }
+
+    @Test
+    void writeTruncateDataTerminalQueryFailureKeepsEveryRetryInput() throws IOException {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                        .build();
+        List<FileLoadsCommittable> files =
+                List.of(file(T1, "a", 6L << 40), file(T1, "b", 6L << 40));
+        Harness successful = new Harness(options, builder -> {});
+        successful.orchestrator.run(files);
+        String queryJobId = successful.runner.queries.keySet().iterator().next();
+        Harness retry = new Harness(options, builder -> {});
+        retry.runner.failOnAwait.add(queryJobId);
+
+        assertThatThrownBy(() -> retry.orchestrator.run(files)).isInstanceOf(IOException.class);
+
+        assertThat(retry.runner.queries).containsOnlyKeys(queryJobId);
+        assertThat(retry.runner.deletedTables).isEmpty();
+        assertThat(retry.storage.getDeleted()).isEmpty();
     }
 
     @Test

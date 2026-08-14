@@ -89,10 +89,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
-  checkpoint, synchronously; every overflow uses temp tables plus one final copy per destination,
-  inserting deterministic intermediate copy levels when more than 1,200 leaves must be combined.
-  The whole plan is validated before side effects, and each independent level runs in waves of at
-  most 50,000 jobs (`docs/adr/0018`). The polling attempt cap stays
+  checkpoint, synchronously; every overflow uses temp tables and inserts deterministic
+  intermediate copy levels when more than 1,200 leaves must be combined.
+  Ordinary dispositions finish with one copy per destination.
+  `WRITE_TRUNCATE_DATA` instead builds one aggregate temp table with `WRITE_TRUNCATE` and finishes
+  with a deterministic terminal query, because copy jobs do not support the data-only disposition.
+  The whole plan is validated before side effects, and each independent load/copy level runs in
+  waves of at most 50,000 jobs; interactive terminal queries use waves of at most 1,000
+  (`docs/adr/0018`). The polling attempt cap stays
   `Integer.MAX_VALUE` — do not expose it.
   **`awaitJob` re-fetches
   through `BigQuery#getJob`, never `Job#reload()`**: the convenience throws `BigQueryException`
@@ -133,11 +137,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The staging format travels in the committable, and load jobs group on it.** A committable
   restored from state must load as the format its file was written in, which configuration read at
   commit time cannot tell you — so `LoadJobOrchestrator` keys on `(destination, format)` and the
-  transitional commit after a format change issues **two jobs for one table**, deliberately. Job
-  ids need no format segment: they hash the source URI list, which already differs. The serializer
-  is v3 and **migrates v2** (the layout `main` has produced since #69, whose committables are all Avro by
-  construction) where it still rejects v1. `enableListInference` on every Parquet load is not
-  style: without it a `REPEATED` column loads as an empty array and the job reports success.
+  transitional commit after a format change can contain two groups.
+  `WRITE_APPEND` and `WRITE_EMPTY` retain separate direct loads when both groups fit.
+  `WRITE_TRUNCATE` and `WRITE_TRUNCATE_DATA` must combine the groups through temporary tables and
+  one final replacement action, so one direct truncate cannot erase the other format's rows.
+  Job ids need no format segment: they hash the source URI list, which already differs.
+  The serializer is v3 and **migrates v2** (the layout `main` has produced since #69, whose
+  committables are all Avro by construction) where it still rejects v1.
+  `enableListInference` on every Parquet load is not style: without it a `REPEATED` column loads as
+  an empty array and the job reports success.
 - **The staging roll threshold is a measured band, and smaller is not better**: the curve is a
   basin with a floor near 8 MiB, so any change to `maxStagingFileBytes` needs a floor as well as a
   ceiling, and the 10,000-URI cap is what the value trades *against* rather than what it is derived

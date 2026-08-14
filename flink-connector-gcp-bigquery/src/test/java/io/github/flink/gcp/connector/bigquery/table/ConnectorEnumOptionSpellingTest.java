@@ -52,7 +52,12 @@ class ConnectorEnumOptionSpellingTest {
                 "storage-api-exactly-once",
                 "file-loads");
         assertSpellings(CreateDisposition.class, "create-if-needed", "create-never");
-        assertSpellings(WriteDisposition.class, "write-append", "write-truncate", "write-empty");
+        assertSpellings(
+                WriteDisposition.class,
+                "write-append",
+                "write-truncate",
+                "write-truncate-data",
+                "write-empty");
         assertSpellings(
                 TableCreateOptions.TimePartitioningType.class, "hour", "day", "month", "year");
         assertSpellings(StagingFormat.class, "avro", "parquet");
@@ -87,9 +92,10 @@ class ConnectorEnumOptionSpellingTest {
         // beside it must be the constant too, not the DDL spelling.
         assertThat(WriteMethod.FILE_LOADS.name()).isEqualTo("FILE_LOADS");
         // Same for the streaming write-disposition message in BigQueryFileLoadsSink, which names
-        // WRITE_APPEND, WRITE_TRUNCATE and WRITE_EMPTY in its prose. The message itself is pinned
-        // by BigQueryFileLoadsSinkTopologyTest; this is the spelling that makes it possible.
+        // WRITE_APPEND and the non-append constants in its prose. The message itself is pinned by
+        // BigQueryFileLoadsSinkTopologyTest; this is the spelling that makes it possible.
         assertThat(WriteDisposition.WRITE_TRUNCATE.name()).isEqualTo("WRITE_TRUNCATE");
+        assertThat(WriteDisposition.WRITE_TRUNCATE_DATA.name()).isEqualTo("WRITE_TRUNCATE_DATA");
     }
 
     private static <E extends Enum<E>> void assertRoundTrips(Class<E> enumClass) {

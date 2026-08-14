@@ -383,11 +383,11 @@ public final class FileLoadsOptions implements Serializable {
 
         /**
          * Sets the dataset holding temporary tables when a table's staged files exceed the
-         * per-load-job limits and rows go through leaf tables, optional intermediate copy levels,
-         * and one final copy. Optional; defaults to each destination table's own dataset. The
-         * temporary and final datasets must share a BigQuery location. A dedicated dataset with a
-         * default table expiration is recommended so temporary tables orphaned by hard failures are
-         * garbage-collected.
+         * per-load-job limits or replacement rows span staging formats. Rows go through leaf
+         * tables, optional intermediate copy levels, and one final copy or query. Optional;
+         * defaults to each destination table's own dataset. The temporary and final datasets must
+         * share a BigQuery location. A dedicated dataset with a default table expiration is
+         * recommended so temporary tables orphaned by hard failures are garbage-collected.
          *
          * @param tempDataset the dataset id, in the same project as the destination table
          * @return this builder
@@ -402,7 +402,9 @@ public final class FileLoadsOptions implements Serializable {
 
         /**
          * Sets how loaded rows land in a destination table that already contains data. Defaults to
-         * {@link WriteDisposition#WRITE_APPEND}.
+         * {@link WriteDisposition#WRITE_APPEND}. Non-append dispositions are batch-only. {@link
+         * WriteDisposition#WRITE_TRUNCATE_DATA} preserves the destination table's schema and
+         * constraints, while {@link WriteDisposition#WRITE_TRUNCATE} replaces its schema.
          *
          * @param writeDisposition the write disposition
          * @return this builder
@@ -495,10 +497,11 @@ public final class FileLoadsOptions implements Serializable {
         }
 
         /**
-         * Sets the first backoff between polls of a submitted load or copy job's completion.
-         * Defaults to {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF}. Lowering it
-         * notices a finished load sooner at the cost of more {@code jobs.get} calls; raising it
-         * does the reverse. There is no attempt cap to configure — see the class javadoc.
+         * Sets the first backoff between polls of a submitted load, copy, or query job's
+         * completion. Defaults to {@link FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF}.
+         * Lowering it notices a finished load sooner at the cost of more {@code jobs.get} calls;
+         * raising it does the reverse. There is no attempt cap to configure — see the class
+         * javadoc.
          *
          * @param loadJobPollInitialBackoff the first poll backoff, at least 1 ms
          * @return this builder
@@ -511,8 +514,8 @@ public final class FileLoadsOptions implements Serializable {
         }
 
         /**
-         * Caps the backoff between polls of a submitted load or copy job's completion. Must be at
-         * least the initial backoff. Defaults to {@link
+         * Caps the backoff between polls of a submitted load, copy, or query job's completion. Must
+         * be at least the initial backoff. Defaults to {@link
          * FileLoadsOptions#DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF}.
          *
          * @param loadJobPollMaxBackoff the poll backoff cap, at least 1 ms

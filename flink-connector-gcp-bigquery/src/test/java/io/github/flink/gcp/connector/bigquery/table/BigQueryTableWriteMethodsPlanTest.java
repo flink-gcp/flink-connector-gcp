@@ -258,6 +258,28 @@ class BigQueryTableWriteMethodsPlanTest {
     }
 
     @Test
+    void refusesWriteTruncateDataInStreamingByKeyName() {
+        TableEnvironment tEnv =
+                tableEnvironmentWith(
+                        checkpointingEvery(Duration.ofMinutes(5)),
+                        "CREATE TABLE events (name STRING) "
+                                + withOptions(
+                                        "file_loads_truncate_data",
+                                        "sink.write-method",
+                                        "file-loads",
+                                        "sink.file-loads.staging-path",
+                                        "gs://bucket/prefix",
+                                        "sink.file-loads.write-disposition",
+                                        "write-truncate-data"));
+
+        assertThatThrownBy(() -> tEnv.executeSql("INSERT INTO events VALUES ('alice')"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot be used in streaming execution")
+                .hasStackTraceContaining(
+                        "Option 'sink.file-loads.write-disposition' = 'write-truncate-data'");
+    }
+
+    @Test
     void acceptsBothStreamingOnlyViolationsInBatchExecution() {
         // Both rules are streaming's alone — a batch job loads once at end of input, so truncating
         // is a meaningful write and no checkpoint issues a load job. The table therefore violates
@@ -277,6 +299,25 @@ class BigQueryTableWriteMethodsPlanTest {
                                         "gs://bucket/prefix",
                                         "sink.file-loads.write-disposition",
                                         "write-truncate"));
+
+        assertThatCode(() -> tEnv.explainSql("INSERT INTO events VALUES ('alice')"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void acceptsWriteTruncateDataInBatchExecution() {
+        TableEnvironment tEnv =
+                batchTableEnvironmentWith(
+                        new Configuration(),
+                        "CREATE TABLE events (name STRING) "
+                                + withOptions(
+                                        "file_loads_batch_truncate_data",
+                                        "sink.write-method",
+                                        "file-loads",
+                                        "sink.file-loads.staging-path",
+                                        "gs://bucket/prefix",
+                                        "sink.file-loads.write-disposition",
+                                        "write-truncate-data"));
 
         assertThatCode(() -> tEnv.explainSql("INSERT INTO events VALUES ('alice')"))
                 .doesNotThrowAnyException();

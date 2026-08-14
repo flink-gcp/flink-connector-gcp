@@ -9,7 +9,7 @@ One builder dispatches to a write-method implementation at job-graph constructio
 |---|---|
 | `STORAGE_API_AT_LEAST_ONCE` | Writer implemented, incl. table auto-creation with create dispositions, error classification/routing and schema evolution (full emulator IT suite: [#15](https://github.com/laughingman7743/flink-connector-gcp/issues/15)); tuning knobs, cold-destination eviction and `flushInterval` ([#54](https://github.com/laughingman7743/flink-connector-gcp/issues/54)) |
 | `STORAGE_API_EXACTLY_ONCE` | Implemented, including dynamic destinations and mid-stream schema evolution ([#30](https://github.com/laughingman7743/flink-connector-gcp/issues/30), [#76](https://github.com/laughingman7743/flink-connector-gcp/issues/76), [#77](https://github.com/laughingman7743/flink-connector-gcp/issues/77)) |
-| `FILE_LOADS` | Implemented ([#14](https://github.com/laughingman7743/flink-connector-gcp/issues/14) batch, [#69](https://github.com/laughingman7743/flink-connector-gcp/issues/69) streaming) |
+| `FILE_LOADS` | Implemented ([#14](https://github.com/laughingman7743/flink-connector-gcp/issues/14) batch, [#69](https://github.com/laughingman7743/flink-connector-gcp/issues/69) streaming, [#646](https://github.com/laughingman7743/flink-connector-gcp/issues/646) metadata-preserving batch replacement) |
 
 ```java
 Sink<MyEvent> sink =
@@ -86,7 +86,8 @@ projects; when code is adapted from them, the fact is recorded here and in the r
   `BatchLoads`/`WritePartition`/`WriteTables`/`WriteRename` design (per-destination bin-packing
   against load-job limits, temp-table + copy-job overflow path, updating the final table schema
   before the copy since copy jobs support no schema update options, and GC of staged files only
-  after load completion), and the streaming FILE_LOADS `triggeringFrequency` model (the Flink
+  after the final load, copy, or query completes), and the streaming FILE_LOADS
+  `triggeringFrequency` model (the Flink
   checkpoint takes the trigger role); for STORAGE_API_EXACTLY_ONCE, the
   `StorageApiFlushAndFinalizeDoFn` flush semantics (`ALREADY_EXISTS` on `FlushRows` means the
   offset was already flushed and is success — the idempotent-re-commit foundation)

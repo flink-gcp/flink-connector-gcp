@@ -31,6 +31,7 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
 
     public final Map<String, LoadJobSpec> loads = new LinkedHashMap<>();
     public final Map<String, CopyJobSpec> copies = new LinkedHashMap<>();
+    public final Map<String, QueryJobSpec> queries = new LinkedHashMap<>();
     public final List<String> events = new ArrayList<>();
     public final List<String> awaited = new ArrayList<>();
     public final List<TableDestination> deletedTables = new ArrayList<>();
@@ -47,6 +48,12 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
     public void submitCopy(String jobId, CopyJobSpec spec) {
         events.add("submit-copy:" + jobId);
         copies.put(jobId, spec);
+    }
+
+    @Override
+    public void submitQuery(String jobId, QueryJobSpec spec) {
+        events.add("submit-query:" + jobId);
+        queries.put(jobId, spec);
     }
 
     @Override

@@ -59,11 +59,12 @@ import java.util.function.Supplier;
  * originating Flink job id), so the runner re-attaches instead of double-loading even when the
  * restore runs under a new Flink job id.
  *
- * <p>Loads are synchronous: a commit returns only when every load and copy job of its batch has
- * completed. Independent jobs are submitted then awaited in bounded waves, so BigQuery still runs
- * each wave concurrently server-side; a copy level is awaited before its dependent level begins. In
- * streaming execution a slow job therefore delays the next checkpoint — the backpressure mechanism
- * — and a failed job fails the Flink job with every retry input left in place.
+ * <p>Loads are synchronous: a commit returns only when every load, copy, and terminal query job of
+ * its batch has completed. Independent jobs are submitted then awaited in bounded waves, so
+ * BigQuery still runs each wave concurrently server-side; a copy level is awaited before its
+ * dependent level begins. In streaming execution a slow job therefore delays the next checkpoint —
+ * the backpressure mechanism — and a failed job fails the Flink job with every retry input left in
+ * place.
  */
 @Internal
 public final class FileLoadsCommitter implements Committer<FileLoadsCommittable> {

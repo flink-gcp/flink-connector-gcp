@@ -34,6 +34,7 @@ import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
 import com.google.cloud.bigquery.ParquetOptions;
+import com.google.cloud.bigquery.QueryJobConfiguration;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
@@ -176,6 +177,21 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                         .setWriteDisposition(spec.getWriteDisposition())
                         .build();
         submitOrAttach(jobId, copy, spec.getDestination(), spec.toString());
+    }
+
+    @Override
+    public void submitQuery(String jobId, QueryJobSpec spec) throws IOException {
+        QueryJobConfiguration.Builder query =
+                QueryJobConfiguration.newBuilder(spec.getSql())
+                        .setUseLegacySql(false)
+                        .setPriority(QueryJobConfiguration.Priority.INTERACTIVE)
+                        .setDestinationTable(BigQueryTableAdmin.toTableId(spec.getDestination()))
+                        .setCreateDisposition(JobInfo.CreateDisposition.CREATE_NEVER)
+                        .setWriteDisposition(JobInfo.WriteDisposition.WRITE_TRUNCATE_DATA);
+        if (!spec.getSchemaUpdateOptions().isEmpty()) {
+            query.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
+        }
+        submitOrAttach(jobId, query.build(), spec.getDestination(), spec.toString());
     }
 
     @Override

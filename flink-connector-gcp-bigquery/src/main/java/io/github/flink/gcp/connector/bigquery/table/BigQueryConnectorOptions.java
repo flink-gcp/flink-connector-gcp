@@ -567,10 +567,11 @@ public final class BigQueryConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The dataset holding the temporary tables a load too large for one job"
-                                    + " goes through. Absent, each destination table's own dataset"
-                                    + " is used; a dedicated dataset with a default table"
-                                    + " expiration collects the ones a hard failure orphans.");
+                            "The dataset holding temporary tables when a load is too large for one"
+                                    + " job or replacement rows span staging formats. Absent, each"
+                                    + " destination table's own dataset is used; a dedicated"
+                                    + " dataset with a default table expiration collects the ones"
+                                    + " a hard failure orphans.");
 
     public static final ConfigOption<WriteDisposition> SINK_FILE_LOADS_WRITE_DISPOSITION =
             ConfigOptions.key("sink.file-loads.write-disposition")
@@ -579,7 +580,9 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "How loaded rows land in a table that already holds data. Streaming"
                                     + " execution accepts 'write-append' only, since every"
-                                    + " checkpoint commits its own staged files.");
+                                    + " checkpoint commits its own staged files. In batch,"
+                                    + " 'write-truncate-data' replaces rows while preserving the"
+                                    + " destination schema and constraints.");
 
     public static final ConfigOption<Duration> SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL =
             ConfigOptions.key("sink.file-loads.min-checkpoint-interval")
@@ -632,7 +635,8 @@ public final class BigQueryConnectorOptions {
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
-                            "The first backoff between polls of a submitted load or copy job."
+                            "The first backoff between polls of a submitted load, copy, or terminal"
+                                    + " query job."
                                     + " Lowering it notices a finished load sooner, at the cost of"
                                     + " more jobs.get calls.");
 

@@ -18,8 +18,10 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.JobInfo;
+import com.google.cloud.bigquery.PrimaryKey;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
+import com.google.cloud.bigquery.TableConstraints;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.RealGcs;
@@ -39,6 +41,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -62,13 +65,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BigQueryLoadJobRunnerRealGcpITCase {
 
     private static final String TABLE = "load_reattach_" + TestNames.runId();
+    private static final String QUERY_SOURCE = "truncate_data_source_" + TestNames.runId();
+    private static final String QUERY_DESTINATION =
+            "truncate_data_destination_" + TestNames.runId();
 
     /** Real polling backs off gently: a small load job usually finishes within a few seconds. */
     private static final RetrySchedule POLL = new RetrySchedule(500, 5_000, Integer.MAX_VALUE, 0);
 
     @AfterAll
     static void cleanUp() {
-        RealBigQuery.deleteTables(TABLE);
+        RealBigQuery.deleteTables(TABLE, QUERY_SOURCE, QUERY_DESTINATION);
         RealGcs.deletePrefix(TABLE + "/");
     }
 
@@ -106,6 +112,54 @@ class BigQueryLoadJobRunnerRealGcpITCase {
         // doubled the rows.
         assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + RealBigQuery.tablePath(TABLE)))
                 .containsExactly(1L);
+    }
+
+    @Test
+    void terminalQueryReplacesRowsAndPreservesDestinationMetadata() throws Exception {
+        Field id =
+                Field.newBuilder("id", StandardSQLTypeName.INT64)
+                        .setDescription("stable id description")
+                        .build();
+        Schema schema = Schema.of(id);
+        RealBigQuery.createTable(QUERY_SOURCE, schema);
+        RealBigQuery.queryRows(
+                "INSERT INTO " + RealBigQuery.tablePath(QUERY_SOURCE) + " VALUES (2), (3)");
+        RealBigQuery.createTableWithMetadata(
+                QUERY_DESTINATION,
+                schema,
+                "stable destination description",
+                Map.of("owner", "terminal-query-it"),
+                TableConstraints.newBuilder()
+                        .setPrimaryKey(PrimaryKey.newBuilder().setColumns(List.of("id")).build())
+                        .build());
+        RealBigQuery.queryRows(
+                "INSERT INTO " + RealBigQuery.tablePath(QUERY_DESTINATION) + " VALUES (1)");
+        String jobId = "flink-bq-query-truncate-data-it-" + QUERY_DESTINATION;
+        QueryJobSpec spec =
+                new QueryJobSpec(
+                        RealBigQuery.destination(QUERY_SOURCE),
+                        RealBigQuery.destination(QUERY_DESTINATION),
+                        List.of());
+
+        BigQueryLoadJobRunner runner = new BigQueryLoadJobRunner(null, POLL);
+        runner.submitQuery(jobId, spec);
+        runner.awaitJob(jobId);
+
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT id FROM "
+                                        + RealBigQuery.tablePath(QUERY_DESTINATION)
+                                        + " ORDER BY id"))
+                .containsExactly(2L, 3L);
+        assertThat(RealBigQuery.tableDescription(QUERY_DESTINATION))
+                .isEqualTo("stable destination description");
+        assertThat(RealBigQuery.tableLabels(QUERY_DESTINATION))
+                .containsEntry("owner", "terminal-query-it");
+        assertThat(RealBigQuery.tableFields(QUERY_DESTINATION).get("id").getDescription())
+                .isEqualTo("stable id description");
+        assertThat(RealBigQuery.tableConstraints(QUERY_DESTINATION).getPrimaryKey().getColumns())
+                .containsExactly("id");
+        assertThat(RealBigQuery.queryBytesProcessed(jobId)).isPositive();
     }
 
     private static byte[] oneRowAvroFile() throws IOException {
