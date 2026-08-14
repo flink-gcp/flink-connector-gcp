@@ -273,6 +273,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   selected by `prefers-color-scheme` in `docs/assets/_custom.scss`, which hugo-book bundles into
   its own stylesheet. Regenerate the palettes with `just docs-chroma`, which is where the two
   `hugo gen chromastyles` style names live (verbatim output; apache-rat excludes them)
+- **New or materially changed runnable Java guidance opts into one compiled source with
+  `java-snippet`** (#658). The source lives under
+  `flink-connector-gcp-docs-validation/src/test/java`, the shortcode renders the exact tagged
+  region, and `just check-doc-snippets` compiles it against the current reactor. Ordinary fenced
+  Java blocks are deliberately outside that check: use them for partial or pseudocode fragments
+  and make that abbreviation clear in the surrounding prose. Existing ordinary fences remain
+  unvalidated until they are migrated. Use `.agents/skills/maintain-doc-java-snippets/` when
+  adding, updating or repairing either form
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6
@@ -429,6 +437,10 @@ facts); the rules a session needs:
   artifact publishing. Publishing to Maven Central happens once all connectors are implemented,
   as `v1.0.0` (Central namespace registration, signing and the Flink 1.x/2.x publishing strategy
   are decided then; see issues #29 and #39)
+- **`flink-connector-gcp-docs-validation` is never published.** It remains outside the ordinary
+  module list behind the `docs-snippets` profile and configures its module-local deploy plugin to
+  skip deployment; it is build-time documentation validation, not one of the connector artifacts
+  released to Maven Central
 - `main` supports **the current and previous Flink minor** — today **2.2 and 2.3**, with
   `flink.version` pinned to the floor (`2.2.1`) — and **one artifact covers the range**, a
   claim the weekly `binary_compat` job measures rather than assumes (ADR-0053, which also

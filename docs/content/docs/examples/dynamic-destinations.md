@@ -73,22 +73,7 @@ Pub/Sub deliberately keeps each topic publisher until the writer closes, while C
 
 This resolver caches one `TableDestination` per event day and lets every BigQuery write method use the same routing decision.
 
-```java
-Map<LocalDate, TableDestination> tablesByDay = new HashMap<>();
-
-BigQuerySink.<OrderEvent>builder()
-        .destinationResolver(
-                (event, context) ->
-                        tablesByDay.computeIfAbsent(
-                                event.day(),
-                                day ->
-                                        TableDestination.of(
-                                                "my-project",
-                                                "my_dataset",
-                                                "orders_" + day.format(DateTimeFormatter.BASIC_ISO_DATE))))
-        .serializer(serializer)
-        .build();
-```
+{{< java-snippet file="DynamicDestinationsBigQueryTables.java" tag="bigquery-tables" >}}
 
 The default-stream and buffered-stream methods keep independent writer state per active table.
 FILE_LOADS stages and commits files per table instead, so its load-job cadence and table-modification quotas replace the streaming methods' connection cost.
@@ -99,23 +84,7 @@ The [BigQuery examples]({{< relref "docs/examples/bigquery" >}}#a-table-per-day)
 Pub/Sub adds an ordering boundary to dynamic routing because an ordering key is ordered only within one topic and one publisher stream.
 The job must route every record for one customer to the same topic and the same sink subtask when it requires end-to-end per-customer order.
 
-```java
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
-        .keyBy(OrderEvent::customerId)
-        .sinkTo(
-                PubSubSink.<OrderEvent>builder()
-                        .destinationResolver(
-                                (event, context) ->
-                                        TopicDestination.of("my-project", event.region()))
-                        .serializer(
-                                PubSubSerializationSchema.dataOnly(new OrderEventSchema())
-                                        .withOrderingKey(OrderEvent::customerId))
-                        .publisherOptions(
-                                PubSubPublisherOptions.builder()
-                                        .enableMessageOrdering(true)
-                                        .build())
-                        .build());
-```
+{{< java-snippet file="DynamicDestinationsPubSubTopics.java" tag="pubsub-topics" >}}
 
 `keyBy` keeps one ordering key on one sink subtask, while the resolver must keep that key on one topic.
 If a customer's records resolve to different topics, Pub/Sub preserves a separate sequence inside each topic rather than one sequence across them.
@@ -126,20 +95,7 @@ The [Pub/Sub examples]({{< relref "docs/examples/pubsub" >}}#a-topic-per-record)
 Cloud Tasks can shard work across queues without creating a service client, publisher, stream or batcher per queue.
 This example uses four queues to spread dispatch capacity while keeping the same customer on the same queue.
 
-```java
-CloudTasksSink.<OrderEvent>builder()
-        .destinationResolver(
-                (event, context) ->
-                        QueueDestination.of(
-                                "my-project",
-                                "asia-northeast1",
-                                "webhooks-"
-                                        + Math.floorMod(event.customerId().hashCode(), 4)))
-        .serializer(
-                CloudTasksSerializationSchema.httpTarget("https://api.example.com/v1/orders")
-                        .withBody(new OrderEventSchema()))
-        .build();
-```
+{{< java-snippet file="DynamicDestinationsCloudTasksQueues.java" tag="cloud-tasks-queues" >}}
 
 Every queue must already exist because this sink does not create queues.
 The [Cloud Tasks examples]({{< relref "docs/examples/cloudtasks" >}}#sharding-across-queues) explain the per-queue throughput reason for this routing shape.
@@ -149,33 +105,7 @@ The [Cloud Tasks examples]({{< relref "docs/examples/cloudtasks" >}}#sharding-ac
 Bigtable places one batcher behind each active table, so the resolver's cardinality is also a resource decision.
 This example shortens the idle lifetime because a date-suffixed table stops receiving records when its day ends.
 
-```java
-Map<LocalDate, TableDestination> tablesByDay = new HashMap<>();
-
-BigtableSink.<OrderEvent>builder()
-        .destinationResolver(
-                (event, context) ->
-                        tablesByDay.computeIfAbsent(
-                                event.day(),
-                                day ->
-                                        TableDestination.of(
-                                                "my-project",
-                                                "my-instance",
-                                                "orders-" + day)))
-        .serializer(
-                (event, context) ->
-                        RowMutationEntry.create(event.id())
-                                .setCell(
-                                        "cf",
-                                        "payload",
-                                        event.timestampMicros(),
-                                        event.body()))
-        .writerOptions(
-                BigtableWriterOptions.builder()
-                        .destinationIdleTimeout(Duration.ofMinutes(15))
-                        .build())
-        .build();
-```
+{{< java-snippet file="DynamicDestinationsBigtableTables.java" tag="bigtable-tables" >}}
 
 If the sink may create tables, one `TableCreateOptions` declaration applies to every table the resolver can name.
 An unbounded routing key can therefore create an unbounded table set, so auto-creation must be chosen for the generated set rather than for the first table alone.
@@ -186,18 +116,7 @@ The [Bigtable examples]({{< relref "docs/examples/bigtable" >}}#a-table-per-day-
 Spanner fixes the sink to one database and takes the table name from the `Mutation` returned by the serializer.
 There is no resolver SPI because a second table-routing decision could disagree with the mutation that the Spanner client actually writes.
 
-```java
-SpannerSink.<Event>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
-        .serializer(
-                (event, context) ->
-                        Mutation.newInsertOrUpdateBuilder(
-                                        event.isAudit() ? "AuditEvents" : "Events")
-                                .set("EventId").to(event.getId())
-                                .set("Body").to(event.getBody())
-                                .build())
-        .build();
-```
+{{< java-snippet file="DynamicDestinationsSpannerTables.java" tag="spanner-tables" >}}
 
 The writer batches mutations from several tables together and reads cell weights for the whole database when it opens.
 Every table must already exist, and the serializer must preserve the sink's at-least-once idempotence requirements for each mutation.

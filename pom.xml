@@ -913,6 +913,17 @@ limitations under the License.
     </build>
 
     <profiles>
+        <!-- The documentation examples are test sources in an internal-only module. Keeping the
+             module behind an explicit profile prevents its five connector dependencies from
+             widening every connector's ordinary reactor build. The module also refuses deploy;
+             it is validation infrastructure, never a Maven Central artifact. -->
+        <profile>
+            <id>docs-snippets</id>
+            <modules>
+                <module>flink-connector-gcp-docs-validation</module>
+            </modules>
+        </profile>
+
         <!-- Resolves Flink SNAPSHOT builds, for the early-warning row of the version
              matrix (`-Pflink-snapshots -Dflink.version=2.4-SNAPSHOT`). The connector
              parent declares a <pluginRepositories> entry only, so snapshot artifacts

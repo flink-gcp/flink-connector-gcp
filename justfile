@@ -80,6 +80,14 @@ check-java-license-headers:
 verify-flink version *extra:
     @just verify -Dflink.version={{ version }} {{ if version =~ '^1\.' { '-Dflink.compat=flink1' } else { '' } }} {{ extra }}
 
+# The opt-in module is outside the ordinary reactor so its dependency on every connector does not
+# widen connector-only builds. `-am` is still load-bearing here: the snippets must compile against
+# the working tree, never io.github.flink-gcp SNAPSHOTs left in ~/.m2.
+#
+# Compile the Java examples rendered into the documentation.
+check-doc-snippets *args:
+    {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am {{ args }} test-compile
+
 # -am is load-bearing: without it the io.github.flink-gcp siblings resolve from
 # ~/.m2 rather than from the reactor, so the recipe reports on whichever jar
 # happens to be installed there instead of on the working tree. That fails both
@@ -123,9 +131,11 @@ ci-maven-args *args:
 test-scripts:
     mise x uv -- uv run --locked pytest
 
+# The profile is explicit because its internal module is outside the ordinary reactor, but its
+# Java snippet sources still follow the same Spotless contract as every connector source.
 # Apply the formatter — CI fails on unformatted code, so run before committing.
 format:
-    {{ mvn }} spotless:apply
+    {{ mvn }} -Pdocs-snippets spotless:apply
 
 # Does a jar built against the Flink version pinned in pom.xml still run on
 # <ceiling> without being recompiled? This is the measurement behind the claim

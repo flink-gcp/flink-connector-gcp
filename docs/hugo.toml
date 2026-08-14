@@ -29,6 +29,15 @@ title = "GCP Connectors for Apache Flink"
 
 # hugo-book is pulled in as a Hugo module; the version is pinned in go.mod.
 [module]
+  # Defining another assets mount replaces the default assets mount for this
+  # component, so keep the site's own SCSS explicit beside the Java sources.
+  [[module.mounts]]
+    source = "assets"
+    target = "assets"
+  [[module.mounts]]
+    source = "../flink-connector-gcp-docs-validation/src/test/java/io/github/flink/gcp/connector/docs"
+    target = "assets/java-snippets"
+
   [[module.imports]]
     path = "github.com/alex-shpak/hugo-book"
 

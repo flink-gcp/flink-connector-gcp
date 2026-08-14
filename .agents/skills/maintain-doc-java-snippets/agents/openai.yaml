@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain Java Doc Snippets"
+  short_description: "Maintain source-backed and partial Java examples"
+  default_prompt: "Use $maintain-doc-java-snippets to add or update a Java example in the documentation."
