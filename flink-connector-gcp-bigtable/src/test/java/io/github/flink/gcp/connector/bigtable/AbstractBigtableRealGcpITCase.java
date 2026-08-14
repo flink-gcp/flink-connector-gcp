@@ -297,6 +297,16 @@ public abstract class AbstractBigtableRealGcpITCase {
         }
     }
 
+    /** Applies one caller-defined mutation to a binary row key in the ephemeral instance. */
+    protected static void mutateRow(
+            TableDestination destination,
+            ByteString rowKey,
+            Consumer<RowMutation> mutationBuilder) {
+        RowMutation mutation = RowMutation.create(TableId.of(destination.getTable()), rowKey);
+        mutationBuilder.accept(mutation);
+        dataClient.mutateRow(mutation);
+    }
+
     /** Returns what the service answers {@code SampleRowKeys} with. */
     protected static List<KeyOffset> sampleRowKeys(TableDestination destination) {
         return dataClient.sampleRowKeys(TableId.of(destination.getTable()));
@@ -311,12 +321,13 @@ public abstract class AbstractBigtableRealGcpITCase {
         return rows;
     }
 
-    /** Creates an application profile routing to the instance's only cluster. */
-    protected static void createSingleClusterAppProfile(String appProfileId) {
+    /** Creates an application profile routing to and returns the instance's only cluster. */
+    protected static String createSingleClusterAppProfile(String appProfileId) {
         String clusterId = instanceAdmin.listClusters(instanceId).get(0).getId();
         instanceAdmin.createAppProfile(
                 CreateAppProfileRequest.of(instanceId, appProfileId)
                         .setRoutingPolicy(AppProfile.SingleClusterRoutingPolicy.of(clusterId))
                         .setDescription("flink-connector-gcp source integration test"));
+        return clusterId;
     }
 }

@@ -19,16 +19,21 @@ package io.github.flink.gcp.connector.bigtable.table;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
+import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.ExceptionUtils;
 
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * The table source against real Cloud Bigtable, driven through SQL with <b>no</b> {@code
  * emulator-endpoint} option.
  *
- * <p>Three things run nowhere else (ADR-0080). Split planning: the emulator models no tablets, so
+ * <p>Four things run nowhere else (ADR-0080). Split planning: the emulator models no tablets, so
  * only a pre-split real table makes a SQL scan actually plan several splits. {@code
  * scan.app-profile-id}: the emulator ignores profiles, so only the service can say whether the
  * option reached the wire. And the family filter's server-side answer: a declared family the table
@@ -49,13 +54,16 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * projection — whose keys-only chain names no family — reads the same table fine, which is what
  * shows the pruning is served by the server and not by the converter. Filter pushdown: the emulator
  * can exercise the same filter proto, but only this suite proves that the service accepts the
- * conditional cell-existence filter composed with SQL row-key bounds and projection.
+ * conditional cell-existence filter composed with SQL row-key bounds and projection. Change
+ * Streams: the emulator implements no Change Streams RPC, so only the service can exercise the SQL
+ * mutation envelope, its metadata, and its timestamp bounds end to end.
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BIGTABLE_IT_PROJECT", matches = ".+")
 class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
 
     private static final String APP_PROFILE = "flink-table-source-it";
+    private static final String CHANGE_STREAM_APP_PROFILE = "flink-table-change-stream-it";
 
     private static String ddl(String flinkTable, String columns, String tableId, String... opts) {
         Map<String, String> options = new LinkedHashMap<>();
@@ -206,5 +214,143 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                                         + FAMILY
                                         + ".q = 'b0'"))
                 .containsExactly(Row.of("b0"));
+    }
+
+    @Test
+    void readsTheChangeStreamMutationEnvelopeAndMetadataThroughSql() throws Exception {
+        TableDestination table = createChangeStreamTable("table-change-stream-source");
+        String sourceCluster = createSingleClusterAppProfile(CHANGE_STREAM_APP_PROFILE);
+        ByteString startMarkerRowKey = ByteString.copyFromUtf8("start-marker");
+        mutateRow(table, startMarkerRowKey, mutation -> mutation.setCell(FAMILY, "q", "marker"));
+        long startMicros = readRows(table).get(0).getCells(FAMILY, "q").get(0).getTimestamp();
+        Instant start = instantFromMicros(startMicros);
+        ByteString binaryRowKey = ByteString.copyFrom(new byte[] {0x00, (byte) 0x80, (byte) 0xff});
+        ByteString binaryQualifier = ByteString.copyFrom(new byte[] {0x00, (byte) 0xff});
+        ByteString binaryValue = ByteString.copyFrom(new byte[] {(byte) 0xff, 0x00});
+        ByteString orderedDeleteRowKey = ByteString.copyFromUtf8("ordered-delete");
+
+        mutateRow(
+                table,
+                binaryRowKey,
+                mutation -> mutation.setCell(FAMILY, binaryQualifier, binaryValue));
+        mutateRow(
+                table,
+                orderedDeleteRowKey,
+                mutation ->
+                        mutation.setCell(FAMILY, "q", "value")
+                                .deleteCells(FAMILY, "q")
+                                .deleteFamily(FAMILY));
+        Instant end = Instant.now().plusSeconds(120);
+
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(changeStreamTableDdl(table, start, end));
+        List<Row> rows =
+                collect(
+                        tEnv,
+                        "SELECT row_key, entry_index, kind, family, qualifier, entry_value, "
+                                + "mutation_type, source_cluster, committed_at, tie_breaker, "
+                                + "low_watermark "
+                                + "FROM table_mutations CROSS JOIN UNNEST(entries) AS entry_table("
+                                + "entry_index, kind, family, qualifier, entry_timestamp, "
+                                + "entry_value, delete_range)");
+
+        List<Row> binaryEntries = entriesFor(rows, binaryRowKey);
+        assertThat(binaryEntries).hasSize(1);
+        Row binaryEntry = binaryEntries.get(0);
+        assertThat(binaryEntry.getField(1)).isEqualTo(0);
+        assertThat(binaryEntry.getField(2)).isEqualTo("SET_CELL");
+        assertThat(binaryEntry.getField(3)).isEqualTo(FAMILY);
+        assertRawValue((Row) binaryEntry.getField(4), binaryQualifier);
+        assertRawValue((Row) binaryEntry.getField(5), binaryValue);
+
+        List<Row> orderedDeleteEntries = entriesFor(rows, orderedDeleteRowKey);
+        assertThat(orderedDeleteEntries).hasSize(3);
+        assertThat(orderedDeleteEntries)
+                .extracting(row -> row.getField(1))
+                .containsExactly(0, 1, 2);
+        assertThat(orderedDeleteEntries)
+                .extracting(row -> row.getField(2))
+                .containsExactly("SET_CELL", "DELETE_CELLS", "DELETE_FAMILY");
+
+        List<Row> acceptedEntries = new ArrayList<>(binaryEntries);
+        acceptedEntries.addAll(orderedDeleteEntries);
+        assertThat(acceptedEntries)
+                .allSatisfy(
+                        row -> {
+                            assertThat(row.getKind()).isEqualTo(RowKind.INSERT);
+                            assertThat(row.getField(6)).isEqualTo("USER");
+                            assertThat(row.getField(7)).isEqualTo(sourceCluster);
+                            assertThat((Instant) row.getField(8)).isBetween(start, end);
+                            assertThat(row.getField(9)).isInstanceOf(Integer.class);
+                            assertThat(row.getField(10)).isInstanceOf(Instant.class);
+                        });
+    }
+
+    private static void assertRawValue(Row value, ByteString expected) {
+        assertThat(value.getField(0)).isEqualTo("RAW_VALUE");
+        assertThat((byte[]) value.getField(1)).containsExactly(expected.toByteArray());
+        assertThat(value.getField(2)).isNull();
+    }
+
+    private static List<Row> entriesFor(List<Row> rows, ByteString rowKey) {
+        List<Row> matched = new ArrayList<>();
+        for (Row row : rows) {
+            if (Arrays.equals((byte[]) row.getField(0), rowKey.toByteArray())) {
+                matched.add(row);
+            }
+        }
+        matched.sort(Comparator.comparingInt(row -> (Integer) row.getField(1)));
+        return matched;
+    }
+
+    private static Instant instantFromMicros(long micros) {
+        return Instant.ofEpochSecond(
+                Math.floorDiv(micros, 1_000_000L), Math.floorMod(micros, 1_000_000L) * 1_000L);
+    }
+
+    private static String changeStreamTableDdl(TableDestination table, Instant start, Instant end) {
+        return "CREATE TABLE table_mutations (\n"
+                + "  row_key BYTES,\n"
+                + "  entries ARRAY<ROW<\n"
+                + "    entry_index INT,\n"
+                + "    kind STRING,\n"
+                + "    family STRING,\n"
+                + "    qualifier ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,\n"
+                + "    `timestamp` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,\n"
+                + "    `value` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,\n"
+                + "    delete_range ROW<start_bound STRING, start_micros BIGINT, "
+                + "end_bound STRING, end_micros BIGINT>\n"
+                + "  >>,\n"
+                + "  mutation_type STRING NOT NULL METADATA FROM 'mutation-type' VIRTUAL,\n"
+                + "  source_cluster STRING METADATA FROM 'source-cluster-id' VIRTUAL,\n"
+                + "  committed_at TIMESTAMP_LTZ(9) NOT NULL METADATA FROM "
+                + "'commit-timestamp' VIRTUAL,\n"
+                + "  tie_breaker INT NOT NULL METADATA FROM 'tie-breaker' VIRTUAL,\n"
+                + "  low_watermark TIMESTAMP_LTZ(9) NOT NULL METADATA FROM "
+                + "'estimated-low-watermark' VIRTUAL\n"
+                + ") WITH (\n"
+                + "  'connector' = 'bigtable',\n"
+                + "  'project' = '"
+                + PROJECT
+                + "',\n"
+                + "  'instance' = '"
+                + table.getInstance()
+                + "',\n"
+                + "  'table' = '"
+                + table.getTable()
+                + "',\n"
+                + "  'scan.mode' = 'change-stream',\n"
+                + "  'scan.change-stream.changelog-mode' = 'envelope',\n"
+                + "  'scan.app-profile-id' = '"
+                + CHANGE_STREAM_APP_PROFILE
+                + "',\n"
+                + "  'scan.startup.mode' = 'timestamp',\n"
+                + "  'scan.startup.timestamp-millis' = '"
+                + start.toEpochMilli()
+                + "',\n"
+                + "  'scan.end-timestamp-millis' = '"
+                + end.toEpochMilli()
+                + "'\n"
+                + ")";
     }
 }

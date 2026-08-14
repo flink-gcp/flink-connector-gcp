@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600), [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601), [#603](https://github.com/laughingman7743/flink-connector-gcp/issues/603)
+- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600), [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601), [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602), [#603](https://github.com/laughingman7743/flink-connector-gcp/issues/603)
 - Modules: bigtable (`table`, `table.source`)
 - Current behavior: [Change Streams](../content/docs/connectors/table/bigtable.md#change-streams)
 
@@ -113,4 +113,8 @@ This prevents a valid-looking DDL from carrying options that no selected runtime
 - A downstream keyed materialization interprets the first `UPDATE_AFTER` it sees as the current value; the source does not relabel it as `INSERT`.
 - The SQL uber-jar does not bundle Flink formats, so a selected-cell deployment supplies its chosen format jar separately.
 - The source deliberately omits native source watermarks because Bigtable does not guarantee that its partition estimate is non-early ([ADR-0109](0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md)).
-- Real-GCP Table API acceptance remains in the staged follow-up [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602).
+- Gated real-GCP Table API acceptance uses the existing ephemeral-instance harness to exercise the
+  envelope through SQL with timestamp bounds, a binary row key, binary qualifier and value, ordered
+  user writes and deletes, and readable metadata.
+  Service-timed garbage collection and retention expiry remain outside that acceptance because
+  neither is deterministic.

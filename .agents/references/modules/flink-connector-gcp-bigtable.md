@@ -431,6 +431,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The gated suite creates an ephemeral instance per gated **class** (`flink-it-<epoch>-<runId>`
   naming + two-hour sweep); nothing persistent exists to run against. The gate variables cost
   nothing by themselves since #245's `@Tag("gated")`.
+- The Table-source gated class shares one ephemeral instance across its scan and Change Streams
+  acceptance. The Change Streams test uses a separate single-cluster profile and table, and a
+  finite end timestamp so SQL collection terminates without cancellation.
 - What real Bigtable answers each rejection with is measured, not inferred; client-side
   `Mutation` limits never reach the wire and arrive as serialization failures.
 - `BigtableEmulatorDeviationITCase` asserts what the *emulator* does (INTERNAL instead of

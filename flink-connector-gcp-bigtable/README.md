@@ -47,6 +47,7 @@ Source<OrderEvent, ?, ?> source =
 | `ScanTableSource` with column-family projection pushdown | Implemented ([#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459)) |
 | SQL filter pushdown for exact row-key ranges and best-effort cell existence | Implemented ([#518](https://github.com/laughingman7743/flink-connector-gcp/issues/518)) |
 | `LookupTableSource`, sync and async, with the standard lookup caches | Implemented ([#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460)) |
+| Change Streams envelope and selected-cell changelog sources | Implemented ([#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523)) |
 | `flink-sql-connector-gcp-bigtable` shaded uber-jar | Implemented ([#461](https://github.com/laughingman7743/flink-connector-gcp/issues/461)) |
 
 ## Documentation
