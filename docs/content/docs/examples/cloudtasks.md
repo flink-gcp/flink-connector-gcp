@@ -242,19 +242,7 @@ on the SQL Client and cluster classpaths.
 
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#cloud-tasks-queues) places this sharding pattern in the shared resolver contract.
 
-```java
-CloudTasksSink.<OrderEvent>builder()
-        .destinationResolver(
-                (element, context) ->
-                        QueueDestination.of(
-                                "my-project",
-                                "asia-northeast1",
-                                "webhooks-" + Math.floorMod(element.customerId().hashCode(), 4)))
-        .serializer(
-                CloudTasksSerializationSchema.httpTarget("https://api.example.com/v1/orders")
-                        .withBody(new OrderEventSchema()))
-        .build();
-```
+{{< java-snippet file="CloudTasksExamplesShardingAcrossQueues.java" tag="cloud-tasks-examples-sharding-across-queues" >}}
 
 A single Cloud Tasks client serves every queue, and the sink creates no per-queue client, stream, publisher or batcher to cache or evict.
 When `CloudTasksWriterOptions.builder().perDestinationMetrics(true).build()` is supplied through `writerOptions(...)`, each queue with a recorded send or failure registers counters that remain for the task lifetime because Flink cannot unregister metrics.
@@ -277,18 +265,7 @@ docker run --rm -p 8123:8123 --add-host=host.docker.internal:host-gateway \
     -queue projects/my-project/locations/asia-northeast1/queues/webhooks
 ```
 
-```java
-CloudTasksSink.<String>builder()
-        .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
-        .serializer(
-                // Not localhost: the emulator dispatches from inside the container, where that
-                // would be the container itself. --add-host above is what makes this name resolve
-                // to the host on Linux; Docker Desktop provides it already.
-                CloudTasksSerializationSchema.httpTarget("http://host.docker.internal:9000/orders")
-                        .withBody(new SimpleStringSchema()))
-        .emulatorEndpoint("localhost:8123")
-        .build();
-```
+{{< java-snippet file="CloudTasksExamplesEmulator.java" tag="cloud-tasks-examples-emulator" >}}
 
 Unlike the Pub/Sub emulator this one dispatches over **real HTTP**, so a server on your machine
 sees exactly what the tasks carry — which is the whole reason it is worth running, and also why the
