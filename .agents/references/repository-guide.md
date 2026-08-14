@@ -92,7 +92,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   by its class-level stability annotation, read from the `-sources.jar`s at the pom-pinned
   `flink.version` (never class files: their constant pool lists method-level annotations too,
   the #103 miscount). `@Internal`, `@Experimental` and unannotated types each need a reasoned
-  allowlist entry in `scripts/flink-api-tiers.toml`; a new one — or a stale entry — fails.
+  allowlist entry in `scripts/config/flink-api-tiers.toml`; a new one — or a stale entry — fails.
   Runs as its own `verify.yaml` job, not in `lint.yaml` and not inside `just lint` (ADR-0058),
   and it downloads the sources jars (into `target/flink-api-tiers/`) while `just lint` stays
   offline — the rule that also put `check-skill-frontmatter` in `verify.yaml`

@@ -107,7 +107,7 @@ data loss bug in reader split handling". Writing it a third time was the cost wo
   module already declares: `flink-core` owns `SplitEnumerator` and `SplitsAssignment`, and
   `flink-metrics-core` — which `flink-core` brings — owns `SplitEnumeratorMetricGroup` and
   `ThreadSafeSimpleCounter` (verified against the resolved 2.2.1 jars). `ThreadSafeSimpleCounter`
-  is the only unstable tier among them and its `scripts/flink-api-tiers.toml` entry already
+  is the only unstable tier among them and its `scripts/config/flink-api-tiers.toml` entry already
   existed, so the main code needed no new one.
 - A connector can no longer quietly opt out of the protocol: `start()`, `close()` and the three
   assignment methods are `final`, so the closed-guard and the no-ledger assignment cannot be

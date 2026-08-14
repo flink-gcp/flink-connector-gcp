@@ -404,7 +404,7 @@ check-notice-sources:
 # files: a class file's constant pool lists method-level annotations too, the
 # bug that produced the wrong numbers on issue #103). @Internal, @Experimental
 # and unannotated types must each have a reasoned allowlist entry in
-# scripts/flink-api-tiers.toml; anything new — or stale — fails. Downloads the
+# scripts/config/flink-api-tiers.toml; anything new — or stale — fails. Downloads the
 # sources jars from Maven Central into target/flink-api-tiers/ on first run,
 # which is why this is not part of `just lint` (that stays offline).
 #

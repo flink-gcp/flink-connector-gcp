@@ -238,7 +238,7 @@ jobs:
 
   # The Flink API tier audit (issue #103): fails when the main sources add a
   # dependency on an @Internal, @Experimental or unannotated Flink type
-  # without a reasoned allowlist entry in scripts/flink-api-tiers.toml (see
+  # without a reasoned allowlist entry in scripts/config/flink-api-tiers.toml (see
   # .agents/skills/curate-flink-api-tier/ for how to respond).
   #
   # A job here rather than a step in lint.yaml (decided with the user on the
