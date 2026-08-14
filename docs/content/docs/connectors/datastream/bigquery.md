@@ -1943,12 +1943,15 @@ Source<GenericRecord, ?, ?> source =
 env.fromSource(source, WatermarkStrategy.noWatermarks(), "BigQuery");
 ```
 
-**Reads through this API cost money**, unlike the sink's `FILE_LOADS` path, which is free. BigQuery
-charges for the bytes *scanned from storage* to serve a read session — "the total number of bytes
-scanned from BigQuery storage to fulfill the request … used to calculate the analysis cost of the
-read operation", in its own words. Because BigQuery stores columns separately, a job that reads a
-wide table to use two of its columns pays for the rest unless it says so with
-[`selectedFields`](#push-down).
+**The public contracts place bytes-read accounting on `ReadRows`, not session creation.**
+BigQuery records [`scanned_bytes` on `ReadRows` audit entries](https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use)
+and uses that value to calculate the read's analysis cost, while it classifies
+[`CreateReadSession` as a control-plane metadata operation](https://cloud.google.com/bigquery/quotas#storage_read_api).
+If a `ReadRows` call fails or is cancelled, its
+[metered usage includes the data read before it stopped](https://cloud.google.com/bigquery/pricing#storage_read_api_pricing).
+This source follows session creation with `ReadRows`, so its use can still incur analysis charges.
+Because BigQuery stores columns separately, a job that reads a wide table to use two of its columns
+meters the rest as bytes read unless it says so with [`selectedFields`](#push-down).
 
 ### Splits, offsets and recovery
 
@@ -2017,7 +2020,7 @@ than there are subtasks is how this source gets its elasticity. A `preferredMinS
 
 `selectedFields`, `rowRestriction` and `snapshotTime` are fields of the read session, so BigQuery
 applies them before anything is transferred. What that saves differs between the two:
-`selectedFields` leaves whole columns unscanned, which is what BigQuery charges for;
+`selectedFields` leaves whole columns out of the metered bytes-read usage;
 `rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
 partitioning or clustering column. The Table API source maps `selectedFields` onto
 `SupportsProjectionPushDown`. It deliberately does not advertise SQL filter pushdown:

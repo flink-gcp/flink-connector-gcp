@@ -56,14 +56,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * path the connector cannot script: a subtask dying with a stream in hand, its splits coming back
  * through {@code addSplitsBack}, and another subtask finishing them.
  *
- * <p><b>The table is a public dataset, and that is the cost decision.</b> The read is billed to
- * {@code BQ_IT_PROJECT} at the Storage Read API's per-byte rate, so this run costs a fraction of a
- * cent for its 264 MB — where a table of our own large enough for BigQuery to split would have to
- * be created and then stored. {@code austin_bikeshare.bikeshare_trips} is the smallest candidate
- * measured that BigQuery splits at all: 195 MB answered with one stream and 264 MB with four
- * (measured 2026-08-10), so the fixture sits just above a threshold BigQuery does not document.
- * Reading every column is load-bearing rather than lazy: the stream count follows the bytes
- * actually selected, and each of this table's columns read on its own answered with a single
+ * <p><b>The table is a public dataset, and that is the cost decision.</b> Session planning reported
+ * 264 MB for the selected fields, and this test then calls {@code ReadRows}, so the documented
+ * bytes-read pricing applies to {@code BQ_IT_PROJECT}. Whether the bytes-read component produces a
+ * monetary charge depends on the billing account's monthly free-tier use; applicable network
+ * transfer is charged separately. A table of our own large enough for BigQuery to split would also
+ * have to be created and then stored. {@code austin_bikeshare.bikeshare_trips} is the smallest
+ * candidate measured that BigQuery splits at all: 195 MB answered with one stream and 264 MB with
+ * four (measured 2026-08-10), so the fixture sits just above a threshold BigQuery does not
+ * document. Reading every column is load-bearing rather than lazy: the stream count follows the
+ * bytes actually selected, and each of this table's columns read on its own answered with a single
  * stream.
  *
  * <p>The table is public and therefore not ours to hold still, so both the read and the row count

@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-10 (client behaviour read out of the pinned sources; stream counts measured against
   BigQuery the same day)
-- Issues: [#391], [#64]
+- Issues: [#391], [#462], [#64]
 - Modules: bigquery (`source`, `source.reader`, `source.split`, `source.enumerator`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
 
@@ -73,7 +73,29 @@ Two things ADR-0079 did not have. The threshold at which BigQuery splits a table
 bytes actually selected, not the table's size, which is why a single-column read of an 8 GB table
 gets twelve streams where the whole table gets fifty-nine.
 
+The billing experiment proposed by [#462] cannot answer its own question.
+The bytes-read price has a 300 TiB monthly free tier, so the absence of an analysis charge is
+compatible with either the bytes planned by those session creations or the bytes the gated case
+read.
+
+The current Storage Read API documentation gives the boundary that the billing report cannot.
+The monitoring contract identifies `ReadRows` as the relevant method and documents
+[`scanned_bytes` on its audit records][storage-read-monitoring] as the value used to calculate the
+read's analysis cost.
+The [pricing contract][storage-read-pricing] includes the data read before a failed or cancelled
+`ReadRows` stopped, while the [quota contract][storage-read-quotas] classifies `CreateReadSession`
+as a control-plane metadata operation.
+Taken together, these contracts place bytes-read accounting on `ReadRows` and do not provide a
+basis for assigning bytes-read usage to a `CreateReadSession`-only probe (contracts read
+2026-08-14).
+
 ## Decision
+
+**A stream-count probe that never calls `ReadRows` has no documented bytes-read usage.**
+`CreateReadSession` still consumes the Storage Read API's control-plane request quota, so the
+absence of bytes-read usage does not make repeated probing unbounded.
+The real-GCP recovery case below does call `ReadRows`; its fixture remains small to bound metered
+read volume and wall-clock time.
 
 **The connector runs no retry loop of its own over `ReadRows`, and that is a decision rather than an
 omission.** A connector-level reopen at the reader's own offset is what the client already does,
@@ -128,11 +150,13 @@ is cheap here and keeps a savepoint written by today's `main` restorable.
 **The real-GCP case reads a public dataset**, `austin_bikeshare.bikeshare_trips`, all columns, at
 parallelism 2 with one deliberate failure. ADR-0079 recorded that a table large enough to be split
 "costs more than the assignment logic is worth"; that priced *creating and storing* one. A public
-dataset removes the storage entirely and leaves the Storage Read API's per-byte charge — 264 MB at
-$1.10/TiB, a fraction of a cent per run, and 14 s of wall clock (measured 2026-08-10). The table is
-not ours to hold still, so the read and the row count it is checked against are pinned to one
-instant with `snapshotTime` and `FOR SYSTEM_TIME AS OF`. Reading every column is load-bearing: the
-projection measurement above shows a single-column read collapses the fixture to one stream.
+dataset removes the storage entirely. Session planning reported 264 MB for the selected fields, and
+the test then calls `ReadRows`, so the documented bytes-read pricing applies. Whether the bytes-read
+component produces a monetary charge depends on the billing account's monthly free-tier use;
+applicable network transfer is charged separately. The run took 14 s (measured 2026-08-10). The
+table is not ours to hold still, so the read and the row count it is checked against are pinned to
+one instant with `snapshotTime` and `FOR SYSTEM_TIME AS OF`. Reading every column is load-bearing:
+the projection measurement above shows a single-column read collapses the fixture to one stream.
 
 ## Consequences
 
@@ -161,3 +185,7 @@ projection measurement above shows a single-column read collapses the fixture to
 [#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
 [#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
 [#391]: https://github.com/laughingman7743/flink-connector-gcp/issues/391
+[#462]: https://github.com/laughingman7743/flink-connector-gcp/issues/462
+[storage-read-monitoring]: https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use
+[storage-read-pricing]: https://cloud.google.com/bigquery/pricing#storage_read_api_pricing
+[storage-read-quotas]: https://cloud.google.com/bigquery/quotas#storage_read_api
