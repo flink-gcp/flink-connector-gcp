@@ -164,7 +164,7 @@ jobs:
       # the selection carries a NOTICE.template. python3 comes from
       # the runner image: the script is standard-library only, so there is no
       # version to pin (see mise.toml).
-      # The NOTICE checker reads scripts/licence-sources.toml with tomllib,
+      # The NOTICE checker reads scripts/config/licence-sources.toml with tomllib,
       # stdlib since Python 3.11 — installed deliberately rather than trusted
       # from the runner image, for the same reason shellcheck is pinned: an
       # image migration must not change what CI runs. Keep the version in

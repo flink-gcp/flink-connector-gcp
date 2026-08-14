@@ -61,7 +61,7 @@ workflow-level filter. The pieces:
   is the root module's rat run, which scans the whole working tree and is their only
   pre-merge licence check — a `scripts/tests/`-only pull request had been paying 7m41s of
   full reactor for it. **Two files are deliberately outside that class**,
-  `scripts/licence-sources.toml` and `scripts/check-notice.py`: the NOTICE check is a step
+  `scripts/config/licence-sources.toml` and `scripts/check-notice.py`: the NOTICE check is a step
   *inside* the `build` job gated on `check_notice`, which is false when no shaded module is
   built, so routing them root-only would skip the licence check on exactly the change that
   edits the licence pins. That the other checkers' scripts *are* in the class is the same

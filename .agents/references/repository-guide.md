@@ -73,7 +73,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in
-  `scripts/licence-sources.toml`. A url source is either version-templated — `{version}` filled
+  `scripts/config/licence-sources.toml`. A url source is either version-templated — `{version}` filled
   from the resolved bundle, so a dependency bump re-fetches the matching tag with no edit to the
   entry — or declared `version_independent = true` (#343); the toml header carries the scheme.
   `update-notice` regenerates after a dependency change; `check-notice` verifies offline in CI.

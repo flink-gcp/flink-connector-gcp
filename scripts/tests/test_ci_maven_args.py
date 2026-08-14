@@ -180,7 +180,7 @@ def test_root_only_paths_buy_the_rat_check(fake_repo, ci_maven_args, path):
 
 
 @pytest.mark.parametrize(
-    "path", ["scripts/licence-sources.toml", "scripts/check-notice.py"]
+    "path", ["scripts/config/licence-sources.toml", "scripts/check-notice.py"]
 )
 def test_the_notice_checkers_inputs_stay_full_reactor(fake_repo, ci_maven_args, path):
     # The check they feed is a step *inside* the build job, gated on
@@ -424,7 +424,9 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
     # The regression this class's boundary exists to prevent (#253): the NOTICE
     # check runs inside the build job behind check_notice, so a licence-pin
     # change must keep the reactor that makes it true.
-    out = outputs(run_cli("--files", json.dumps(["scripts/licence-sources.toml"])))
+    out = outputs(
+        run_cli("--files", json.dumps(["scripts/config/licence-sources.toml"]))
+    )
     assert out == {
         "run_build": "true",
         "maven_args": "",
@@ -443,7 +445,7 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
     [
         "pom.xml",
         "flink-connector-gcp-pubsub/pom.xml",
-        "scripts/licence-sources.toml",
+        "scripts/config/licence-sources.toml",
         "scripts/check-notice.py",
         "flink-sql-connector-gcp-pubsub/NOTICE.template",
         "flink-sql-connector-gcp-pubsub/src/main/resources/META-INF/NOTICE",

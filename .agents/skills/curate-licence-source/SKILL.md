@@ -16,7 +16,7 @@ hoc, and replacing them is where this procedure comes from.
 
 A non-Apache-2.0 artifact needs its licence text pinned. Work down this ladder
 and stop at the first rung that holds. Record the outcome in
-`scripts/licence-sources.toml` (entry: `artifacts`, `jar` or `url`, `sha256`,
+`scripts/config/licence-sources.toml` (entry: `artifacts`, `jar` or `url`, `sha256`,
 plus a `#` comment explaining why this rung — a `note` key would be rejected,
 the entry's key set is strict).
 
