@@ -49,33 +49,7 @@ gcloud bigtable instances tables create orders --instance=my-instance \
     --column-families=cf
 ```
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-// Not optional: the sink is at-least-once only with checkpointing, which is what makes Flink wait
-// for every outstanding mutation before the barrier passes.
-env.enableCheckpointing(60_000);
-
-env.fromData("a-1", "a-2")
-        .sinkTo(
-                BigtableSink.<String>builder()
-                        .table(TableDestination.of("my-project", "my-instance", "orders"))
-                        .serializer(
-                                (element, context) ->
-                                        RowMutationEntry.create("order#" + element)
-                                                // An explicit cell timestamp, so a replayed record
-                                                // overwrites this cell instead of adding a version.
-                                                .setCell(
-                                                        "cf",
-                                                        "payload",
-                                                        context.timestamp() == null
-                                                                ? 0L
-                                                                : context.timestamp() * 1_000,
-                                                        element))
-                        .build());
-
-env.execute("bigtable-quickstart");
-```
+{{< java-snippet file="BigtableQuickstartWrite.java" tag="bigtable-quickstart-write" >}}
 
 Read the rows back with the `cbt` CLI:
 
@@ -95,44 +69,7 @@ The source reads the rows of a key range and finishes. It is bounded, which is n
 batch-only: this job runs in streaming mode and simply ends, which is also what lets a Bigtable
 table be read and joined against an unbounded stream.
 
-```java
-public class ReadOrders {
-
-    public static void main(String[] args) throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
-        Source<String, ?, ?> source =
-                BigtableSource.<String>builder()
-                        .table(TableDestination.of("my-project", "my-instance", "orders"))
-                        // Zero or more records per row: this one emits the payload of each cell.
-                        .deserializer(
-                                new BigtableRowDeserializationSchema<String>() {
-                                    @Override
-                                    public void deserialize(Row row, Collector<String> out) {
-                                        for (RowCell cell : row.getCells("cf", "payload")) {
-                                            out.collect(
-                                                    row.getKey().toStringUtf8()
-                                                            + " = "
-                                                            + cell.getValue().toStringUtf8());
-                                        }
-                                    }
-
-                                    @Override
-                                    public TypeInformation<String> getProducedType() {
-                                        return TypeInformation.of(String.class);
-                                    }
-                                })
-                        // Only the rows this job needs: a prefix is sugar for the range it
-                        // describes, and what a filter excludes never leaves the server.
-                        .prefix("order#")
-                        .filter(Filters.FILTERS.family().exactMatch("cf"))
-                        .build();
-
-        env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders").print();
-        env.execute("read-orders");
-    }
-}
-```
+{{< java-snippet file="BigtableQuickstartRead.java" tag="bigtable-quickstart-read" >}}
 
 The job needs `bigtable.tables.readRows` and `bigtable.tables.sampleRowKeys` — `roles/bigtable.reader`
 covers both — and creates nothing.
