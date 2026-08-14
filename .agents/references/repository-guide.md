@@ -281,6 +281,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   and make that abbreviation clear in the surrounding prose. Existing ordinary fences remain
   unvalidated until they are migrated. Use `.agents/skills/maintain-doc-java-snippets/` when
   adding, updating or repairing either form
+- **Every public Javadoc `<pre>{@code ...}</pre>` block is classified and synchronized** (#694).
+  Runnable examples map to one exact tagged Java region under the docs-validation module;
+  intentionally partial examples carry a visible `Abbreviated, not compiled:` label and a concrete
+  reason. `just check-doc-snippets` checks the two-way inventory before compiling the backing
+  sources against the current reactor. Use `.agents/skills/maintain-javadoc-examples/` when adding,
+  updating or repairing either form
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6

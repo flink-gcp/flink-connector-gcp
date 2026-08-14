@@ -46,6 +46,7 @@ import java.io.Serializable;
  *
  * <p>The common case — an HTTP target whose body is a serialized record — is covered by {@link
  * #httpTarget(String)}:
+ * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="http-target" -->
  *
  * <pre>{@code
  * CloudTasksSerializationSchema.httpTarget("https://api.example.com/v1/orders")
@@ -55,6 +56,7 @@ import java.io.Serializable;
  * }</pre>
  *
  * <p>An App Engine target uses a relative URI and optional service, version, and instance routing:
+ * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="app-engine-target" -->
  *
  * <pre>{@code
  * CloudTasksSerializationSchema.appEngineTarget("/tasks/orders")

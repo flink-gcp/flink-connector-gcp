@@ -31,13 +31,16 @@ import org.apache.flink.annotation.PublicEvolving;
  * serializer, or handed to that handler.
  *
  * <p>Example:
+ * <!-- javadoc-example file="JavadocPubSubExamples.java" tag="sink" -->
  *
  * <pre>{@code
  * Sink<MyEvent> sink =
  *         PubSubSink.<MyEvent>builder()
  *                 .destinationResolver(
  *                         (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
- *                 .serializer(PubSubSerializationSchema.dataOnly(new MyEventSerializationSchema()))
+ *                 .serializer(
+ *                         PubSubSerializationSchema.dataOnly(
+ *                                 new MyEventSerializationSchema()))
  *                 .build();
  * }</pre>
  */

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0056: The API reference is unfiltered aggregated JavaDoc at one unversioned path
 
 - Status: Accepted
-- Date: 2026-08-01 ([#88])
+- Date: 2026-08-01 ([#88]); refined 2026-08-14 ([#694])
 - Issues: [#88], [#93] (the deploy job that publishes it), [#39] (per-release references wait
-  there)
+  there), [#694] (compiled examples)
 - Modules: all (docs)
 
 ## Context
@@ -33,7 +33,7 @@ before uploading. It is never committed (gitignored, rat-excluded), and pages li
 
 ## Decision
 
-Three sub-decisions, the first two measured rather than assumed:
+Four sub-decisions, the first two measured rather than assumed:
 
 - **Nothing is filtered by API tier.** `@Internal` is `@Documented`, so the tier is a badge on
   every class page, and using an `@Internal` type is the caller's risk — a consumer can audit
@@ -57,6 +57,15 @@ Three sub-decisions, the first two measured rather than assumed:
 - **One unversioned path, tracking `main`.** Per-release references wait for artifact
   publishing, which is [#39]'s scope; javadoc.io serves released versions from Central for
   free once that happens.
+- **Runnable examples are compiled from exact backing regions.** Every public
+  `<pre>{@code ...}</pre>` block chooses between a source-backed runnable example and a visibly
+  abbreviated fragment. A runnable block maps to one tagged source region in the internal
+  docs-validation module; `just check-doc-snippets` rejects display drift, stale regions, and
+  duplicate references before compiling that module against the current reactor. An abbreviated
+  block names what it omits in reader-visible prose, because a hidden allowlist would make the
+  published API reference overstate its validation. A custom Taglet was declined: the standard
+  doclet already renders the desired code, while a JDK 17 checker can enforce the source contract
+  without changing the reader-visible code rendering or adding a second Javadoc extension point.
 
 ## Consequences
 
@@ -65,8 +74,12 @@ Three sub-decisions, the first two measured rather than assumed:
 - `docs.yaml`'s push-side paths filter carries the main sources and the poms since [#88] made
   the API reference part of the site, and the workflow takes java from `mise.toml` rather
   than adding a second JDK installer for the shim rule (ADR-0057) to have to disarm.
+- The same workflow runs the Javadoc source contract and compilation before Hugo, and its push-side
+  paths include the checker and docs-validation sources. Checker behavior is covered with synthetic
+  temporary trees rather than assertions against the live repository inventory.
 
 [#39]: https://github.com/laughingman7743/flink-connector-gcp/issues/39
 [#88]: https://github.com/laughingman7743/flink-connector-gcp/issues/88
 [#93]: https://github.com/laughingman7743/flink-connector-gcp/issues/93
 [#125]: https://github.com/laughingman7743/flink-connector-gcp/issues/125
+[#694]: https://github.com/laughingman7743/flink-connector-gcp/issues/694

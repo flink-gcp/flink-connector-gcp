@@ -37,6 +37,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * BigtableSinkBuilder#tableCreateOptions(TableCreateOptions)} opts into creating them.
  *
  * <p>Example:
+ * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="sink" -->
  *
  * <pre>{@code
  * Sink<OrderEvent> sink =
@@ -45,7 +46,10 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .serializer(
  *                         (event, context) ->
  *                                 RowMutationEntry.create(event.getId())
- *                                         .setCell("cf", "payload", event.getTimestampMicros(),
+ *                                         .setCell(
+ *                                                 "cf",
+ *                                                 "payload",
+ *                                                 event.getTimestampMicros(),
  *                                                 event.getBody()))
  *                 .build();
  * }</pre>

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain Javadoc Examples"
+  short_description: "Keep public Javadoc examples compiled and synchronized"
+  default_prompt: "Use $maintain-javadoc-examples to add, update, or repair a public Javadoc code example."

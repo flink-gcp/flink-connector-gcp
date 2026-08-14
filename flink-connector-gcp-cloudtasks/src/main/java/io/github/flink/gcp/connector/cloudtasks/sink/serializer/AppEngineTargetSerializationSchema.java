@@ -28,6 +28,7 @@ import java.io.IOException;
  *
  * <p>Built by {@link AppEngineTargetBuilder}. Instances are immutable and contain no configuration
  * methods; all optional request settings belong to the builder.
+ * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="detailed-app-engine-target" -->
  *
  * <pre>{@code
  * CloudTasksSerializationSchema.appEngineTarget("/tasks/orders")
@@ -35,10 +36,7 @@ import java.io.IOException;
  *         .withMethod(HttpMethod.POST)
  *         .withRelativeUri(e -> "/tasks/orders/" + e.orderId())
  *         .withRouting(
- *                 AppEngineRouting.newBuilder()
- *                         .setService("worker")
- *                         .setVersion("v2")
- *                         .build())
+ *                 AppEngineRouting.newBuilder().setService("worker").setVersion("v2").build())
  *         .build();
  * }</pre>
  *

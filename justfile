@@ -84,8 +84,9 @@ verify-flink version *extra:
 # widen connector-only builds. `-am` is still load-bearing here: the snippets must compile against
 # the working tree, never io.github.flink-gcp SNAPSHOTs left in ~/.m2.
 #
-# Compile the Java examples rendered into the documentation.
+# Check and compile the source-backed Java examples rendered in documentation and Javadoc.
 check-doc-snippets *args:
+    python3 scripts/check-javadoc-examples.py
     {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am {{ args }} test-compile
 
 # -am is load-bearing: without it the io.github.flink-gcp siblings resolve from

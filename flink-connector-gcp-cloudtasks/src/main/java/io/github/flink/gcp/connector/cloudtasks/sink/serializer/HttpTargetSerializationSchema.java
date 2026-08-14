@@ -42,6 +42,7 @@ import java.util.Map;
  * <p>Obtained from {@link CloudTasksSerializationSchema#httpTarget(String)}. Instances are
  * immutable: every {@code with*} method returns a new schema, and the schema itself is what the
  * sink builder takes, so no terminal {@code build()} call is needed.
+ * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="detailed-http-target" -->
  *
  * <pre>{@code
  * CloudTasksSerializationSchema.httpTarget("https://api.example.com/v1/orders")

@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 
 /**
  * Entry point for building Pub/Sub sources.
+ * <!-- javadoc-example file="JavadocPubSubExamples.java" tag="source" -->
  *
  * <pre>{@code
  * Source<String, ?, ?> source =

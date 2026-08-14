@@ -41,6 +41,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * serializer, or handed to that handler.
  *
  * <p>Example:
+ * <!-- javadoc-example file="JavadocSpannerExamples.java" tag="sink" -->
  *
  * <pre>{@code
  * Sink<OrderEvent> sink =
@@ -49,8 +50,10 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .serializer(
  *                         (event, context) ->
  *                                 Mutation.newInsertOrUpdateBuilder("Orders")
- *                                         .set("OrderId").to(event.getId())
- *                                         .set("Total").to(event.getTotal())
+ *                                         .set("OrderId")
+ *                                         .to(event.getId())
+ *                                         .set("Total")
+ *                                         .to(event.getTotal())
  *                                         .build())
  *                 .build();
  * }</pre>
