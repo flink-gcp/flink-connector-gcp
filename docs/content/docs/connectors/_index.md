@@ -24,6 +24,21 @@ limitations under the License.
 
 Google Cloud connectors for Apache Flink.
 
+## Choosing an API
+
+The Table connectors map onto the DataStream connectors with the same names, but the two APIs
+describe jobs at different levels.
+
+| API | Choose it when |
+|-----|----------------|
+| [DataStream API]({{< relref "docs/connectors/datastream" >}}) | A Java job needs connector builders, connector-specific serialization or deserialization schemas, per-record destinations, or a connector feature with no SQL option |
+| [Table API and SQL]({{< relref "docs/connectors/table" >}}) | A job is expressed as relational tables and needs DDL, SQL type mappings, or metadata columns |
+
+The Table page for a connector documents its DDL, SQL types, metadata columns, and planner-specific
+restrictions.
+The corresponding DataStream page documents the underlying runtime behavior and builder-only
+features.
+
 Start with [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) when
 checkpoint durability, replay behavior, or exactly-once delivery determines which sink method to
 use.

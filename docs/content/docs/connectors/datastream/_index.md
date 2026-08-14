@@ -22,4 +22,9 @@ limitations under the License.
 
 # DataStream Connectors
 
-Connectors for the DataStream API.
+Use these pages for Java builder APIs, connector-specific serialization and deserialization
+schemas, and the runtime behavior that the Table connectors reuse.
+For DDL, SQL type mappings, metadata columns, and planner-specific restrictions, see the
+[Table API connectors]({{< relref "docs/connectors/table" >}}).
+The [connector overview]({{< relref "docs/connectors" >}}) explains how to choose between the two
+APIs.
