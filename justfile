@@ -259,19 +259,17 @@ e2e:
 check-gated-tags:
     scripts/e2e-gated-its.sh --check-tags
 
-# Deletes the instances an E2E run abandoned (issue #246), for every service
-# whose gated suite provisions one: Bigtable and Spanner. Each suite already
-# sweeps at the start of a gated class, but only the weekly E2E workflow
-# schedules one — so a run whose teardown never executed leaves an instance
-# standing until the next Saturday, about $109 for a Bigtable node. This is the
-# same sweep on a daily schedule (sweep-e2e.yaml), turning a 7-day worst case
-# into a 1-day one. Each service's prefix and two-hour threshold are read from
-# its Abstract*RealGcpITCase rather than repeated, so the two sweeps cannot
-# disagree, and the services are swept independently so one failure cannot hide
-# the other. Needs BIGTABLE_IT_PROJECT, SPANNER_IT_PROJECT and an authenticated
-# gcloud; `--dry-run` lists without deleting.
+# Returns every billed E2E fixture to its idle state (issue #246): stale
+# Bigtable and Spanner instances are deleted, and the fixed Cloud Tasks App
+# Engine version is stopped. The Java instance prefixes and thresholds and the
+# OpenTofu App Engine identifiers are read from their owning sources rather
+# than repeated. Each cleanup is attempted independently so one failure cannot
+# hide another. Needs BIGTABLE_IT_PROJECT, SPANNER_IT_PROJECT,
+# CLOUDTASKS_IT_PROJECT and an authenticated gcloud; `--dry-run` only reports
+# the changes it would make.
 #
-# Delete the instances left behind by a crashed E2E run.
+# Delete abandoned Bigtable and Spanner instances and stop the fixed App Engine
+# fixture left serving by an interrupted E2E run.
 sweep-e2e *args:
     scripts/sweep-e2e.sh {{ args }}
 
@@ -312,8 +310,8 @@ lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
     mise x ruff -- ruff --version
-    mise x ruff -- ruff check scripts/
-    mise x ruff -- ruff format --check scripts/
+    mise x ruff -- ruff check scripts/ opentofu/flink-gcp/appengine-e2e/main.py
+    mise x ruff -- ruff format --check scripts/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
     mise x opentofu -- tofu fmt -check -recursive opentofu/

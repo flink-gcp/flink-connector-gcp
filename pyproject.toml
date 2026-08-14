@@ -15,12 +15,12 @@
 # The uv project behind `just test-scripts` (decided with the owner on PR
 # #247): dependency management for the scripts/tests suite and pytest
 # configuration, nothing more, at the repository root where uv expects a
-# project. The layout is not a Python package's — the code under test lives
-# in scripts/ as executables that are never importable, standard-library-only
-# but for check-skill-frontmatter.py, which declares PyYAML in PEP 723 metadata
-# of its own (hence the dev-group pyyaml below: the suite loads it by path) —
-# so this project is never packaged (`package = false`) and the tests load
-# the scripts by file path; `testpaths` below is the one layout
+# project. The layout is not a Python package's: most code under test lives in
+# scripts/ as executables that are never importable, standard-library-only but
+# for check-skill-frontmatter.py, which declares PyYAML in PEP 723 metadata of
+# its own (hence the dev-group pyyaml below: the suite loads it by path).
+# The App Engine fixture is also loaded by path, so this project is never
+# packaged (`package = false`); `testpaths` below is the one layout
 # customisation that needs saying. pytest's constraint is deliberately loose
 # (owner's call): uv.lock pins the version actually installed, and an
 # upgrade is an explicit `uv lock --upgrade`, so a tight constraint here

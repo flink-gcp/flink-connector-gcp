@@ -14,28 +14,25 @@
 
 name: Sweep E2E leftovers
 
-# Deletes the instances an E2E run abandoned (issue #246), for both services
-# whose gated suites provision one: Bigtable and Spanner.
+# Returns every billed E2E fixture to its idle state (issue #246): deletes
+# Bigtable and Spanner instances, and stops the fixed App Engine version used
+# by Cloud Tasks.
 #
-# Each suite's Abstract*RealGcpITCase sweeps at the start of a gated class,
-# which is enough while runs finish. It is not enough when one does not: a
-# killed runner, a cancelled job or a JVM crash after @BeforeAll leaves an
-# instance standing, and the only thing that schedules a gated class is
-# e2e.yaml, weekly. At $0.65 a node-hour a leaked Bigtable instance is ~$109
-# over seven days, and two gated classes run per execution — the number this
-# workflow exists to bound, and a property of the sweep-on-next-run design
-# rather than of anything Bigtable does. A leaked 100-processing-unit Spanner
-# instance is an order of magnitude cheaper and swept by the same schedule.
+# Bigtable and Spanner sweep at the start of each gated class, and the App
+# Engine lifecycle wrapper stops its version after use. Those guards cannot run
+# after a killed runner, cancelled job or process crash. At $0.65 a node-hour a
+# leaked Bigtable instance is ~$109 over seven days, and a manual-scaling App
+# Engine instance is also billed while serving. This daily workflow is the
+# hard-cancellation fallback for all three resource types.
 #
 # Daily, so the worst case is ~$15 rather than ~$109. Detection of everything a
 # sweep cannot foresee is a separate question (a billing budget; see the issue),
-# deliberately not answered here: this needs no billing permissions, no API
-# enablement and no account identifier in the repository, which is why it lands
-# first.
+# deliberately not answered here. The cleanup needs no billing permissions or
+# account identifier in the repository.
 #
-# No Maven, no JDK: the sweep is a shell script over gcloud. It reads the
-# instance prefix and the staleness threshold out of the Java source, so the
-# two sweeps cannot drift apart.
+# No Maven, no JDK: the sweep is a shell script over gcloud. It reads instance
+# prefixes and thresholds from Java and the App Engine identifiers from
+# OpenTofu, so the cleanup paths cannot drift apart.
 on:
   schedule:
     # Daily, and off the hour and the half hour like every other schedule
@@ -62,7 +59,7 @@ jobs:
     # anyway (the provider condition pins the repository and owner IDs), but
     # this keeps them from trying.
     if: github.repository_owner == 'laughingman7743'
-    name: Delete abandoned E2E instances
+    name: Clean up billed E2E fixtures
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -72,8 +69,8 @@ jobs:
       # change was needed for this workflow: the binding in e2e-sa.tf is on
       # repository_id:event_name:ref, so it admits schedule and
       # workflow_dispatch on main whatever the workflow is called. The account
-      # holds project-wide roles/bigtable.admin and roles/spanner.editor, which
-      # is what lets it delete.
+      # holds project-wide roles/bigtable.admin, roles/spanner.editor and
+      # roles/appengine.serviceAdmin, which let it perform these cleanups.
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -94,5 +91,6 @@ jobs:
       - name: Sweep
         env:
           BIGTABLE_IT_PROJECT: flink-gcp
+          CLOUDTASKS_IT_PROJECT: flink-gcp
           SPANNER_IT_PROJECT: flink-gcp
         run: just sweep-e2e

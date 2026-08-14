@@ -26,6 +26,11 @@ resource "google_project_service" "this" {
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
     # Connector E2E targets.
+    # App Engine Standard builds use Cloud Build and store their images in
+    # Artifact Registry. The fixture source itself is staged through the App
+    # Engine application's code bucket (appengine-e2e.tf).
+    "appengine.googleapis.com",
+    "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
     "bigquerystorage.googleapis.com",
     # Two services, because the Bigtable E2E suite (#218) spans both planes: it
@@ -33,6 +38,7 @@ resource "google_project_service" "this" {
     # writes and reads rows through the data one.
     "bigtable.googleapis.com",
     "bigtableadmin.googleapis.com",
+    "cloudbuild.googleapis.com",
     "cloudtasks.googleapis.com",
     "pubsub.googleapis.com",
     # One service, not two as Bigtable needs: Spanner's instance and database

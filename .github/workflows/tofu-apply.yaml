@@ -107,3 +107,16 @@ jobs:
         with:
           action: apply
           github_token: ${{ github.token }}
+
+      # A new manually scaled App Engine version starts with one billed
+      # instance. Stop it immediately after the apply, including after a
+      # partially successful apply, rather than relying on the daily sweep.
+      - name: Set up gcloud for App Engine cleanup
+        if: always() && steps.setup.outcome == 'success'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Stop the App Engine E2E fixture
+        if: always() && steps.setup.outcome == 'success'
+        env:
+          CLOUDTASKS_IT_PROJECT: flink-gcp
+        run: scripts/appengine-e2e-fixture.sh stop

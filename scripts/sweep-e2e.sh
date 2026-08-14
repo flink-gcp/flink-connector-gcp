@@ -14,23 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Delete the instances an E2E run abandoned (issue #246), across every service
-# whose gated suite provisions one: Bigtable (#218) and Spanner (#224).
+# Return every billed E2E fixture to its idle state (issue #246): delete stale
+# Bigtable (#218) and Spanner (#224) instances, and stop the fixed App Engine
+# version used by Cloud Tasks (#630).
 #
-# Each suite's base class already sweeps at the start of a gated class, but the
-# only thing that schedules a gated class is the weekly E2E workflow — so a run
-# whose teardown never executed (killed runner, cancelled job, a JVM crash after
-# @BeforeAll) leaves an instance standing until the next Saturday. At $0.65 a
-# node-hour a Bigtable leak is about $109 over that week, and two classes run
-# per execution; a 100-processing-unit Spanner instance is an order of magnitude
-# cheaper and still not free. This script is the same sweep on a daily schedule,
-# which turns a 7-day worst case into a 1-day one.
+# Bigtable and Spanner sweep at the start of each gated class, and the App
+# Engine lifecycle wrapper stops its version after use. A killed runner,
+# cancelled job or process crash can bypass those guards. This script repeats
+# all three cleanups daily so their worst-case billed lifetime is one day.
 #
-# One script rather than one per service, and the reason is not tidiness: a just
-# recipe stops at its first failing line, so two lines would mean a Bigtable
-# delete failure silently skipping the Spanner sweep — the guardrail failing
-# quietly in the direction that costs money. Here each service is swept
-# independently and the exit status is the worst of them.
+# One script rather than one recipe line per resource type, and the reason is
+# not tidiness: a just recipe stops at its first failing line, so one cleanup
+# failure could silently skip the others — the guardrail failing quietly in the
+# direction that costs money. Here each cleanup is attempted independently and
+# the exit status is the worst of them.
 #
 # The prefix and the staleness threshold are READ FROM THE JAVA SOURCE rather
 # than repeated here, in the e2e-gated-its.sh tradition: a second copy of
@@ -41,8 +38,8 @@
 # deletes instances, and a name it cannot date is a name it does not
 # understand.
 #
-# Exit codes: 0 nothing stale, or everything stale deleted; 1 a delete failed;
-# 2 infrastructure error (no project, source or constant not found, no gcloud).
+# Exit codes: 0 every fixture is idle; 1 a cleanup failed; 2 infrastructure
+# error (no project, source or constant not found, no gcloud).
 
 set -euo pipefail
 
@@ -217,5 +214,19 @@ sweep bigtable BIGTABLE_IT_PROJECT \
     flink-connector-gcp-bigtable AbstractBigtableRealGcpITCase
 sweep spanner SPANNER_IT_PROJECT \
     flink-connector-gcp-spanner AbstractSpannerRealGcpITCase
+
+# App Engine is a fixed persistent version rather than a per-run instance, so
+# its safe steady state is STOPPED with zero instances. The same wrapper is
+# used after OpenTofu apply and by the gated E2E orchestrator; keeping the state
+# transition in one place prevents the three cleanup paths from disagreeing.
+appengine_args=(stop)
+if [ "$dry_run" = true ]; then
+    appengine_args+=(--dry-run)
+fi
+appengine_outcome=0
+"$root/scripts/appengine-e2e-fixture.sh" "${appengine_args[@]}" || appengine_outcome=$?
+if [ "$appengine_outcome" -gt "$status" ]; then
+    status=$appengine_outcome
+fi
 
 exit "$status"
