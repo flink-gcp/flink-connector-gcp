@@ -31,6 +31,8 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
@@ -83,6 +85,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     @Nullable private final WriteMethod writeMethod;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
+    @Nullable private final CdcTableOptions cdcTableOptions;
+    @Nullable private final CdcTableReconciliationPolicy cdcTableReconciliationPolicy;
     @Nullable private final String location;
     @Nullable private final SchemaUpdateOptions schemaUpdateOptions;
     @Nullable private final DefaultStreamOptions defaultStreamOptions;
@@ -105,6 +109,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         this.writeMethod = builder.writeMethod;
         this.createDisposition = builder.createDisposition;
         this.tableCreateOptions = builder.tableCreateOptions;
+        this.cdcTableOptions = builder.cdcTableOptions;
+        this.cdcTableReconciliationPolicy = builder.cdcTableReconciliationPolicy;
         this.location = builder.location;
         this.schemaUpdateOptions = builder.schemaUpdateOptions;
         this.defaultStreamOptions = builder.defaultStreamOptions;
@@ -192,6 +198,12 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
             // there is no second destination for a provider to answer differently for.
             builder.tableCreateOptions(tableCreateOptions);
         }
+        if (cdcTableOptions != null) {
+            builder.cdcTableOptions(cdcTableOptions);
+        }
+        if (cdcTableReconciliationPolicy != null) {
+            builder.cdcTableReconciliationPolicy(cdcTableReconciliationPolicy);
+        }
         if (location != null) {
             builder.location(location);
         }
@@ -231,6 +243,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 .writeMethod(writeMethod)
                 .createDisposition(createDisposition)
                 .tableCreateOptions(tableCreateOptions)
+                .cdcTableOptions(cdcTableOptions)
+                .cdcTableReconciliationPolicy(cdcTableReconciliationPolicy)
                 .location(location)
                 .schemaUpdateOptions(schemaUpdateOptions)
                 .defaultStreamOptions(defaultStreamOptions)
@@ -266,6 +280,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 && writeMethod == that.writeMethod
                 && createDisposition == that.createDisposition
                 && Objects.equals(tableCreateOptions, that.tableCreateOptions)
+                && Objects.equals(cdcTableOptions, that.cdcTableOptions)
+                && cdcTableReconciliationPolicy == that.cdcTableReconciliationPolicy
                 && Objects.equals(location, that.location)
                 && Objects.equals(schemaUpdateOptions, that.schemaUpdateOptions)
                 && Objects.equals(defaultStreamOptions, that.defaultStreamOptions)
@@ -289,6 +305,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                         writeMethod,
                         createDisposition,
                         tableCreateOptions,
+                        cdcTableOptions,
+                        cdcTableReconciliationPolicy,
                         location,
                         schemaUpdateOptions,
                         defaultStreamOptions,
@@ -322,6 +340,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private WriteMethod writeMethod;
         @Nullable private CreateDisposition createDisposition;
         @Nullable private TableCreateOptions tableCreateOptions;
+        @Nullable private CdcTableOptions cdcTableOptions;
+        @Nullable private CdcTableReconciliationPolicy cdcTableReconciliationPolicy;
         @Nullable private String location;
         @Nullable private SchemaUpdateOptions schemaUpdateOptions;
         @Nullable private DefaultStreamOptions defaultStreamOptions;
@@ -411,6 +431,19 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder tableCreateOptions(@Nullable TableCreateOptions tableCreateOptions) {
             this.tableCreateOptions = tableCreateOptions;
+            return this;
+        }
+
+        /** Sets the desired CDC table contract, or {@code null} when CDC is disabled. */
+        public Builder cdcTableOptions(@Nullable CdcTableOptions cdcTableOptions) {
+            this.cdcTableOptions = cdcTableOptions;
+            return this;
+        }
+
+        /** Sets the existing CDC table policy, or {@code null} when CDC is disabled. */
+        public Builder cdcTableReconciliationPolicy(
+                @Nullable CdcTableReconciliationPolicy cdcTableReconciliationPolicy) {
+            this.cdcTableReconciliationPolicy = cdcTableReconciliationPolicy;
             return this;
         }
 

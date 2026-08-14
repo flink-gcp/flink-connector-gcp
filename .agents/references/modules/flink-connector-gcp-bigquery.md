@@ -226,6 +226,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   metadata after the physical row, outside schema derivation (`docs/adr/0111`).
   Preserve key-only delete serialization, reject `UPDATE_BEFORE`, and add Debezium ordering one
   connector profile at a time without a timestamp-only fallback.
+- **CDC auto-creation is a recoverable Tables API plus verified-DDL protocol** (`docs/adr/0112`).
+  Create schema and primary key through `tables.insert`; when maximum staleness is configured,
+  use the pending/complete ownership label, verify through `INFORMATION_SCHEMA.TABLE_OPTIONS`, and
+  never treat REST `Table.maxStaleness` as an oracle.
+  `tables.insert`, `tables.patch`, and `tables.update` all silently dropped the field in the
+  2026-08-14 measurement.
+  Preserve restart completion, parallel idempotence, dynamic-destination re-entry, and the rule
+  that an unlabeled existing table is verified but never modified.
 - `sink.table-create.*` checks shape, never the clusterable scalar type list; the
   field-without-granularity rejection has no builder backstop and is load-bearing
   (`docs/adr/0033`).

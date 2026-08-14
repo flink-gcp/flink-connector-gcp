@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.MemorySize;
 
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -243,8 +244,9 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "The BigQuery location of the destination table, for example 'US' or"
                                     + " 'asia-northeast1'. Setting it avoids a metadata lookup"
-                                    + " when a write connection is opened; under FILE_LOADS it is"
-                                    + " the location load jobs run in, derived from the"
+                                    + " when a write connection is opened and locates CDC"
+                                    + " maximum-staleness jobs; under FILE_LOADS it is the"
+                                    + " location load jobs run in, derived from the"
                                     + " destination dataset when unset.");
 
     public static final ConfigOption<Boolean> SINK_CDC_ENABLED =
@@ -254,7 +256,34 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "Whether the default-stream sink writes the table changelog as"
                                     + " BigQuery CDC UPSERT and DELETE mutations. Requires a"
-                                    + " declared primary key and storage-api-at-least-once.");
+                                    + " declared primary key and storage-api-at-least-once. With"
+                                    + " create-if-needed, the sink creates and verifies the CDC"
+                                    + " table before writing.");
+
+    public static final ConfigOption<Duration> SINK_CDC_MAX_STALENESS =
+            ConfigOptions.key("sink.cdc.max-staleness")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum staleness the sink manages for a CDC table through"
+                                    + " verified DDL. Absent, the property is unmanaged.");
+
+    public static final ConfigOption<Boolean> SINK_CDC_CLEAR_MAX_STALENESS =
+            ConfigOptions.key("sink.cdc.clear-max-staleness")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the desired CDC table state has maximum staleness disabled."
+                                    + " Mutually exclusive with 'sink.cdc.max-staleness'.");
+
+    public static final ConfigOption<CdcTableReconciliationPolicy> SINK_CDC_TABLE_RECONCILIATION =
+            ConfigOptions.key("sink.cdc.table-reconciliation")
+                    .enumType(CdcTableReconciliationPolicy.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether an existing CDC table is only verified or has mutable"
+                                    + " CDC properties reconciled. Defaults to"
+                                    + " verify-only.");
 
     public static final ConfigOption<Boolean> SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS =
             ConfigOptions.key("sink.schema-update.allow-new-fields")

@@ -154,7 +154,7 @@ final class DefaultStreamWriterMetrics {
         appendRetries.inc();
     }
 
-    /** Counts one destination table created by the sink. */
+    /** Counts one destination-table creation request made by the sink. */
     void tableCreated() {
         tablesCreated.inc();
     }

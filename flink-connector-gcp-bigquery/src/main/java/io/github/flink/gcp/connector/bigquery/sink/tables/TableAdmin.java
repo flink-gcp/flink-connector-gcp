@@ -19,7 +19,11 @@ package io.github.flink.gcp.connector.bigquery.sink.tables;
 import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 import java.io.IOException;
@@ -55,6 +59,34 @@ public interface TableAdmin {
      * @throws IOException if the table cannot be created
      */
     void create(TableDestination destination, TableSchema schema, TableCreateOptions options)
+            throws IOException;
+
+    /**
+     * Ensures a CDC destination satisfies its configured table contract.
+     *
+     * <p>The operation is idempotent across retries and parallel subtasks. It creates a missing
+     * table through the Tables API only when the create disposition permits it, completes any
+     * matching partial attempt, and verifies or reconciles an existing table according to policy.
+     *
+     * @param destination the CDC destination
+     * @param schema the physical table schema, without CDC pseudocolumns
+     * @param createOptionsProvider options resolved only when a missing table is created
+     * @param cdcOptions desired primary key and maximum-staleness contract
+     * @param createDisposition whether a missing table may be created
+     * @param reconciliationPolicy how an existing table is handled
+     * @return whether this call found the table absent and requested its creation
+     * @throws RetriableTableAdminException if repeating the operation can complete it
+     * @throws TableAdminException if provisioning fails after creation was requested, or retry
+     *     processing fails; {@link TableAdminException#wasCreationRequested()} retains the outcome
+     * @throws IOException if the destination cannot satisfy the CDC table contract
+     */
+    boolean ensureCdcTable(
+            TableDestination destination,
+            TableSchema schema,
+            TableCreateOptionsProvider createOptionsProvider,
+            CdcTableOptions cdcOptions,
+            CreateDisposition createDisposition,
+            CdcTableReconciliationPolicy reconciliationPolicy)
             throws IOException;
 
     /**

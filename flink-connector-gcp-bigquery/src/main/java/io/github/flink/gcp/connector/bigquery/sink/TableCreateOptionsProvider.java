@@ -25,8 +25,9 @@ import java.io.Serializable;
  * CreateDisposition#CREATE_IF_NEEDED}.
  *
  * <p>This is the creation-metadata hook referenced by {@link TableDestination}: destinations stay
- * pure table identity, while partitioning and clustering of auto-created tables are resolved here.
- * Invoked when the sink creates a missing table, not per record.
+ * pure table identity, while partitioning and clustering are resolved here. It is invoked only when
+ * the sink finds a destination missing and {@link CreateDisposition#CREATE_IF_NEEDED} permits
+ * creation, not for an existing table or per record.
  */
 @PublicEvolving
 @FunctionalInterface
@@ -35,7 +36,7 @@ public interface TableCreateOptionsProvider extends Serializable {
     /**
      * Returns the creation options for the given destination.
      *
-     * @param destination the destination table about to be created
+     * @param destination the destination table to create
      * @return the creation options, never {@code null}
      */
     TableCreateOptions optionsFor(TableDestination destination);

@@ -89,6 +89,22 @@ limitations under the License.
             <artifactId>google-cloud-bigquery</artifactId>
         </dependency>
         <dependency>
+            <!-- The high-level client does not expose If-Match for table patches. CDC uses its
+                 configured transport directly for the conditional label transition. -->
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-core-http</artifactId>
+        </dependency>
+        <dependency>
+            <!-- HTTP request types used by the conditional CDC label patch. -->
+            <groupId>com.google.http-client</groupId>
+            <artifactId>google-http-client</artifactId>
+        </dependency>
+        <dependency>
+            <!-- JSON request encoding for the conditional CDC label patch. -->
+            <groupId>com.google.http-client</groupId>
+            <artifactId>google-http-client-gson</artifactId>
+        </dependency>
+        <dependency>
             <!-- Direct dependency: protobuf types (ByteString, Descriptors) are part of this
                  module's public API surface. Version managed by the libraries BOM. -->
             <groupId>com.google.protobuf</groupId>

@@ -33,6 +33,8 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStream
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 
+import javax.annotation.Nullable;
+
 /**
  * Builder for BigQuery sinks, obtained from {@link BigQuerySink#builder()}.
  *
@@ -51,6 +53,13 @@ public class BigQuerySinkBuilder<T> {
     private BigQueryProtoSerializer<? super T> serializer;
     private AdditionalFields<? super T> additionalFields;
     private CdcOptions<? super T> cdcOptions;
+    private CdcTableOptionsProvider cdcTableOptionsProvider =
+            destination -> CdcTableOptions.defaults();
+    @Nullable private CdcTableOptions fixedCdcTableOptions = CdcTableOptions.defaults();
+    private boolean cdcTableOptionsConfigured;
+    private CdcTableReconciliationPolicy cdcTableReconciliationPolicy =
+            CdcTableReconciliationPolicy.VERIFY_ONLY;
+    private boolean cdcTableReconciliationPolicyConfigured;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             destination -> TableCreateOptions.defaults();
@@ -138,9 +147,13 @@ public class BigQuerySinkBuilder<T> {
      * Enables BigQuery change data capture for records appended through the Storage Write API
      * default stream.
      *
-     * <p>The destination table must already have a BigQuery primary key. The sink adds CDC
-     * pseudocolumns to the write descriptor and row bytes only; they are not added to the physical
-     * table schema used for auto-creation. Rejected for {@link
+     * <p>The desired primary key and optional maximum-staleness policy are configured separately
+     * through {@link #cdcTableOptions(CdcTableOptions)} or {@link
+     * #cdcTableOptionsProvider(CdcTableOptionsProvider)}. The sink creates a missing physical
+     * schema and primary key through the Tables API only when {@link
+     * CreateDisposition#CREATE_IF_NEEDED} permits it. Existing-table handling is selected through
+     * {@link #cdcTableReconciliationPolicy(CdcTableReconciliationPolicy)}. CDC pseudocolumns are
+     * added to write rows only, never to the physical schema. Rejected for {@link
      * WriteMethod#STORAGE_API_EXACTLY_ONCE} and {@link WriteMethod#FILE_LOADS}.
      *
      * @param cdcOptions the per-record CDC providers
@@ -148,6 +161,59 @@ public class BigQuerySinkBuilder<T> {
      */
     public BigQuerySinkBuilder<T> cdcOptions(CdcOptions<? super T> cdcOptions) {
         this.cdcOptions = Preconditions.checkNotNull(cdcOptions, "cdcOptions must not be null");
+        return this;
+    }
+
+    /**
+     * Applies the same desired CDC table contract to every destination.
+     *
+     * <p>Primary-key columns are required only when the sink must create a missing table or when
+     * {@link CdcTableReconciliationPolicy#RECONCILE} needs an authoritative key. An existing table
+     * under {@link CdcTableReconciliationPolicy#VERIFY_ONLY} may supply its key from BigQuery
+     * metadata. Overrides any previously set options or provider.
+     *
+     * @param cdcTableOptions the desired CDC table contract
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> cdcTableOptions(CdcTableOptions cdcTableOptions) {
+        Preconditions.checkNotNull(cdcTableOptions, "cdcTableOptions must not be null");
+        this.cdcTableOptionsProvider = destination -> cdcTableOptions;
+        this.fixedCdcTableOptions = cdcTableOptions;
+        this.cdcTableOptionsConfigured = true;
+        return this;
+    }
+
+    /**
+     * Resolves the desired CDC table contract per destination. Overrides fixed CDC table options.
+     *
+     * @param cdcTableOptionsProvider the provider
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> cdcTableOptionsProvider(
+            CdcTableOptionsProvider cdcTableOptionsProvider) {
+        this.cdcTableOptionsProvider =
+                Preconditions.checkNotNull(
+                        cdcTableOptionsProvider, "cdcTableOptionsProvider must not be null");
+        this.fixedCdcTableOptions = null;
+        this.cdcTableOptionsConfigured = true;
+        return this;
+    }
+
+    /**
+     * Sets how the sink handles a CDC destination table that already exists. Defaults to {@link
+     * CdcTableReconciliationPolicy#VERIFY_ONLY}.
+     *
+     * <p>This policy is independent of {@link CreateDisposition}: reconciliation never authorizes
+     * creation under {@link CreateDisposition#CREATE_NEVER}.
+     *
+     * @param policy the existing-table policy
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> cdcTableReconciliationPolicy(
+            CdcTableReconciliationPolicy policy) {
+        this.cdcTableReconciliationPolicy =
+                Preconditions.checkNotNull(policy, "policy must not be null");
+        this.cdcTableReconciliationPolicyConfigured = true;
         return this;
     }
 
@@ -164,9 +230,10 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
-     * Applies the same creation options (partitioning, clustering) to every table created under
-     * {@link CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
-     * Defaults to {@link TableCreateOptions#defaults()} (plain tables).
+     * Applies the same creation options to every table created under {@link
+     * CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
+     * Defaults to {@link TableCreateOptions#defaults()} (plain tables). CDC primary-key and
+     * maximum-staleness properties belong to {@link CdcTableOptions} instead.
      *
      * @param tableCreateOptions the creation options
      * @return this builder
@@ -178,8 +245,8 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
-     * Resolves creation options (partitioning, clustering) per destination for tables created under
-     * {@link CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
+     * Resolves creation options per destination for tables created under {@link
+     * CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
      *
      * @param tableCreateOptionsProvider the provider
      * @return this builder
@@ -382,8 +449,11 @@ public class BigQuerySinkBuilder<T> {
                         serializer,
                         additionalFields,
                         cdcOptions,
+                        cdcOptions != null,
                         createDisposition,
                         tableCreateOptionsProvider,
+                        cdcTableOptionsProvider,
+                        cdcTableReconciliationPolicy,
                         schemaUpdateOptions,
                         failedRowHandler,
                         location,
@@ -424,6 +494,20 @@ public class BigQuerySinkBuilder<T> {
                 "cdcOptions(...) is only valid for WriteMethod.STORAGE_API_AT_LEAST_ONCE"
                         + " (write method is %s).",
                 writeMethod.name());
+        Preconditions.checkState(
+                cdcOptions != null
+                        || (!cdcTableOptionsConfigured && !cdcTableReconciliationPolicyConfigured),
+                "cdcTableOptions(...), cdcTableOptionsProvider(...), and"
+                        + " cdcTableReconciliationPolicy(...) are only valid with"
+                        + " cdcOptions(...).");
+        Preconditions.checkState(
+                cdcOptions == null
+                        || cdcTableReconciliationPolicy != CdcTableReconciliationPolicy.RECONCILE
+                        || fixedCdcTableOptions == null
+                        || !fixedCdcTableOptions.getPrimaryKeyColumns().isEmpty(),
+                "CDC table reconciliation requires CdcTableOptions.primaryKeyColumns(...). A"
+                        + " cdcTableOptionsProvider(...) must return primary-key columns for every"
+                        + " destination.");
         // FILE_LOADS stages to Cloud Storage and submits load jobs; no emulator here stands in for
         // GCS, so an endpoint would be honored by the metadata half of that write method and
         // silently ignored by the half that actually moves the rows.

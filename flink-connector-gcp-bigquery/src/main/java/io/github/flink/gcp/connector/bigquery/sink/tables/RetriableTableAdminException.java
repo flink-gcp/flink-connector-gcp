@@ -33,7 +33,7 @@ import java.io.IOException;
  * reason {@code AppendErrorClassifier.isExistenceMasked} is.
  */
 @Internal
-public final class RetriableTableAdminException extends IOException {
+public final class RetriableTableAdminException extends TableAdminException {
 
     private static final long serialVersionUID = 1L;
 
@@ -44,6 +44,10 @@ public final class RetriableTableAdminException extends IOException {
      * @param cause the failure from the client
      */
     public RetriableTableAdminException(String message, Throwable cause) {
-        super(message, cause);
+        this(message, cause, false);
+    }
+
+    RetriableTableAdminException(String message, Throwable cause, boolean creationRequested) {
+        super(message, cause, creationRequested);
     }
 }

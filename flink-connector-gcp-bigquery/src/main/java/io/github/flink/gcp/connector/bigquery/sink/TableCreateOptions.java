@@ -35,7 +35,9 @@ import java.util.Objects;
  *
  * <p>The table <em>schema</em> is not part of these options — it always comes from {@link
  * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer#getTableSchema}.
- * Options only affect table creation; they are never applied to tables that already exist.
+ * Partitioning and clustering only affect table creation. CDC properties are configured through
+ * {@link CdcTableOptions} because they also describe existing-table verification and
+ * reconciliation.
  *
  * <p>Instances are immutable and serializable. Use {@link #defaults()} for plain, unpartitioned
  * tables.

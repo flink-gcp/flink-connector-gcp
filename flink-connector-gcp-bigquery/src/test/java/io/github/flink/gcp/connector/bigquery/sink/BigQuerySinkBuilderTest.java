@@ -47,6 +47,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
+import java.io.ObjectStreamClass;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -60,6 +62,12 @@ class BigQuerySinkBuilderTest {
             TableDestination.of("my-project", "my_dataset", "my_table");
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
+
+    @Test
+    void sinkConfigKeepsItsLegacySerializationIdentity() {
+        assertThat(ObjectStreamClass.lookup(BigQuerySinkConfig.class).getSerialVersionUID())
+                .isEqualTo(1L);
+    }
 
     /** A trivial serializable test serializer. */
     private static class TestSerializer extends BigQueryProtoSerializer<Object> {
@@ -182,6 +190,11 @@ class BigQuerySinkBuilderTest {
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
                                                 .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(
+                                                        java.util.Collections.singletonList("f"))
+                                                .build())
                                 .build();
 
         Descriptors.Descriptor descriptor = sink.getConfig().getWriteDescriptor(DESTINATION);
@@ -230,6 +243,7 @@ class BigQuerySinkBuilderTest {
                         BigQuerySink.<String>builder()
                                 .destination(DESTINATION)
                                 .serializer(new TestSerializer())
+                                .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .cdcOptions(options)
                                 .build();
 
@@ -277,6 +291,98 @@ class BigQuerySinkBuilderTest {
                 .hasMessageContaining(
                         "cdcOptions(...) is only valid for"
                                 + " WriteMethod.STORAGE_API_AT_LEAST_ONCE");
+    }
+
+    @Test
+    void cdcOptionsAllowCreateIfNeededByDefault() {
+        CdcOptions<String> options =
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .cdcOptions(options)
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(
+                                                        java.util.Collections.singletonList("id"))
+                                                .maxStaleness(Duration.ofMinutes(10))
+                                                .build())
+                                .build();
+
+        assertThat(sink.getConfig().getCreateDisposition())
+                .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
+        assertThat(
+                        sink.getConfig()
+                                .getCdcTableOptionsProvider()
+                                .optionsFor(DESTINATION)
+                                .getPrimaryKeyColumns())
+                .containsExactly("id");
+    }
+
+    @Test
+    void fixedCdcAutoCreationDefersMissingTablePrimaryKeyValidationToRuntime() {
+        CdcOptions<String> cdc =
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+
+        assertThat(
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .cdcOptions(cdc)
+                                .build())
+                .isInstanceOf(BigQueryDefaultStreamSink.class);
+
+        assertThat(
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .cdcOptions(cdc)
+                                .cdcTableOptionsProvider(
+                                        destination ->
+                                                CdcTableOptions.builder()
+                                                        .primaryKeyColumns(
+                                                                java.util.Collections.singletonList(
+                                                                        "id"))
+                                                        .build())
+                                .build())
+                .isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+
+    @Test
+    void fixedMaximumStalenessRequiresCdcAtBuildTime() {
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .cdcTableOptions(
+                                                CdcTableOptions.builder()
+                                                        .maxStaleness(Duration.ofMinutes(10))
+                                                        .build())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("only valid with cdcOptions(...)");
+    }
+
+    @Test
+    void reconcileRequiresAnAuthoritativePrimaryKey() {
+        CdcOptions<String> cdc =
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .destination(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .cdcOptions(cdc)
+                                        .cdcTableReconciliationPolicy(
+                                                CdcTableReconciliationPolicy.RECONCILE)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("CdcTableOptions.primaryKeyColumns(...)");
     }
 
     @Test

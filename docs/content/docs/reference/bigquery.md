@@ -35,15 +35,18 @@ section; the three forms of the Default column are explained
 | `destination` | **required**, unless `destinationResolver` is set | Writes every record to one fixed table |
 | `destinationResolver` | — | Resolves the table per record for every write method |
 | `serializer` | **required** | Converts each record into the protobuf row the Storage Write API accepts, or into `null` to skip it |
-| `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job. `CREATE_IF_NEEDED` also lets `STORAGE_API_EXACTLY_ONCE` wait out the post-creation propagation window at commit time, so `CREATE_NEVER` opts out of both |
+| `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job. It does not authorize or deny reconciliation of an existing CDC table. `CREATE_IF_NEEDED` also lets `STORAGE_API_EXACTLY_ONCE` wait out the post-creation propagation window at commit time, so `CREATE_NEVER` opts out of both on that write path |
 | `tableCreateOptions` | plain tables | [Creation settings](#tablecreateoptions) for every table the sink creates |
 | `tableCreateOptionsProvider` | — | The same, resolved per destination. Overrides `tableCreateOptions` |
 | `schemaUpdateOptions` | updates disabled | [What the sink may change](#schemaupdateoptions) about a destination table's schema |
 | `failedRowHandler` | `FailureHandler.failJob()` | What happens to a row that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
-| `location` | — | The BigQuery location shared by the destination tables. Setting it avoids a per-table metadata lookup when a write connection is opened; under `FILE_LOADS` it is the location every load job runs in and is recovered under, derived from each job's destination dataset when unset — which is what a sink routing to datasets in several regions should rely on |
+| `location` | — | The BigQuery location shared by the destination tables. Setting it avoids a per-table metadata lookup when a write connection is opened and locates CDC maximum-staleness jobs; under `FILE_LOADS` it is the location every load job runs in and is recovered under, derived from each job's destination dataset when unset — which is what a sink routing to datasets in several regions should rely on |
 | `serviceAccountKeyFile` | *unset → ADC* | Uses the service account in this JSON key file for every BigQuery client and for GCS staging under `FILE_LOADS`. The file is loaded at runtime and must exist on each TaskManager; rejected with either emulator endpoint |
 | `additionalFields` | no additional fields | Appends ordered [additional physical fields]({{< relref "docs/connectors/datastream/bigquery" >}}#additional-physical-fields) after serialization for every write method |
-| `cdcOptions` | CDC disabled | Adds [CDC metadata]({{< relref "docs/connectors/datastream/bigquery" >}}#change-data-capture) to non-skipped rows. `STORAGE_API_AT_LEAST_ONCE` only |
+| `cdcOptions` | CDC disabled | Adds [CDC metadata]({{< relref "docs/connectors/datastream/bigquery" >}}#change-data-capture) to non-skipped rows. Requires `STORAGE_API_AT_LEAST_ONCE` and a BigQuery primary key |
+| `cdcTableOptions` | primary key undeclared; maximum staleness unmanaged | Applies one [CDC table contract](#cdctableoptions) to every destination. Required with a primary key when a missing table must be created or the reconciliation policy is `RECONCILE` |
+| `cdcTableOptionsProvider` | — | The same contract, resolved per destination. Overrides `cdcTableOptions` |
+| `cdcTableReconciliationPolicy` | `VERIFY_ONLY` | Verifies without starting adoption or drift repair, or opts into convergence through `RECONCILE`. Either policy resumes a matching pending attempt. Independent of `createDisposition` |
 | `defaultStreamOptions` | [defaults](#defaultstreamoptions) | Tuning for `STORAGE_API_AT_LEAST_ONCE`; rejected for the other two |
 | `bufferedStreamOptions` | **required** for `STORAGE_API_EXACTLY_ONCE` | [Tuning](#bufferedstreamoptions) for that method; rejected for the other two |
 | `fileLoadsOptions` | **required** for `FILE_LOADS` | [Settings](#fileloadsoptions) for that method; rejected for the other two |
@@ -179,8 +182,10 @@ where the daily job and destination-table limits that shape `minCheckpointInterv
 
 ## `TableCreateOptions`
 
-Applied by `tableCreateOptions(...)` or `tableCreateOptionsProvider(...)` to tables the sink
-creates. **Creation only** — an existing table is never modified by them. See
+Applied by `tableCreateOptions(...)` or `tableCreateOptionsProvider(...)` only when the sink creates
+a missing table under `CREATE_IF_NEEDED`.
+Partitioning and clustering are **creation only**.
+See
 [Table auto-creation]({{< relref "docs/connectors/datastream/bigquery" >}}#table-auto-creation).
 
 | Option | Default | What it does |
@@ -189,6 +194,19 @@ creates. **Creation only** — an existing table is never modified by them. See
 | `timePartitioning(type, field)` | unpartitioned | Partitions on the given `TIMESTAMP`, `DATE` or `DATETIME` column instead. A `DATE` column takes no `HOUR` granularity — BigQuery refuses that table at creation, and only the SQL layer checks it client-side |
 | `timePartitioningExpiration` | partitions never expire | How long BigQuery keeps a partition |
 | `clusteredFields` | not clustered | Clusters on the given columns in precedence order, at most four |
+
+## `CdcTableOptions`
+
+Applied by `cdcTableOptions(...)` or `cdcTableOptionsProvider(...)` to each CDC destination.
+The selected reconciliation policy decides whether an existing table is only verified or has its
+managed mutable properties converged.
+Primary-key drift is always rejected.
+
+| Option | Default | What it does |
+|---|---|---|
+| `primaryKeyColumns` | undeclared | Declares the unenforced BigQuery primary key. Required when the sink creates a missing table or uses `RECONCILE`; an existing table under `VERIFY_ONLY` may supply its nonempty key from BigQuery metadata |
+| `maxStaleness` | unmanaged | Sets and verifies maximum staleness through DDL and `INFORMATION_SCHEMA`. Adds query-job permission, latency, and metadata-query cost. Overrides an earlier `clearMaxStaleness()` call |
+| `clearMaxStaleness` | unmanaged | Explicitly removes maximum staleness. Overrides an earlier `maxStaleness(...)` call; omitting both leaves the property unmanaged |
 
 ## `SchemaUpdateOptions`
 

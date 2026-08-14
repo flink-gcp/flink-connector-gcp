@@ -117,6 +117,8 @@ SQL and Table API jobs can preserve a Flink upsert changelog as BigQuery CDC mut
 placing pseudocolumns or Debezium maps in the table schema.
 Jobs must model a primary-key change as delete plus upsert and must not send update-before rows to
 the runtime adapter.
-The destination still needs a pre-existing BigQuery primary key until #627 lands.
+The destination must have a BigQuery primary key.
+ADR-0112 records how both CDC APIs can create it and apply optional maximum staleness without
+treating a successful but lossy REST field as evidence.
 The formatted-sequence route is usable immediately, while Debezium maps become operational one
 connector profile at a time through #629, #631, and #633.

@@ -322,36 +322,55 @@ has a BigQuery primary key.
 The sink adds BigQuery's `_CHANGE_TYPE` pseudocolumn and, when configured, the
 `_CHANGE_SEQUENCE_NUMBER` pseudocolumn to each non-skipped row.
 
-```java
-Sink<MyMutation> sink =
-        BigQuerySink.<MyMutation>builder()
-                .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
-                .destination(
-                        TableDestination.of("my-project", "my_dataset", "accounts"))
-                .serializer(new AccountMutationSerializer())
-                .createDisposition(CreateDisposition.CREATE_NEVER)
-                .cdcOptions(
-                        CdcOptions.<MyMutation>builder(
-                                        mutation ->
-                                                mutation.deleted()
-                                                        ? CdcChangeType.DELETE
-                                                        : CdcChangeType.UPSERT)
-                                .sequenceNumberProvider(MyMutation::sequenceNumber)
-                                .build())
-                .build();
-```
+{{< java-snippet file="BigQueryCdcTableCreation.java" tag="bigquery-cdc-table-creation" >}}
 
 CDC has the following table and write-path requirements:
 
-- The destination table must already declare a `PRIMARY KEY ... NOT ENFORCED` constraint.
-  The connector cannot add a primary key to an existing table.
-- This release does not add primary keys or `max_staleness` when it auto-creates a table.
-  Pre-create each CDC destination and select `CREATE_NEVER`, as in the example.
-  Connector-managed CDC table creation is tracked by
-  [#627]({{< param BookRepo >}}/issues/627).
+- `CdcTableOptions` declares the desired primary key and optional maximum-staleness state.
+  A dynamic-destination sink supplies it through `cdcTableOptionsProvider(...)`.
+  The primary key is required when `CREATE_IF_NEEDED` encounters a missing table and whenever the
+  reconciliation policy is `RECONCILE`.
+  An existing table under the default `VERIFY_ONLY` policy may instead supply its nonempty key
+  through BigQuery metadata.
+- `maxStaleness(...)` manages a duration, while `clearMaxStaleness()` explicitly removes one.
+  Leaving both unset means that maximum staleness is unmanaged.
+  `INFORMATION_SCHEMA.TABLE_OPTIONS` exposes a never-set value as absent and a value cleared with
+  `NULL` as a zero interval; the sink accepts both as disabled.
+  BigQuery accepts but silently drops the field through `tables.insert`, `tables.patch`, and
+  `tables.update` in the 2026-08-14 service measurement.
+  The sink therefore applies a managed value through `ALTER TABLE`, verifies it through
+  `INFORMATION_SCHEMA.TABLE_OPTIONS`, and only then writes CDC rows.
+  This path additionally needs `bigquery.jobs.create` and table-update permission and submits
+  metadata query jobs; leaving both maximum-staleness options unset submits none.
+- `CdcTableReconciliationPolicy.VERIFY_ONLY` is the conservative default for existing tables.
+  It detects drift without modifying an unlabeled table.
+  `RECONCILE` adopts an unlabeled table and converges only maximum staleness and the connector's
+  provisioning label; it never changes the primary key, partitioning, clustering, or schema.
+  Managing that label requires table-update permission even when maximum staleness is unmanaged;
+  the label-only path submits no query job.
+- `CreateDisposition` remains independent of reconciliation.
+  `CREATE_NEVER` fails for a missing table, but either policy may verify or reconcile a table that
+  already exists.
+  [ADR-0112]({{< param BookRepo >}}/blob/main/docs/adr/0112-bigquery-cdc-auto-creation-combines-the-tables-api-with-verified-ddl.md)
+  records the behavior matrix, recovery protocol, ownership boundary, and reconsideration trigger.
 - CDC is valid only with `STORAGE_API_AT_LEAST_ONCE`, which writes through the Storage Write API
   default stream.
   The builder rejects it with buffered exactly-once streams and file loads.
+
+`CreateDisposition` and `CdcTableReconciliationPolicy` combine as follows:
+
+| Create disposition | `VERIFY_ONLY` (default) | `RECONCILE` |
+|---|---|---|
+| `CREATE_IF_NEEDED` | Create a missing table; verify an existing table | Create a missing table; converge an existing table |
+| `CREATE_NEVER` | Fail if the table is missing; verify an existing table | Fail if the table is missing; converge an existing table |
+
+`VERIFY_ONLY` does not start adoption or drift repair.
+If a table carries the matching connector-owned pending label, either policy resumes that partial
+attempt, which may apply the required maximum-staleness DDL before completing the label.
+
+A running job restored from a job graph serialized before CDC auto-creation existed keeps its
+pre-created-table behavior after a connector upgrade.
+Redeploy the job from the new builder or Table API plan to opt into connector-managed creation.
 
 The configured serializer remains the source of the physical `TableSchema`.
 The sink augments only the protobuf descriptor sent to the default stream, so the two CDC
@@ -1035,6 +1054,7 @@ tables in the committer, and that creation is retried too — on `schemaReconcil
 write method's budget for contention on the same per-table metadata quota.
 
 Retried or not, `tablesCreated` counts one creation per table this subtask asked for.
+Eager CDC verification of an existing table does not increment it.
 
 A failure that repeating cannot fix — a `bigquery.tables.create` denial, an invalid schema — is not
 retried and surfaces immediately. Nor is the neighbouring `quotaExceeded` reason, which BigQuery
@@ -2316,7 +2336,7 @@ same thing in each.
 | `inFlightBatches` | gauge | appends the service has not answered |
 | `openDestinations` | gauge | destinations holding a live stream writer, after eviction |
 | `appendRetries` | counter | appends re-issued while repairing a destination |
-| `tablesCreated` | counter | table creations this subtask asked for under `CREATE_IF_NEEDED`; a creation another subtask won, or one for a table that turned out to exist, counts here too |
+| `tablesCreated` | counter | table creations this subtask asked for under `CREATE_IF_NEEDED`; a creation another subtask won counts here too, while eager CDC verification of an existing table does not |
 | `schemaReconciliations` | counter | table schema updates applied under `schemaUpdateOptions(...)` |
 | `errorClass.CODE.errors` | counter | failed appends by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |

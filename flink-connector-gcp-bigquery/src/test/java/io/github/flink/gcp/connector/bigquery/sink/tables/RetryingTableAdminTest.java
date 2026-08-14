@@ -21,7 +21,11 @@ import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
 
@@ -38,6 +42,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class RetryingTableAdminTest {
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
+    private static final CdcTableOptions CDC_OPTIONS =
+            CdcTableOptions.builder().primaryKeyColumns(List.of("f")).build();
 
     private static final TableSchema SCHEMA =
             TableSchema.newBuilder()
@@ -68,11 +74,18 @@ class RetryingTableAdminTest {
                         new BigQueryError("rateLimitExceeded", null, "Exceeded rate limits")));
     }
 
+    private static RetriableTableAdminException rateLimitedAfterCreation() {
+        return new RetriableTableAdminException(
+                "Failed after requesting creation of " + DESTINATION, rateLimited(), true);
+    }
+
     /** Records every call and fails creations off a script, one entry per attempt. */
     private static final class ScriptedTableAdmin implements TableAdmin {
 
         private final List<TableDestination> creates = new ArrayList<>();
         private final Deque<IOException> creationFailures = new ArrayDeque<>();
+        private final Deque<IOException> cdcFailures = new ArrayDeque<>();
+        private final Deque<Boolean> cdcResults = new ArrayDeque<>();
         private int getSchemaCalls;
         private int updateSchemaCalls;
 
@@ -85,6 +98,23 @@ class RetryingTableAdminTest {
             if (failure != null) {
                 throw failure;
             }
+        }
+
+        @Override
+        public boolean ensureCdcTable(
+                TableDestination destination,
+                TableSchema schema,
+                TableCreateOptionsProvider optionsProvider,
+                CdcTableOptions cdcOptions,
+                CreateDisposition createDisposition,
+                CdcTableReconciliationPolicy reconciliationPolicy)
+                throws IOException {
+            create(destination, schema, optionsProvider.optionsFor(destination));
+            IOException failure = cdcFailures.poll();
+            if (failure != null) {
+                throw failure;
+            }
+            return cdcResults.isEmpty() || cdcResults.remove();
         }
 
         @Override
@@ -101,6 +131,16 @@ class RetryingTableAdminTest {
         }
     }
 
+    private static boolean ensureCdc(TableAdmin admin) throws IOException {
+        return admin.ensureCdcTable(
+                DESTINATION,
+                SCHEMA,
+                destination -> TableCreateOptions.defaults(),
+                CDC_OPTIONS,
+                CreateDisposition.CREATE_IF_NEEDED,
+                CdcTableReconciliationPolicy.VERIFY_ONLY);
+    }
+
     @Test
     void repeatsARateLimitedCreationUntilItSucceeds() throws Exception {
         ScriptedTableAdmin delegate = new ScriptedTableAdmin();
@@ -111,6 +151,83 @@ class RetryingTableAdminTest {
                 .create(DESTINATION, SCHEMA, TableCreateOptions.defaults());
 
         assertThat(delegate.creates).containsExactly(DESTINATION, DESTINATION, DESTINATION);
+    }
+
+    @Test
+    void repeatsARetriableCdcProvisioningStep() throws Exception {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.creationFailures.add(rateLimited());
+
+        boolean creationRequested = ensureCdc(new RetryingTableAdmin(delegate, fast(3)));
+
+        assertThat(creationRequested).isTrue();
+        assertThat(delegate.creates).containsExactly(DESTINATION, DESTINATION);
+    }
+
+    @Test
+    void preservesACreationRequestAcrossAPostCreateRetry() throws Exception {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.creationFailures.add(rateLimitedAfterCreation());
+        delegate.cdcResults.add(false);
+
+        boolean creationRequested = ensureCdc(new RetryingTableAdmin(delegate, fast(3)));
+
+        assertThat(creationRequested).isTrue();
+        assertThat(delegate.creates).containsExactly(DESTINATION, DESTINATION);
+    }
+
+    @Test
+    void preservesACreationRequestWhenALaterAttemptFailsTerminally() {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.creationFailures.add(rateLimitedAfterCreation());
+        delegate.cdcFailures.add(new IOException("verification denied"));
+
+        assertThatThrownBy(() -> ensureCdc(new RetryingTableAdmin(delegate, fast(3))))
+                .isExactlyInstanceOf(TableAdminException.class)
+                .hasMessage("verification denied")
+                .satisfies(
+                        failure ->
+                                assertThat(((TableAdminException) failure).wasCreationRequested())
+                                        .isTrue());
+        assertThat(delegate.creates).containsExactly(DESTINATION, DESTINATION);
+    }
+
+    @Test
+    void preservesACreationRequestWhenTheCdcRetryBudgetIsExhausted() {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.creationFailures.add(rateLimitedAfterCreation());
+        delegate.creationFailures.add(rateLimited());
+        delegate.creationFailures.add(rateLimited());
+
+        assertThatThrownBy(() -> ensureCdc(new RetryingTableAdmin(delegate, fast(3))))
+                .isExactlyInstanceOf(TableAdminException.class)
+                .hasMessageContaining("retry budget is exhausted")
+                .satisfies(
+                        failure ->
+                                assertThat(((TableAdminException) failure).wasCreationRequested())
+                                        .isTrue());
+        assertThat(delegate.creates).hasSize(3);
+    }
+
+    @Test
+    void preservesACreationRequestWhenCdcRetryBackoffIsInterrupted() {
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.creationFailures.add(rateLimitedAfterCreation());
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> ensureCdc(new RetryingTableAdmin(delegate, fast(3))))
+                    .isExactlyInstanceOf(TableAdminException.class)
+                    .hasMessageContaining("Interrupted while waiting")
+                    .satisfies(
+                            failure ->
+                                    assertThat(
+                                                    ((TableAdminException) failure)
+                                                            .wasCreationRequested())
+                                            .isTrue());
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(delegate.creates).containsExactly(DESTINATION);
     }
 
     @Test

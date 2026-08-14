@@ -217,7 +217,10 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 |---|---|---|
 | `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
 | `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
-| `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
+| `sink.cdc.max-staleness` | Duration | `CdcTableOptions.maxStaleness(...)`. Absent means that the property is unmanaged |
+| `sink.cdc.clear-max-staleness` | Boolean | `CdcTableOptions.clearMaxStaleness()`. Explicitly removes a previous value and is mutually exclusive with `sink.cdc.max-staleness` |
+| `sink.cdc.table-reconciliation` | Enum | `cdcTableReconciliationPolicy(...)` — `verify-only` (default) or `reconcile`. Selects whether an existing table is only checked or has managed mutable CDC properties converged |
+| `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never`. This controls only whether a missing table may be created; existing-table handling is independent |
 | `sink.location` | String | `location(...)` |
 | `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
 | `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load/query option applies to `write-append` and `write-truncate-data`, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
@@ -232,8 +235,44 @@ Set `sink.cdc.enabled` to `true` to consume a Flink upsert changelog and write B
 and `DELETE` mutations through the Storage Write API default stream.
 The option defaults to `false`, is rejected with `storage-api-exactly-once` or `file-loads`, and
 requires the sink DDL to declare a `PRIMARY KEY ... NOT ENFORCED`.
-The destination table must already have the corresponding BigQuery primary key until
-[#627]({{< param BookRepo >}}/issues/627) adds primary-key table creation.
+Under the default `create-if-needed`, the sink creates a missing table's schema and BigQuery
+primary key through the Tables API.
+Set `sink.cdc.max-staleness` when the sink should also manage that CDC policy, or set
+`sink.cdc.clear-max-staleness=true` to remove a previous value.
+Leaving both unset means that maximum staleness is unmanaged.
+`INFORMATION_SCHEMA.TABLE_OPTIONS` exposes a never-set value as absent and a value cleared with
+`NULL` as a zero interval; the sink accepts both as disabled.
+BigQuery silently dropped `maxStaleness` through all three measured Tables API write methods on
+2026-08-14, so the sink applies a configured value through `ALTER TABLE` and verifies it through
+`INFORMATION_SCHEMA.TABLE_OPTIONS` before opening the first writer.
+That optional path needs `bigquery.jobs.create` and table-update permission and submits metadata
+query jobs; leaving both maximum-staleness options unset submits none.
+The default `sink.cdc.table-reconciliation=verify-only` checks existing tables without modifying
+an unlabeled table.
+Select `reconcile` to adopt an existing table and converge maximum staleness plus the connector
+provisioning label.
+Managing that label requires table-update permission even when maximum staleness is unmanaged;
+the label-only path submits no query job.
+Reconciliation never changes the primary key, partitioning, clustering, or schema.
+`sink.create-disposition=create-never` still permits verification or reconciliation of an existing
+table; it only denies creation when the table is missing.
+
+The two options combine as follows:
+
+| `sink.create-disposition` | `verify-only` (default) | `reconcile` |
+|---|---|---|
+| `create-if-needed` | Create a missing table; verify an existing table | Create a missing table; converge an existing table |
+| `create-never` | Fail if the table is missing; verify an existing table | Fail if the table is missing; converge an existing table |
+
+`verify-only` does not start adoption or drift repair.
+If a table carries the matching connector-owned pending label, either policy resumes that partial
+attempt, which may apply the required maximum-staleness DDL before completing the label.
+
+A job restored from a job graph serialized before CDC auto-creation existed keeps that pre-created
+behavior until it is redeployed from a new plan.
+See
+[ADR-0112]({{< param BookRepo >}}/blob/main/docs/adr/0112-bigquery-cdc-auto-creation-combines-the-tables-api-with-verified-ddl.md)
+for the service evidence, recovery protocol, and ownership boundary.
 
 `INSERT` and `UPDATE_AFTER` become `UPSERT`, while `DELETE` becomes `DELETE`.
 `UPDATE_BEFORE` is rejected instead of being guessed to be a delete, because an ordinary update
@@ -272,7 +311,10 @@ CREATE TABLE current_orders (
   'project' = 'my-project',
   'dataset' = 'analytics',
   'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true'
+  'sink.cdc.enabled' = 'true',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min',
+  'sink.cdc.table-reconciliation' = 'reconcile'
 );
 
 INSERT INTO current_orders
@@ -307,7 +349,10 @@ CREATE TABLE current_orders_from_debezium (
   'project' = 'my-project',
   'dataset' = 'analytics',
   'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true'
+  'sink.cdc.enabled' = 'true',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min',
+  'sink.cdc.table-reconciliation' = 'reconcile'
 );
 
 INSERT INTO current_orders_from_debezium
@@ -328,8 +373,8 @@ PostgreSQL, MySQL GTID, and repository-native Spanner profiles are delivered by
 ### Table creation
 
 Setting any one of these builds a `TableCreateOptions`; the rest stay at the connector's defaults.
-They apply **only when the sink creates the table** — an existing table is never repartitioned or
-reclustered by them, whatever the DDL says.
+Partitioning and clustering apply **only when the sink creates the table** — an existing table is
+never repartitioned or reclustered by them, whatever the DDL says.
 
 They do not *authorize* creation: `sink.create-disposition` does, and it defaults to
 `create-if-needed`, so the settings alone configure the table an unconfigured DDL already creates.

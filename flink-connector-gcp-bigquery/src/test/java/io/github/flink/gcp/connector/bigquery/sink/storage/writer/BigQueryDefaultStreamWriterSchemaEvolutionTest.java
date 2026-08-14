@@ -33,10 +33,13 @@ import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
@@ -159,6 +162,18 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                 TableDestination destination, TableSchema schema, TableCreateOptions options) {
             creates.add(destination);
             liveSchema = schema;
+        }
+
+        @Override
+        public boolean ensureCdcTable(
+                TableDestination destination,
+                TableSchema schema,
+                TableCreateOptionsProvider optionsProvider,
+                CdcTableOptions cdcOptions,
+                CreateDisposition createDisposition,
+                CdcTableReconciliationPolicy reconciliationPolicy) {
+            create(destination, schema, optionsProvider.optionsFor(destination));
+            return true;
         }
 
         @Override

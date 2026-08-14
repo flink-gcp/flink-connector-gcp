@@ -54,8 +54,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final BigQueryProtoSerializer<? super T> serializer;
     @Nullable private final CdcOptions<? super T> cdcOptions;
     @Nullable private final ProtoRowAugmentingSerializer<T> rowAugmentingSerializer;
+    private final boolean manageCdcTableCreation;
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
+    private final CdcTableOptionsProvider cdcTableOptionsProvider;
+    private final CdcTableReconciliationPolicy cdcTableReconciliationPolicy;
     private final SchemaUpdateOptions schemaUpdateOptions;
     private final FailureHandler<? super FailedRow> failedRowHandler;
     private final String location;
@@ -68,8 +71,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             BigQueryProtoSerializer<? super T> serializer,
             @Nullable AdditionalFields<? super T> additionalFields,
             @Nullable CdcOptions<? super T> cdcOptions,
+            boolean manageCdcTableCreation,
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
+            CdcTableOptionsProvider cdcTableOptionsProvider,
+            CdcTableReconciliationPolicy cdcTableReconciliationPolicy,
             SchemaUpdateOptions schemaUpdateOptions,
             FailureHandler<? super FailedRow> failedRowHandler,
             String location,
@@ -99,8 +105,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
                                 cdcOnly
                                         ? "Failed to add BigQuery CDC metadata to a serialized row"
                                         : "Failed to add fields to a serialized BigQuery row");
+        this.manageCdcTableCreation = manageCdcTableCreation;
         this.createDisposition = createDisposition;
         this.tableCreateOptionsProvider = tableCreateOptionsProvider;
+        this.cdcTableOptionsProvider = cdcTableOptionsProvider;
+        this.cdcTableReconciliationPolicy = cdcTableReconciliationPolicy;
         this.schemaUpdateOptions = schemaUpdateOptions;
         this.failedRowHandler = failedRowHandler;
         this.location = location;
@@ -130,6 +139,19 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         return rowAugmentingSerializer == null
                 ? serializer.getTableSchema(destination)
                 : rowAugmentingSerializer.getTableSchema(destination);
+    }
+
+    /**
+     * Returns whether this job graph opted into connector-managed CDC table verification and
+     * provisioning.
+     *
+     * <p>The field deliberately keeps Java's {@code false} default for job graphs serialized before
+     * CDC auto-creation existed. Those jobs retain their previous pre-created-table behavior after
+     * an upgrade instead of failing because their old creation options carry no primary-key
+     * declaration.
+     */
+    public boolean managesCdcTableContract() {
+        return manageCdcTableCreation;
     }
 
     /** Returns the descriptor sent to a writer, including every additional or write-only field. */
@@ -171,6 +193,20 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     /** Returns the per-destination creation options provider for auto-created tables. */
     public TableCreateOptionsProvider getTableCreateOptionsProvider() {
         return tableCreateOptionsProvider;
+    }
+
+    /** Returns the per-destination desired CDC table contract. */
+    public CdcTableOptionsProvider getCdcTableOptionsProvider() {
+        return cdcTableOptionsProvider == null
+                ? destination -> CdcTableOptions.defaults()
+                : cdcTableOptionsProvider;
+    }
+
+    /** Returns how this job handles CDC tables that already exist. */
+    public CdcTableReconciliationPolicy getCdcTableReconciliationPolicy() {
+        return cdcTableReconciliationPolicy == null
+                ? CdcTableReconciliationPolicy.VERIFY_ONLY
+                : cdcTableReconciliationPolicy;
     }
 
     /** Returns the options gating connector-driven table schema updates. */
