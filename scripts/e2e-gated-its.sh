@@ -24,9 +24,9 @@
 # run it, which is the point: joining the E2E workflow is a decision, not an
 # accident.
 #
-# Four modes. The first three are called by the `e2e` recipe in the justfile
-# (which the E2E workflow runs — see .github/workflows/e2e.yaml); the fourth is
-# a per-pull-request check in ci.yaml, via `just check-gated-tags`:
+# Six modes. The `e2e` recipe uses the four lifecycle modes below; default is
+# useful for an undivided manual run, and the final mode is a per-pull-request
+# check in ci.yaml via `just check-gated-tags`:
 #
 #   (default)      print the gated class names, comma-joined, for -Dtest=
 #   --require-env  fail unless every variable the gates read is set.
@@ -42,6 +42,12 @@
 #                  that lost its credentials would go green, the worst failure
 #                  mode for a job whose purpose is catching what the emulator
 #                  cannot.
+#   --for-gate     print only the classes using the named gate. The App Engine
+#                  lifecycle uses this to start its billed instance around the
+#                  Cloud Tasks class and nothing else.
+#   --except-gate  print every class except those using the named gate. The
+#                  remaining suites run only after the App Engine fixture has
+#                  returned to its stopped state.
 #   --check-tags   fail unless the environment gate and @Tag("gated") sit
 #                  together on every class carrying either (issue #245)
 #
@@ -54,6 +60,22 @@
 
 set -euo pipefail
 
+gates=(
+    BQ_IT_PROJECT
+    PUBSUB_IT_PROJECT
+    BIGTABLE_IT_PROJECT
+    SPANNER_IT_PROJECT
+    CLOUDTASKS_IT_PROJECT
+)
+
+known_gate() {
+    local candidate=$1 gate
+    for gate in "${gates[@]}"; do
+        [ "$candidate" != "$gate" ] || return 0
+    done
+    return 1
+}
+
 # The E2E suite: every test class gated on one of the variables that workflow
 # sets. Fatal when a gate matches nothing, since zero gated ITCases for a
 # connector means the annotation moved or the tree layout changed, and the
@@ -63,8 +85,10 @@ set -euo pipefail
 # A function rather than a top-level block: --check-tags is deliberately
 # gate-agnostic (see there) and must not require this particular list to match.
 gated_sources() {
-    local sources='' gate matched
-    for gate in BQ_IT_PROJECT PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
+    local only_gate=${1:-} except_gate=${2:-} sources='' gate matched
+    for gate in "${gates[@]}"; do
+        [ -z "$only_gate" ] || [ "$gate" = "$only_gate" ] || continue
+        [ -z "$except_gate" ] || [ "$gate" != "$except_gate" ] || continue
         matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
             echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
             return 1
@@ -74,32 +98,62 @@ gated_sources() {
     printf '%s' "$sources" | sort -u
 }
 
+print_classes() {
+    local sources
+    sources=$(gated_sources "${1:-}" "${2:-}")
+    while IFS= read -r src; do
+        basename "$src" .java
+    done <<< "$sources" | paste -sd, -
+}
+
 case "${1:-}" in
     '')
         # Simple class names: -Dtest= matches on them, and every module keeps
         # its test classes uniquely named.
-        sources=$(gated_sources)
-        while IFS= read -r src; do
-            basename "$src" .java
-        done <<< "$sources" | paste -sd, -
+        print_classes
         ;;
     --require-env)
         # The union of what the gates read: BQ_IT_PROJECT/BQ_IT_DATASET gate
         # every BigQuery class, BQ_IT_GCS_BUCKET additionally gates the
         # FILE_LOADS ones, PUBSUB_IT_PROJECT gates the Pub/Sub suite,
-        # BIGTABLE_IT_PROJECT the Bigtable one and SPANNER_IT_PROJECT the
-        # Spanner one. Neither Bigtable nor Spanner needs a companion variable:
+        # BIGTABLE_IT_PROJECT the Bigtable one, SPANNER_IT_PROJECT the Spanner
+        # one and CLOUDTASKS_IT_PROJECT the Cloud Tasks one. Neither Bigtable
+        # nor Spanner needs a companion variable:
         # unlike the BigQuery dataset and the GCS bucket, nothing persistent is
         # provisioned for them — each suite creates and deletes an instance of
-        # its own — so there is no resource name to pass in.
-        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT; do
+        # its own — so there is no resource name to pass in. Cloud Tasks reads
+        # its service and version from OpenTofu, while the lifecycle wrapper
+        # exports the observed instance id only after startup.
+        [ "$#" -eq 1 ] || {
+            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            exit 2
+        }
+        for var in BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET PUBSUB_IT_PROJECT BIGTABLE_IT_PROJECT SPANNER_IT_PROJECT CLOUDTASKS_IT_PROJECT; do
             if [ -z "${!var:-}" ]; then
                 echo "::error::$var is not set, so the gated real-GCP ITCases would silently skip. Locally the variables come from the uncommitted .env at the repository root, which mise loads." >&2
                 exit 1
             fi
         done
         ;;
+    --for-gate)
+        if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
+            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            exit 2
+        fi
+        print_classes "$2"
+        ;;
+    --except-gate)
+        if [ "$#" -ne 2 ] || ! known_gate "${2:-}"; then
+            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            exit 2
+        fi
+        print_classes '' "$2"
+        ;;
     --assert-ran)
+        [ "$#" -eq 1 ] || {
+            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            exit 2
+        }
         failed=0
         sources=$(gated_sources)
         while IFS= read -r src; do
@@ -132,6 +186,10 @@ case "${1:-}" in
         exit "$failed"
         ;;
     --check-tags)
+        [ "$#" -eq 1 ] || {
+            echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
+            exit 2
+        }
         # Deliberately gate-agnostic — any variable, not just the three the E2E
         # workflow sets: BigQueryDefaultStreamSchemaEvolutionITCase gates on
         # BQ_IT_SCHEMA_EVOLUTION precisely to stay out of that suite, and at a
@@ -178,7 +236,7 @@ case "${1:-}" in
         exit "$failed"
         ;;
     *)
-        echo "usage: $0 [--require-env | --assert-ran | --check-tags]" >&2
+        echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
         exit 2
         ;;
 esac

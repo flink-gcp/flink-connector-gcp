@@ -191,15 +191,18 @@ check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.
 worktree-env:
     scripts/worktree-env.sh
 
-# The ITCases gated on the BQ_IT_*, PUBSUB_IT_PROJECT, BIGTABLE_IT_PROJECT and
-# SPANNER_IT_PROJECT
+# The ITCases gated on the BQ_IT_*, PUBSUB_IT_PROJECT, BIGTABLE_IT_PROJECT,
+# SPANNER_IT_PROJECT and CLOUDTASKS_IT_PROJECT
 # variables: what they check is exactly what the emulators cannot (see the
 # testing sections of the connector documentation). The E2E workflow
 # (.github/workflows/e2e.yaml) runs this same recipe weekly via WIF; locally
 # the variables come from the uncommitted .env, which mise loads — and which a
 # fresh worktree does not have until `just worktree-env` links it (issue #156).
 #
-# The shape is scripts/e2e-gated-its.sh three times around three Maven calls.
+# The shape is scripts/e2e-gated-its.sh around four Maven calls. The Cloud
+# Tasks App Engine class runs first inside appengine-e2e-fixture.sh's exact
+# start/test/stop lifecycle; the other connectors start only after that script
+# has verified STOPPED with zero instances.
 # The pre-flight makes a missing variable an error before any build minutes are
 # spent, and the assertion afterwards proves the gated classes ran — without
 # it, @EnabledIfEnvironmentVariable turns lost credentials into a green run.
@@ -225,12 +228,11 @@ worktree-env:
 # on every pull request, and this install only primes ~/.m2.
 #
 # This costs real money beyond runner minutes, which the BigQuery and Pub/Sub
-# halves do not: neither the Bigtable nor the Spanner suite has a persistent
-# instance to run against, so each creates one per gated class and deletes it
-# afterwards. A Bigtable node stands at roughly $470 a month, a 100-processing-
-# unit Spanner instance at an order of magnitude less, and both are zero while
-# nothing is running. A killed run is swept by the next one, not left standing —
-# see AbstractBigtableRealGcpITCase and AbstractSpannerRealGcpITCase.
+# halves do not: the Cloud Tasks suite briefly starts its persistent B1 App
+# Engine version, while Bigtable and Spanner create one ephemeral instance per
+# gated class. A killed run is bounded by the daily sweep rather than left
+# standing indefinitely; normal Cloud Tasks completion verifies zero running
+# App Engine instances before either of the longer suites begins.
 #
 # -Dtest.excluded.groups= is that opt-in (issue #245): the gated classes carry
 # @Tag("gated"), which the root pom excludes from every surefire execution, so
@@ -242,8 +244,9 @@ worktree-env:
 e2e:
     scripts/e2e-gated-its.sh --require-env
     {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh)"
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
+    scripts/appengine-e2e-fixture.sh run -- {{ mvn }} -pl flink-connector-gcp-cloudtasks surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh --for-gate CLOUDTASKS_IT_PROJECT)"
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh --except-gate CLOUDTASKS_IT_PROJECT)"
     scripts/e2e-gated-its.sh --assert-ran
 
 # The two markers a gated real-GCP ITCase carries have to stay together: the

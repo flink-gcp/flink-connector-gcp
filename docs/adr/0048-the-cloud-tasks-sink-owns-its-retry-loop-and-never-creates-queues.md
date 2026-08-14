@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-25 ([#23] design, [#24] implementation via PR
   [#107](https://github.com/laughingman7743/flink-connector-gcp/pull/107)); revised 2026-08-12
-  ([#545]) and 2026-08-13 ([#608], [#628])
-- Issues: [#23], [#24], [#25], [#545], [#608], [#628]
+  ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632])
+- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -74,6 +74,13 @@ limitations under the License.
   REST-only HTTP target override, this field is visible in the v2 `Queue` proto, but the sink does
   not fetch queue configuration before each write. The documented queue configuration therefore
   remains authoritative.
+- App Engine dispatch and queue-level routing have a gated real-service acceptance suite because
+  the emulator implements neither behavior.
+  The gated suite creates one isolated queue per case and inspects requests while queues are
+  paused before selectively resuming them for dispatch.
+  Its manually scaled App Engine fixture is started only around that suite and is stopped and
+  verified at zero instances on success, failure or handled interruption.
+  The daily sweep restores that state after a hard cancellation that cannot run shell cleanup.
 - Production uses application-default credentials unless `serviceAccountKeyFile(path)` selects a
   service-account JSON key. Only the path enters the job graph; each writer loads and scopes the
   key when it starts, so every eligible TaskManager must see the same path. Missing, malformed and
@@ -90,3 +97,4 @@ limitations under the License.
 [#545]: https://github.com/laughingman7743/flink-connector-gcp/issues/545
 [#608]: https://github.com/laughingman7743/flink-connector-gcp/issues/608
 [#628]: https://github.com/laughingman7743/flink-connector-gcp/issues/628
+[#632]: https://github.com/laughingman7743/flink-connector-gcp/issues/632
