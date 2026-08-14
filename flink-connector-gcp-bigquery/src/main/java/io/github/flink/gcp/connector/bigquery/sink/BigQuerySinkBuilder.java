@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
@@ -48,6 +49,7 @@ public class BigQuerySinkBuilder<T> {
     private WriteMethod writeMethod = WriteMethod.STORAGE_API_AT_LEAST_ONCE;
     private DestinationResolver<? super T> destinationResolver;
     private BigQueryProtoSerializer<? super T> serializer;
+    private AdditionalFields<? super T> additionalFields;
     private CdcOptions<? super T> cdcOptions;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
@@ -112,6 +114,23 @@ public class BigQuerySinkBuilder<T> {
      */
     public BigQuerySinkBuilder<T> serializer(BigQueryProtoSerializer<? super T> serializer) {
         this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
+        return this;
+    }
+
+    /**
+     * Appends physical fields derived from each non-skipped input record.
+     *
+     * <p>The fields are added to protobuf rows and to the physical BigQuery schema used by every
+     * write method for table creation and schema reconciliation. When this method is not called, it
+     * adds no fields or provider calls. If no other row decorator such as {@link #cdcOptions} is
+     * configured, the sink uses the serializer's schema, descriptor, and row bytes unchanged.
+     *
+     * @param additionalFields ordered physical fields to append
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> additionalFields(AdditionalFields<? super T> additionalFields) {
+        this.additionalFields =
+                Preconditions.checkNotNull(additionalFields, "additionalFields must not be null");
         return this;
     }
 
@@ -361,6 +380,7 @@ public class BigQuerySinkBuilder<T> {
                 new BigQuerySinkConfig<>(
                         destinationResolver,
                         serializer,
+                        additionalFields,
                         cdcOptions,
                         createDisposition,
                         tableCreateOptionsProvider,

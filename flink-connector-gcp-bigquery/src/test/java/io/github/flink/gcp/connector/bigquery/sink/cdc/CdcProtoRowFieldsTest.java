@@ -29,6 +29,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -42,7 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class CdcProtoRowSerializerTest {
+class CdcProtoRowFieldsTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "dataset", "table");
@@ -59,7 +60,7 @@ class CdcProtoRowSerializerTest {
     @Test
     void addsChangeTypeAndCanonicalSequenceWithoutChangingThePhysicalSchema() throws Exception {
         TestSerializer serializer = new TestSerializer();
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(serializer, record -> record.sequence);
 
         TestRecord upsert = new TestRecord(7, CdcChangeType.UPSERT, "a/00000000000000ff");
@@ -76,8 +77,8 @@ class CdcProtoRowSerializerTest {
     @Test
     void omitsTheSequenceFieldWhenNoProviderIsConfigured() throws Exception {
         TestSerializer serializer = new TestSerializer();
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
-                new CdcProtoRowSerializer<>(
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
+                cdcSerializer(
                         serializer,
                         CdcOptions.<TestRecord>builder(record -> record.changeType).build());
 
@@ -88,9 +89,8 @@ class CdcProtoRowSerializerTest {
                         cdcSerializer.serialize(
                                 new TestRecord(9, CdcChangeType.UPSERT, null), DESTINATION));
 
-        assertThat(descriptor.findFieldByName(CdcProtoRowSerializer.CHANGE_TYPE_FIELD)).isNotNull();
-        assertThat(descriptor.findFieldByName(CdcProtoRowSerializer.SEQUENCE_NUMBER_FIELD))
-                .isNull();
+        assertThat(descriptor.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD)).isNotNull();
+        assertThat(descriptor.findFieldByName(CdcProtoRowFields.SEQUENCE_NUMBER_FIELD)).isNull();
         assertThat(row.getField(descriptor.findFieldByName("id"))).isEqualTo(9L);
     }
 
@@ -98,8 +98,8 @@ class CdcProtoRowSerializerTest {
     void skippedRowsDoNotInvokeEitherProvider() throws Exception {
         AtomicInteger providerCalls = new AtomicInteger();
         TestSerializer serializer = new TestSerializer();
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
-                new CdcProtoRowSerializer<>(
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
+                cdcSerializer(
                         serializer,
                         CdcOptions.<TestRecord>builder(
                                         record -> {
@@ -123,7 +123,7 @@ class CdcProtoRowSerializerTest {
     @ParameterizedTest
     @ValueSource(strings = {"", "1/", "/1", "10000000000000000", "1/2/3/4/5", "0x1", "not-hex"})
     void rejectsInvalidSequences(String sequence) {
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(new TestSerializer(), record -> sequence);
 
         assertThatThrownBy(
@@ -137,13 +137,13 @@ class CdcProtoRowSerializerTest {
 
     @Test
     void rejectsNullMetadataAndWrapsProviderFailures() {
-        CdcProtoRowSerializer<TestRecord> nullChange =
-                new CdcProtoRowSerializer<>(
+        ProtoRowAugmentingSerializer<TestRecord> nullChange =
+                cdcSerializer(
                         new TestSerializer(),
                         CdcOptions.<TestRecord>builder(record -> null).build());
-        CdcProtoRowSerializer<TestRecord> nullSequence =
+        ProtoRowAugmentingSerializer<TestRecord> nullSequence =
                 cdcSerializer(new TestSerializer(), record -> null);
-        CdcProtoRowSerializer<TestRecord> failedProvider =
+        ProtoRowAugmentingSerializer<TestRecord> failedProvider =
                 cdcSerializer(
                         new TestSerializer(),
                         record -> {
@@ -175,17 +175,15 @@ class CdcProtoRowSerializerTest {
     void preservesNestedDescriptorsAndSkipsReservedFieldNumbers() throws Exception {
         Descriptors.Descriptor nested = nestedDescriptorWithFieldNumber(18_999);
         BigQueryProtoSerializer<TestRecord> serializer = descriptorOnlySerializer(nested);
-        CdcProtoRowSerializer<TestRecord> cdcSerializer = cdcSerializer(serializer, record -> "1");
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
+                cdcSerializer(serializer, record -> "1");
 
         Descriptors.Descriptor augmented = cdcSerializer.getDescriptor(DESTINATION);
 
         assertThat(augmented.getContainingType().getName()).isEqualTo("Envelope");
-        assertThat(augmented.findFieldByName(CdcProtoRowSerializer.CHANGE_TYPE_FIELD).getNumber())
+        assertThat(augmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD).getNumber())
                 .isEqualTo(20_000);
-        assertThat(
-                        augmented
-                                .findFieldByName(CdcProtoRowSerializer.SEQUENCE_NUMBER_FIELD)
-                                .getNumber())
+        assertThat(augmented.findFieldByName(CdcProtoRowFields.SEQUENCE_NUMBER_FIELD).getNumber())
                 .isEqualTo(20_001);
     }
 
@@ -197,7 +195,7 @@ class CdcProtoRowSerializerTest {
                 descriptorWithFields(
                         optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64),
                         optionalField("name", 2, FieldDescriptorProto.Type.TYPE_STRING));
-        AtomicInteger descriptorCalls = new AtomicInteger();
+        AtomicInteger schemaVersion = new AtomicInteger();
         BigQueryProtoSerializer<TestRecord> serializer =
                 new BigQueryProtoSerializer<>() {
                     private static final long serialVersionUID = 1L;
@@ -209,7 +207,12 @@ class CdcProtoRowSerializerTest {
 
                     @Override
                     public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-                        return descriptorCalls.getAndIncrement() == 0 ? first : second;
+                        return schemaVersion.get() == 0 ? first : second;
+                    }
+
+                    @Override
+                    public Object getSchemaFingerprint(TableDestination destination) {
+                        return schemaVersion.get();
                     }
 
                     @Override
@@ -217,14 +220,16 @@ class CdcProtoRowSerializerTest {
                         return ByteString.EMPTY;
                     }
                 };
-        CdcProtoRowSerializer<TestRecord> cdcSerializer = cdcSerializer(serializer, record -> "1");
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
+                cdcSerializer(serializer, record -> "1");
 
         Descriptors.Descriptor firstAugmented = cdcSerializer.getDescriptor(DESTINATION);
+        schemaVersion.set(1);
         Descriptors.Descriptor secondAugmented = cdcSerializer.getDescriptor(DESTINATION);
 
         assertThat(firstAugmented.findFieldByName("name")).isNull();
         assertThat(secondAugmented.findFieldByName("name")).isNotNull();
-        assertThat(secondAugmented.findFieldByName(CdcProtoRowSerializer.CHANGE_TYPE_FIELD))
+        assertThat(secondAugmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD))
                 .isNotNull();
         assertThat(secondAugmented).isNotSameAs(firstAugmented);
     }
@@ -232,7 +237,7 @@ class CdcProtoRowSerializerTest {
     @Test
     void preservesFileDependencies() throws Exception {
         Descriptors.Descriptor base = descriptorWithDependency();
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(descriptorOnlySerializer(base), record -> "1");
 
         Descriptors.Descriptor augmented = cdcSerializer.getDescriptor(DESTINATION);
@@ -256,17 +261,14 @@ class CdcProtoRowSerializerTest {
                                 DescriptorProto.ExtensionRange.newBuilder().setStart(7).setEnd(9))
                         .build();
         Descriptors.Descriptor base = descriptor(row, new Descriptors.FileDescriptor[0]);
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(descriptorOnlySerializer(base), record -> "1");
 
         Descriptors.Descriptor augmented = cdcSerializer.getDescriptor(DESTINATION);
 
-        assertThat(augmented.findFieldByName(CdcProtoRowSerializer.CHANGE_TYPE_FIELD).getNumber())
+        assertThat(augmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD).getNumber())
                 .isEqualTo(9);
-        assertThat(
-                        augmented
-                                .findFieldByName(CdcProtoRowSerializer.SEQUENCE_NUMBER_FIELD)
-                                .getNumber())
+        assertThat(augmented.findFieldByName(CdcProtoRowFields.SEQUENCE_NUMBER_FIELD).getNumber())
                 .isEqualTo(10);
     }
 
@@ -280,7 +282,7 @@ class CdcProtoRowSerializerTest {
                                 .setType(FieldDescriptorProto.Type.TYPE_STRING)
                                 .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL)
                                 .build());
-        CdcProtoRowSerializer<TestRecord> cdcSerializer =
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(descriptorOnlySerializer(collision), record -> "1");
 
         assertThatThrownBy(() -> cdcSerializer.getDescriptor(DESTINATION))
@@ -290,25 +292,34 @@ class CdcProtoRowSerializerTest {
 
     @Test
     void serializerAndProvidersSurviveJobGraphSerialization() throws Exception {
-        CdcProtoRowSerializer<TestRecord> copy =
+        ProtoRowAugmentingSerializer<TestRecord> copy =
                 InstantiationUtil.clone(
                         cdcSerializer(new TestSerializer(), record -> record.sequence));
 
         assertRow(copy, new TestRecord(3, CdcChangeType.DELETE, "abc"), "DELETE", "ABC");
     }
 
-    private static CdcProtoRowSerializer<TestRecord> cdcSerializer(
+    private static ProtoRowAugmentingSerializer<TestRecord> cdcSerializer(
             BigQueryProtoSerializer<TestRecord> serializer,
             CdcSequenceNumberProvider<TestRecord> sequenceProvider) {
-        return new CdcProtoRowSerializer<>(
+        return cdcSerializer(
                 serializer,
                 CdcOptions.<TestRecord>builder(record -> record.changeType)
                         .sequenceNumberProvider(sequenceProvider)
                         .build());
     }
 
+    private static ProtoRowAugmentingSerializer<TestRecord> cdcSerializer(
+            BigQueryProtoSerializer<TestRecord> serializer, CdcOptions<TestRecord> options) {
+        return new ProtoRowAugmentingSerializer<>(
+                serializer,
+                CdcProtoRowFields.create(options),
+                "BigQuery CDC pseudocolumn",
+                "Failed to add BigQuery CDC metadata to a serialized row");
+    }
+
     private static void assertRow(
-            CdcProtoRowSerializer<TestRecord> cdcSerializer,
+            ProtoRowAugmentingSerializer<TestRecord> cdcSerializer,
             TestRecord record,
             String expectedChangeType,
             String expectedSequence)
@@ -317,15 +328,12 @@ class CdcProtoRowSerializerTest {
         DynamicMessage row =
                 DynamicMessage.parseFrom(descriptor, cdcSerializer.serialize(record, DESTINATION));
         assertThat(row.getField(descriptor.findFieldByName("id"))).isEqualTo(record.id);
-        assertThat(
-                        row.getField(
-                                descriptor.findFieldByName(
-                                        CdcProtoRowSerializer.CHANGE_TYPE_FIELD)))
+        assertThat(row.getField(descriptor.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD)))
                 .isEqualTo(expectedChangeType);
         assertThat(
                         row.getField(
                                 descriptor.findFieldByName(
-                                        CdcProtoRowSerializer.SEQUENCE_NUMBER_FIELD)))
+                                        CdcProtoRowFields.SEQUENCE_NUMBER_FIELD)))
                 .isEqualTo(expectedSequence);
     }
 

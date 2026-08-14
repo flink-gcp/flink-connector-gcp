@@ -21,6 +21,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `FailureHandler` catch, where log-and-drop leaves an empty table under a green job
   (`docs/adr/0023`, `0024`, `0027`). A serializer `null` is a skip (`docs/adr/0001`) and does
   not loosen this rule.
+- Additional fields are absent unless `additionalFields(...)` is configured.
+  Every built-in serializer reaches the common protobuf row boundary before the fields are added.
+  Configured fields are physical singular scalar columns used by all three write methods; only the
+  internal CDC allowlist may add descriptor-only fields (`docs/adr/0113`).
 - **The protobuf mapping is normative for every serializer**; `NULLABLE` is the default mode and
   `deriveRequiredColumns()` the opt-in on both proto and Avro sides — neither default is to be
   flipped per format again, and the method name went through two rejected candidates

@@ -27,7 +27,8 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
-import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowFields;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -161,8 +162,8 @@ class RowDataSerializerTest {
                                 .getLogicalType();
         RowDataSerializer physical =
                 new RowDataSerializer(cdcRow, RowDataSchemaOptions.defaults(), new int[] {0});
-        CdcProtoRowSerializer<GenericRowData> cdc =
-                new CdcProtoRowSerializer<>(
+        ProtoRowAugmentingSerializer<GenericRowData> cdc =
+                cdcSerializer(
                         physical,
                         CdcOptions.<GenericRowData>builder(RowDataCdcChangeTypeProvider.INSTANCE)
                                 .sequenceNumberProvider(
@@ -258,8 +259,18 @@ class RowDataSerializerTest {
     }
 
     private static DynamicMessage cdcMessage(
-            CdcProtoRowSerializer<GenericRowData> serializer, GenericRowData row) throws Exception {
+            ProtoRowAugmentingSerializer<GenericRowData> serializer, GenericRowData row)
+            throws Exception {
         return DynamicMessage.parseFrom(
                 serializer.getDescriptor(DESTINATION), serializer.serialize(row, DESTINATION));
+    }
+
+    private static ProtoRowAugmentingSerializer<GenericRowData> cdcSerializer(
+            RowDataSerializer serializer, CdcOptions<GenericRowData> options) {
+        return new ProtoRowAugmentingSerializer<>(
+                serializer,
+                CdcProtoRowFields.create(options),
+                "BigQuery CDC pseudocolumn",
+                "Failed to add BigQuery CDC metadata to a serialized row");
     }
 }

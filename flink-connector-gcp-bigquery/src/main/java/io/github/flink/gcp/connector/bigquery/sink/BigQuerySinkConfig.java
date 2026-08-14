@@ -18,19 +18,26 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
-import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowFields;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Immutable configuration shared by all {@link WriteMethod} implementations, assembled by {@link
@@ -46,7 +53,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final DestinationResolver<? super T> destinationResolver;
     private final BigQueryProtoSerializer<? super T> serializer;
     @Nullable private final CdcOptions<? super T> cdcOptions;
-    @Nullable private final CdcProtoRowSerializer<T> cdcRowSerializer;
+    @Nullable private final ProtoRowAugmentingSerializer<T> rowAugmentingSerializer;
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
     private final SchemaUpdateOptions schemaUpdateOptions;
@@ -59,6 +66,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     BigQuerySinkConfig(
             DestinationResolver<? super T> destinationResolver,
             BigQueryProtoSerializer<? super T> serializer,
+            @Nullable AdditionalFields<? super T> additionalFields,
             @Nullable CdcOptions<? super T> cdcOptions,
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
@@ -71,8 +79,26 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.cdcOptions = cdcOptions;
-        this.cdcRowSerializer =
-                cdcOptions == null ? null : new CdcProtoRowSerializer<>(serializer, cdcOptions);
+        List<ProtoRowAugmentationField<? super T>> augmentationFields = new ArrayList<>();
+        if (additionalFields != null) {
+            for (AdditionalField<? super T> field : additionalFields.getFields()) {
+                augmentationFields.add(ProtoRowAugmentationField.physical(field));
+            }
+        }
+        if (cdcOptions != null) {
+            augmentationFields.addAll(CdcProtoRowFields.create(cdcOptions));
+        }
+        boolean cdcOnly = additionalFields == null && cdcOptions != null;
+        this.rowAugmentingSerializer =
+                augmentationFields.isEmpty()
+                        ? null
+                        : new ProtoRowAugmentingSerializer<>(
+                                serializer,
+                                augmentationFields,
+                                cdcOnly ? "BigQuery CDC pseudocolumn" : "additional BigQuery field",
+                                cdcOnly
+                                        ? "Failed to add BigQuery CDC metadata to a serialized row"
+                                        : "Failed to add fields to a serialized BigQuery row");
         this.createDisposition = createDisposition;
         this.tableCreateOptionsProvider = tableCreateOptionsProvider;
         this.schemaUpdateOptions = schemaUpdateOptions;
@@ -99,32 +125,42 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         return cdcOptions;
     }
 
-    /** Returns the descriptor sent to the write stream, including CDC metadata when enabled. */
-    public Descriptors.Descriptor getWriteDescriptor(TableDestination destination) {
-        return cdcRowSerializer == null
-                ? serializer.getDescriptor(destination)
-                : cdcRowSerializer.getDescriptor(destination);
+    /** Returns the physical table schema, including configured additional fields. */
+    public TableSchema getTableSchema(TableDestination destination) {
+        return rowAugmentingSerializer == null
+                ? serializer.getTableSchema(destination)
+                : rowAugmentingSerializer.getTableSchema(destination);
     }
 
-    /**
-     * Validates and caches the CDC write descriptor for a destination, when CDC is enabled.
-     *
-     * <p>The default-stream writer calls this before entering row-failure handling so a physical
-     * schema that conflicts with the CDC pseudocolumns remains a configuration failure instead of
-     * being dropped or dead-lettered once per record.
-     */
-    public void prepareCdcWriteDescriptor(TableDestination destination) {
-        if (cdcRowSerializer != null) {
-            cdcRowSerializer.getDescriptor(destination);
+    /** Returns the descriptor sent to a writer, including every additional or write-only field. */
+    public Descriptors.Descriptor getWriteDescriptor(TableDestination destination) {
+        return rowAugmentingSerializer == null
+                ? serializer.getDescriptor(destination)
+                : rowAugmentingSerializer.getDescriptor(destination);
+    }
+
+    /** Returns the delegate fingerprint; configured additional-field declarations are immutable. */
+    public Object getSchemaFingerprint(TableDestination destination) {
+        return rowAugmentingSerializer == null
+                ? serializer.getSchemaFingerprint(destination)
+                : rowAugmentingSerializer.getSchemaFingerprint(destination);
+    }
+
+    /** Validates the effective schema surfaces before entering per-row failure handling. */
+    public void prepareWriteSchema(TableDestination destination) {
+        if (rowAugmentingSerializer != null) {
+            rowAugmentingSerializer.prepare(destination);
         }
     }
 
-    /** Serializes a row for its destination, including CDC metadata when enabled. */
+    /**
+     * Serializes a row for its destination, including configured additional or write-only fields.
+     */
     @Nullable
     public ByteString serialize(T element, TableDestination destination) throws IOException {
-        return cdcRowSerializer == null
+        return rowAugmentingSerializer == null
                 ? serializer.serialize(element)
-                : cdcRowSerializer.serialize(element, destination);
+                : rowAugmentingSerializer.serialize(element, destination);
     }
 
     /** Returns the table create disposition. */

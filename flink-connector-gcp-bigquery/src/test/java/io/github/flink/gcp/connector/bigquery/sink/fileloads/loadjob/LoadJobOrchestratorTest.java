@@ -39,6 +39,10 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
@@ -495,6 +499,36 @@ class LoadJobOrchestratorTest {
                 .isEqualTo(TableCreateOptions.TimePartitioningType.DAY);
         assertThat(options.getTimePartitioningField()).isEqualTo("f1");
         assertThat(options.getClusteredFields()).containsExactly("f2");
+    }
+
+    @Test
+    void missingFinalTableIsCreatedAndLoadedWithAdditionalFields() throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        builder ->
+                                builder.additionalFields(
+                                        AdditionalFields.builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                element -> "connector"))
+                                                .build()));
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.tableAdmin.tables.get(T1).getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("f1", "f2", "source");
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        spec ->
+                                assertThat(spec.getSchema().getFields())
+                                        .extracting(Field::getName)
+                                        .containsExactly("f1", "f2", "source"));
     }
 
     @Test

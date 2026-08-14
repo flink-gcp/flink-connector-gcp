@@ -398,10 +398,10 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             checkAsyncError();
         }
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
-        // CDC schema conflicts are configuration failures, not poison rows. Derive the augmented
-        // descriptor before entering the row-failure boundary so log-and-drop or dead-letter
-        // policies cannot hide a destination whose physical schema declares a pseudocolumn.
-        config.prepareCdcWriteDescriptor(destination);
+        // Augmented schema conflicts are configuration failures, not poison rows. Derive both
+        // schema surfaces before entering the row-failure boundary so log-and-drop or dead-letter
+        // policies cannot hide a destination-wide conflict.
+        config.prepareWriteSchema(destination);
         ByteString row;
         try {
             // Serialized before any per-destination state exists: a poison record must reach the
@@ -591,7 +591,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         // The fingerprint is captured before the descriptor: if the serializer schema evolves
         // between the two calls, the stale fingerprint triggers a redundant-but-harmless refresh
         // on the next record, whereas the opposite order could miss a change.
-        Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+        Object fingerprint = config.getSchemaFingerprint(destination);
         RowAppender appender =
                 appenderFactory.create(
                         destination, config.getWriteDescriptor(destination), config.getLocation());
@@ -611,7 +611,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             // per-record serializer call entirely.
             return state;
         }
-        Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+        Object fingerprint = config.getSchemaFingerprint(destination);
         if (Objects.equals(fingerprint, state.schemaFingerprint)) {
             return state;
         }
@@ -637,7 +637,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             if (state == null) {
                 continue;
             }
-            Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
+            Object fingerprint = config.getSchemaFingerprint(destination);
             if (Objects.equals(fingerprint, state.schemaFingerprint)) {
                 LOG.debug(
                         "BigQuery reported an updated schema for {} but the serializer schema is"
@@ -973,7 +973,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
     private void createTable(TableDestination destination) throws IOException {
         tableAdmin.create(
                 destination,
-                config.getSerializer().getTableSchema(destination),
+                config.getTableSchema(destination),
                 config.getTableCreateOptionsProvider().optionsFor(destination));
         // The single creation site, so the counter needs no guard against the repair paths that
         // reach it. Creation is idempotent across subtasks, so this counts what this subtask

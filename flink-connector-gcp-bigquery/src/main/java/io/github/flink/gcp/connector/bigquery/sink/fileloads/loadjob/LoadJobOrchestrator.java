@@ -595,7 +595,7 @@ public final class LoadJobOrchestrator {
      * races.
      */
     private Schema ensureFinalTable(TableDestination destination) throws IOException {
-        TableSchema desired = config.getSerializer().getTableSchema(destination);
+        TableSchema desired = config.getTableSchema(destination);
         TableSchemaSnapshot snapshot = tableAdmin.getSchema(destination);
         if (snapshot == null) {
             if (config.getCreateDisposition() == CreateDisposition.CREATE_NEVER) {

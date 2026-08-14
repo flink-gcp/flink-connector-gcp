@@ -20,12 +20,14 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiExceptionFactory;
+import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -33,8 +35,14 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -98,6 +106,47 @@ class BigQueryBufferedStreamWriterTest {
                 return null;
             }
             return ByteString.copyFromUtf8(element);
+        }
+    }
+
+    /** Serializer with matching physical and protobuf schemas for additional-field assertions. */
+    static class ProtoStringSerializer extends BigQueryProtoSerializer<String> {
+        private static final long serialVersionUID = 1L;
+
+        private static final TableSchema SCHEMA =
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("value")
+                                        .setType(TableFieldSchema.Type.STRING)
+                                        .setMode(TableFieldSchema.Mode.NULLABLE))
+                        .build();
+        private static final Descriptors.Descriptor DESCRIPTOR = descriptor();
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return SCHEMA;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return DESCRIPTOR;
+        }
+
+        @Override
+        public ByteString serialize(String element) {
+            return DynamicMessage.newBuilder(DESCRIPTOR)
+                    .setField(DESCRIPTOR.findFieldByName("value"), element)
+                    .build()
+                    .toByteString();
+        }
+
+        private static Descriptors.Descriptor descriptor() {
+            try {
+                return BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(SCHEMA);
+            } catch (Descriptors.DescriptorValidationException e) {
+                throw new AssertionError(e);
+            }
         }
     }
 
@@ -339,6 +388,90 @@ class BigQueryBufferedStreamWriterTest {
         assertThat(next.getFlushOffset()).isEqualTo(2);
         assertThat(service.createdStreams).hasSize(1);
         assertThat(service.appends.get(1).offset).isEqualTo(2);
+    }
+
+    @Test
+    void appendsConfiguredPhysicalFieldsThroughTheBufferedStreamWriter() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new ProtoStringSerializer())
+                                .bufferedStreamOptions(fastOptions(3))
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .build();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        sink.getConfig(),
+                        sink.getOptions(),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.write("alpha", CONTEXT);
+        writer.flush(false);
+
+        Descriptors.Descriptor descriptor = service.openedDescriptors.get(0);
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        descriptor, service.appends.get(0).rows.getSerializedRows(0));
+        assertThat(row.getField(descriptor.findFieldByName("value"))).isEqualTo("alpha");
+        assertThat(row.getField(descriptor.findFieldByName("source"))).isEqualTo("computed-alpha");
+    }
+
+    @Test
+    void autoCreationUsesConfiguredPhysicalFields() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.createFailures.add(
+                ApiExceptionFactory.createException(
+                        null, GrpcStatusCode.of(Status.Code.NOT_FOUND), false));
+        List<TableSchema> createdSchemas = new ArrayList<>();
+        TableAdmin admin =
+                new BigQueryDefaultStreamWriterTest.NoopTableAdmin() {
+                    @Override
+                    public void create(
+                            TableDestination destination,
+                            TableSchema schema,
+                            TableCreateOptions options) {
+                        createdSchemas.add(schema);
+                    }
+                };
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new ProtoStringSerializer())
+                                .bufferedStreamOptions(fastOptions(3))
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .build();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(sink.getConfig(), sink.getOptions(), service, admin);
+
+        writer.write("alpha", CONTEXT);
+        writer.flush(false);
+
+        assertThat(createdSchemas).singleElement();
+        assertThat(createdSchemas.get(0).getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("value", "source");
     }
 
     @Test

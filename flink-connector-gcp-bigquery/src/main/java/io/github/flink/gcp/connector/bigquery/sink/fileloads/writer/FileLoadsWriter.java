@@ -138,11 +138,12 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
         TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        config.prepareWriteSchema(destination);
         ByteString rowBytes;
         try {
             // A poison record must reach the handler no matter how the serializer fails,
             // matching the streaming writer's contract.
-            rowBytes = config.getSerializer().serialize(element);
+            rowBytes = config.serialize(element, destination);
         } catch (IOException | RuntimeException e) {
             metrics.recordFailed(metrics.forTable(destination));
             config.getFailedRowHandler()
@@ -259,8 +260,8 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
     private DestinationState stateFor(TableDestination destination) {
         DestinationState state = destinations.get(destination);
         if (state == null) {
-            TableSchema tableSchema = config.getSerializer().getTableSchema(destination);
-            Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(destination);
+            TableSchema tableSchema = config.getTableSchema(destination);
+            Descriptors.Descriptor descriptor = config.getWriteDescriptor(destination);
             Schema avroSchema = TableSchemaToAvroConverter.convert(tableSchema);
             state =
                     new DestinationState(
