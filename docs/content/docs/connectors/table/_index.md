@@ -22,10 +22,10 @@ limitations under the License.
 
 # Table API Connectors
 
-Connectors for the Table API and SQL.
-
-Each of these is a mapping onto the DataStream connector of the same name rather than a separate
-implementation: the programmatic API is the source of truth, and a table option exists because a
-builder setter does. The corresponding
-[DataStream connector]({{< relref "docs/connectors/datastream" >}}) page is where the behavior
-behind an option is described; the page here documents the option surface and the decisions specific to SQL.
+Use these pages for DDL, SQL type mappings, metadata columns, and planner-specific restrictions.
+Each Table connector maps onto the DataStream connector with the same name rather than providing a
+separate implementation.
+The corresponding [DataStream connector]({{< relref "docs/connectors/datastream" >}}) page
+documents runtime behavior and builder-only features.
+The [connector overview]({{< relref "docs/connectors" >}}) explains how to choose between the two
+APIs.
