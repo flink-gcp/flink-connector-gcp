@@ -34,6 +34,10 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -199,6 +203,33 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         return ((BigQueryDefaultStreamSink<String>) builder.build()).getConfig();
     }
 
+    private static BigQuerySinkConfig<String> augmentedConfig() {
+        BigQueryProtoSerializer<String> serializer =
+                new StringSerializer() {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public ByteString serialize(String element) {
+                        return ByteString.EMPTY;
+                    }
+                };
+        return ((BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(serializer)
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> value))
+                                                .build())
+                                .build())
+                .getConfig();
+    }
+
     private static BigQueryDefaultStreamWriter<String> writer(
             BigQuerySinkConfig<String> config,
             ScriptedAppenderFactory factory,
@@ -263,6 +294,34 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
         assertThat(factory.created.get(0).closed).isTrue();
         assertThat(factory.created.get(1).appends).hasSize(1);
         assertThat(factory.allAppendedRows()).containsExactly("aa", "aa");
+    }
+
+    @Test
+    void autoCreationUsesTheConfiguredAdditionalFieldSchema() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        factory.scriptedResults.add(notFound());
+        RecordingTableAdmin creator = new RecordingTableAdmin();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        augmentedConfig(),
+                        factory,
+                        creator,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        3);
+
+        writer.write("computed", CONTEXT);
+        writer.flush(false);
+
+        assertThat(creator.schemas)
+                .singleElement()
+                .satisfies(
+                        schema -> {
+                            assertThat(schema.getFieldsList())
+                                    .extracting(TableFieldSchema::getName)
+                                    .containsExactly("f", "source");
+                            assertThat(schema.getFields(1).getMode())
+                                    .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+                        });
     }
 
     @Test

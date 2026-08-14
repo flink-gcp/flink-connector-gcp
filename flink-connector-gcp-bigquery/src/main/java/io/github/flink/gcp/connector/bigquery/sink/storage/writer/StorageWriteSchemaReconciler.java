@@ -78,7 +78,7 @@ final class StorageWriteSchemaReconciler<T> {
      * Each lost update race re-reads the live schema before trying again.
      */
     Outcome reconcile(TableDestination destination) throws IOException {
-        TableSchema desired = config.getSerializer().getTableSchema(destination);
+        TableSchema desired = config.getTableSchema(destination);
         for (int attempt = 1; attempt <= MAX_UPDATE_ATTEMPTS; attempt++) {
             TableSchemaSnapshot live = tableAdmin.getSchema(destination);
             if (live == null) {

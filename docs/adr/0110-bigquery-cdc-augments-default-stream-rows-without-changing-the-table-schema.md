@@ -47,13 +47,16 @@ The builder rejects the options with buffered exactly-once streams and file load
 accepts CDC mutations only through the default stream.
 
 **The serializer remains the sole source of the physical `TableSchema`.**
-For the write stream, the CDC layer copies the serializer's protobuf file descriptor and adds the
-pseudocolumn fields to the selected row message.
+CDC uses the shared post-serializer protobuf engine introduced by ADR-0113, but its two fields are
+the engine's allowlisted write-only case.
+For the write stream, the engine copies the serializer's protobuf file descriptor and adds the
+pseudocolumn fields to the selected row message without adding physical columns.
 It preserves nested messages and file dependencies, allocates field numbers after the physical
 fields while skipping protobuf and message-specific reserved ranges, and caches each augmented
-descriptor by its physical descriptor.
-A changed physical descriptor therefore produces a new augmented descriptor without adding CDC
-pseudocolumns to schema reconciliation.
+descriptor by the serializer's schema fingerprint.
+A changed fingerprint therefore produces a new augmented descriptor without adding CDC
+pseudocolumns to schema reconciliation; serializers with evolving descriptors must update that
+fingerprint as required by the serializer contract.
 
 **The serializer's skip decision precedes CDC metadata extraction.**
 A `null` serialized row invokes neither provider and follows the existing skip contract.

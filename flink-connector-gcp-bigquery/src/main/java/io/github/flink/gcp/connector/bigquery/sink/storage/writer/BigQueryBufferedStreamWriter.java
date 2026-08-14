@@ -253,8 +253,8 @@ public class BigQueryBufferedStreamWriter<T>
         long now = nanoClock.getAsLong();
         for (BufferedStreamWriterState adopted : adoptedByDestination.values()) {
             TableDestination destination = adopted.getDestination();
-            Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
-            Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(destination);
+            Object fingerprint = config.getSchemaFingerprint(destination);
+            Descriptors.Descriptor descriptor = config.getWriteDescriptor(destination);
             destinations.put(
                     destination, DestinationState.restored(adopted, fingerprint, descriptor, now));
             LOG.info(
@@ -283,11 +283,12 @@ public class BigQueryBufferedStreamWriter<T>
             // destination or at the checkpoint barrier.
             drainInFlight(state, true);
         }
+        config.prepareWriteSchema(destination);
         ByteString row;
         try {
             // A poison record must reach the handler no matter how the serializer fails,
             // without creating a stream (or auto-creating a table) it may never need.
-            row = config.getSerializer().serialize(element);
+            row = config.serialize(element, destination);
         } catch (IOException | RuntimeException e) {
             metrics.rowFailed();
             failedRowHandler.handle(
@@ -500,8 +501,8 @@ public class BigQueryBufferedStreamWriter<T>
         // Capture the fingerprint first: if the serializer evolves between these calls, the next
         // record observes the stale fingerprint and performs a redundant-but-safe refresh. The
         // reverse order could miss a change and append rows under the wrong descriptor.
-        Object fingerprint = config.getSerializer().getSchemaFingerprint(destination);
-        Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(destination);
+        Object fingerprint = config.getSchemaFingerprint(destination);
+        Descriptors.Descriptor descriptor = config.getWriteDescriptor(destination);
         return DestinationState.fresh(destination, fingerprint, descriptor, now);
     }
 
@@ -510,7 +511,7 @@ public class BigQueryBufferedStreamWriter<T>
         if (state.schemaFingerprint == null) {
             return;
         }
-        Object fingerprint = config.getSerializer().getSchemaFingerprint(state.destination);
+        Object fingerprint = config.getSchemaFingerprint(state.destination);
         if (Objects.equals(fingerprint, state.schemaFingerprint)) {
             return;
         }
@@ -525,7 +526,7 @@ public class BigQueryBufferedStreamWriter<T>
             reconcileSchema(state.destination);
         }
 
-        Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(state.destination);
+        Descriptors.Descriptor descriptor = config.getWriteDescriptor(state.destination);
         LOG.info(
                 "The serializer schema for {} changed, reopening buffered stream {} at offset {}",
                 state.destination,
@@ -865,8 +866,8 @@ public class BigQueryBufferedStreamWriter<T>
 
     /** Reopens the same remote stream with the serializer's current descriptor. */
     private void refreshAppenderSchema(DestinationState state) throws IOException {
-        Object fingerprint = config.getSerializer().getSchemaFingerprint(state.destination);
-        Descriptors.Descriptor descriptor = config.getSerializer().getDescriptor(state.destination);
+        Object fingerprint = config.getSchemaFingerprint(state.destination);
+        Descriptors.Descriptor descriptor = config.getWriteDescriptor(state.destination);
         closeAppender(state);
         state.schemaFingerprint = fingerprint;
         state.descriptor = descriptor;
@@ -1113,7 +1114,7 @@ public class BigQueryBufferedStreamWriter<T>
                         state.destination);
                 tableAdmin.create(
                         state.destination,
-                        config.getSerializer().getTableSchema(state.destination),
+                        config.getTableSchema(state.destination),
                         config.getTableCreateOptionsProvider().optionsFor(state.destination));
                 tableCreated = true;
             } else if (!(notFound && tableCreated)

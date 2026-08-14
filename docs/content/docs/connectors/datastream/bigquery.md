@@ -238,6 +238,83 @@ API notes:
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
 
+## Additional physical fields
+
+`additionalFields(...)` adds physical BigQuery columns whose values are derived from each record
+after its configured serializer emits a protobuf row.
+The feature is fully opt-in: omitting this builder call leaves the serializer's table schema,
+descriptor and row bytes unchanged and invokes no additional provider unless the existing,
+independently configured CDC feature decorates the row with its write-only metadata.
+
+All three built-in serializers reach this common protobuf boundary, so additional fields work with
+`ProtoMessageSerializer`, `AvroRecordSerializer` and `JsonDocumentSerializer`, as well as custom
+`BigQueryProtoSerializer` implementations.
+The value provider receives the original input element: a protobuf message, an `IndexedRecord`, a
+JSON `String` or the custom serializer's input type.
+
+```java
+Sink<MyEvent> sink =
+        BigQuerySink.<MyEvent>builder()
+                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .serializer(new MyEventProtoSerializer())
+                .additionalFields(
+                        AdditionalFields.<MyEvent>builder()
+                                .field(
+                                        AdditionalField.of(
+                                                "__uuid",
+                                                AdditionalFieldType.STRING,
+                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                MyEvent::uuid))
+                                .field(
+                                        AdditionalField.of(
+                                                "__timestamp",
+                                                AdditionalFieldType.TIMESTAMP,
+                                                AdditionalFieldNullPolicy.NULLABLE,
+                                                MyEvent::timestamp))
+                                .build())
+                .build();
+```
+
+Declarations retain their order in the table schema, protobuf descriptor and emitted row.
+The column name must be a protobuf-compatible identifier and must not collide
+case-insensitively with the serializer's physical fields or another additional field.
+Additional fields are singular scalars; repeated values, records, `RANGE`, `INTERVAL` and BigQuery
+flexible column names are not accepted by this API.
+
+| `AdditionalFieldType` | Provider value |
+|---|---|
+| `BOOL` | `Boolean` |
+| `BYTES` | protobuf `ByteString` |
+| `DATE` | `LocalDate` |
+| `DATETIME` | `LocalDateTime` |
+| `DOUBLE` | `Double` |
+| `GEOGRAPHY` | WKT `String` |
+| `INT64` | `Long` |
+| `NUMERIC`, `BIGNUMERIC` | `BigDecimal` within the selected BigQuery type's bounds |
+| `STRING` | `String` |
+| `TIME` | `LocalTime` |
+| `TIMESTAMP` | `Instant`, truncated to microsecond precision |
+| `JSON` | JSON text as `String` |
+
+The serializer runs first.
+When it returns `null`, the record keeps the ordinary skip behavior and no additional-field provider
+runs.
+For an emitted row, providers run in declaration order.
+A provider returning `null` omits a `NULLABLE` field and fails a `REQUIRED` field; an exception or a
+value of the wrong Java type follows the configured failed-row policy and names the field.
+
+The same declarations apply to `STORAGE_API_AT_LEAST_ONCE`,
+`STORAGE_API_EXACTLY_ONCE` and `FILE_LOADS`.
+They extend the physical schema used for table auto-creation, schema reconciliation and file
+staging as well as the write descriptor.
+For an existing table, `schemaUpdateOptions(...)` still controls additive reconciliation: a new
+`REQUIRED` additional field is added as `NULLABLE` because BigQuery cannot add required columns to
+an existing table, while its provider continues to reject null values.
+
+CDC metadata below is deliberately different.
+BigQuery documents its two CDC names as write-only pseudocolumns, so they extend the default-stream
+descriptor without becoming physical columns; arbitrary additional fields never take that path.
+
 ## Change data capture
 
 The default-stream write method can apply **change data capture (CDC)** mutations to a table that

@@ -40,6 +40,10 @@ import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
@@ -378,6 +382,40 @@ class BigQueryDefaultStreamWriterTest {
                     .isEqualTo(value.length() == 10 ? "A" : "4");
         }
         assertThat(factory.descriptors).hasSize(2);
+    }
+
+    @Test
+    void appendsConfiguredPhysicalFieldsThroughTheDefaultStreamWriter() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        TableDestination destination = TableDestination.of("p", "d", "t");
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(destination)
+                                .serializer(new CdcStringSerializer())
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(factory, NOOP_ADMIN, TestSinkWriterMetricGroup.create());
+
+        writer.write("alpha", CONTEXT);
+        writer.flush(false);
+
+        Descriptors.Descriptor descriptor = factory.descriptors.get(destination);
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        descriptor,
+                        factory.appenders.get(destination).appends.get(0).getSerializedRows(0));
+        assertThat(row.getField(descriptor.findFieldByName("value"))).isEqualTo("alpha");
+        assertThat(row.getField(descriptor.findFieldByName("source"))).isEqualTo("computed-alpha");
     }
 
     @Test

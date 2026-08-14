@@ -55,6 +55,9 @@
 [[builders]]
 module = "flink-connector-gcp-bigquery"
 page = "docs/content/docs/reference/bigquery.md"
+sources = [
+  "flink-connector-gcp-bigquery/src/main/java/io/github/flink/gcp/connector/bigquery/sink/serializer/AdditionalFields.java",
+]
 
 [[builders]]
 module = "flink-connector-gcp-pubsub"

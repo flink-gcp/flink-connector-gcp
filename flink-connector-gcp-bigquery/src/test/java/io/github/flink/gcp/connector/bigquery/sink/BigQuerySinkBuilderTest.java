@@ -24,12 +24,17 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
@@ -92,6 +97,126 @@ class BigQuerySinkBuilderTest {
                         .build();
 
         assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);
+    }
+
+    @Test
+    void omittedAdditionalFieldsAreANoOp() throws Exception {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+
+        assertThat(sink.getConfig().getTableSchema(DESTINATION).getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("f");
+        assertThat(sink.getConfig().getWriteDescriptor(DESTINATION))
+                .isSameAs(Empty.getDescriptor());
+        assertThat(sink.getConfig().serialize("value", DESTINATION))
+                .isEqualTo(Empty.getDefaultInstance().toByteString());
+    }
+
+    @Test
+    void additionalFieldsReachEveryWriteMethodAndSurviveSerialization() throws Exception {
+        AdditionalFields<String> options =
+                AdditionalFields.<String>builder()
+                        .field(
+                                AdditionalField.of(
+                                        "computed",
+                                        AdditionalFieldType.STRING,
+                                        AdditionalFieldNullPolicy.REQUIRED,
+                                        value -> value))
+                        .build();
+        BigQueryDefaultStreamSink<String> defaultStream =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .additionalFields(options)
+                                .build();
+        BigQueryBufferedStreamSink<String> bufferedStream =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .bufferedStreamOptions(BufferedStreamOptions.builder().build())
+                                .additionalFields(options)
+                                .build();
+        BigQueryFileLoadsSink<String> fileLoads =
+                (BigQueryFileLoadsSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .fileLoadsOptions(
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://staging-bucket")
+                                                .build())
+                                .additionalFields(options)
+                                .build();
+
+        assertAdditionalField(InstantiationUtil.clone(defaultStream).getConfig());
+        assertAdditionalField(InstantiationUtil.clone(bufferedStream).getConfig());
+        assertAdditionalField(InstantiationUtil.clone(fileLoads).getConfig());
+    }
+
+    @Test
+    void physicalAndWriteOnlyFieldsShareOneDescriptor() throws Exception {
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "computed",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> value))
+                                                .build())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .build())
+                                .build();
+
+        Descriptors.Descriptor descriptor = sink.getConfig().getWriteDescriptor(DESTINATION);
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        descriptor, sink.getConfig().serialize("value", DESTINATION));
+
+        assertThat(sink.getConfig().getTableSchema(DESTINATION).getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("f", "computed");
+        assertThat(descriptor.getFields())
+                .extracting(Descriptors.FieldDescriptor::getName)
+                .containsExactly("computed", "_change_type");
+        assertThat(row.getField(descriptor.findFieldByName("computed"))).isEqualTo("value");
+        assertThat(row.getField(descriptor.findFieldByName("_change_type"))).isEqualTo("UPSERT");
+    }
+
+    @Test
+    void additionalFieldsRejectNull() {
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().additionalFields(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("additionalFields must not be null");
+    }
+
+    private static void assertAdditionalField(BigQuerySinkConfig<String> config) throws Exception {
+        assertThat(config.getTableSchema(DESTINATION).getFieldsList())
+                .extracting(TableFieldSchema::getName)
+                .containsExactly("f", "computed");
+        Descriptors.Descriptor descriptor = config.getWriteDescriptor(DESTINATION);
+        assertThat(descriptor.findFieldByName("computed")).isNotNull();
+        DynamicMessage row =
+                DynamicMessage.parseFrom(
+                        descriptor, config.serialize("provider-value", DESTINATION));
+        assertThat(row.getField(descriptor.findFieldByName("computed")))
+                .isEqualTo("provider-value");
     }
 
     @Test

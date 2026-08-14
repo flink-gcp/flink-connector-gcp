@@ -35,6 +35,10 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -237,20 +241,28 @@ class FileLoadsWriterTest {
 
     static BigQuerySinkConfig<TestRow> config(
             FailureHandler<FailedRow> handler, TableSchema schema) {
-        BigQueryFileLoadsSink<TestRow> sink =
-                (BigQueryFileLoadsSink<TestRow>)
-                        BigQuerySink.<TestRow>builder()
-                                .writeMethod(WriteMethod.FILE_LOADS)
-                                .destinationResolver(
-                                        (element, context) ->
-                                                TableDestination.of("p", "d", element.table))
-                                .serializer(new TestRowSerializer(schema))
-                                .failedRowHandler(handler)
-                                .fileLoadsOptions(
-                                        FileLoadsOptions.builder()
-                                                .stagingPath("gs://bucket/prefix")
-                                                .build())
-                                .build();
+        return config(handler, schema, null);
+    }
+
+    static BigQuerySinkConfig<TestRow> config(
+            FailureHandler<FailedRow> handler,
+            TableSchema schema,
+            AdditionalFields<TestRow> additionalFields) {
+        var builder =
+                BigQuerySink.<TestRow>builder()
+                        .writeMethod(WriteMethod.FILE_LOADS)
+                        .destinationResolver(
+                                (element, context) -> TableDestination.of("p", "d", element.table))
+                        .serializer(new TestRowSerializer(schema))
+                        .failedRowHandler(handler)
+                        .fileLoadsOptions(
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket/prefix")
+                                        .build());
+        if (additionalFields != null) {
+            builder.additionalFields(additionalFields);
+        }
+        BigQueryFileLoadsSink<TestRow> sink = (BigQueryFileLoadsSink<TestRow>) builder.build();
         return sink.getConfig();
     }
 
@@ -549,6 +561,38 @@ class FileLoadsWriterTest {
         assertThat(records.get(0).get("value")).isEqualTo(1L);
         assertThat(records.get(1).get("name")).hasToString("b");
         assertThat(records.get(1).get("value")).isNull();
+    }
+
+    @Test
+    void stagesConfiguredPhysicalFieldsThroughTheFileLoadsWriter() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        AdditionalFields<TestRow> additionalFields =
+                AdditionalFields.<TestRow>builder()
+                        .field(
+                                AdditionalField.of(
+                                        "source",
+                                        AdditionalFieldType.STRING,
+                                        AdditionalFieldNullPolicy.REQUIRED,
+                                        row -> "computed-" + row.name))
+                        .build();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob(), SCHEMA, additionalFields),
+                        storage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+
+        writer.write(new TestRow("t", "alpha", 1L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        List<GenericRecord> records = readAvro(storage.getObjects().get(committable.getUri()));
+        assertThat(records)
+                .singleElement()
+                .satisfies(
+                        record -> {
+                            assertThat(record.get("name")).hasToString("alpha");
+                            assertThat(record.get("source")).hasToString("computed-alpha");
+                        });
     }
 
     @Test
