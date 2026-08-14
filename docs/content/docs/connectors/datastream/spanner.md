@@ -35,13 +35,7 @@ is implemented and what is planned is in the
 The bounded source, Change Streams source, and sink use Application Default Credentials when neither `serviceAccountKeyFile(...)` nor `emulatorEndpoint(...)` is set.
 Set it only when the job must select a service-account JSON key that the runtime environment cannot supply through ADC.
 
-```java
-SpannerSink.<OrderEvent>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-        .serializer(orderSerializer)
-        .serviceAccountKeyFile("/var/run/secrets/spanner/key.json")
-        .build();
-```
+{{< java-snippet file="SpannerConnectorCredentials.java" tag="spanner-connector-credentials" >}}
 
 The connector serializes only the path into the job graph and reads the file in each process that creates a client.
 The sink reads it on each TaskManager when a writer starts.
@@ -65,18 +59,7 @@ That is a shape of its own among the connectors here. The BigQuery, Pub/Sub, Clo
 Bigtable sinks resolve a destination per record, through a resolver the builder is given; this one
 fixes the database and leaves the table to the mutation, so there is no resolver to configure.
 
-```java
-Sink<OrderEvent> sink =
-        SpannerSink.<OrderEvent>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-                .serializer(
-                        (event, context) ->
-                                Mutation.newInsertOrUpdateBuilder("Orders")
-                                        .set("OrderId").to(event.getId())
-                                        .set("Total").to(event.getTotal())
-                                        .build())
-                .build();
-```
+{{< java-snippet file="SpannerConnectorDatabaseDestination.java" tag="spanner-connector-database-destination" >}}
 
 ## How the sink writes
 
@@ -309,18 +292,7 @@ failed and routes it instead. This is the same contract every connector here fol
 
 The source reads a Spanner database at one snapshot and finishes.
 
-```java
-Source<Singer, ?, ?> source =
-        SpannerSource.<Singer>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "my-db"))
-                .readOperation(
-                        SpannerReadOperation.query(
-                                Statement.of("SELECT id, name FROM singers")))
-                .deserializer(new SingerDeserializer())
-                .build();
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "singers");
-```
+{{< java-snippet file="SpannerConnectorSource.java" tag="spanner-connector-source" >}}
 
 Bounded is not the same as batch-only: a bounded source runs inside a streaming pipeline and simply
 ends, which is what makes reading a Spanner table and joining it against an unbounded stream work.
@@ -456,23 +428,7 @@ one direction that is easy to get backwards. Measured against `emulator:1.5.56` 
 The Change Streams source continuously reads data-change records from the generated Spanner read function.
 It uses the checkpointed partition lineage described in [ADR-0099](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) and the bounded asynchronous reader in [ADR-0101](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0101-the-spanner-change-stream-reader-bounds-asynchronous-partition-queries.md).
 
-```java
-SpannerChangeStreamSource<OrderChange> source =
-        SpannerChangeStreamSource.<OrderChange>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-                .changeStreamName("order_changes")
-                .deserializer(new OrderChangeDeserializer())
-                .serviceAccountKeyFile("/var/run/secrets/spanner/key.json")
-                .startPosition(StartPosition.latest())
-                .maxConcurrentQueriesPerSubtask(8)
-                .build();
-
-env.fromSource(
-                source,
-                WatermarkStrategy.noWatermarks(),
-                "spanner-order-changes")
-        .setParallelism(4);
-```
+{{< java-snippet file="SpannerConnectorChangeStreamSource.java" tag="spanner-connector-change-stream-source" >}}
 
 The complete builder surface is in [the reference]({{< relref "docs/reference/spanner" >}}#spannerchangestreamsourcebuilder).
 In this example the configured query capacity is 32: four subtasks multiplied by eight concurrent queries per subtask.
@@ -522,16 +478,7 @@ Primary-key columns and their type metadata are always retained, even when a col
 For every other column, projection removes the same member from `columnTypes` and from every mod's old and new value objects.
 Absent values and explicit JSON `null` remain distinct.
 
-```java
-SpannerChangeStreamSource<OrderChange> source =
-        SpannerChangeStreamSource.<OrderChange>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
-                .changeStreamName("all_changes")
-                .deserializer(new OrderChangeDeserializer())
-                .tableIncludeList(List.of("orders", "order_items"))
-                .columnExcludeList(List.of("orders\\.internal_note", ".*\\.debug_payload"))
-                .build();
-```
+{{< java-snippet file="SpannerConnectorChangeStreamOutputFilters.java" tag="spanner-connector-change-stream-output-filters" >}}
 
 If projection removes every reported non-key value, the default still calls the deserializer with empty projected value objects.
 This preserves transaction activity that a downstream consumer might need.
