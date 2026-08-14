@@ -490,6 +490,31 @@ class SpannerChangeStreamReaderTest {
     }
 
     @Test
+    void inactivePathDoesNotInvokeTheFilterAndPreservesMetricsAndProgress() throws Exception {
+        RecordingDeserializer deserializer = new RecordingDeserializer();
+        reader = reader(1, deserializer, filter(null, null, null, "table\\.secret", true), false);
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        DataChangeRecord original = dataWithSecret("1", START.plusSeconds(4));
+
+        client.record("change-stream-token:a", new SpannerChangeStreamRecord.Data(original));
+        TrackingOutput<String> output = new TrackingOutput<>();
+        reader.pollNext(output);
+
+        assertThat(output.records).containsExactly("1");
+        assertThat(deserializer.records).singleElement().isSameAs(original);
+        assertThat(counter("changeStreamRecordsFilteredByTable")).isZero();
+        assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isZero();
+        assertThat(counter("changeStreamColumnOccurrencesFiltered")).isZero();
+        assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+        assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(4));
+        assertThat(context.sourceEvents())
+                .singleElement()
+                .isInstanceOf(PartitionProgressEvent.class);
+    }
+
+    @Test
     void tableFilteringBypassesTheDeserializerButStillCheckpointsProgress() throws Exception {
         RecordingDeserializer deserializer = new RecordingDeserializer();
         reader = reader(1, deserializer, filter("included", null, null, null, false));
@@ -678,6 +703,19 @@ class SpannerChangeStreamReaderTest {
         SpannerChangeStreamReader<String> created =
                 new SpannerChangeStreamReader<>(
                         context, DATABASE, deserializer, filter, maximum, client);
+        created.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
+        return created;
+    }
+
+    private SpannerChangeStreamReader<String> reader(
+            int maximum,
+            SpannerChangeStreamDeserializationSchema<String> deserializer,
+            SpannerChangeStreamRecordFilter filter,
+            boolean filtersActive) {
+        SpannerChangeStreamReader<String> created =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, deserializer, filter, filtersActive, maximum, client);
         created.handleSourceEvents(
                 new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
         return created;

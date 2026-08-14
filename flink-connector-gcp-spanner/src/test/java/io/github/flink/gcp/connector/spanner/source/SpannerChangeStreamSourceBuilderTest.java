@@ -61,6 +61,7 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(defaults.getRpcPriority()).isEqualTo(SpannerRpcPriority.HIGH);
         assertThat(defaults.getMaxConcurrentQueriesPerSubtask()).isEqualTo(8);
         assertThat(defaults.getServiceAccountKeyFile()).isEmpty();
+        assertThat(defaults.getRecordFilter().hasFilters()).isFalse();
         DataChangeRecord unfiltered = record("orders");
         assertThat(defaults.getRecordFilter().filter(unfiltered).getRecord()).isSameAs(unfiltered);
         assertThat(defaults.getQueryClientFactory())
@@ -85,6 +86,7 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(configured.getHeartbeatMillis()).isEqualTo(1_500);
         assertThat(configured.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
         assertThat(configured.getMaxConcurrentQueriesPerSubtask()).isEqualTo(19);
+        assertThat(configured.getRecordFilter().hasFilters()).isTrue();
         assertThat(configured.getRecordFilter().filter(record("orders")).getDisposition())
                 .isEqualTo(
                         SpannerChangeStreamRecordFilter.Result.Disposition.SKIPPED_WITHOUT_CHANGE);
@@ -113,11 +115,20 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(copy.getConfig().getDatabase()).isEqualTo(DATABASE);
         assertThat(copy.getConfig().getChangeStreamName()).isEqualTo("changes");
         assertThat(copy.getProducedType()).isEqualTo(TypeInformation.of(Long.class));
+        assertThat(copy.getConfig().getRecordFilter().hasFilters()).isTrue();
         assertThat(copy.getConfig().getRecordFilter().filter(record("orders")).getDisposition())
                 .isEqualTo(
                         SpannerChangeStreamRecordFilter.Result.Disposition.SKIPPED_WITHOUT_CHANGE);
         assertThat(copy.getConfig().getRecordFilter().filter(record("audit")).getDisposition())
                 .isEqualTo(SpannerChangeStreamRecordFilter.Result.Disposition.TABLE_FILTERED);
+    }
+
+    @Test
+    void skipOnlyFilterRemainsInactiveAfterJobGraphSerialization() throws Exception {
+        SpannerChangeStreamSource<Long> copy =
+                InstantiationUtil.clone(builder().skipMessagesWithoutChange(true).build());
+
+        assertThat(copy.getConfig().getRecordFilter().hasFilters()).isFalse();
     }
 
     @Test

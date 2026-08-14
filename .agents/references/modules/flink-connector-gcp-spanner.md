@@ -214,6 +214,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Table and column filters run after dialect-specific decoding and before the user deserializer.
   Patterns fully match the Spanner-reported table name or `table.column`; do not case-fold,
   substring-match, or look up a historical schema. Primary-key metadata and keys always survive.
+- Determine filter activation once when constructing the reader. When all table and column lists
+  are empty, pass the original record directly to the deserializer without calling the filter or
+  allocating its result. `skipMessagesWithoutChange` alone does not activate filtering.
+- When an active column filter retains every column in the record's metadata, return the original
+  record before parsing or rebuilding its mod value JSON.
 - Column projection removes a rejected non-key name from `columnTypes` and every mod's old and new
   value objects. Empty projections are delivered by default; `skipMessagesWithoutChange` is the
   explicit opt-in to skip them. Either filter outcome still advances split progress.

@@ -511,6 +511,11 @@ Table expressions see the record's Spanner-reported `tableName`.
 Column expressions see `tableName + "." + columnName`, so `orders\.status` does not select a same-named column from `audit_orders`.
 The connector does not fold case or interpret quoting, so patterns must use the exact table and column names carried by the decoded record.
 
+When all four filter lists are empty, the reader passes the original decoded `DataChangeRecord` directly to the deserializer without evaluating the filter or creating a filter result.
+The reader determines this once when it is constructed, so `skipMessagesWithoutChange(true)` alone does not add per-record filter work.
+That option affects records only when a configured column filter can remove reported values.
+An active column filter that retains every column in the record's metadata returns the original record before parsing or rebuilding its mod value JSON.
+
 An include list retains an identifier when any expression matches, while an exclude list removes an identifier when any expression matches.
 The builder rejects setting both lists for the same table or column scope.
 Primary-key columns and their type metadata are always retained, even when a column expression matches them.
