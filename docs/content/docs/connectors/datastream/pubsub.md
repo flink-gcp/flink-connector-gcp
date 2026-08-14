@@ -499,8 +499,9 @@ repository):
 
 {{< java-snippet file="PubSubConnectorFailedMessagePolicy.java" tag="pubsub-connector-failed-message-policy" >}}
 
-- `FailureHandler.failJob()` (default) — every per-message failure fails the checkpoint, which is
-  the sink's behavior when nothing is configured
+- `FailureHandler.failJob()` (default) — every per-message failure fails the ongoing write or
+  checkpoint, depending on where the failure surfaces; this is the sink's behavior when nothing is
+  configured
 - `FailureHandler.logAndDrop()` — logs each failed message at WARN and drops it
 - `FailureHandler.sendToDeadLetterQueue(...)` — forwards each failed message to a `DeadLetterQueue`
   (experimental), whose implementation the sink drives through a lifecycle: `open(context)` once
@@ -512,9 +513,9 @@ repository):
 - Custom handlers implement `FailureHandler<FailedMessage>` — or `FailureHandler<FailedElement>`,
   which `failedMessageHandler(...)` accepts as-is (the parameter is contravariant), so one handler
   written against the shared contract serves every connector in this repository. Throwing from
-  `handle` fails the checkpoint, returning drops the message. `FailedMessage` carries the
-  `PubsubMessage` the serializer produced, or `null` when serialization itself failed; under the
-  shared `FailedElement` contract it reports `getConnector()` (`"pubsub"`),
+  `handle` propagates from the current write or checkpoint operation; returning drops the message.
+  `FailedMessage` carries the `PubsubMessage` the serializer produced, or `null` when serialization
+  itself failed; under the shared `FailedElement` contract it reports `getConnector()` (`"pubsub"`),
   `describeDestination()` (`projects/<p>/topics/<t>`) and `getPayloadBytes()` — the **whole**
   serialized message, so a consumer recovers the attributes and the ordering key with
   `PubsubMessage.parseFrom(bytes)`
