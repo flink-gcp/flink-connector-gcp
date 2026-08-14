@@ -44,6 +44,7 @@ E2E_GATES = (
     "PUBSUB_IT_PROJECT",
     "BIGTABLE_IT_PROJECT",
     "SPANNER_IT_PROJECT",
+    "CLOUDTASKS_IT_PROJECT",
 )
 REQUIRED = (
     "BQ_IT_PROJECT",
@@ -52,6 +53,7 @@ REQUIRED = (
     "PUBSUB_IT_PROJECT",
     "BIGTABLE_IT_PROJECT",
     "SPANNER_IT_PROJECT",
+    "CLOUDTASKS_IT_PROJECT",
 )
 
 REPORT = '<?xml version="1.0"?>\n<testsuite name="{fqcn}" tests="{tests}" skipped="{skipped}">\n'
@@ -204,6 +206,36 @@ def test_default_mode_is_fatal_when_a_gate_matches_nothing(tree):
     result = tree()
     assert result.returncode == 1
     assert "PUBSUB_IT_PROJECT" in result.stderr
+
+
+def test_for_gate_prints_only_the_selected_classes(tree):
+    sources = full_suite(tree)
+
+    result = tree("--for-gate", "CLOUDTASKS_IT_PROJECT")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == sources[-1].stem
+
+
+def test_except_gate_omits_only_the_selected_classes(tree):
+    sources = full_suite(tree)
+
+    result = tree("--except-gate", "CLOUDTASKS_IT_PROJECT")
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(result.stdout.strip().split(",")) == sorted(
+        source.stem for source in sources[:-1]
+    )
+
+
+@pytest.mark.parametrize("mode", ["--for-gate", "--except-gate"])
+def test_gate_selector_rejects_an_unknown_gate(tree, mode):
+    full_suite(tree)
+
+    result = tree(mode, "UNKNOWN_GATE")
+
+    assert result.returncode == 2
+    assert "GATE" in result.stderr
 
 
 def test_require_env_accepts_a_complete_environment(tree):

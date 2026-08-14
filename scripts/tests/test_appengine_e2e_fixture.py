@@ -14,7 +14,9 @@
 """Tests for the fixed App Engine E2E fixture lifecycle wrapper."""
 
 import shutil
+import signal
 import subprocess
+import time
 
 import pytest
 from conftest import SCRIPTS
@@ -94,9 +96,8 @@ def fixture_lifecycle(tmp_path):
     gcloud.chmod(0o755)
     log = tmp_path / "gcloud.log"
 
-    def run(
-        command,
-        *args,
+    def prepare(
+        *,
         statuses=("STOPPED",),
         instance_observations=((),),
         project="flink-gcp",
@@ -142,9 +143,12 @@ def fixture_lifecycle(tmp_path):
         if extra_env:
             env.update(extra_env)
 
+        return env
+
+    def run(command, *args, **kwargs):
         result = subprocess.run(
             [str(script), command, *args],
-            env=env,
+            env=prepare(**kwargs),
             capture_output=True,
             text=True,
             check=False,
@@ -153,6 +157,10 @@ def fixture_lifecycle(tmp_path):
         return result
 
     run.fixture = fixture
+    run.log = log
+    run.prepare = prepare
+    run.script = script
+    run.tmp_path = tmp_path
     return run
 
 
@@ -211,6 +219,160 @@ def test_an_already_stopped_fixture_is_idempotent(fixture_lifecycle):
     assert result.returncode == 0, result.stderr
     assert result.gcloud == []
     assert "stopped with zero instances" in result.stdout
+
+
+def test_run_passes_fixture_identifiers_and_accepts_already_stopped_cleanup(
+    fixture_lifecycle,
+):
+    output = fixture_lifecycle.tmp_path / "environment.txt"
+    child = fixture_lifecycle.tmp_path / "record-environment.sh"
+    child.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "printf '%s\\n' \"$CLOUDTASKS_IT_APPENGINE_SERVICE\" "
+        '"$CLOUDTASKS_IT_APPENGINE_VERSION" '
+        '"$CLOUDTASKS_IT_APPENGINE_INSTANCE" > "$OUTPUT"\n'
+    )
+    child.chmod(0o755)
+
+    result = fixture_lifecycle(
+        "run",
+        "--",
+        str(child),
+        statuses=("SERVING", "STOPPED"),
+        instance_observations=(("instance-1",), ()),
+        extra_env={"OUTPUT": str(output)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert output.read_text().splitlines() == ["default", "flink-e2e", "instance-1"]
+    assert result.gcloud == [
+        "app versions start flink-e2e --service=default --project=flink-gcp --quiet"
+    ]
+
+
+def test_run_cleans_up_after_a_startup_timeout_without_running_the_command(
+    fixture_lifecycle,
+):
+    marker = fixture_lifecycle.tmp_path / "ran"
+    child = fixture_lifecycle.tmp_path / "mark-ran.sh"
+    child.write_text('#!/usr/bin/env bash\ntouch "$MARKER"\n')
+    child.chmod(0o755)
+
+    result = fixture_lifecycle(
+        "run",
+        "--",
+        str(child),
+        statuses=("STOPPED", "STOPPED", "STOPPED"),
+        instance_observations=((), (), ()),
+        attempts=2,
+        extra_env={"MARKER": str(marker)},
+    )
+
+    assert result.returncode == 1
+    assert not marker.exists()
+    assert "Timed out waiting" in result.stderr
+    assert "stopped with zero instances" in result.stdout
+
+
+def test_run_preserves_a_test_failure_after_successful_cleanup(fixture_lifecycle):
+    result = fixture_lifecycle(
+        "run",
+        "--",
+        "/bin/sh",
+        "-c",
+        "exit 17",
+        statuses=("SERVING", "SERVING", "STOPPED"),
+        instance_observations=(("instance-1",), ("instance-1",), ()),
+    )
+
+    assert result.returncode == 17
+    assert result.gcloud == [
+        "app versions start flink-e2e --service=default --project=flink-gcp --quiet",
+        "app versions stop flink-e2e --service=default --project=flink-gcp --quiet",
+    ]
+
+
+def test_run_reports_cleanup_failure_after_a_successful_test(fixture_lifecycle):
+    result = fixture_lifecycle(
+        "run",
+        "--",
+        "/bin/true",
+        statuses=("SERVING", "SERVING"),
+        instance_observations=(("instance-1",), ("instance-1",)),
+        stop_fails=True,
+    )
+
+    assert result.returncode == 1
+    assert "Failed to stop" in result.stderr
+
+
+def test_run_preserves_a_test_failure_when_cleanup_also_fails(fixture_lifecycle):
+    result = fixture_lifecycle(
+        "run",
+        "--",
+        "/bin/sh",
+        "-c",
+        "exit 17",
+        statuses=("SERVING", "SERVING"),
+        instance_observations=(("instance-1",), ("instance-1",)),
+        stop_fails=True,
+    )
+
+    assert result.returncode == 17
+    assert "App Engine cleanup also failed with exit code 1" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("sent_signal", "expected_status"),
+    [(signal.SIGINT, 130), (signal.SIGTERM, 143)],
+)
+def test_run_terminates_the_child_on_signals_and_stops_the_fixture(
+    fixture_lifecycle, sent_signal, expected_status
+):
+    ready = fixture_lifecycle.tmp_path / "ready"
+    received = fixture_lifecycle.tmp_path / "signal"
+    child = fixture_lifecycle.tmp_path / "wait-for-signal.sh"
+    child.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -eu\n"
+        "trap 'printf INT > \"$RECEIVED\"; exit 0' INT\n"
+        "trap 'printf TERM > \"$RECEIVED\"; exit 0' TERM\n"
+        'touch "$READY"\n'
+        "while :; do read -r -t 1 _ || true; done\n"
+    )
+    child.chmod(0o755)
+    env = fixture_lifecycle.prepare(
+        statuses=("SERVING", "SERVING", "STOPPED"),
+        instance_observations=(("instance-1",), ("instance-1",), ()),
+        extra_env={"READY": str(ready), "RECEIVED": str(received)},
+    )
+    process = subprocess.Popen(
+        [str(fixture_lifecycle.script), "run", "--", str(child)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 5
+    while not ready.exists():
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(f"run exited before its child was ready: {stdout} {stderr}")
+        if time.monotonic() >= deadline:
+            process.kill()
+            process.communicate()
+            pytest.fail("timed out waiting for the signal fixture")
+
+    process.send_signal(sent_signal)
+    stdout, stderr = process.communicate(timeout=5)
+
+    assert process.returncode == expected_status, (stdout, stderr)
+    assert received.read_text() == "TERM"
+    assert fixture_lifecycle.log.read_text().splitlines() == [
+        "app versions start flink-e2e --service=default --project=flink-gcp --quiet",
+        "app versions stop flink-e2e --service=default --project=flink-gcp --quiet",
+    ]
 
 
 def test_dry_run_observes_but_does_not_stop(fixture_lifecycle):
@@ -281,6 +443,9 @@ def test_a_fixture_identifier_that_cannot_be_read_is_an_error(
         ("start", "--dry-run"),
         ("stop", "--force"),
         ("stop", "--dry-run", "extra"),
+        ("run",),
+        ("run", "--"),
+        ("run", "command"),
         ("status",),
     ],
 )

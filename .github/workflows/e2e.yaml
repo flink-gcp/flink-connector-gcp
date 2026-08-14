@@ -18,16 +18,17 @@ name: E2E
 # silently skips, checking exactly what the emulator cannot (idempotent
 # re-flush, load jobs, the default-stream fan-out/restore suite, serializer
 # column-type fidelity, ordered Pub/Sub dispatch and dead-letter forwarding,
-# and which statuses Bigtable rejects a mutation with; see the testing section
-# of each connector's documentation). The whole run is `just e2e`, which also
+# Cloud Tasks App Engine dispatch and routing, and which statuses Bigtable
+# rejects a mutation with; see each connector's testing section). The whole
+# run is `just e2e`, which also
 # asserts the gated classes actually executed: @EnabledIfEnvironmentVariable
 # makes a missing variable a silent skip, so a workflow that lost its
 # credentials would otherwise go green — the worst failure mode for this job.
 #
-# The Bigtable half creates and deletes a one-node instance per gated class, so
-# this job costs Bigtable node-hours on top of runner minutes; nothing
-# persistent is provisioned for it (opentofu/flink-gcp holds the API enablement
-# and the grant, not an instance).
+# The Cloud Tasks half starts its fixed B1 App Engine version only around its
+# own class and verifies zero instances before the other connector suites run.
+# Bigtable creates and deletes a one-node instance per gated class, so this job
+# costs service runtime on top of runner minutes.
 #
 # Weekly rather than nightly, and no push trigger, both on cost: the repository
 # is private, so runner minutes are billed, and the per-PR emulator coverage in
@@ -69,8 +70,9 @@ jobs:
     # did: each gated class of either waits on an instance being provisioned
     # before its first test runs, and the Spanner classes seed and read a few
     # thousand rows on top. The ceiling also bounds what a hung run can leave
-    # standing, since both suites' sweeps treat anything older than two hours as
-    # abandoned — so this must stay well under two hours whatever else changes.
+    # standing, since the resource sweeps treat anything older than two hours as
+    # abandoned and the App Engine sweep restores its stopped state — so this
+    # must stay well under two hours whatever else changes.
     timeout-minutes: 60
     steps:
       # Pinned to the commit for the same reason as weekly.yaml: a merge
@@ -97,6 +99,10 @@ jobs:
           service_account: github-actions-e2e@flink-gcp.iam.gserviceaccount.com
           project_id: flink-gcp
 
+      # appengine-e2e-fixture.sh uses gcloud to start the one manual-scaling
+      # instance, observe its id and stop it after the Cloud Tasks class.
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
       - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
         with:
           distribution: temurin
@@ -121,4 +127,5 @@ jobs:
           PUBSUB_IT_PROJECT: flink-gcp
           BIGTABLE_IT_PROJECT: flink-gcp
           SPANNER_IT_PROJECT: flink-gcp
+          CLOUDTASKS_IT_PROJECT: flink-gcp
         run: just e2e

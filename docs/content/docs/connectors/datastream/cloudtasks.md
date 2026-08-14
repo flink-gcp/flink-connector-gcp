@@ -699,7 +699,27 @@ construction by the runtime. Queues are created by the tests, since the sink nev
   final one, since the writer creates each task as it is written rather than buffering until the
   flush.
 
-What the emulator leaves uncovered, for the real-GCP suite or for nothing at all:
+The gated real-GCP suite exercises the App Engine behavior that the emulator omits.
+It runs through the production writer and creates one uniquely named, paused queue per case.
+`FULL` task reads assert fixed and per-record relative URIs, bodies, headers and exact
+service/version/instance routing before dispatch can delete a successful task.
+For a record whose routing extractor returns `null`, the service leaves those three selectors
+empty but populates the output-only routing host; the suite checks the selectors rather than
+mistaking that canonical response for task-level routing.
+The suite also reads a queue-level `appEngineRoutingOverride`, asserts that a `204` response removes
+the task, and observes failed attempts for the fixture's `503` and `302` handlers.
+Each queue is deleted after its case and again after the class as a fallback.
+
+The manually scaled App Engine fixture is started only for this class.
+The lifecycle wrapper waits for exactly one serving instance, exports that instance together with
+the fixture service and version, and stops the version on normal exit and handled `INT`/`TERM`
+before checking that it is `STOPPED` with zero instances.
+It preserves a test or signal exit status if cleanup also fails, while still surfacing a cleanup
+failure after a successful test.
+The daily sweep restores the stopped state after a hard cancellation that cannot run shell cleanup.
+The remaining gated suites run after the fixture has returned to its idle state.
+
+What remains uncovered by the emulator and this App Engine suite:
 
 - It never garbage-collects task names — the dedup window cannot be exercised, only the
   `ALREADY_EXISTS` response. (Its uniqueness check is also a non-atomic check-then-act, so a
@@ -709,9 +729,9 @@ What the emulator leaves uncovered, for the real-GCP suite or for nothing at all
 - It does not implement `UpdateQueue`, so queue-level `httpTarget` routing — the override that can
   silently redirect per-record URLs — is not testable there. (Nor is it reachable through the v2
   client at all, as the targets section explains.)
-- It does not implement App Engine dispatch. Deterministic tests therefore cover the request
-  protobuf, validation and routing precedence within the serializer; [#632]({{< param BookRepo
-  >}}/issues/632) owns queue-level override and handler behavior against the real service.
+- It does not implement App Engine dispatch.
+  Deterministic tests therefore cover the request protobuf, validation and routing precedence,
+  while the gated real-GCP suite covers queue-level override and handler behavior.
 - It authenticates **OIDC only** — its task dispatch has a single `GetOidcToken` branch — so the
   OAuth path in the v1 scope has no emulator coverage and needs real GCP or a hand-written fake.
 - It offers no failure injection, so the transient retry budget stays a unit test against the fake

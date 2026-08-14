@@ -25,11 +25,12 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 start | stop [--dry-run]" >&2
+    echo "usage: $0 start | stop [--dry-run] | run -- command [args...]" >&2
 }
 
 command_name=${1:-}
 dry_run=false
+run_command=()
 case "$command_name" in
     start)
         [ "$#" -eq 1 ] || {
@@ -50,6 +51,14 @@ case "$command_name" in
             usage
             exit 2
         }
+        ;;
+    run)
+        [ "${2:-}" = "--" ] && [ "$#" -ge 3 ] || {
+            usage
+            exit 2
+        }
+        shift 2
+        run_command=("$@")
         ;;
     *)
         usage
@@ -151,37 +160,95 @@ wait_for() {
     return 1
 }
 
+start_fixture() {
+    echo "Starting App Engine fixture ${project}/${service}/${version}." >&2
+    if ! gcloud app versions start "$version" \
+        --service="$service" --project="$project" --quiet >/dev/null; then
+        echo "Failed to start App Engine version ${service}/${version}." >&2
+        return 1
+    fi
+    wait_for SERVING 1
+}
+
+stop_fixture() {
+    observe || return $?
+    if [ "$status" = STOPPED ] && [ "$instance_count" -eq 0 ]; then
+        echo "App Engine fixture ${project}/${service}/${version} is stopped with zero instances."
+        return 0
+    fi
+    if [ "$dry_run" = true ]; then
+        echo "would stop App Engine fixture ${project}/${service}/${version}" \
+            "(${status:-<empty>}, ${instance_count} instance(s))"
+        return 0
+    fi
+    echo "Stopping App Engine fixture ${project}/${service}/${version}."
+    if ! gcloud app versions stop "$version" \
+        --service="$service" --project="$project" --quiet >/dev/null; then
+        echo "Failed to stop App Engine version ${service}/${version}." >&2
+        return 1
+    fi
+    wait_for STOPPED 0 || return $?
+    echo "App Engine fixture ${project}/${service}/${version} is stopped with zero instances."
+}
+
+child_pid=''
+
+finish_run() {
+    local primary_status=$? cleanup_status=0
+    trap - EXIT INT TERM
+    set +e
+    stop_fixture
+    cleanup_status=$?
+    set -e
+    if [ "$cleanup_status" -ne 0 ] && [ "$primary_status" -ne 0 ]; then
+        echo "App Engine cleanup also failed with exit code ${cleanup_status}." >&2
+    fi
+    if [ "$primary_status" -ne 0 ]; then
+        exit "$primary_status"
+    fi
+    exit "$cleanup_status"
+}
+
+terminate_child() {
+    local signal_status=$1
+    if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+        # A non-interactive shell starts asynchronous children with SIGINT
+        # ignored. SIGTERM therefore provides the reliable termination path
+        # for both wrapper signals; the wrapper still preserves 130 versus 143.
+        kill -TERM "$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+        child_pid=''
+    fi
+    exit "$signal_status"
+}
+
 case "$command_name" in
     start)
-        echo "Starting App Engine fixture ${project}/${service}/${version}." >&2
-        if ! gcloud app versions start "$version" \
-            --service="$service" --project="$project" --quiet >/dev/null; then
-            echo "Failed to start App Engine version ${service}/${version}." >&2
-            exit 1
-        fi
-        wait_for SERVING 1 || exit $?
+        start_fixture
         # Machine-readable stdout: the orchestrator in #632 passes this exact
         # instance id to the gated test. Progress stays on stderr.
         printf '%s\n' "$instance_id"
         ;;
     stop)
-        observe || exit $?
-        if [ "$status" = STOPPED ] && [ "$instance_count" -eq 0 ]; then
-            echo "App Engine fixture ${project}/${service}/${version} is stopped with zero instances."
-            exit 0
-        fi
-        if [ "$dry_run" = true ]; then
-            echo "would stop App Engine fixture ${project}/${service}/${version}" \
-                "(${status:-<empty>}, ${instance_count} instance(s))"
-            exit 0
-        fi
-        echo "Stopping App Engine fixture ${project}/${service}/${version}."
-        if ! gcloud app versions stop "$version" \
-            --service="$service" --project="$project" --quiet >/dev/null; then
-            echo "Failed to stop App Engine version ${service}/${version}." >&2
-            exit 1
-        fi
-        wait_for STOPPED 0 || exit $?
-        echo "App Engine fixture ${project}/${service}/${version} is stopped with zero instances."
+        stop_fixture
+        ;;
+    run)
+        trap finish_run EXIT
+        trap 'terminate_child 130' INT
+        trap 'terminate_child 143' TERM
+
+        start_fixture
+        export CLOUDTASKS_IT_APPENGINE_SERVICE=$service
+        export CLOUDTASKS_IT_APPENGINE_VERSION=$version
+        export CLOUDTASKS_IT_APPENGINE_INSTANCE=$instance_id
+
+        "${run_command[@]}" &
+        child_pid=$!
+        set +e
+        wait "$child_pid"
+        command_status=$?
+        set -e
+        child_pid=''
+        exit "$command_status"
         ;;
 esac
