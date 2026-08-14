@@ -939,10 +939,16 @@ a service RPC to prove credential injection: unit and runtime-boundary tests par
 inspect every affected client settings family.
 
 Change Streams metadata and `UNNEST(entries)` are covered without a service: converter tests use
-the connector-owned mutation model directly, planner tests select and cast metadata, and the existing
-`flink-sql-connector-gcp-bigtable` uber-jar plans the same DDL through its discovered `bigtable`
-factory.
+the connector-owned mutation model directly, planner tests select and cast metadata, and the
+existing `flink-sql-connector-gcp-bigtable` uber-jar plans an envelope DDL through its discovered
+`bigtable` factory.
 Selected-cell tests drive the strict mutation classifier and row assembly directly, while a
 MiniCluster job executes the canonical upsert, unrelated-mutation, and key-only-delete paths.
-The emulator implements no Change Streams RPC, so real-GCP Table API acceptance remains in
-[#602]({{< param BookRepo >}}/issues/602).
+The emulator implements no Change Streams RPC, so the gated production-service suite runs the
+envelope DDL through the discovered `bigtable` factory on the existing ephemeral instance and
+single-cluster application profile.
+It starts from an explicit timestamp, finishes at a finite end timestamp, and verifies a binary row
+key, binary qualifier and value, ordered user writes and deletes, and all five readable metadata
+fields through SQL.
+Garbage-collection timing and retention expiry remain deterministic model and protocol tests rather
+than service-timed assertions.
