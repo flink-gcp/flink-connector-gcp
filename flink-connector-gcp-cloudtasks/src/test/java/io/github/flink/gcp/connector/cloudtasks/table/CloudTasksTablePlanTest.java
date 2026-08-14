@@ -191,6 +191,134 @@ class CloudTasksTablePlanTest {
     }
 
     @Test
+    void documentedNestedJsonRequestParses() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE json_tasks (\n"
+                        + "  order_id STRING,\n"
+                        + "  customer ROW<name STRING, city STRING>,\n"
+                        + "  items ARRAY<ROW<sku STRING, quantity INT>>,\n"
+                        + "  attributes MAP<STRING, STRING>,\n"
+                        + "  note STRING,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + QUEUE_OPTIONS
+                        + ",\n"
+                        + "  'http.url' = 'https://api.example.com/orders',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'application/json',\n"
+                        + "  'json.encode.ignore-null-fields' = 'false'\n"
+                        + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO json_tasks VALUES ("
+                                                + "'o-42', "
+                                                + "CAST(ROW('Alice \"A\"', '東京') AS "
+                                                + "ROW<name STRING, city STRING>), "
+                                                + "ARRAY["
+                                                + "CAST(ROW('book', 2) AS "
+                                                + "ROW<sku STRING, quantity INT>), "
+                                                + "CAST(ROW('pen', 1) AS "
+                                                + "ROW<sku STRING, quantity INT>)], "
+                                                + "MAP['priority', 'high'], "
+                                                + "CAST(NULL AS STRING), "
+                                                + "MAP['X-Trace-Id', 'trace-42'])"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void documentedCsvRequestParses() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE csv_tasks (\n"
+                        + "  order_id STRING,\n"
+                        + "  note STRING,\n"
+                        + "  missing_value STRING,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'cloud-tasks',\n"
+                        + "  'project' = 'my-project',\n"
+                        + "  'location' = 'asia-northeast1',\n"
+                        + "  'queue' = 'orders',\n"
+                        + "  'http.url' = 'https://api.example.com/import',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'text/csv; charset=UTF-8',\n"
+                        + "  'format' = 'csv',\n"
+                        + "  'csv.field-delimiter' = '|',\n"
+                        + "  'csv.quote-character' = '\"',\n"
+                        + "  'csv.null-literal' = 'NULL'\n"
+                        + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO csv_tasks SELECT '42', "
+                                                + "U&'line 1 | \"quoted\"\\000Aline 2', "
+                                                + "CAST(NULL AS STRING), "
+                                                + "MAP['X-Trace-Id', 'trace-42']"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void documentedRawRequestParses() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE raw_tasks (\n"
+                        + "  body STRING,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'cloud-tasks',\n"
+                        + "  'project' = 'my-project',\n"
+                        + "  'location' = 'asia-northeast1',\n"
+                        + "  'queue' = 'orders',\n"
+                        + "  'http.url' = 'https://api.example.com/text',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'text/plain; charset=UTF-16BE',\n"
+                        + "  'format' = 'raw',\n"
+                        + "  'raw.charset' = 'UTF-16BE'\n"
+                        + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO raw_tasks VALUES ("
+                                                + "'東京', MAP['X-Trace-Id', 'trace-42'])"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void documentedBinaryAvroRequestParses() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE avro_tasks (\n"
+                        + "  order_id STRING NOT NULL,\n"
+                        + "  quantity INT NOT NULL,\n"
+                        + "  gift BOOLEAN NOT NULL,\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers'\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'cloud-tasks',\n"
+                        + "  'project' = 'my-project',\n"
+                        + "  'location' = 'asia-northeast1',\n"
+                        + "  'queue' = 'orders',\n"
+                        + "  'http.url' = 'https://api.example.com/avro-orders',\n"
+                        + "  'http.method' = 'POST',\n"
+                        + "  'http.headers.Content-Type' = 'application/octet-stream',\n"
+                        + "  'format' = 'avro',\n"
+                        + "  'avro.encoding' = 'binary'\n"
+                        + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO avro_tasks VALUES ("
+                                                + "'o-7', 3, TRUE, "
+                                                + "MAP['X-Trace-Id', 'trace-7'])"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void documentedFormTransformationsParse() {
         TableEnvironment tEnv = tableEnvironment();
         tEnv.executeSql(
