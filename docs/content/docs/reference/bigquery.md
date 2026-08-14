@@ -39,7 +39,7 @@ section; the three forms of the Default column are explained
 | `tableCreateOptions` | plain tables | [Creation settings](#tablecreateoptions) for every table the sink creates |
 | `tableCreateOptionsProvider` | — | The same, resolved per destination. Overrides `tableCreateOptions` |
 | `schemaUpdateOptions` | updates disabled | [What the sink may change](#schemaupdateoptions) about a destination table's schema |
-| `failedRowHandler` | `FailureHandler.failJob()` | What happens to a row that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
+| `failureHandler` | `FailureHandler.failJob()` | What happens to an explicit record-specific routing failure or a row that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `location` | — | The BigQuery location shared by the destination tables. Setting it avoids a per-table metadata lookup when a write connection is opened and locates CDC maximum-staleness jobs; under `FILE_LOADS` it is the location every load job runs in and is recovered under, derived from each job's destination dataset when unset — which is what a sink routing to datasets in several regions should rely on |
 | `serviceAccountKeyFile` | *unset → ADC* | Uses the service account in this JSON key file for every BigQuery client and for GCS staging under `FILE_LOADS`. The file is loaded at runtime and must exist on each TaskManager; rejected with either emulator endpoint |
 | `additionalFields` | no additional fields | Appends ordered [additional physical fields]({{< relref "docs/connectors/datastream/bigquery" >}}#additional-physical-fields) after serialization for every write method |
@@ -63,7 +63,7 @@ a misplaced one fails when the job graph is built rather than being ignored. See
 [Delivery guarantees]({{< relref "docs/connectors/datastream/bigquery" >}}#delivery-guarantees-and-state)
 for how the three methods differ, and
 [Error handling]({{< relref "docs/connectors/datastream/bigquery" >}}#error-handling) for the
-failed-row policies.
+record-failure policies.
 
 ## `AdditionalFields`
 

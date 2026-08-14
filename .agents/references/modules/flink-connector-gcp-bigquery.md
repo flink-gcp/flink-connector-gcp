@@ -40,9 +40,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   delegates to `JsonToProtoMessage`; its `BYTES`-column gap is pursued upstream, not patched
   locally (`docs/adr/0025`).
 
-## Error handling and recovery (`docs/adr/0017`, `0030`, `0071`)
+## Error handling and recovery (`docs/adr/0017`, `0030`, `0071`, `0114`)
 
-- Only row verdicts route to the `FailureHandler`; `findRowLevel` rejects a row-detailed error
+- Only explicit `UnroutableRecord` results and row verdicts route to the `FailureHandler`.
+  A bare resolver `null` and unexpected resolver exceptions stay fatal; an unroutable result is
+  handled before serialization or per-destination state and increments only the global error
+  counter (`docs/adr/0114`).
+  `findRowLevel` rejects a row-detailed error
   whose own status is transient, and `replayBatches` carries the same no-progress guard as
   `retryBatches` (`docs/adr/0017`).
 - The SDK watchdog timeout and `StreamWriterClosedException` are one client-side dead-writer

@@ -28,8 +28,9 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -143,6 +144,7 @@ class FileLoadsWriterTest {
 
         private final TableSchema schema;
         private transient Descriptors.Descriptor descriptor;
+        private int invocations;
 
         TestRowSerializer(TableSchema schema) {
             this.schema = schema;
@@ -173,6 +175,7 @@ class FileLoadsWriterTest {
 
         @Override
         public ByteString serialize(TestRow element) throws IOException {
+            invocations++;
             if (element.failSerialization) {
                 throw new IOException("boom");
             }
@@ -208,10 +211,10 @@ class FileLoadsWriterTest {
     }
 
     /** Collects failed rows instead of failing the job. */
-    static final class CollectingHandler implements FailureHandler<FailedRow> {
+    static final class CollectingHandler implements FailureHandler<BigQueryFailure> {
         private static final long serialVersionUID = 1L;
 
-        private final List<FailedRow> rows = new ArrayList<>();
+        private final List<BigQueryFailure> rows = new ArrayList<>();
 
         /** "handle"/"flush" in invocation order, pinning that flush follows the routed rows. */
         private final List<String> events = new ArrayList<>();
@@ -219,7 +222,7 @@ class FileLoadsWriterTest {
         private boolean closed;
 
         @Override
-        public void handle(FailedRow row) {
+        public void handle(BigQueryFailure row) {
             rows.add(row);
             events.add("handle");
         }
@@ -235,17 +238,17 @@ class FileLoadsWriterTest {
         }
     }
 
-    static BigQuerySinkConfig<TestRow> config(FailureHandler<FailedRow> handler) {
+    static BigQuerySinkConfig<TestRow> config(FailureHandler<BigQueryFailure> handler) {
         return config(handler, SCHEMA);
     }
 
     static BigQuerySinkConfig<TestRow> config(
-            FailureHandler<FailedRow> handler, TableSchema schema) {
+            FailureHandler<BigQueryFailure> handler, TableSchema schema) {
         return config(handler, schema, null);
     }
 
     static BigQuerySinkConfig<TestRow> config(
-            FailureHandler<FailedRow> handler,
+            FailureHandler<BigQueryFailure> handler,
             TableSchema schema,
             AdditionalFields<TestRow> additionalFields) {
         var builder =
@@ -254,7 +257,7 @@ class FileLoadsWriterTest {
                         .destinationResolver(
                                 (element, context) -> TableDestination.of("p", "d", element.table))
                         .serializer(new TestRowSerializer(schema))
-                        .failedRowHandler(handler)
+                        .failureHandler(handler)
                         .fileLoadsOptions(
                                 FileLoadsOptions.builder()
                                         .stagingPath("gs://bucket/prefix")
@@ -301,6 +304,167 @@ class FileLoadsWriterTest {
             reader.forEach(records::add);
         }
         return records;
+    }
+
+    @Test
+    void routesAnExplicitResolutionFailureWithoutOpeningAStagingFile() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        CollectingHandler handler = new CollectingHandler();
+        TestRowSerializer serializer = new TestRowSerializer(SCHEMA);
+        UnroutableRecord unroutable =
+                UnroutableRecord.of(ByteString.copyFromUtf8("original"), "unknown tenant");
+        BigQuerySinkConfig<TestRow> config =
+                ((BigQueryFileLoadsSink<TestRow>)
+                                BigQuerySink.<TestRow>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destinationResolver((element, context) -> unroutable)
+                                        .serializer(serializer)
+                                        .failureHandler(handler)
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://bucket/prefix")
+                                                        .build())
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config,
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        storage,
+                        metrics,
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1);
+
+        writer.write(new TestRow("ignored", "record", 1L), CONTEXT);
+
+        assertThat(handler.rows).containsExactly(unroutable);
+        assertThat(serializer.invocations).isZero();
+        assertThat(writer.prepareCommit()).isEmpty();
+        assertThat(storage.getObjects()).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(metrics.hasMetric("destination", "unresolved", "sendErrors")).isFalse();
+    }
+
+    @Test
+    void explicitResolutionFailureFailsBeforeOpeningAStagingFileUnderTheDefaultPolicy()
+            throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestRowSerializer serializer = new TestRowSerializer(SCHEMA);
+        UnroutableRecord unroutable =
+                UnroutableRecord.of(ByteString.copyFromUtf8("original"), "unknown tenant");
+        BigQuerySinkConfig<TestRow> config =
+                ((BigQueryFileLoadsSink<TestRow>)
+                                BigQuerySink.<TestRow>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destinationResolver((element, context) -> unroutable)
+                                        .serializer(serializer)
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://bucket/prefix")
+                                                        .build())
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config,
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        storage,
+                        metrics,
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1);
+
+        assertThatThrownBy(() -> writer.write(new TestRow("ignored", "record", 1L), CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("destination unresolved")
+                .hasMessageContaining("unknown tenant");
+        assertThat(serializer.invocations).isZero();
+        assertThat(writer.prepareCommit()).isEmpty();
+        assertThat(storage.getObjects()).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(metrics.hasMetric("destination", "unresolved", "sendErrors")).isFalse();
+    }
+
+    @Test
+    void treatsANullResolutionAsFatalBeforeTheFailurePolicy() {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        CollectingHandler handler = new CollectingHandler();
+        TestRowSerializer serializer = new TestRowSerializer(SCHEMA);
+        BigQuerySinkConfig<TestRow> config =
+                ((BigQueryFileLoadsSink<TestRow>)
+                                BigQuerySink.<TestRow>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destinationResolver((element, context) -> null)
+                                        .serializer(serializer)
+                                        .failureHandler(handler)
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://bucket/prefix")
+                                                        .build())
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config,
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        storage,
+                        metrics,
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1);
+
+        assertThatThrownBy(() -> writer.write(new TestRow("ignored", "record", 1L), CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessage("The destination resolver returned null for a record.");
+        assertThat(handler.rows).isEmpty();
+        assertThat(serializer.invocations).isZero();
+        assertThat(storage.getObjects()).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
+    }
+
+    @Test
+    void keepsUnexpectedResolverExceptionsFatal() {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        CollectingHandler handler = new CollectingHandler();
+        TestRowSerializer serializer = new TestRowSerializer(SCHEMA);
+        BigQuerySinkConfig<TestRow> config =
+                ((BigQueryFileLoadsSink<TestRow>)
+                                BigQuerySink.<TestRow>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destinationResolver(
+                                                (element, context) -> {
+                                                    throw new IllegalStateException("resolver bug");
+                                                })
+                                        .serializer(serializer)
+                                        .failureHandler(handler)
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://bucket/prefix")
+                                                        .build())
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config,
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        storage,
+                        metrics,
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1);
+
+        assertThatThrownBy(() -> writer.write(new TestRow("ignored", "record", 1L), CONTEXT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("resolver bug");
+        assertThat(handler.rows).isEmpty();
+        assertThat(serializer.invocations).isZero();
+        assertThat(storage.getObjects()).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
     }
 
     @Test
@@ -624,9 +788,8 @@ class FileLoadsWriterTest {
 
         assertThat(committables).isEmpty();
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes()).isNull();
-        assertThat(handler.rows.get(0).getDestination())
-                .isEqualTo(TableDestination.of("p", "d", "t1"));
+        assertThat(handler.rows.get(0).getPayloadBytes()).isNull();
+        assertThat(handler.rows.get(0).describeDestination()).isEqualTo("p.d.t1");
     }
 
     @Test
@@ -659,7 +822,7 @@ class FileLoadsWriterTest {
         writer.close();
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes()).isNotNull();
+        assertThat(handler.rows.get(0).getPayloadBytes()).isNotNull();
         assertThat(committables)
                 .singleElement()
                 .satisfies(c -> assertThat(c.getRowCount()).isEqualTo(1));

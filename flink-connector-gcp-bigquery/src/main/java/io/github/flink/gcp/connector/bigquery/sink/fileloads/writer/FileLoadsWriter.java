@@ -29,7 +29,10 @@ import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolution;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolutionDispatcher;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -80,7 +83,9 @@ import java.util.UUID;
  * @param <T> type of the records written
  */
 @Internal
-public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoadsCommittable> {
+public final class FileLoadsWriter<T>
+        implements CommittingSinkWriter<T, FileLoadsCommittable>,
+                DestinationResolutionDispatcher.Visitor<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(FileLoadsWriter.class);
 
@@ -137,7 +142,19 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
 
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
-        TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        DestinationResolution resolution =
+                config.getDestinationResolver().resolve(element, context);
+        DestinationResolutionDispatcher.dispatch(resolution, element, context, this);
+    }
+
+    @Override
+    public void visit(UnroutableRecord failure, T element, Context context) throws IOException {
+        metrics.recordFailedWithoutDestination();
+        config.getFailureHandler().handle(failure);
+    }
+
+    @Override
+    public void visit(TableDestination destination, T element, Context context) throws IOException {
         config.prepareWriteSchema(destination);
         ByteString rowBytes;
         try {
@@ -146,7 +163,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             rowBytes = config.serialize(element, destination);
         } catch (IOException | RuntimeException e) {
             metrics.recordFailed(metrics.forTable(destination));
-            config.getFailedRowHandler()
+            config.getFailureHandler()
                     .handle(
                             FailedRow.of(
                                     destination,
@@ -172,7 +189,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             record = state.converter.convert(row);
         } catch (InvalidProtocolBufferException e) {
             metrics.recordFailed(metrics.forTable(destination));
-            config.getFailedRowHandler()
+            config.getFailureHandler()
                     .handle(
                             FailedRow.of(
                                     destination,
@@ -185,7 +202,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
             return;
         } catch (IOException e) {
             metrics.recordFailed(metrics.forTable(destination));
-            config.getFailedRowHandler()
+            config.getFailureHandler()
                     .handle(
                             FailedRow.of(
                                     destination,
@@ -213,7 +230,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         // finishes the open ones. A pre-end-of-input flush is a checkpoint — the streaming
         // trigger for FILE_LOADS — and the failure handler persists the rows routed to it
         // before that checkpoint completes.
-        config.getFailedRowHandler().flush();
+        config.getFailureHandler().flush();
     }
 
     @Override
@@ -245,7 +262,7 @@ public final class FileLoadsWriter<T> implements CommittingSinkWriter<T, FileLoa
         // call and the metric group's own close; the conversion state is dead once the files are
         // aborted. Cleared after the loop above has taken every open file.
         destinations.clear();
-        closeables.add(config.getFailedRowHandler()::close);
+        closeables.add(config.getFailureHandler()::close);
         Closers.closeAll(closeables);
     }
 

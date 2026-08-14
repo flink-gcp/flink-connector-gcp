@@ -41,7 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -804,13 +804,14 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                                         RowError.newBuilder().setIndex(0).setMessage("extra field"))
                                 .build()));
         RecordingTableAdmin admin = new RecordingTableAdmin(V1);
-        List<FailedRow> routed = new ArrayList<>();
+        List<BigQueryFailure> routed = new ArrayList<>();
         BigQuerySinkConfig<String> config =
                 ((BigQueryDefaultStreamSink<String>)
                                 BigQuerySink.<String>builder()
                                         .destination(DESTINATION)
                                         .serializer(new EvolvingSerializer(V2))
-                                        .failedRowHandler((FailureHandler<FailedRow>) routed::add)
+                                        .failureHandler(
+                                                (FailureHandler<BigQueryFailure>) routed::add)
                                         .build())
                         .getConfig();
         BigQueryDefaultStreamWriter<String> writer = writer(config, factory, admin);
@@ -822,7 +823,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         // in charge instead of failing the whole job on the mismatch.
         assertThatCode(() -> writer.flush(false)).doesNotThrowAnyException();
         assertThat(routed).hasSize(1);
-        assertThat(routed.get(0).getRowBytes().toStringUtf8()).isEqualTo("aa");
+        assertThat(routed.get(0).getPayloadBytes().toStringUtf8()).isEqualTo("aa");
         assertThat(factory.allAppendedRows()).containsExactly("aa", "bb", "bb");
     }
 

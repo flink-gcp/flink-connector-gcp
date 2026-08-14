@@ -35,8 +35,9 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
@@ -109,6 +110,19 @@ class BigQueryBufferedStreamWriterTest {
         }
     }
 
+    /** Serializer recording whether destination resolution allowed serialization to begin. */
+    static final class CountingSerializer extends StringSerializer {
+        private static final long serialVersionUID = 1L;
+
+        private int invocations;
+
+        @Override
+        public ByteString serialize(String element) {
+            invocations++;
+            return super.serialize(element);
+        }
+    }
+
     /** Serializer with matching physical and protobuf schemas for additional-field assertions. */
     static class ProtoStringSerializer extends BigQueryProtoSerializer<String> {
         private static final long serialVersionUID = 1L;
@@ -151,10 +165,10 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     /** Handler recording every failed row. */
-    static class RecordingHandler implements FailureHandler<FailedRow> {
+    static class RecordingHandler implements FailureHandler<BigQueryFailure> {
         private static final long serialVersionUID = 1L;
 
-        final List<FailedRow> rows = new ArrayList<>();
+        final List<BigQueryFailure> rows = new ArrayList<>();
 
         /** "handle"/"flush" in invocation order, pinning that flush runs after the drain. */
         final List<String> events = new ArrayList<>();
@@ -162,7 +176,7 @@ class BigQueryBufferedStreamWriterTest {
         boolean closed;
 
         @Override
-        public void handle(FailedRow row) {
+        public void handle(BigQueryFailure row) {
             rows.add(row);
             events.add("handle");
         }
@@ -193,12 +207,12 @@ class BigQueryBufferedStreamWriterTest {
 
     static BigQuerySinkConfig<String> config(
             BigQueryProtoSerializer<? super String> serializer,
-            FailureHandler<FailedRow> handler,
+            FailureHandler<BigQueryFailure> handler,
             CreateDisposition createDisposition) {
         var builder = BigQuerySink.<String>builder().destination(DESTINATION);
         builder.serializer(serializer);
         if (handler != null) {
-            builder.failedRowHandler(handler);
+            builder.failureHandler(handler);
         }
         if (createDisposition != null) {
             builder.createDisposition(createDisposition);
@@ -250,6 +264,144 @@ class BigQueryBufferedStreamWriterTest {
         assertThat(service.createdStreams).isEmpty();
         assertThat(writer.snapshotState(1)).isEmpty();
         writer.close();
+    }
+
+    @Test
+    void routesAnExplicitResolutionFailureWithoutCreatingAStream() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        RecordingHandler handler = new RecordingHandler();
+        CountingSerializer serializer = new CountingSerializer();
+        UnroutableRecord unroutable =
+                UnroutableRecord.of(ByteString.copyFromUtf8("original"), "unknown tenant");
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destinationResolver((element, context) -> unroutable)
+                                        .serializer(serializer)
+                                        .failureHandler(handler)
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        BigQueryBufferedStreamWriter<String> writer =
+                new BigQueryBufferedStreamWriter<>(
+                        config,
+                        fastOptions(3),
+                        service.asFactory(),
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        metrics,
+                        0,
+                        List.of());
+
+        writer.write("record", CONTEXT);
+
+        assertThat(handler.rows).containsExactly(unroutable);
+        assertThat(serializer.invocations).isZero();
+        assertThat(service.createdStreams).isEmpty();
+        assertThat(writer.snapshotState(1)).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isEqualTo(1);
+    }
+
+    @Test
+    void explicitResolutionFailureFailsBeforeCreatingAStreamUnderTheDefaultPolicy() {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        CountingSerializer serializer = new CountingSerializer();
+        UnroutableRecord unroutable =
+                UnroutableRecord.of(ByteString.copyFromUtf8("original"), "unknown tenant");
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destinationResolver((element, context) -> unroutable)
+                                        .serializer(serializer)
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        BigQueryBufferedStreamWriter<String> writer =
+                new BigQueryBufferedStreamWriter<>(
+                        config,
+                        fastOptions(3),
+                        service.asFactory(),
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        metrics,
+                        0,
+                        List.of());
+
+        assertThatThrownBy(() -> writer.write("record", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("destination unresolved")
+                .hasMessageContaining("unknown tenant");
+        assertThat(serializer.invocations).isZero();
+        assertThat(service.createdStreams).isEmpty();
+        assertThat(writer.snapshotState(1)).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isEqualTo(1);
+    }
+
+    @Test
+    void treatsANullResolutionAsFatalBeforeTheFailurePolicy() {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        RecordingHandler handler = new RecordingHandler();
+        CountingSerializer serializer = new CountingSerializer();
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destinationResolver((element, context) -> null)
+                                        .serializer(serializer)
+                                        .failureHandler(handler)
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        BigQueryBufferedStreamWriter<String> writer =
+                new BigQueryBufferedStreamWriter<>(
+                        config,
+                        fastOptions(3),
+                        service.asFactory(),
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        metrics,
+                        0,
+                        List.of());
+
+        assertThatThrownBy(() -> writer.write("record", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessage("The destination resolver returned null for a record.");
+        assertThat(handler.rows).isEmpty();
+        assertThat(serializer.invocations).isZero();
+        assertThat(service.createdStreams).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
+    }
+
+    @Test
+    void keepsUnexpectedResolverExceptionsFatal() {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        RecordingHandler handler = new RecordingHandler();
+        CountingSerializer serializer = new CountingSerializer();
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destinationResolver(
+                                                (element, context) -> {
+                                                    throw new IllegalStateException("resolver bug");
+                                                })
+                                        .serializer(serializer)
+                                        .failureHandler(handler)
+                                        .build())
+                        .getConfig();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        BigQueryBufferedStreamWriter<String> writer =
+                new BigQueryBufferedStreamWriter<>(
+                        config,
+                        fastOptions(3),
+                        service.asFactory(),
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN,
+                        metrics,
+                        0,
+                        List.of());
+
+        assertThatThrownBy(() -> writer.write("record", CONTEXT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("resolver bug");
+        assertThat(handler.rows).isEmpty();
+        assertThat(serializer.invocations).isZero();
+        assertThat(service.createdStreams).isEmpty();
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
     }
 
     @Test

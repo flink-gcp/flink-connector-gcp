@@ -178,7 +178,8 @@ class AvroRecordSerializerTest {
 
     @Test
     void schemaMappingProblemsFailWhenTheSerializerIsCreated() {
-        // Not on the first record: serialize() runs inside the writers' FailureHandler<FailedRow>
+        // Not on the first record: serialize() runs inside the writers'
+        // FailureHandler<BigQueryFailure>
         // catch, so
         // a lazily derived schema would make one misconfiguration look like a poison record —
         // and a log-and-drop policy would swallow the whole stream.

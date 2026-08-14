@@ -35,7 +35,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -132,10 +132,10 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     /** Handler recording every routed row and dropping it. */
-    private static class RecordingFailedRowHandler implements FailureHandler<FailedRow> {
+    private static class RecordingFailedRowHandler implements FailureHandler<BigQueryFailure> {
         private static final long serialVersionUID = 1L;
 
-        private final transient List<FailedRow> rows = new ArrayList<>();
+        private final transient List<BigQueryFailure> rows = new ArrayList<>();
 
         /** "handle"/"flush" in invocation order, pinning that flush runs after the drain. */
         private final transient List<String> events = new ArrayList<>();
@@ -143,7 +143,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         private transient boolean closed;
 
         @Override
-        public void handle(FailedRow row) {
+        public void handle(BigQueryFailure row) {
             rows.add(row);
             events.add("handle");
         }
@@ -222,12 +222,12 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
             io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer<
                             ? super String>
                     serializer,
-            FailureHandler<FailedRow> failedRowHandler) {
+            FailureHandler<BigQueryFailure> failureHandler) {
         return ((BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .destination(DESTINATION)
                                 .serializer(serializer)
-                                .failedRowHandler(failedRowHandler)
+                                .failureHandler(failureHandler)
                                 .build())
                 .getConfig();
     }
@@ -445,8 +445,8 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getDestination()).isEqualTo(DESTINATION);
-        assertThat(handler.rows.get(0).getRowBytes().toStringUtf8()).isEqualTo("bb");
+        assertThat(handler.rows.get(0).describeDestination()).isEqualTo(DESTINATION.toString());
+        assertThat(handler.rows.get(0).getPayloadBytes().toStringUtf8()).isEqualTo("bb");
         assertThat(handler.rows.get(0).getErrorMessage()).isEqualTo("row 1 is broken");
         // The surviving rows were re-appended on a rebuilt appender.
         assertThat(factory.created).hasSize(2);
@@ -497,7 +497,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes().toStringUtf8()).isEqualTo("aa");
+        assertThat(handler.rows.get(0).getPayloadBytes().toStringUtf8()).isEqualTo("aa");
         assertThat(handler.rows.get(0).getErrorMessage()).isEqualTo("bad response row");
         assertThat(rowsOf(factory.created.get(1).appends.get(0))).containsExactly("bb");
     }
@@ -506,7 +506,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     void rowLevelFailureThrowingCustomHandlerFailsTheFlush() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
         factory.scriptedResults.add(rowLevelError(Map.of(0, "broken")));
-        FailureHandler<FailedRow> throwingHandler =
+        FailureHandler<BigQueryFailure> throwingHandler =
                 row -> {
                     throw new IOException("handler rejected the row");
                 };
@@ -550,12 +550,12 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     @Test
     void handlerFlushFailureFailsTheFlush() throws Exception {
         ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
-        FailureHandler<FailedRow> unflushableHandler =
-                new FailureHandler<FailedRow>() {
+        FailureHandler<BigQueryFailure> unflushableHandler =
+                new FailureHandler<BigQueryFailure>() {
                     private static final long serialVersionUID = 1L;
 
                     @Override
-                    public void handle(FailedRow row) {}
+                    public void handle(BigQueryFailure row) {}
 
                     @Override
                     public void flush() throws IOException {
@@ -594,7 +594,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes()).isNull();
+        assertThat(handler.rows.get(0).getPayloadBytes()).isNull();
         assertThat(handler.rows.get(0).getErrorMessage())
                 .contains("cannot serialize unserializable");
         assertThat(handler.rows.get(0).getCause()).isInstanceOf(IOException.class);
@@ -631,7 +631,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes()).isNotNull();
+        assertThat(handler.rows.get(0).getPayloadBytes()).isNotNull();
         assertThat(handler.rows.get(0).getErrorMessage()).contains("per-row limit");
         assertThat(factory.allAppendedRows()).isEmpty();
     }
@@ -651,7 +651,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes()).isNull();
+        assertThat(handler.rows.get(0).getPayloadBytes()).isNull();
         assertThat(handler.rows.get(0).getCause()).isInstanceOf(IllegalStateException.class);
         assertThat(factory.allAppendedRows()).isEmpty();
     }

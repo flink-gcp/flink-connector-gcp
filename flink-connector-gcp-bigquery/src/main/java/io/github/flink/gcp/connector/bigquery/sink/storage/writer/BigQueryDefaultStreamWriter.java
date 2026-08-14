@@ -39,7 +39,11 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolution;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolutionDispatcher;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -147,7 +151,8 @@ import java.util.function.LongSupplier;
  * @param <T> type of the records written by the sink
  */
 @Internal
-public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
+public class BigQueryDefaultStreamWriter<T>
+        implements SinkWriter<T>, DestinationResolutionDispatcher.Visitor<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigQueryDefaultStreamWriter.class);
 
@@ -175,7 +180,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
 
     private final RowAppenderFactory appenderFactory;
     private final TableAdmin tableAdmin;
-    private final FailureHandler<? super FailedRow> failedRowHandler;
+    private final FailureHandler<? super BigQueryFailure> failureHandler;
     private final long maxAppendRequestBytes;
     private final RetrySchedule recoverySchedule;
     private final RetrySchedule schemaWaitSchedule;
@@ -343,7 +348,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         this.appenderFactory =
                 Preconditions.checkNotNull(appenderFactory, "appenderFactory must not be null");
         this.tableAdmin = Preconditions.checkNotNull(tableAdmin, "tableAdmin must not be null");
-        this.failedRowHandler = config.getFailedRowHandler();
+        this.failureHandler = config.getFailureHandler();
         this.maxAppendRequestBytes = maxAppendRequestBytes;
         this.recoverySchedule =
                 Preconditions.checkNotNull(recoverySchedule, "recoverySchedule must not be null");
@@ -399,7 +404,19 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             refreshPushedSchemas();
             checkAsyncError();
         }
-        TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        DestinationResolution resolution =
+                config.getDestinationResolver().resolve(element, context);
+        DestinationResolutionDispatcher.dispatch(resolution, element, context, this);
+    }
+
+    @Override
+    public void visit(UnroutableRecord failure, T element, Context context) throws IOException {
+        metrics.recordFailedWithoutDestination();
+        failureHandler.handle(failure);
+    }
+
+    @Override
+    public void visit(TableDestination destination, T element, Context context) throws IOException {
         // Augmented schema conflicts are configuration failures, not poison rows. Derive both
         // schema surfaces before entering the row-failure boundary so log-and-drop or dead-letter
         // policies cannot hide a destination-wide conflict.
@@ -413,7 +430,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
             row = config.serialize(element, destination);
         } catch (IOException | RuntimeException e) {
             metrics.rowFailed(metrics.forTable(destination));
-            failedRowHandler.handle(
+            failureHandler.handle(
                     FailedRow.of(
                             destination,
                             null,
@@ -430,7 +447,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         }
         if (row.size() > MAX_ROW_BYTES) {
             metrics.rowFailed(metrics.forTable(destination));
-            failedRowHandler.handle(
+            failureHandler.handle(
                     FailedRow.of(
                             destination,
                             row,
@@ -484,7 +501,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         checkAsyncError();
         // After the drain: every row-level failure this flush routed has been handled, so the
         // handler can persist them before the checkpoint completes.
-        failedRowHandler.flush();
+        failureHandler.flush();
         if (!endOfInput) {
             evictIdleDestinations();
         }
@@ -544,7 +561,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
         inFlight.clear();
         // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
         // too, even when closing an appender throws.
-        closeables.add(failedRowHandler::close);
+        closeables.add(failureHandler::close);
         Closers.closeAll(closeables);
     }
 
@@ -950,7 +967,7 @@ public class BigQueryDefaultStreamWriter<T> implements SinkWriter<T> {
                 survivors.addSerializedRows(rows.getSerializedRows(i));
             } else {
                 metrics.rowFailed(table);
-                failedRowHandler.handle(
+                failureHandler.handle(
                         FailedRow.of(
                                 destination, rows.getSerializedRows(i), errorMessage, rowLevel));
             }

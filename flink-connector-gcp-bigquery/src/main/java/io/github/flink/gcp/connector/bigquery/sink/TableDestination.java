@@ -17,11 +17,13 @@
 package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.storage.v1.TableName;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.util.Objects;
 
@@ -39,7 +41,7 @@ import java.util.Objects;
  * instead of re-creating them per record.
  */
 @PublicEvolving
-public final class TableDestination implements Serializable {
+public final class TableDestination extends DestinationResolution implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -70,6 +72,15 @@ public final class TableDestination implements Serializable {
         checkComponent(dataset, "dataset");
         checkComponent(table, "table");
         return new TableDestination(project, dataset, table);
+    }
+
+    @Override
+    <T> void accept(
+            T element,
+            SinkWriter.Context context,
+            DestinationResolutionDispatcher.Visitor<T> visitor)
+            throws IOException {
+        visitor.visit(this, element, context);
     }
 
     private static void checkComponent(String value, String name) {

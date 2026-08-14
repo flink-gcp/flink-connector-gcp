@@ -33,6 +33,11 @@ import java.io.Serializable;
  * <p>The {@link SinkWriter.Context} exposes the record's event timestamp for time-based routing
  * (for example daily tables).
  *
+ * <p>Return {@link UnroutableRecord} only for a deterministic, record-specific routing failure that
+ * the configured failure policy may safely fail, drop, or dead-letter. Returning {@code null} or
+ * throwing an unexpected exception is a resolver bug or configuration failure and always fails the
+ * write.
+ *
  * @param <T> type of the records written by the sink
  */
 @PublicEvolving
@@ -40,11 +45,12 @@ import java.io.Serializable;
 public interface DestinationResolver<T> extends Serializable {
 
     /**
-     * Returns the destination table for the given record.
+     * Resolves the destination for the given record.
      *
      * @param element the record
      * @param context writer context exposing the record's event timestamp and current watermark
-     * @return the destination table
+     * @return a destination table, or an explicit record-specific routing failure; never {@code
+     *     null}
      */
-    TableDestination resolve(T element, SinkWriter.Context context);
+    DestinationResolution resolve(T element, SinkWriter.Context context);
 }

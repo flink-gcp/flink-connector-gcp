@@ -37,7 +37,11 @@ import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolution;
+import io.github.flink.gcp.connector.bigquery.sink.DestinationResolutionDispatcher;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -125,14 +129,15 @@ import java.util.function.LongSupplier;
 @Internal
 public class BigQueryBufferedStreamWriter<T>
         implements CommittingSinkWriter<T, BufferedStreamCommittable>,
-                StatefulSinkWriter<T, BufferedStreamWriterState> {
+                StatefulSinkWriter<T, BufferedStreamWriterState>,
+                DestinationResolutionDispatcher.Visitor<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigQueryBufferedStreamWriter.class);
 
     private final BigQuerySinkConfig<T> config;
     private final BufferedStreamServiceFactory serviceFactory;
     private final TableAdmin tableAdmin;
-    private final FailureHandler<? super FailedRow> failedRowHandler;
+    private final FailureHandler<? super BigQueryFailure> failureHandler;
     private final int subtaskId;
     private final long maxAppendRequestBytes;
     private final long destinationIdleTimeoutNanos;
@@ -220,7 +225,7 @@ public class BigQueryBufferedStreamWriter<T>
         this.serviceFactory =
                 Preconditions.checkNotNull(serviceFactory, "serviceFactory must not be null");
         this.tableAdmin = Preconditions.checkNotNull(tableAdmin, "tableAdmin must not be null");
-        this.failedRowHandler = config.getFailedRowHandler();
+        this.failureHandler = config.getFailureHandler();
         this.subtaskId = subtaskId;
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
         this.destinationIdleTimeoutNanos = options.getDestinationIdleTimeout().toNanos();
@@ -275,7 +280,19 @@ public class BigQueryBufferedStreamWriter<T>
 
     @Override
     public void write(T element, Context context) throws IOException, InterruptedException {
-        TableDestination destination = config.getDestinationResolver().resolve(element, context);
+        DestinationResolution resolution =
+                config.getDestinationResolver().resolve(element, context);
+        DestinationResolutionDispatcher.dispatch(resolution, element, context, this);
+    }
+
+    @Override
+    public void visit(UnroutableRecord failure, T element, Context context) throws IOException {
+        metrics.rowFailed();
+        failureHandler.handle(failure);
+    }
+
+    @Override
+    public void visit(TableDestination destination, T element, Context context) throws IOException {
         DestinationState state = destinations.get(destination);
         if (state != null) {
             // Keep the per-record cost independent of the number of active destinations. An
@@ -291,7 +308,7 @@ public class BigQueryBufferedStreamWriter<T>
             row = config.serialize(element, destination);
         } catch (IOException | RuntimeException e) {
             metrics.rowFailed();
-            failedRowHandler.handle(
+            failureHandler.handle(
                     FailedRow.of(
                             destination,
                             null,
@@ -308,7 +325,7 @@ public class BigQueryBufferedStreamWriter<T>
         }
         if (row.size() > BigQueryDefaultStreamWriter.MAX_ROW_BYTES) {
             metrics.rowFailed();
-            failedRowHandler.handle(
+            failureHandler.handle(
                     FailedRow.of(
                             destination,
                             row,
@@ -347,7 +364,7 @@ public class BigQueryBufferedStreamWriter<T>
         }
         // After the drain: every row-level failure this flush routed has been handled, so the
         // handler can persist them before the checkpoint completes.
-        failedRowHandler.flush();
+        failureHandler.flush();
         if (!endOfInput) {
             evictIdleDestinations();
         }
@@ -410,7 +427,7 @@ public class BigQueryBufferedStreamWriter<T>
         // reporting appends after it has given resource ownership to the close sequence below.
         inFlightCount = 0;
         destinations.clear();
-        closeables.add(failedRowHandler::close);
+        closeables.add(failureHandler::close);
         Closers.closeAll(closeables);
     }
 
@@ -916,7 +933,7 @@ public class BigQueryBufferedStreamWriter<T>
                 survivors.addSerializedRows(rows.getSerializedRows(i));
             } else {
                 metrics.rowFailed();
-                failedRowHandler.handle(
+                failureHandler.handle(
                         FailedRow.of(
                                 state.destination,
                                 rows.getSerializedRows(i),

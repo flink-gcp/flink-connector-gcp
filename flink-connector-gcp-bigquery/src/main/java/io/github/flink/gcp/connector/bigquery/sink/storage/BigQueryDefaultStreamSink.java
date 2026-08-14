@@ -74,7 +74,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-        config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
+        config.getFailureHandler().open(DefaultFailureHandlerContext.of(context));
         try {
             // The context's processing-time service fires timer callbacks on the mailbox (task)
             // thread, which is what makes the writer's periodic flush safe against its
@@ -96,7 +96,7 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T> {
             // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
             // this guard. Precise rethrow keeps the declared throws clause honest, and it also
             // means a checked exception added to anything above stays covered.
-            Closers.closeAllSuppressing(e, config.getFailedRowHandler()::close);
+            Closers.closeAllSuppressing(e, config.getFailureHandler()::close);
             throw e;
         }
     }

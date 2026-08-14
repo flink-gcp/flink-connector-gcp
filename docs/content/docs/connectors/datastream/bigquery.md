@@ -214,16 +214,18 @@ API notes:
   `Descriptor`s are not Java-serializable — obtain them statically or lazily, don't store them in
   instance fields.
 - `serialize` returning `null` **skips** the record — it is written nowhere, is not a failure, and
-  never reaches the failed-row handler — which is how a filter that depends on the row being built
+  never reaches the failure handler — which is how a filter that depends on the row being built
   belongs in the serializer rather than upstream of the sink. Every serializer in this connector
   family reads `null` that way, and all three write methods honour it. A skip is counted by
   [`recordsSkipped`](#metrics), the only thing that reports it: a serializer skipping every
   record would otherwise leave an empty table under a green job. The destination is resolved
-  *before* the serializer runs, so a record the serializer would skip still needs a resolvable
-  table — resolver failures are configuration errors and propagate.
+  *before* the serializer runs, so a record the serializer would skip still needs either a
+  `TableDestination` or an explicit `UnroutableRecord` result.
 - `DestinationResolver.resolve(element, context)` receives the writer context (event timestamp,
   watermark) so time-based routing such as daily tables is expressible. Resolvers run per record:
-  cache and reuse `TableDestination` instances.
+  cache and reuse `TableDestination` instances. A deterministic record-specific routing failure
+  can return `UnroutableRecord.of(payloadBytes, reason)` for the configured failure handler. A
+  bare `null` or an unexpected resolver exception is always fatal.
 - `ProtoMessageSerializer.of(MyMessage.class)` is the built-in serializer for records that
   already are protobuf messages. The BigQuery schema is derived from the message descriptor; see
   [Protobuf messages](#protobuf-messages) for the type mapping and for `ProtoSchemaOptions`.
@@ -301,7 +303,7 @@ When it returns `null`, the record keeps the ordinary skip behavior and no addit
 runs.
 For an emitted row, providers run in declaration order.
 A provider returning `null` omits a `NULLABLE` field and fails a `REQUIRED` field; an exception or a
-value of the wrong Java type follows the configured failed-row policy and names the field.
+value of the wrong Java type follows the configured failure policy and names the field.
 
 The same declarations apply to `STORAGE_API_AT_LEAST_ONCE`,
 `STORAGE_API_EXACTLY_ONCE` and `FILE_LOADS`.
@@ -376,7 +378,7 @@ The configured serializer remains the source of the physical `TableSchema`.
 The sink augments only the protobuf descriptor sent to the default stream, so the two CDC
 pseudocolumns never become ordinary table columns or participate in schema reconciliation.
 A physical field whose name matches either pseudocolumn case-insensitively is a configuration
-error raised before a row reaches the failed-row handler.
+error raised before a row reaches the failure handler.
 
 The change-type provider must return `UPSERT` or `DELETE` for every row the serializer emits.
 The sequence provider is optional for the whole sink; when present, it must return a non-null value
@@ -389,7 +391,7 @@ the system time at which it ingests each mutation.
 The serializer runs before either CDC provider.
 Its `null` result therefore keeps the ordinary skip contract and invokes neither provider.
 A provider failure, null metadata or invalid sequence is a serialization failure routed through
-the configured failed-row handler.
+the configured failure handler.
 The providers receive the original element, so this API also works with dynamic destinations and
 with serializers that derive different descriptors per destination.
 
@@ -1821,14 +1823,15 @@ Append failures are classified on the task thread and routed by class:
 | Missing table | `NOT_FOUND`, and the `PERMISSION_DENIED` the service [masks a missing table behind](#a-missing-table-does-not-say-not_found) | Under `CREATE_IF_NEEDED`: the table is created and the batch re-appended while metadata propagates, within the **recovery** retry budget — never the schema one, whatever the repair was already running on (see [Table auto-creation](#table-auto-creation)). On the exactly-once path the committer's `FlushRows` waits the same window out — but on the `PERMISSION_DENIED` **only**, since it creates nothing itself and a `NOT_FOUND` there names a write stream. That path's **appends** wait for nothing and are terminal here, which is measured rather than missing: 140 trials produced no denied append beside eleven denied flushes. Under `CREATE_NEVER`: terminal |
 | Rate-limited creation | The REST creation itself answering HTTP 429, or 403 with reason `rateLimitExceeded` — the per-table metadata-update quota a creation race can exceed | The creation is repeated within the **recovery** budget (see [Losing the creation race costs a retry, not the job](#losing-the-creation-race-costs-a-retry-not-the-job)). HTTP 409 is not in this class: it means the table is already there and counts as success |
 | Terminal | `INVALID_ARGUMENT`, the two codes above under `CREATE_NEVER`, `NOT_FOUND` from the exactly-once committer's `FlushRows` under any disposition, a creation failure repeating cannot fix (`bigquery.tables.create` denied, an invalid schema, the unobserved `quotaExceeded` reason), retry-budget exhaustion, failures without a status code (other than the callback-wait timeout above) | Fail the ongoing write or checkpoint immediately |
+| Record-specific routing | The resolver explicitly returns `UnroutableRecord` because data in one record cannot name a destination | Routed to the configured failure handler before serialization and before any per-destination state is created. The resolver supplies the payload because no destination schema exists yet |
 | Row-level | Rows rejected with per-row error details (`AppendSerializationError`, response row errors), serialization failures, rows over the per-row size limit | Routed row by row to the configured failure handler; surviving rows of the batch are re-appended. A row-detailed error whose own status code is transient is classified transient, not row-level: outage-shaped failures never reach the handler |
 
 A record the serializer *skips* by returning `null` is in none of those classes: it is not a
 failure, so it never reaches the handler and is counted by [`recordsSkipped`](#metrics) rather
 than `numRecordsSendErrors`.
 
-The failed-row policy is pluggable via `failedRowHandler(...)`, taking the shared
-`FailureHandler<FailedRow>` SPI from `flink-connector-gcp-base`
+The record-failure policy is pluggable via `failureHandler(...)`, taking the shared
+`FailureHandler<BigQueryFailure>` SPI from `flink-connector-gcp-base`
 ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the connectors in this
 repository):
 
@@ -1837,31 +1840,37 @@ Sink<MyEvent> sink =
         BigQuerySink.<MyEvent>builder()
                 .destination(TableDestination.of("my-project", "my_dataset", "events"))
                 .serializer(new MyEventProtoSerializer())
-                .failedRowHandler(FailureHandler.logAndDrop())
+                .failureHandler(FailureHandler.logAndDrop())
                 .build();
 ```
 
-- `FailureHandler.failJob()` (default) — every row-level failure fails the checkpoint
-- `FailureHandler.logAndDrop()` — logs each failed row at WARN and drops it
-- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each failed row to a
+- `FailureHandler.failJob()` (default) — every explicit routing or row-level failure fails the ongoing write or checkpoint
+- `FailureHandler.logAndDrop()` — logs each failed record at WARN and drops it
+- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each failed record to a
   `DeadLetterQueue` (experimental), whose implementation the sink drives through a lifecycle:
   `open(context)` once when the writer is created (the context carries the subtask index and
-  the writer's metric group), `offer(element)` per failed row — buffering is allowed —
+  the writer's metric group), `offer(element)` per failed record — buffering is allowed —
   `flush()` at every checkpoint barrier and at end of input — and at every `flushInterval`
   tick when that option is set — always after the sink's own write path has drained (on
   return everything offered must be durable, throwing fails the checkpoint),
   and `close()` when the writer closes, which must not be relied on for persistence
-- Custom handlers implement `FailureHandler<FailedRow>` — or `FailureHandler<FailedElement>`,
-  which `failedRowHandler(...)` accepts as-is (the parameter is contravariant), so one handler
+- Custom handlers implement `FailureHandler<BigQueryFailure>` — or `FailureHandler<FailedElement>`,
+  which `failureHandler(...)` accepts as-is (the parameter is contravariant), so one handler
   written against the shared contract serves every connector in this repository. Throwing from
-  `handle` fails the checkpoint, returning drops the row. `FailedRow` carries the serialized protobuf bytes (the
-  writer is stateless, so the original record object is gone by the time server-side row errors
-  arrive), or `null` bytes when serialization itself failed. Under the shared `FailedElement`
-  contract it also reports `getConnector()` (`"bigquery"`) and `describeDestination()` (the
-  `project.dataset.table` string), so one `DeadLetterQueue` implementation can serve every
-  connector in this repository
+  `handle` fails the ongoing write or checkpoint; returning drops the record. `FailedRow` carries
+  the serialized protobuf bytes (the writer is stateless, so the original record object is gone by
+  the time server-side row errors arrive), or `null` bytes when serialization itself failed. Under
+  the shared `FailedElement` contract it also reports `getConnector()` (`"bigquery"`) and
+  `describeDestination()` (the `project.dataset.table` string), so one `DeadLetterQueue`
+  implementation can serve every connector in this repository. `UnroutableRecord` instead carries
+  the resolver-supplied payload and reason, reports `describeDestination()` as `unresolved`, and has
+  no cause
 
-Dead-letter output is **at-least-once, for failures that recur on replay**: rows are offered
+Only an explicit `UnroutableRecord` enters this policy from destination resolution.
+Returning `null` or throwing an unexpected exception remains fatal and cannot be hidden by a
+drop or dead-letter policy.
+
+Dead-letter output is **at-least-once, for failures that recur on replay**: failures are offered
 before the checkpoint covering their originating records completes, so a restart replays those
 records and a deterministic failure (malformed data, an oversized row) is offered again —
 consume the dead-letter destination idempotently or deduplicate by key. A failure that does
@@ -1882,7 +1891,7 @@ dead-lettering this way adds `flink-connector-gcp-pubsub` as a dependency:
 BigQuerySink.<Order>builder()
         .destination(TableDestination.of("my-project", "my_dataset", "orders"))
         .serializer(new MyOrderProtoSerializer())
-        .failedRowHandler(
+        .failureHandler(
                 FailureHandler.sendToDeadLetterQueue(
                         PubSubDeadLetterQueue.builder()
                                 .topic(TopicDestination.of("my-project", "dead-letters"))
@@ -1901,15 +1910,17 @@ note covers Kubernetes Secret mounts, session clusters and rotation.
 | Attribute | Value |
 |---|---|
 | `dlq-connector` | `bigquery`, `bigtable`, `pubsub` or `cloudtasks` |
-| `dlq-destination` | the resource the element was bound for |
+| `dlq-destination` | the resource the element was bound for, or `unresolved` for an explicit BigQuery routing failure |
 | `dlq-error` | the failure description, truncated to Pub/Sub's 1024-byte attribute-value limit and marked with `...` |
 | `dlq-timestamp` | when the element was offered, ISO-8601 |
 | `dlq-subtask` | the offering sink subtask's index |
 
-The message **data** is the element's payload bytes — empty when serialization itself failed, which
-is how a consumer tells the two apart. The failure's cause chain is not in the envelope (it has no
-bounded string form); enable `DEBUG` logging on `PubSubDeadLetterQueue` to see untruncated errors in
-the job logs.
+The message **data** is the element's payload bytes.
+A `FailedRow` whose serialization failed has empty data because no payload was produced;
+an `UnroutableRecord` uses exactly the resolver-supplied bytes, which may also be empty.
+Use `dlq-destination=unresolved`, not data length, to identify an explicit routing failure.
+The failure's cause chain is not in the envelope (it has no bounded string form); enable `DEBUG`
+logging on `PubSubDeadLetterQueue` to see untruncated errors in the job logs.
 
 Publishes are batched and awaited in `flush()`, so a rare failure costs no round trip of its own.
 `maxOutstandingMessages` bounds what one checkpoint interval can accumulate when *every* record
@@ -1930,7 +1941,8 @@ against Flink's `task.cancellation.timeout`. Full description on the
 The queue reports what it published, what it still holds and how long its waits take, on
 **this sink's** writer group — documented once, with the queue, under
 [Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics). How
-many rows were dead-lettered in the first place is [`numRecordsSendErrors`](#metrics) here.
+many records reached the dead-letter policy in the first place is
+[`numRecordsSendErrors`](#metrics) here.
 
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
@@ -2331,7 +2343,7 @@ same thing in each.
 |---|---|---|
 | `numRecordsSend` | counter (Flink standard) | rows handed to the client library in an append |
 | `numBytesSend` | counter (Flink standard) | their serialized row bytes |
-| `numRecordsSendErrors` | counter (Flink standard) | rows routed to the failed-row handler |
+| `numRecordsSendErrors` | counter (Flink standard) | explicit routing failures and rows routed to the failure handler |
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `inFlightBatches` | gauge | appends the service has not answered |
 | `openDestinations` | gauge | destinations holding a live stream writer, after eviction |
@@ -2361,7 +2373,7 @@ part of this write method's surface.
 |---|---|---|
 | `numRecordsSend` | counter (Flink standard) | records written to a staging file |
 | `numBytesSend` | counter (Flink standard) | bytes of the staging files finished so far |
-| `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-row handler |
+| `numRecordsSendErrors` | counter (Flink standard) | explicit routing failures and records routed to the failure handler |
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
 | `openDestinations` | gauge | destinations holding conversion state |
 | `filesStaged` | counter | staging files finished (rolled at `maxStagingFileBytes`, and at every commit) |
@@ -2392,9 +2404,11 @@ the pipeline. A terminal failure that fails the job is counted once, under its o
 the exception is thrown.
 
 **`numRecordsSendErrors` is the counter to watch when the handler is not `failJob()`.** It counts
-exactly what reached `failedRowHandler(...)`: a record the serializer rejected, a row over the
-per-row limit, a row the service rejected by index, and — on FILE_LOADS — a row the Avro conversion
-could not encode. A serializer bug that makes *every* row invalid is dropped one at a time under a
+exactly what reached `failureHandler(...)`: an explicit record-specific routing failure, a record
+the serializer rejected, a row over the per-row limit, a row the service rejected by index, and —
+on FILE_LOADS — a row the Avro conversion could not encode. Routing failures have no table, so
+they increment only this global counter and never create per-destination counters. A serializer
+bug that makes *every* row invalid is dropped one at a time under a
 dropping policy, and this counter is what shows it while the job stays green.
 
 **`perDestinationMetrics` is off by default, and should stay off with a per-record
