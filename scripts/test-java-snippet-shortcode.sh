@@ -68,6 +68,28 @@ require_fragment() {
     fi
 }
 
+render_plain_text() {
+    local html_file=$1
+    local text_file=$2
+
+    sed -n '/<code class="language-java"/,/<\/code>/p' "${html_file}" \
+        | sed -E 's/<[^>]+>//g' \
+        >"${text_file}"
+}
+
+require_exact_text() {
+    local text_file=$1
+    local label=$2
+    shift 2
+    local expected_file="${temporary_root}/${label}.expected"
+    local diff_file="${temporary_root}/${label}.diff"
+
+    printf '%s\n' "$@" >"${expected_file}"
+    if ! diff -u "${expected_file}" "${text_file}" >"${diff_file}"; then
+        fail_with_log "Rendered text for ${label} did not match its expected block" "${diff_file}"
+    fi
+}
+
 expect_failure() {
     local case_name=$1
     shift
@@ -90,7 +112,17 @@ if ! run_hugo valid >"${valid_log}" 2>&1; then
 fi
 
 valid_html="${temporary_root}/valid/fixture/index.html"
+valid_text="${temporary_root}/valid-first.txt"
 require_fragment "${valid_html}" "renderedRegionSentinel"
+render_plain_text "${valid_html}" "${valid_text}"
+require_exact_text "${valid_text}" valid-first \
+    "" \
+    "int renderedRegionSentinel =" \
+    "        firstValue" \
+    "                + secondValue;" \
+    "" \
+    "render(renderedRegionSentinel);" \
+    ""
 for excluded in \
     wrapperBeforeSentinel \
     wrapperAfterSentinel \
@@ -101,6 +133,101 @@ for excluded in \
         fail_with_log "Expected rendered HTML to exclude: ${excluded}" "${valid_html}"
     fi
 done
+
+valid_second_html="${temporary_root}/valid/second/index.html"
+valid_second_text="${temporary_root}/valid-second.txt"
+require_fragment "${valid_second_html}" "secondPageSentinel"
+render_plain_text "${valid_second_html}" "${valid_second_text}"
+require_exact_text "${valid_second_text}" valid-second \
+    "" \
+    "String secondPageSentinel =" \
+    "        firstPart" \
+    "                + secondPart;" \
+    "" \
+    "render(secondPageSentinel);" \
+    ""
+for excluded in \
+    wrapperBeforeSentinel \
+    wrapperAfterSentinel \
+    SupportTypeSentinel \
+    'tag::valid-second' \
+    'end::valid-second'; do
+    if grep -Fq -- "${excluded}" "${valid_second_html}"; then
+        fail_with_log "Expected rendered HTML to exclude: ${excluded}" "${valid_second_html}"
+    fi
+done
+
+valid_mixed_html="${temporary_root}/valid/mixed/index.html"
+valid_mixed_text="${temporary_root}/valid-mixed.txt"
+require_fragment "${valid_mixed_html}" "mixedWhitespacePrefixSentinel"
+render_plain_text "${valid_mixed_html}" "${valid_mixed_text}"
+require_exact_text "${valid_mixed_text}" valid-mixed \
+    $'\t        String mixedWhitespacePrefixSentinel =' \
+    "        firstPart" \
+    $'\t                + secondPart;'
+for excluded in \
+    wrapperBeforeSentinel \
+    wrapperAfterSentinel \
+    SupportTypeSentinel \
+    'tag::mixed-whitespace-prefixes' \
+    'end::mixed-whitespace-prefixes'; do
+    if grep -Fq -- "${excluded}" "${valid_mixed_html}"; then
+        fail_with_log "Expected rendered HTML to exclude: ${excluded}" "${valid_mixed_html}"
+    fi
+done
+
+blank_fixture_root="${temporary_root}/blank-whitespace-fixture"
+mkdir -p \
+    "${blank_fixture_root}/assets/java-snippets" \
+    "${blank_fixture_root}/content" \
+    "${blank_fixture_root}/layouts/_default"
+cp "${fixture_root}/layouts/_default/single.html" \
+    "${blank_fixture_root}/layouts/_default/single.html"
+printf '%s\n' \
+    'title = "blank whitespace fixture"' \
+    'disableKinds = ["404", "home", "RSS", "robotsTXT", "section", "sitemap", "taxonomy", "term"]' \
+    '' \
+    '[module]' \
+    '  [[module.mounts]]' \
+    '    source = "assets"' \
+    '    target = "assets"' \
+    '  [[module.mounts]]' \
+    '    source = "layouts"' \
+    '    target = "layouts"' \
+    '  [[module.mounts]]' \
+    "    source = \"${repository_root}/docs/layouts/_shortcodes\"" \
+    '    target = "layouts/_shortcodes"' \
+    >"${blank_fixture_root}/hugo.toml"
+printf '%s\n' \
+    '---' \
+    'title: Blank whitespace' \
+    '---' \
+    '{{< java-snippet file="BlankWhitespace.java" tag="blank-whitespace" >}}' \
+    >"${blank_fixture_root}/content/fixture.md"
+printf '%s\n' \
+    '// tag::blank-whitespace[]' \
+    '    first();' \
+    '        ' \
+    '        second();' \
+    '// end::blank-whitespace[]' \
+    >"${blank_fixture_root}/assets/java-snippets/BlankWhitespace.java"
+blank_log="${temporary_root}/blank-whitespace.log"
+if ! hugo \
+    --source "${blank_fixture_root}" \
+    --destination "${blank_fixture_root}/public" \
+    --cacheDir "${temporary_root}/cache" \
+    --noBuildLock \
+    --panicOnWarning \
+    >"${blank_log}" 2>&1; then
+    fail_with_log "Expected blank-whitespace fixture to render" "${blank_log}"
+fi
+blank_html="${blank_fixture_root}/public/fixture/index.html"
+blank_text="${temporary_root}/blank-whitespace.txt"
+render_plain_text "${blank_html}" "${blank_text}"
+require_exact_text "${blank_text}" blank-whitespace \
+    "first();" \
+    "        " \
+    "    second();"
 
 expect_failure missing-file-argument \
     "requires non-empty named file and tag arguments"

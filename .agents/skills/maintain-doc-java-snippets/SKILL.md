@@ -55,14 +55,16 @@ Preserve these boundaries when changing `docs/layouts/_shortcodes/java-snippet.h
   start and one end marker, in that order, with a non-empty region between them.
 - Render only the lines inside the markers. Keep wrapper code, imports, support types and marker
   comments out of the generated HTML.
+- Remove the exact leading horizontal-whitespace prefix shared by every non-blank region line
+  before highlighting. Preserve the lines' relative indentation and all other whitespace.
 - After argument validation, keep failures actionable by naming the fixture page position, source
   file and tag, plus the observed marker count when it distinguishes the failure.
 
-Extend `docs/tests/fixtures/java-snippet/` when adding or changing a validation branch. The fixture
-site must mount the repository shortcode rather than copy its parsing logic, and its pages and Java
-sources must remain outside Hugo's production content and static roots. Give each failing branch an
-independent page so the runner can invoke and assert that branch separately even when Hugo
-aggregates multiple template errors.
+Extend `docs/tests/fixtures/java-snippet/` when changing rendering or a validation branch. The
+fixture site must mount the repository shortcode rather than copy its parsing logic, and its pages
+and Java sources must remain outside Hugo's production content and static roots. Give each failing
+branch an independent page so the runner can invoke and assert that branch separately even when
+Hugo aggregates multiple template errors.
 
 Before trusting a new fixture, inject the defect it claims to catch into a committed shortcode,
 require the named fixture to fail for the intended assertion, and then restore the committed

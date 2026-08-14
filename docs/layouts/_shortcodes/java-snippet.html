@@ -54,10 +54,39 @@ follow .agents/skills/maintain-doc-java-snippets and run the synthetic fixture s
     {{- else -}}
       {{- $snippetLineCount := sub $endLine (add $startLine 1) -}}
       {{- $snippetLines := collections.First $snippetLineCount (collections.After (add $startLine 1) $lines) -}}
-      {{- $snippet := strings.TrimSpace (delimit $snippetLines "\n") -}}
-      {{- if not $snippet -}}
+      {{- $hasContent := false -}}
+      {{- $commonIndent := "" -}}
+      {{- range $line := $snippetLines -}}
+        {{- if strings.TrimSpace $line -}}
+          {{- $lineIndent := replaceRE "^([[:blank:]]*).*" "$1" $line -}}
+          {{- if not $hasContent -}}
+            {{- $hasContent = true -}}
+            {{- $commonIndent = $lineIndent -}}
+          {{- else if $commonIndent -}}
+            {{- $matchedIndentLength := 0 -}}
+            {{- range $index, $_ := strings.Split $commonIndent "" -}}
+              {{- $candidateLength := add $index 1 -}}
+              {{- $candidate := substr $commonIndent 0 $candidateLength -}}
+              {{- if strings.HasPrefix $lineIndent $candidate -}}
+                {{- $matchedIndentLength = $candidateLength -}}
+              {{- end -}}
+            {{- end -}}
+            {{- $commonIndent = substr $commonIndent 0 $matchedIndentLength -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+      {{- if not $hasContent -}}
         {{- errorf "%s: java-snippet file %q has an empty region for tag %q" .Position $file $tag -}}
       {{- else -}}
+        {{- $normalizedLines := slice -}}
+        {{- range $line := $snippetLines -}}
+          {{- if strings.TrimSpace $line -}}
+            {{- $normalizedLines = $normalizedLines | append (strings.TrimPrefix $commonIndent $line) -}}
+          {{- else -}}
+            {{- $normalizedLines = $normalizedLines | append $line -}}
+          {{- end -}}
+        {{- end -}}
+        {{- $snippet := delimit $normalizedLines "\n" -}}
         {{- transform.Highlight $snippet "java" -}}
       {{- end -}}
     {{- end -}}
