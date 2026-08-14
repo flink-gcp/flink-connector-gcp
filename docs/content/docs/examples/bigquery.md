@@ -30,49 +30,9 @@ The writer context carries the record's event timestamp, which makes time-based 
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#bigquery-tables) defines the shared resolver contract and compares its resource lifetime with the other sinks.
 This resolver caches one destination per UTC day and falls back to the record's own timestamp when the writer context has none.
 
-```java
-public class DailyTableResolver implements DestinationResolver<OrderEvent> {
+{{< java-snippet file="BigQueryExamplesTablePerDay.java" tag="bigquery-examples-table-per-day-resolver" >}}
 
-    private static final DateTimeFormatter SUFFIX = DateTimeFormatter.ofPattern("yyyyMMdd");
-
-    private final String project;
-    private final String dataset;
-    private final String prefix;
-
-    // One entry per day rather than one TableDestination per record. A plain HashMap is enough:
-    // the writer is single-threaded per subtask, and this resolver is never shared across them.
-    private final Map<LocalDate, TableDestination> cache = new HashMap<>();
-
-    public DailyTableResolver(String project, String dataset, String prefix) {
-        this.project = project;
-        this.dataset = dataset;
-        this.prefix = prefix;
-    }
-
-    @Override
-    public TableDestination resolve(OrderEvent element, SinkWriter.Context context) {
-        Long eventTime = context.timestamp();
-        // Null when nothing assigned the record a timestamp — a processing-time job, or a source
-        // with no timestamp assigner. Falling back to the record's own field keeps such a record
-        // routed rather than unroutable.
-        Instant instant =
-                eventTime != null ? Instant.ofEpochMilli(eventTime) : element.createdAt();
-        LocalDate day = instant.atZone(ZoneOffset.UTC).toLocalDate();
-        return cache.computeIfAbsent(
-                day,
-                d ->
-                        TableDestination.of(
-                                project, dataset, prefix + "_" + d.format(SUFFIX)));
-    }
-}
-```
-
-```java
-BigQuerySink.<OrderEvent>builder()
-        .destinationResolver(new DailyTableResolver("my-project", "my_dataset", "orders"))
-        .serializer(serializer)
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesTablePerDay.java" tag="bigquery-examples-table-per-day-sink" >}}
 
 Two things need planning when a resolver keeps producing new destinations.
 The default-stream and buffered-stream methods hold one writer per active destination, so `DefaultStreamOptions` and `BufferedStreamOptions` expose `destinationIdleTimeout` (one hour by default) to bound that local state.
@@ -94,25 +54,7 @@ so needs no line in either job below — but a cluster setting `execution.checkp
 Rows are appended to one Storage Write API buffered stream per (subtask, destination) at explicit
 offsets, invisible until a completed checkpoint makes exactly that checkpoint's rows visible.
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-// The mode must be explicit: AUTOMATIC is rejected at graph construction, because resolving to
-// streaming without checkpointing would leave buffered rows invisible forever.
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-env.enableCheckpointing(60_000);
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
-        .sinkTo(
-                BigQuerySink.<OrderEvent>builder()
-                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destinationResolver(
-                                new DailyTableResolver("my-project", "my_dataset", "orders"))
-                        .serializer(serializer)
-                        .bufferedStreamOptions(BufferedStreamOptions.builder().build())
-                        .build());
-
-env.execute("bigquery-exactly-once");
-```
+{{< java-snippet file="BigQueryExamplesBufferedStreams.java" tag="bigquery-examples-buffered-streams" >}}
 
 `bufferedStreamOptions(...)` is required for this write method and rejected for the others, and
 every knob in it is defaulted — `builder().build()` is how to say "the defaults" out loud. The
@@ -127,28 +69,7 @@ must account for the Storage Write API's stream-creation quota.
 Rows are staged as files on Cloud Storage — Avro by default — and loaded with BigQuery load jobs, which is free of
 streaming-insert cost and exactly-once in both execution modes.
 
-```java
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-// The checkpoint is the load trigger, and each one modifies every active destination with a
-// direct load or an overflow copy. 5 minutes is 288 modifications; below 2 minutes the sink
-// rejects the job outright.
-env.enableCheckpointing(300_000);
-
-env.fromSource(source, WatermarkStrategy.noWatermarks(), "orders")
-        .sinkTo(
-                BigQuerySink.<OrderEvent>builder()
-                        .writeMethod(WriteMethod.FILE_LOADS)
-                        .destinationResolver(
-                                new DailyTableResolver("my-project", "my_dataset", "orders"))
-                        .serializer(serializer)
-                        .fileLoadsOptions(
-                                FileLoadsOptions.builder()
-                                        .stagingPath("gs://my-staging-bucket/flink-loads")
-                                        .build())
-                        .build());
-
-env.execute("bigquery-file-loads");
-```
+{{< java-snippet file="BigQueryExamplesFileLoads.java" tag="bigquery-examples-file-loads" >}}
 
 Point `stagingPath` at a **dedicated bucket, separate from checkpoint and savepoint storage, with a
 lifecycle rule** deleting objects after a few days, so files orphaned by a hard failure expire on
@@ -190,18 +111,7 @@ The default create disposition is `CREATE_IF_NEEDED`, so the first record for a 
 creates it from the serializer's schema. `tableCreateOptions(...)` is what decides the rest of the
 table's shape:
 
-```java
-BigQuerySink.<OrderEvent>builder()
-        .destinationResolver(new DailyTableResolver("my-project", "my_dataset", "orders"))
-        .serializer(serializer)
-        .tableCreateOptions(
-                TableCreateOptions.builder()
-                        .timePartitioning(TimePartitioningType.DAY, "created_at")
-                        .timePartitioningExpiration(Duration.ofDays(90))
-                        .clusteredFields(List.of("customer_id"))
-                        .build())
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesTableAutoCreation.java" tag="bigquery-examples-table-auto-creation" >}}
 
 **These apply at creation and never afterwards.** An existing table is never modified by them, so
 adding partitioning to a running pipeline changes only the tables created from that point on. Use
@@ -241,19 +151,7 @@ The two push-down knobs are applied by BigQuery when the read session is created
 exclude never leaves it — and the columns you leave out are not scanned, which is what the read is
 charged for.
 
-```java
-Schema readerSchema = new Schema.Parser().parse(
-        "{\"type\":\"record\",\"name\":\"Event\",\"fields\":["
-                + "{\"name\":\"user_id\",\"type\":\"long\"}]}");
-
-Source<GenericRecord, ?, ?> source =
-        BigQuerySource.<GenericRecord>builder()
-                .table(TableDestination.of("my-project", "analytics", "events"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-                .selectedFields("user_id")
-                .rowRestriction("event_date = '2026-08-01' AND country = 'JP'")
-                .build();
-```
+{{< java-snippet file="BigQueryExamplesReadingOneColumn.java" tag="bigquery-examples-reading-one-column" >}}
 
 The reader schema names only the column being read. A row's other columns are dropped by Avro's
 schema resolution before the record is built — and here they never left BigQuery in the first place.
@@ -263,13 +161,7 @@ schema resolution before the record is built — and here they never left BigQue
 A read session belongs to a project, and that is the project it is billed to. Reading a table you do
 not own — a public dataset, or another team's — means naming your own project as the payer:
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .table(TableDestination.of("bigquery-public-data", "samples", "shakespeare"))
-        .parentProject("my-project")
-        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesReadingPublicDataset.java" tag="bigquery-examples-reading-public-dataset" >}}
 
 Without `parentProject` the session would be created in `bigquery-public-data`, where you have no
 permission to create one.
@@ -280,13 +172,7 @@ permission to create one.
 the same instant read the same rows, whatever has been written since — which is what makes a
 re-run reproducible rather than merely repeated.
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .table(TableDestination.of("my-project", "my_dataset", "accounts"))
-        .snapshotTime(Instant.parse("2026-08-01T00:00:00Z"))
-        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesReadingSnapshot.java" tag="bigquery-examples-reading-snapshot" >}}
 
 Note that a read session pins its own snapshot at creation regardless, so a job that does *not* set
 this still reads one consistent view of the table — just whichever one existed when it started.
@@ -296,13 +182,7 @@ this still reads one consistent view of the table — just whichever one existed
 A view cannot be read as a table — the Storage Read API reads storage, and a view has none. Run it
 as a query instead, and the source reads the table its result lands in.
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .query("SELECT id, name FROM `my-project.my_dataset.active_accounts`")
-        .parentProject("my-project")
-        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesReadingView.java" tag="bigquery-examples-reading-view" >}}
 
 `parentProject` is required here rather than optional: no table is named, so nothing else says which
 project runs the query job and is billed for it. By default the result goes to BigQuery's own
@@ -319,14 +199,7 @@ constraints of each landing place are under
 If a job is pointed at names it does not control — a catalog where some are tables and some are
 views — `materializeViews()` handles both without the job having to know which is which.
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .table(TableDestination.of("my-project", "my_dataset", "active_accounts"))
-        .materializeViews()
-        .selectedFields("id", "region")
-        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesMaterializingViews.java" tag="bigquery-examples-materializing-views" >}}
 
 A view is materialized and read; an ordinary table is read directly, with nothing billed for a
 query. It is off by default because it costs one metadata call per job to tell the two apart, and
@@ -338,15 +211,7 @@ because materializing bills a query nobody wrote. `selectedFields` is folded int
 Name a dataset when the anonymous one will not do — because something outside the job has to read
 the result, or because a cached results table is not a dependency you want to take.
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .query("SELECT o.id, c.region FROM `my-project.sales.orders` o"
-                + " JOIN `my-project.sales.customers` c USING (customer_id)")
-        .parentProject("my-project")
-        .queryResultDataset("scratch")
-        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesQueryResultDataset.java" tag="bigquery-examples-query-result-dataset" >}}
 
 The dataset must already exist and be in the query's own location. The connector creates a table
 there with a one-day expiration and does not delete it earlier: teardown also runs on a JobManager
@@ -358,13 +223,7 @@ A read stream is read by one subtask at a time, and a subtask takes the next str
 finishes one. Over-provisioning is therefore how the work spreads evenly: with as many streams as
 subtasks, one slow stream leaves a subtask idle at the end.
 
-```java
-BigQuerySource.<GenericRecord>builder()
-        .table(TableDestination.of("my-project", "my_dataset", "events"))
-        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
-        .preferredMinStreamCount(3 * env.getParallelism())
-        .build();
-```
+{{< java-snippet file="BigQueryExamplesPreferredStreamCount.java" tag="bigquery-examples-preferred-stream-count" >}}
 
 BigQuery decides the actual count and may give fewer — a small table is read by one stream however
 many are asked for. The measured behaviour of both knobs is under
