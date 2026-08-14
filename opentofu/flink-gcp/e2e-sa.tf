@@ -48,6 +48,13 @@ resource "google_project_iam_member" "e2e" {
     # custom one is a definition to maintain against an API that adds
     # permissions.
     "roles/bigtable.admin",
+    # Starting/stopping the fixed App Engine version requires
+    # appengine.versions.update; listing its one instance requires get/list.
+    # serviceAdmin is the narrowest predefined role carrying that combination.
+    # It also carries service/version deletion, which the lifecycle wrapper
+    # never calls; appAdmin/editor/admin add still wider application, memcache,
+    # debug, or deployment privileges.
+    "roles/appengine.serviceAdmin",
     # Tests create and delete their own queues and tasks.
     "roles/cloudtasks.admin",
     # Tests create and delete their own topics and subscriptions.

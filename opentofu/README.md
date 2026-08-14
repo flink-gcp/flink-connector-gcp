@@ -21,6 +21,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/opentofu-sa.tf` | Plan (read-only) and apply service accounts |
 | `flink-gcp/e2e-sa.tf` | The E2E test service account and its scoped grants |
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
+| `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
 | `flink-gcp/pubsub-e2e-iam.tf` | Service-agent and E2E-account IAM the Pub/Sub source real-GCP suite needs beyond `roles/pubsub.editor` |
 | `flink-gcp/tfaction.yaml` | Marks the directory as a tfaction root module |
 | `flink-gcp/.terraform.lock.hcl` | Committed provider release pin |
@@ -80,6 +81,17 @@ GOOGLE_APPLICATION_CREDENTIALS=/Users/<you>/.config/flink-gcp/application_defaul
 ```
 
 Then `just tofu plan`, `just tofu validate`, `just tofu state list`, etc.
+
+The Cloud Tasks fixture is the exception whose runtime state is managed
+outside OpenTofu. Its App Engine application is permanently located in
+`us-central` (the App Engine name corresponding to Cloud Tasks `us-central1`),
+and Google does not support deleting the application or changing that location.
+The checked-in version uses one manually scaled instance only while acceptance
+runs. `scripts/appengine-e2e-fixture.sh start` waits for `SERVING` with exactly
+one instance and prints its id; `stop` waits for `STOPPED` with zero instances.
+OpenTofu ignores only `manual_scaling.instances`, so those lifecycle changes do
+not create drift while every other version setting remains managed. Both
+commands require `CLOUDTASKS_IT_PROJECT` and authenticated `gcloud` access.
 
 ## Bootstrap (already done — recorded for reproducibility)
 

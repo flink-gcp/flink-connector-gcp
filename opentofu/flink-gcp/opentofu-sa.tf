@@ -35,7 +35,17 @@ resource "google_service_account" "opentofu_plan" {
 # every change it applies was a reviewed pull request first.
 resource "google_project_iam_member" "opentofu" {
   for_each = toset([
+    # Creating the permanent application, deploying versions, and changing
+    # their serving/manual-scaling state are separate predefined App Engine
+    # roles. Their union is narrower than appengine.admin/appAdmin: it does not
+    # add memcache data access, instance debugging, or deployed-file reads.
+    "roles/appengine.appCreator",
+    "roles/appengine.deployer",
+    "roles/appengine.serviceAdmin",
     "roles/bigquery.admin",
+    # A modern Standard deployment builds its container through Cloud Build.
+    # Storage Admin below already carries the other deployer-side requirement.
+    "roles/cloudbuild.builds.editor",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.workloadIdentityPoolAdmin",
     "roles/resourcemanager.projectIamAdmin",
