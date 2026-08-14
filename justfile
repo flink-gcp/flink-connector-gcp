@@ -89,6 +89,13 @@ check-doc-snippets *args:
     python3 scripts/check-javadoc-examples.py
     {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am {{ args }} test-compile
 
+# The fixture site mounts this repository's shortcode and supplies synthetic pages and Java
+# sources, so changes to the parser are measured without depending on the live documentation.
+#
+# Test the java-snippet shortcode's rendering and validation branches.
+test-java-snippet-shortcode:
+    mise x hugo-extended -- scripts/test-java-snippet-shortcode.sh
+
 # -am is load-bearing: without it the io.github.flink-gcp siblings resolve from
 # ~/.m2 rather than from the reactor, so the recipe reports on whichever jar
 # happens to be installed there instead of on the working tree. That fails both

@@ -31,6 +31,7 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
   Flink 1.x and 2.x.
 - `just check-doc-snippets`: check and compile source-backed Java examples rendered in the docs
   and public Javadoc.
+- `just test-java-snippet-shortcode`: test the Hugo shortcode against synthetic fixtures.
 - `just lint`: lint scripts, workflows, rendered Markdown, and OpenTofu.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
@@ -52,6 +53,7 @@ green; use the clean-state procedures in that guide for such changes.
   `$maintain-doc-java-snippets`. New or materially changed runnable API guidance is source-backed;
   intentionally partial or pseudocode examples remain ordinary fenced blocks and must be
   described as abbreviated. Existing ordinary fences remain unvalidated until they are migrated.
+  When the shortcode itself changes, run its synthetic fixture suite.
 - Before adding or changing a public Javadoc code block, or for a Javadoc-specific
   `just check-doc-snippets` failure, use `$maintain-javadoc-examples`. Runnable blocks map to exact
   compiled backing regions; abbreviated blocks are visibly classified and explain their omission.
