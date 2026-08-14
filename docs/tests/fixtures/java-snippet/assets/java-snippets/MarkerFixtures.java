@@ -18,9 +18,48 @@ final class MarkerFixtures {
 
     private int wrapperBeforeSentinel;
 
-    // tag::valid[]
-    private int renderedRegionSentinel;
-    // end::valid[]
+    private static final int firstValue = 1;
+    private static final int secondValue = 2;
+    private static final String firstPart = "first";
+    private static final String secondPart = "second";
+
+    private static void firstPage() {
+        // tag::valid[]
+
+        int renderedRegionSentinel =
+                firstValue
+                        + secondValue;
+
+        render(renderedRegionSentinel);
+
+        // end::valid[]
+    }
+
+    private static void secondPage(boolean enabled) {
+        if (enabled) {
+            // tag::valid-second[]
+
+            String secondPageSentinel =
+                    firstPart
+                            + secondPart;
+
+            render(secondPageSentinel);
+
+            // end::valid-second[]
+        }
+    }
+
+    private static void mixedWhitespacePrefixes() {
+        // tag::mixed-whitespace-prefixes[]
+	        String mixedWhitespacePrefixSentinel =
+        firstPart
+	                + secondPart;
+        // end::mixed-whitespace-prefixes[]
+    }
+
+    private static void render(int value) {}
+
+    private static void render(String value) {}
 
     private int wrapperAfterSentinel;
 

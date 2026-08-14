@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-15
 - Issues: [#658](https://github.com/laughingman7743/flink-connector-gcp/issues/658),
-  [#665](https://github.com/laughingman7743/flink-connector-gcp/issues/665)
+  [#665](https://github.com/laughingman7743/flink-connector-gcp/issues/665),
+  [#704](https://github.com/laughingman7743/flink-connector-gcp/issues/704)
 - Modules: all (documentation tooling)
 - Current behavior: [Java snippet maintenance skill](../../.agents/skills/maintain-doc-java-snippets/SKILL.md),
   [`java-snippet` shortcode](../layouts/_shortcodes/java-snippet.html)
@@ -58,6 +59,9 @@ The `java-snippet` shortcode requires non-empty named `file` and `tag` arguments
 After trimming whitespace, it recognizes marker-only lines by exact equality, requires exactly one
 start and one end marker in that order, rejects an empty region, and renders only the lines between
 the markers.
+Before highlighting, the shortcode removes the exact leading horizontal-whitespace prefix shared
+by every non-blank region line.
+It preserves relative indentation and all other whitespace in the displayed source.
 After argument validation, its failures name the documentation position, source file and tag, and
 marker-count failures also state the observed count.
 
@@ -65,7 +69,8 @@ Three checks own distinct parts of this contract:
 
 - `just check-doc-snippets` compiles opted-in source-backed examples against the current reactor.
 - `just test-java-snippet-shortcode` runs the repository shortcode through Hugo against synthetic
-  pages and Java sources, checking both the rendered boundary and every validation branch.
+  pages and Java sources, checking the rendered boundary, indentation normalization and every
+  validation branch.
 - `just docs` builds the production documentation site and catches integration failures in the
   current content tree.
 
@@ -112,8 +117,9 @@ fixture suite.
 ## Consequences
 
 A change to runnable guidance updates its Java source and surrounding prose together.
-A change to the shortcode preserves the marker and diagnostic contract, adds a synthetic fixture
-for each new validation branch, and proves the fixture with a targeted defect injection.
+A change to the shortcode preserves the marker and diagnostic contract, extends the synthetic
+fixtures for each rendering or validation change, and proves the fixture with a targeted defect
+injection.
 
 The validation module stays behind the `docs-snippets` Maven profile and is never published.
 The synthetic fixture tree is test input, not production documentation, and the production Hugo
