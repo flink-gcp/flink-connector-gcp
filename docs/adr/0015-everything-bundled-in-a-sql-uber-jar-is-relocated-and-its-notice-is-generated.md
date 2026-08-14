@@ -233,7 +233,7 @@ group, which `scripts/check-notice.py --update` fills from what license-maven-pl
 so a wrong group, a duplicate bullet or a stale version is not a checkable mistake but an
 *inexpressible* one. `just update-notice <module>` regenerates; `just check-notice <module>`
 (CI) re-renders in memory and fails on any drift, offline. Licence *texts* come only from
-`scripts/licence-sources.toml`, each entry pinned by **sha256** with its provenance recorded:
+`scripts/config/licence-sources.toml`, each entry pinned by **sha256** with its provenance recorded:
 the artifact's own jar where one ships a text (best provenance, version-exact), otherwise a
 curated URL whose ref matches the bundled version and whose note says why (POM-declared URLs are
 often HTML pages or bare templates, and the script rejects HTML outright). A fetch that stops

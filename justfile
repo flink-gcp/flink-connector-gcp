@@ -378,7 +378,7 @@ check-notice module:
 
 # Rewrites META-INF/NOTICE from the module's NOTICE.template and the resolved
 # bundle, and re-materialises META-INF/licenses/ from the pinned sources in
-# scripts/licence-sources.toml (fetching over HTTPS where the artifact's own jar
+# scripts/config/licence-sources.toml (fetching over HTTPS where the artifact's own jar
 # ships no licence text). Run after a dependency change, review the diff, commit.
 #
 # Regenerate the module's META-INF/NOTICE and META-INF/licenses/.

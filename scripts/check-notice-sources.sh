@@ -16,7 +16,7 @@
 #
 # Proof that the pinned licence-text sources still hold (issue #343):
 # regenerate every shaded module's META-INF/NOTICE and META-INF/licenses/ from
-# scripts/licence-sources.toml — fetching each url source — and require the
+# scripts/config/licence-sources.toml — fetching each url source — and require the
 # working tree unchanged. The offline NOTICE check compares checked-in bytes
 # against sha256 pins in the same repository — nothing on the check path ever
 # consults the recorded sources, so in CI this script is what does. A tag

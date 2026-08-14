@@ -177,7 +177,7 @@ ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
 # list of "scripts that matter": it is exactly the Maven-gated checker's
 # inputs, which is why check-option-docs.py and flink-api-tiers.toml are
 # absent (their verify.yaml jobs run unconditionally).
-NOTICE_INPUTS = {"scripts/licence-sources.toml", "scripts/check-notice.py"}
+NOTICE_INPUTS = {"scripts/config/licence-sources.toml", "scripts/check-notice.py"}
 
 
 def moves_a_licence_source(path: str) -> bool:

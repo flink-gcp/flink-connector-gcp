@@ -207,5 +207,5 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   of both built uber-jars against the previous build, and accept only a zero delta.
 - NOTICE prose is hand-written in `NOTICE.template`; everything mechanical is generated
   (`just update-notice` / `check-notice`) and licence texts are sha256-pinned in
-  `scripts/licence-sources.toml` — curation follows the ladder in
+  `scripts/config/licence-sources.toml` — curation follows the ladder in
   `.agents/skills/curate-licence-source/`, and there is no rung 4.

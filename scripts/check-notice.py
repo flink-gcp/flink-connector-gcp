@@ -22,7 +22,7 @@ everything mechanical is generated from it:
     bundled artifacts license-maven-plugin resolved to that licence (names as
     normalised by the licenseMerges in the root POM);
   - every artifact whose licence is not Apache-2.0 must have an entry in
-    scripts/licence-sources.toml, which pins where its licence text comes from
+    scripts/config/licence-sources.toml, which pins where its licence text comes from
     (the artifact's own jar where it ships one, an https URL otherwise) and the
     sha256 of that text. --update materialises those files; the check verifies
     the checked-in files still hash to the recorded values. A url is either
@@ -77,7 +77,7 @@ except ModuleNotFoundError:  # pragma: no cover - version guard, not logic
     )
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCES = Path(__file__).parent / "licence-sources.toml"
+SOURCES = Path(__file__).parent / "config" / "licence-sources.toml"
 
 # `- groupId:artifactId:version` or the same with a ` (META-INF/licenses/…)` pointer,
 # which is how render_notice writes a bullet.
