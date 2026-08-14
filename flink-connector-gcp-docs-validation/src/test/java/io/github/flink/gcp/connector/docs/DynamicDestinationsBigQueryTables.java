@@ -16,8 +16,12 @@
 
 package io.github.flink.gcp.connector.docs;
 
+import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.failure.DeadLetterQueue;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 
 import java.time.LocalDate;
@@ -29,24 +33,31 @@ final class DynamicDestinationsBigQueryTables {
 
     private DynamicDestinationsBigQueryTables() {}
 
-    static void build(BigQueryProtoSerializer<OrderEvent> serializer) {
+    static void build(
+            BigQueryProtoSerializer<OrderEvent> serializer, DeadLetterQueue deadLetterQueue) {
         // tag::bigquery-tables[]
         Map<LocalDate, TableDestination> tablesByDay = new HashMap<>();
 
         BigQuerySink.<OrderEvent>builder()
                 .destinationResolver(
-                        (event, context) ->
-                                tablesByDay.computeIfAbsent(
-                                        event.day(),
-                                        day ->
-                                                TableDestination.of(
-                                                        "my-project",
-                                                        "my_dataset",
-                                                        "orders_"
-                                                                + day.format(
-                                                                        DateTimeFormatter
-                                                                                .BASIC_ISO_DATE))))
+                        (event, context) -> {
+                            if (!event.hasKnownTenant()) {
+                                return UnroutableRecord.of(
+                                        event.deadLetterPayload(), "Unknown tenant");
+                            }
+                            return tablesByDay.computeIfAbsent(
+                                    event.day(),
+                                    day ->
+                                            TableDestination.of(
+                                                    "my-project",
+                                                    "my_dataset",
+                                                    "orders_"
+                                                            + day.format(
+                                                                    DateTimeFormatter
+                                                                            .BASIC_ISO_DATE)));
+                        })
                 .serializer(serializer)
+                .failureHandler(FailureHandler.sendToDeadLetterQueue(deadLetterQueue))
                 .build();
         // end::bigquery-tables[]
     }
@@ -61,6 +72,14 @@ final class DynamicDestinationsBigQueryTables {
 
         LocalDate day() {
             return day;
+        }
+
+        boolean hasKnownTenant() {
+            return true;
+        }
+
+        ByteString deadLetterPayload() {
+            return ByteString.copyFromUtf8(day.toString());
         }
     }
 }

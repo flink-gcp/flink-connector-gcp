@@ -24,15 +24,17 @@ import javax.annotation.Nullable;
 
 /**
  * An element that terminally failed to be written by one of this project's sinks — the read-only
- * contract every connector's concrete failure type implements (BigQuery's {@code FailedRow} today;
- * later connectors add theirs), and the view a cross-connector {@link DeadLetterQueue} sees.
+ * contract every connector's concrete failure type implements, and the view a cross-connector
+ * {@link DeadLetterQueue} sees.
  *
- * <p>Carries the serialized payload rather than the original record: the sink writers are
- * stateless, so by the time a server-side failure is reported the original record object no longer
- * exists. Connector-specific detail beyond this contract (a typed destination, the full request
- * proto) lives on the concrete type.
+ * <p>Carries portable payload bytes chosen by the concrete failure type. A sink-created failure
+ * normally carries the serialized service request because the original record may no longer exist
+ * when an asynchronous failure arrives; a failure created during destination resolution can carry
+ * resolver-supplied bytes instead. Connector-specific detail beyond this contract (a typed
+ * destination, the full request proto) lives on the concrete type.
  *
- * <p>Instances are created by the sinks on the task thread and are not serializable.
+ * <p>Failures reach handlers on the task thread and are not serializable. Depending on the
+ * connector contract, the sink or a user-supplied resolver may create the concrete instance.
  */
 @PublicEvolving
 public interface FailedElement {
@@ -46,13 +48,15 @@ public interface FailedElement {
 
     /**
      * Returns the destination the element was routed to as a stable resource string, for example
-     * {@code my-project.my_dataset.my_table} or {@code projects/p/topics/t}.
+     * {@code my-project.my_dataset.my_table} or {@code projects/p/topics/t}. A connector may return
+     * a stable sentinel such as {@code unresolved} when destination resolution itself failed.
      */
     String describeDestination();
 
     /**
-     * Returns the serialized payload, or {@code null} when serialization itself failed and no
-     * payload was ever produced.
+     * Returns portable payload bytes for inspection or replay, or {@code null} when no payload was
+     * available. The concrete failure type defines whether these are a serialized service request
+     * or record bytes supplied at an earlier boundary.
      */
     @Nullable
     ByteString getPayloadBytes();

@@ -170,7 +170,7 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         writer.flush(false);
 
         assertThat(handler.rows).hasSize(1);
-        assertThat(handler.rows.get(0).getRowBytes().toStringUtf8()).isEqualTo("a1");
+        assertThat(handler.rows.get(0).getPayloadBytes().toStringUtf8()).isEqualTo("a1");
 
         // Original appends: A at 0, B at 3. Replay: survivors (a0, a2) at 0, then B at 2.
         assertThat(service.appends).hasSize(4);

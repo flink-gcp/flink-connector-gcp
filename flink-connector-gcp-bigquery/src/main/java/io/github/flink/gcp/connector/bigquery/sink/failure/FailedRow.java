@@ -26,7 +26,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 /**
  * A single row that terminally failed to be written to BigQuery, as passed to a {@link
- * FailureHandler FailureHandler&lt;FailedRow&gt;}.
+ * FailureHandler FailureHandler&lt;BigQueryFailure&gt;}.
  *
  * <p>Carries the serialized protobuf row bytes rather than the original record: the sink writer is
  * stateless and only retains serialized append batches, so by the time a server-side row error is
@@ -36,7 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
  * <p>Instances are created by the sink and are not serializable.
  */
 @PublicEvolving
-public final class FailedRow implements FailedElement {
+public final class FailedRow implements BigQueryFailure {
 
     private final TableDestination destination;
     private final ByteString rowBytes;

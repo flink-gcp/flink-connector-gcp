@@ -71,9 +71,9 @@ import java.util.concurrent.TimeoutException;
  *
  * <pre>{@code
  * BigQuerySink.<Order>builder()
- *         .table(TableDestination.of("my-project", "my_dataset", "orders"))
+ *         .destination(TableDestination.of("my-project", "my_dataset", "orders"))
  *         .serializer(serializer)
- *         .failedRowHandler(
+ *         .failureHandler(
  *                 FailureHandler.sendToDeadLetterQueue(
  *                         PubSubDeadLetterQueue.builder()
  *                                 .topic(TopicDestination.of("my-project", "dead-letters"))
@@ -83,16 +83,18 @@ import java.util.concurrent.TimeoutException;
  *
  * <h2>The envelope</h2>
  *
- * <p>The message data is the element's {@link FailedElement#getPayloadBytes() payload bytes} —
- * empty when serialization itself failed, so a consumer distinguishes the two by data length. Every
- * message carries five attributes:
+ * <p>The message data is the element's {@link FailedElement#getPayloadBytes() payload bytes}, or
+ * empty when that method returns {@code null}. A concrete failure may also supply an intentionally
+ * empty payload, so consumers must use the attributes rather than data length alone to classify the
+ * failure. Every message carries five attributes:
  *
  * <table>
  *   <caption>Attributes of a dead-lettered message</caption>
  *   <tr><th>Attribute</th><th>Value</th></tr>
  *   <tr><td>{@code dlq-connector}</td><td>{@code bigquery}, {@code bigtable}, {@code pubsub} or {@code cloudtasks}
  *       </td></tr>
- *   <tr><td>{@code dlq-destination}</td><td>the resource the element was bound for</td></tr>
+ *   <tr><td>{@code dlq-destination}</td><td>the resource the element was bound for, or a
+ *       connector-defined sentinel such as {@code unresolved}</td></tr>
  *   <tr><td>{@code dlq-error}</td><td>the failure description, truncated to Pub/Sub's 1024-byte
  *       attribute-value limit</td></tr>
  *   <tr><td>{@code dlq-timestamp}</td><td>when the element was offered, ISO-8601</td></tr>
@@ -360,7 +362,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     static PubsubMessage envelope(FailedElement element, int subtaskIndex, Instant offeredAt) {
         ByteString payload = element.getPayloadBytes();
         return PubsubMessage.newBuilder()
-                // Empty rather than absent when serialization itself failed: the attributes still
+                // Empty rather than absent when the failure has no payload: the attributes still
                 // say which destination and which error, which is what makes the record findable.
                 .setData(payload == null ? ByteString.EMPTY : payload)
                 .putAttributes("dlq-connector", element.getConnector())

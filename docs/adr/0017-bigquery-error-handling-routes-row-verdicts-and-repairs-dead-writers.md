@@ -23,9 +23,16 @@ limitations under the License.
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Error handling
 
+[ADR-0114](0114-bigquery-routing-failures-are-explicit-results-under-one-failure-policy.md)
+supersedes the row-only public surface described in the first decision below with an explicit
+record-specific destination-resolution result and a common BigQuery failure type.
+The row-verdict classification, recovery and handler-lifecycle decisions in this record remain in
+force.
+
 ## Decision
 
-- The row-level failure policy is the shared `FailureHandler<FailedRow>` from `base.failure`
+- **Superseded public surface (historical):** The row-level failure policy was the shared
+  `FailureHandler<FailedRow>` from `base.failure`
   ([#37]/[#205]) — fail-job (default), log-and-drop, DLQ routing — and the base module's record
   owns the lifecycle contract. This module keeps `FailedRow` (implements `FailedElement`;
   `getConnector()` = "bigquery", `describeDestination()` = the `p.d.t` string) and the builder

@@ -122,6 +122,11 @@ final class FileLoadsWriterMetrics {
         table.sendFailed();
     }
 
+    /** Counts one routing failure before a destination exists. */
+    void recordFailedWithoutDestination() {
+        numRecordsSendErrors.inc();
+    }
+
     /**
      * Counts one record the serializer skipped by returning {@code null}.
      *

@@ -816,7 +816,7 @@ class BigQuerySinkBuilderTest {
         assertThat(defaults.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_IF_NEEDED);
         assertThat(defaults.getConfig().getLocation()).isNull();
-        assertThat(defaults.getConfig().getFailedRowHandler()).isEqualTo(FailureHandler.failJob());
+        assertThat(defaults.getConfig().getFailureHandler()).isEqualTo(FailureHandler.failJob());
         assertThat(defaults.getConfig().getEmulatorEndpoint()).isNull();
         assertThat(defaults.getConfig().getEmulatorRestEndpoint()).isNull();
 
@@ -826,13 +826,13 @@ class BigQuerySinkBuilderTest {
                                 .destination(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
-                                .failedRowHandler(FailureHandler.logAndDrop())
+                                .failureHandler(FailureHandler.logAndDrop())
                                 .location("asia-northeast1")
                                 .build();
         assertThat(overridden.getConfig().getCreateDisposition())
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(overridden.getConfig().getLocation()).isEqualTo("asia-northeast1");
-        assertThat(overridden.getConfig().getFailedRowHandler())
+        assertThat(overridden.getConfig().getFailureHandler())
                 .isEqualTo(FailureHandler.logAndDrop());
     }
 
@@ -908,10 +908,10 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void rejectsNullFailedRowHandler() {
-        assertThatThrownBy(() -> BigQuerySink.<String>builder().failedRowHandler(null))
+    void rejectsNullFailureHandler() {
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().failureHandler(null))
                 .isInstanceOf(NullPointerException.class)
-                .hasMessageContaining("failedRowHandler");
+                .hasMessageContaining("failureHandler");
     }
 
     @Test

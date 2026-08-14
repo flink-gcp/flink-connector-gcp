@@ -644,15 +644,17 @@ mounts, session clusters and rotation.
 | Attribute | Value |
 |---|---|
 | `dlq-connector` | `bigquery`, `bigtable`, `pubsub` or `cloudtasks` |
-| `dlq-destination` | the resource the element was bound for |
+| `dlq-destination` | the resource the element was bound for, or a connector-defined sentinel such as `unresolved` |
 | `dlq-error` | the failure description, truncated to Pub/Sub's 1024-byte attribute-value limit and marked with `...` |
 | `dlq-timestamp` | when the element was offered, ISO-8601 |
 | `dlq-subtask` | the offering sink subtask's index |
 
-The message **data** is the element's payload bytes — empty when serialization itself failed, which
-is how a consumer tells the two apart. The failure's cause chain is not in the envelope (it has no
-bounded string form); enable `DEBUG` logging on `PubSubDeadLetterQueue` to see untruncated errors in
-the job logs.
+The message **data** is the element's payload bytes, or empty when the failure has no payload.
+A concrete failure may also supply intentionally empty bytes, so data length alone does not
+classify the failure.
+Use the attributes for that distinction.
+The failure's cause chain is not in the envelope (it has no bounded string form); enable `DEBUG`
+logging on `PubSubDeadLetterQueue` to see untruncated errors in the job logs.
 
 Publishes are batched and awaited in `flush()`, so a rare failure costs no round trip of its own.
 `maxOutstandingMessages` bounds what one checkpoint interval can accumulate when *every* record

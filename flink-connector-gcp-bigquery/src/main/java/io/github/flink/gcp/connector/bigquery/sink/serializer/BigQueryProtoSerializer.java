@@ -131,7 +131,7 @@ public abstract class BigQueryProtoSerializer<T> implements Serializable {
      * @param element the record
      * @return the serialized protobuf row, or {@code null} to skip the record
      * @throws IOException if the record cannot be serialized; the record is handed to the sink's
-     *     failed-row handler, which fails the job by default
+     *     failure handler, which fails the job by default
      */
     @Nullable
     public abstract ByteString serialize(T element) throws IOException;

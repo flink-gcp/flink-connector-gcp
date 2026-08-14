@@ -25,7 +25,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowFields;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
@@ -60,7 +60,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final CdcTableOptionsProvider cdcTableOptionsProvider;
     private final CdcTableReconciliationPolicy cdcTableReconciliationPolicy;
     private final SchemaUpdateOptions schemaUpdateOptions;
-    private final FailureHandler<? super FailedRow> failedRowHandler;
+    private final FailureHandler<? super BigQueryFailure> failureHandler;
     private final String location;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
@@ -77,7 +77,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             CdcTableOptionsProvider cdcTableOptionsProvider,
             CdcTableReconciliationPolicy cdcTableReconciliationPolicy,
             SchemaUpdateOptions schemaUpdateOptions,
-            FailureHandler<? super FailedRow> failedRowHandler,
+            FailureHandler<? super BigQueryFailure> failureHandler,
             String location,
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
@@ -111,7 +111,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         this.cdcTableOptionsProvider = cdcTableOptionsProvider;
         this.cdcTableReconciliationPolicy = cdcTableReconciliationPolicy;
         this.schemaUpdateOptions = schemaUpdateOptions;
-        this.failedRowHandler = failedRowHandler;
+        this.failureHandler = failureHandler;
         this.location = location;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
@@ -214,9 +214,9 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         return schemaUpdateOptions;
     }
 
-    /** Returns the handler for rows that terminally fail to be written. */
-    public FailureHandler<? super FailedRow> getFailedRowHandler() {
-        return failedRowHandler;
+    /** Returns the handler for record-specific routing and row failures. */
+    public FailureHandler<? super BigQueryFailure> getFailureHandler() {
+        return failureHandler;
     }
 
     /**

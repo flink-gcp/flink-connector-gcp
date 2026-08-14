@@ -32,8 +32,10 @@ The connector example pages carry the surrounding job and the detailed options.
 
 The four resolver-based sinks call their resolver once per record on the writer's hot path and before they invoke the serializer.
 The resolver must therefore be serializable, deterministic and cheap.
-The portable contract across all four sinks is that every resolver returns a non-null destination, including when the serializer later skips the record by returning `null`.
+The portable contract across all four sinks is that every resolver returns a non-null result, including when the serializer later skips the record by returning `null`.
 Use the serializer's `null` result, not a resolver's `null` result, to skip a record.
+BigQuery additionally accepts an explicit `UnroutableRecord` result for a deterministic, record-specific routing failure.
+Its configured failure handler then decides whether to fail, drop or dead-letter that record; a bare resolver `null` or an unexpected resolver exception remains fatal.
 
 The writer context exposes the record's event timestamp and the current watermark.
 Time-based routing should use that timestamp or a field carried by the record rather than reading the task manager's wall clock, because a replay must make the same routing decision as the original attempt.
@@ -71,12 +73,16 @@ Pub/Sub deliberately keeps each topic publisher until the writer closes, while C
 
 ## BigQuery tables
 
-This resolver caches one `TableDestination` per event day and lets every BigQuery write method use the same routing decision.
+This resolver caches one `TableDestination` per event day and returns `UnroutableRecord` when the record does not identify a known tenant.
+The same failure policy applies under every BigQuery write method.
 
 {{< java-snippet file="DynamicDestinationsBigQueryTables.java" tag="bigquery-tables" >}}
 
 The default-stream and buffered-stream methods keep independent writer state per active table.
 FILE_LOADS stages and commits files per table instead, so its load-job cadence and table-modification quotas replace the streaming methods' connection cost.
+An `UnroutableRecord` creates none of that per-table state and never reaches the serializer.
+The resolver supplies its dead-letter payload because no destination schema exists for the sink to serialize against; with the Pub/Sub queue shown above it is published with `dlq-destination=unresolved`.
+The default policy is `FailureHandler.failJob()`, so omitting `failureHandler(...)` remains conservative.
 The [BigQuery examples]({{< relref "docs/examples/bigquery" >}}#a-table-per-day) show event-time fallback and all three write methods.
 
 ## Pub/Sub topics

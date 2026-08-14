@@ -41,9 +41,10 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
-import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
@@ -214,6 +215,87 @@ class BigQueryDefaultStreamWriterMetricsTest {
         assertThat(errors("INVALID_ARGUMENT")).isEqualTo(1);
         // The re-append that carried the survivors succeeded, and a success is not an error class.
         assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+    }
+
+    @Test
+    void routesAnExplicitResolutionFailureWithoutCreatingDestinationState() throws Exception {
+        CountingSerializer serializer = new CountingSerializer();
+        UnroutableRecord unroutable =
+                UnroutableRecord.of(ByteString.copyFromUtf8("original"), "unknown tenant");
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(serializer, null, (element, context) -> unroutable);
+
+        writer.write("record", CONTEXT);
+
+        assertThat(handler.rows).containsExactly(unroutable);
+        assertThat(serializer.invocations).isZero();
+        assertThat(factory.created).isEmpty();
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(metrics.hasMetric("destination", "unresolved", "sendErrors")).isFalse();
+    }
+
+    @Test
+    void treatsANullResolutionAsFatalBeforeTheFailurePolicy() {
+        CountingSerializer serializer = new CountingSerializer();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(serializer, null, (element, context) -> null);
+
+        assertThatThrownBy(() -> writer.write("record", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessage("The destination resolver returned null for a record.");
+        assertThat(handler.rows).isEmpty();
+        assertThat(serializer.invocations).isZero();
+        assertThat(factory.created).isEmpty();
+        assertThat(counter("numRecordsSendErrors")).isZero();
+    }
+
+    @Test
+    void explicitResolutionFailureFailsTheJobUnderTheDefaultPolicy() {
+        UnroutableRecord unroutable =
+                UnroutableRecord.of(ByteString.copyFromUtf8("original"), "unknown tenant");
+        BigQuerySinkConfig<String> config =
+                ((BigQueryDefaultStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .destinationResolver((element, context) -> unroutable)
+                                        .serializer(new CountingSerializer())
+                                        .build())
+                        .getConfig();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        config,
+                        factory,
+                        admin,
+                        metrics,
+                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        assertThatThrownBy(() -> writer.write("record", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("destination unresolved")
+                .hasMessageContaining("unknown tenant");
+        assertThat(counter("numRecordsSendErrors")).isEqualTo(1);
+        assertThat(factory.created).isEmpty();
+    }
+
+    @Test
+    void keepsUnexpectedResolverExceptionsFatal() {
+        CountingSerializer serializer = new CountingSerializer();
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        serializer,
+                        null,
+                        (element, context) -> {
+                            throw new IllegalStateException("resolver bug");
+                        });
+
+        assertThatThrownBy(() -> writer.write("record", CONTEXT))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("resolver bug");
+        assertThat(handler.rows).isEmpty();
+        assertThat(serializer.invocations).isZero();
+        assertThat(counter("numRecordsSendErrors")).isZero();
     }
 
     // ------------------------------------------------------------------
@@ -620,7 +702,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                 BigQuerySink.<String>builder()
                         .destinationResolver(resolver)
                         .serializer(serializer)
-                        .failedRowHandler(handler);
+                        .failureHandler(handler);
         if (schemaUpdateOptions != null) {
             builder.schemaUpdateOptions(schemaUpdateOptions);
         }
@@ -696,6 +778,19 @@ class BigQueryDefaultStreamWriterMetricsTest {
         }
     }
 
+    /** Serializer recording whether destination resolution allowed serialization to begin. */
+    private static final class CountingSerializer extends StringSerializer {
+        private static final long serialVersionUID = 1L;
+
+        private int invocations;
+
+        @Override
+        public ByteString serialize(String element) throws IOException {
+            invocations++;
+            return super.serialize(element);
+        }
+    }
+
     /** Serializer skipping the record {@code skip-me} and writing every other one. */
     private static final class SkippingSerializer extends StringSerializer {
         private static final long serialVersionUID = 1L;
@@ -717,13 +812,13 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     /** Handler recording every routed row and dropping it. */
-    private static final class DroppingHandler implements FailureHandler<FailedRow> {
+    private static final class DroppingHandler implements FailureHandler<BigQueryFailure> {
         private static final long serialVersionUID = 1L;
 
-        private final transient List<FailedRow> rows = new ArrayList<>();
+        private final transient List<BigQueryFailure> rows = new ArrayList<>();
 
         @Override
-        public void handle(FailedRow row) {
+        public void handle(BigQueryFailure row) {
             rows.add(row);
         }
     }

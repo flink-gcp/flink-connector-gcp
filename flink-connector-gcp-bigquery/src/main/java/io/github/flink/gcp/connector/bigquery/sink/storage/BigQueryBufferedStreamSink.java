@@ -167,7 +167,7 @@ public class BigQueryBufferedStreamSink<T>
             Collection<BufferedStreamWriterState> recoveredState,
             Supplier<TableAdmin> tableAdminFactory)
             throws IOException {
-        config.getFailedRowHandler().open(DefaultFailureHandlerContext.of(context));
+        config.getFailureHandler().open(DefaultFailureHandlerContext.of(context));
         try {
             return new BigQueryBufferedStreamWriter<>(
                     config,
@@ -189,7 +189,7 @@ public class BigQueryBufferedStreamSink<T>
             // NoClassDefFoundError, which repeats on every attempt and would otherwise walk past
             // this guard. Precise rethrow keeps the declared throws clause honest, and it also
             // means a checked exception added to anything above stays covered.
-            Closers.closeAllSuppressing(e, config.getFailedRowHandler()::close);
+            Closers.closeAllSuppressing(e, config.getFailureHandler()::close);
             throw e;
         }
     }
