@@ -49,18 +49,7 @@ the queue. The sink writes tasks; the queue decides how fast they execute. This 
 the usual connector experience, where throughput knobs sit in the sink's own options, and it is
 worth internalising before reading the rest of this page.
 
-```java
-Sink<OrderEvent> sink =
-        CloudTasksSink.<OrderEvent>builder()
-                .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
-                .serializer(
-                        CloudTasksSerializationSchema
-                                .httpTarget("https://api.example.com/v1/orders")
-                                .withBody(new MyEventJsonSerializationSchema())
-                                .withHeaders(e -> Map.of("Content-Type", "application/json"))
-                                .withOidcToken("dispatcher@my-project.iam.gserviceaccount.com"))
-                .build();
-```
+{{< java-snippet file="CloudTasksConnectorOverview.java" tag="cloud-tasks-connector-overview" >}}
 
 ## API notes
 
@@ -159,21 +148,7 @@ not accept a second project or location that could disagree with the queue desti
 Transport is encrypted, stays inside Google's datacenters, and has no caller-selected protocol;
 the handler still observes an HTTP request.
 
-```java
-CloudTasksSerializationSchema<OrderEvent> serializer =
-        CloudTasksSerializationSchema
-                .appEngineTarget("/tasks/orders")
-                .withBody(new MyEventJsonSerializationSchema())
-                .withRelativeUri(event -> "/tasks/orders/" + event.orderId())
-                .withHeaders(event -> Map.of("Content-Type", "application/json"))
-                .withRouting(
-                        event ->
-                                AppEngineRouting.newBuilder()
-                                        .setService("worker")
-                                        .setVersion("v2")
-                                        .build())
-                .build();
-```
+{{< java-snippet file="CloudTasksConnectorAppEngineTargets.java" tag="cloud-tasks-connector-app-engine-targets" >}}
 
 The relative URI is empty for the root path, or begins with `/` and contains only a path and an
 optional query string.
@@ -250,6 +225,9 @@ for the Table and DataStream API comparison.
 and a task that Flink replays after a failure is created twice.
 
 Naming is opt-in through the **sink builder**, not the serializer:
+
+This intentionally abbreviated chain assumes concrete `queue` and `serializer` values and omits
+the final `build()` call.
 
 ```java
 CloudTasksSink.<OrderEvent>builder()
@@ -454,14 +432,7 @@ counted by [`recordsSkipped`](#metrics) rather than `numRecordsSendErrors`. The 
 `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
 connectors in this repository):
 
-```java
-Sink<OrderEvent> sink =
-        CloudTasksSink.<OrderEvent>builder()
-                .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
-                .serializer(serializer)
-                .failedTaskHandler(FailureHandler.logAndDrop())
-                .build();
-```
+{{< java-snippet file="CloudTasksConnectorFailedTaskPolicy.java" tag="cloud-tasks-connector-failed-task-policy" >}}
 
 - `FailureHandler.failJob()` (default) — every per-task failure fails the checkpoint, which is the
   sink's behavior when nothing is configured
@@ -535,17 +506,7 @@ Pub/Sub topic, and it sees failures through the shared `FailedElement` contract,
 serves every connector here**. It lives in the Pub/Sub module, so a Cloud Tasks job dead-lettering
 this way adds `flink-connector-gcp-pubsub` as a dependency:
 
-```java
-CloudTasksSink.<OrderEvent>builder()
-        .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
-        .serializer(serializer)
-        .failedTaskHandler(
-                FailureHandler.sendToDeadLetterQueue(
-                        PubSubDeadLetterQueue.builder()
-                                .topic(TopicDestination.of("my-project", "dead-letters"))
-                                .build()))
-        .build();
-```
+{{< java-snippet file="CloudTasksConnectorDeadLettering.java" tag="cloud-tasks-connector-dead-lettering" >}}
 
 `PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
 publisher independently of this Cloud Tasks sink's credentials.

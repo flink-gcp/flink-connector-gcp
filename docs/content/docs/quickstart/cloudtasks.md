@@ -36,30 +36,7 @@ gcloud tasks queues create webhooks --location=asia-northeast1 \
     --max-dispatches-per-second=10 --max-concurrent-dispatches=5
 ```
 
-```java
-StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
-// Not optional: the sink is at-least-once only with checkpointing, which is what makes Flink wait
-// for every outstanding task creation before the barrier passes.
-env.enableCheckpointing(60_000);
-
-env.fromData("{\"order_id\":\"a-1\"}")
-        .sinkTo(
-                CloudTasksSink.<String>builder()
-                        .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
-                        .serializer(
-                                CloudTasksSerializationSchema
-                                        .httpTarget("https://api.example.com/v1/orders")
-                                        .withBody(new SimpleStringSchema())
-                                        .withHeaders(
-                                                element ->
-                                                        Map.of(
-                                                                "Content-Type",
-                                                                "application/json")))
-                        .build());
-
-env.execute("cloudtasks-quickstart");
-```
+{{< java-snippet file="CloudTasksQuickstartDispatch.java" tag="cloud-tasks-quickstart-dispatch" >}}
 
 The endpoint must be reachable from Cloud Tasks, which for an HTTP target generally means a public
 IP — the exception, and how to authorize against a Cloud Run service with `withOidcToken(...)`, is
