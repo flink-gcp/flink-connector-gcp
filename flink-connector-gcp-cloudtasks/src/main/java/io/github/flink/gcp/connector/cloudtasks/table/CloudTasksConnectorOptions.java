@@ -29,6 +29,15 @@ import java.util.Map;
 @PublicEvolving
 public final class CloudTasksConnectorOptions {
 
+    public static final ConfigOption<CloudTasksTargetType> TARGET_TYPE =
+            ConfigOptions.key("target.type")
+                    .enumType(CloudTasksTargetType.class)
+                    .defaultValue(CloudTasksTargetType.HTTP)
+                    .withDescription(
+                            "The task request target. 'http' preserves the external HTTP target;"
+                                    + " 'app-engine' selects an App Engine request in the queue's"
+                                    + " project and region.");
+
     public static final ConfigOption<String> PROJECT =
             ConfigOptions.key("project")
                     .stringType()
@@ -105,6 +114,58 @@ public final class CloudTasksConnectorOptions {
                     .withDescription(
                             "OAuth scope. Requires http.oauth.service-account-email; when absent"
                                     + " Cloud Tasks uses its default scope.");
+
+    public static final ConfigOption<String> APP_ENGINE_RELATIVE_URI =
+            ConfigOptions.key("app-engine.relative-uri")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The default App Engine path and optional query. A non-null"
+                                    + " 'relative-uri' metadata value overrides it per row. When"
+                                    + " omitted, the table must declare writable 'relative-uri'"
+                                    + " metadata as STRING NOT NULL.");
+
+    public static final ConfigOption<HttpMethod> APP_ENGINE_METHOD =
+            ConfigOptions.key("app-engine.method")
+                    .enumType(HttpMethod.class)
+                    .defaultValue(HttpMethod.POST)
+                    .withDescription(
+                            "The default App Engine request method. A non-null 'http-method'"
+                                    + " metadata value overrides it per row. Only POST and PUT"
+                                    + " carry the encoded body.");
+
+    public static final ConfigOption<Map<String, String>> APP_ENGINE_HEADERS =
+            ConfigOptions.key("app-engine.headers")
+                    .mapType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Default App Engine request headers. Row metadata overrides a"
+                                    + " matching header name case-insensitively.");
+
+    public static final ConfigOption<String> APP_ENGINE_SERVICE =
+            ConfigOptions.key("app-engine.service")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The default App Engine service. A non-null 'app-engine-service'"
+                                    + " metadata value overrides it per row.");
+
+    public static final ConfigOption<String> APP_ENGINE_VERSION =
+            ConfigOptions.key("app-engine.version")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The default App Engine version. A non-null 'app-engine-version'"
+                                    + " metadata value overrides it per row.");
+
+    public static final ConfigOption<String> APP_ENGINE_INSTANCE =
+            ConfigOptions.key("app-engine.instance")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The default App Engine instance. A non-null 'app-engine-instance'"
+                                    + " metadata value overrides it per row; instance routing"
+                                    + " requires a manually scaled service.");
 
     public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
             ConfigOptions.key("service-account-key-file")

@@ -17,20 +17,17 @@
 package io.github.flink.gcp.connector.cloudtasks.sink.serializer;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.tasks.v2.AppEngineHttpRequest;
 import com.google.cloud.tasks.v2.AppEngineRouting;
 import com.google.cloud.tasks.v2.HttpMethod;
 import com.google.cloud.tasks.v2.Task;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.cloudtasks.sink.AppEngineTargetChecks;
 
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Locale;
 import java.util.Map;
 
 /** Converts one record and its serialized body into an App Engine target task. */
@@ -38,8 +35,6 @@ import java.util.Map;
 final class AppEngineTargetTaskConverter<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
-    private static final int MAX_RELATIVE_URI_LENGTH = 2083;
-
     private final String relativeUri;
     private final HttpMethod method;
 
@@ -94,13 +89,13 @@ final class AppEngineTargetTaskConverter<T> implements Serializable {
         AppEngineHttpRequest.Builder request = prototype().toBuilder();
         if (relativeUriExtractor != null) {
             request.setRelativeUri(
-                    checkRelativeUri(
+                    AppEngineTargetChecks.checkRelativeUri(
                             relativeUriExtractor.extractRelativeUri(element),
                             "extracted relative URI"));
         }
         if (routingExtractor != null) {
             AppEngineRouting extracted =
-                    normalizedRouting(
+                    AppEngineTargetChecks.checkAndNormalizeRouting(
                             routingExtractor.extractRouting(element), "extracted routing");
             if (extracted != null) {
                 request.setAppEngineRouting(extracted);
@@ -145,70 +140,8 @@ final class AppEngineTargetTaskConverter<T> implements Serializable {
                 throw new NullPointerException(
                         "The headers extractor returned a null value for key '" + name + "'.");
             }
-            checkHeaderName(name);
+            AppEngineTargetChecks.checkHeaderName(name);
             request.putHeaders(name, header.getValue());
         }
-    }
-
-    private static void checkHeaderName(String name) {
-        String normalized = name.trim().toLowerCase(Locale.ROOT);
-        Preconditions.checkArgument(
-                !normalized.equals("host")
-                        && !normalized.equals("content-length")
-                        && !normalized.startsWith("x-google-")
-                        && !normalized.startsWith("x-appengine-"),
-                "App Engine header '%s' is set by Cloud Tasks and cannot be overridden",
-                name);
-    }
-
-    @Nullable
-    static AppEngineRouting normalizedRouting(@Nullable AppEngineRouting value, String name) {
-        if (value == null) {
-            return null;
-        }
-        Preconditions.checkArgument(
-                value.getHost().isEmpty(),
-                "%s must not set AppEngineRouting.host because host is output-only",
-                name);
-        if (value.getService().isEmpty()
-                && value.getVersion().isEmpty()
-                && value.getInstance().isEmpty()) {
-            return null;
-        }
-        return value;
-    }
-
-    static String checkRelativeUri(String value, String name) {
-        Preconditions.checkNotNull(value, "%s must not be null", name);
-        Preconditions.checkArgument(
-                value.length() <= MAX_RELATIVE_URI_LENGTH,
-                "%s must be at most %s characters",
-                name,
-                MAX_RELATIVE_URI_LENGTH);
-        if (value.isEmpty()) {
-            return value;
-        }
-        Preconditions.checkArgument(
-                value.startsWith("/"), "%s must be empty or begin with '/': '%s'", name, value);
-        Preconditions.checkArgument(
-                value.chars().noneMatch(Character::isWhitespace),
-                "%s must not contain whitespace: '%s'",
-                name,
-                value);
-        final URI parsed;
-        try {
-            parsed = new URI(value);
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException(
-                    name + " must be a valid HTTP relative URI: '" + value + "'");
-        }
-        Preconditions.checkArgument(
-                !parsed.isAbsolute()
-                        && parsed.getRawAuthority() == null
-                        && parsed.getRawFragment() == null,
-                "%s must contain only a path and optional query: '%s'",
-                name,
-                value);
-        return value;
     }
 }

@@ -33,7 +33,8 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.table.form.FormUrlEncodedFormatFactory;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksDynamicSink;
-import io.github.flink.gcp.connector.cloudtasks.table.sink.TableHttpTarget;
+import io.github.flink.gcp.connector.cloudtasks.table.sink.HttpTargetSpec;
+import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -87,12 +88,78 @@ class CloudTasksDynamicTableFactoryTest {
         return options;
     }
 
+    private static Task serialize(Map<String, String> options, GenericRowData row)
+            throws Exception {
+        return serialize(SCHEMA, options, row);
+    }
+
+    private static Task serialize(
+            ResolvedSchema schema, Map<String, String> options, GenericRowData row)
+            throws Exception {
+        io.github.flink.gcp.connector.cloudtasks.sink.serializer.CloudTasksSerializationSchema<
+                        ? super GenericRowData>
+                serializer =
+                        ((CloudTasksCreateTaskSink<GenericRowData>) runtimeSink(schema, options))
+                                .getConfig()
+                                .getSerializer();
+        serializer.open(new StubWriterInitContext(0).asSerializationSchemaInitializationContext());
+        return serializer.serialize(row);
+    }
+
+    private static Map<String, String> appEngineOptions() {
+        Map<String, String> options = minimalOptions();
+        options.remove("http.url");
+        options.put("target.type", "app-engine");
+        options.put("app-engine.relative-uri", "/tasks/default");
+        return options;
+    }
+
     @Test
     void buildsASinkFromTheMinimalOptionSet() {
         DynamicTableSink sink = FactoryMocks.createTableSink(SCHEMA, minimalOptions());
 
         assertThat(sink).isInstanceOf(CloudTasksDynamicSink.class);
         assertThat(sink.asSummaryString()).isEqualTo("Cloud Tasks table sink");
+    }
+
+    @Test
+    void httpRemainsTheDefaultTargetType() throws Exception {
+        Task task =
+                serialize(
+                        minimalOptions(),
+                        GenericRowData.of(StringData.fromString("order-1"), Integer.valueOf(17)));
+
+        assertThat(task.getMessageTypeCase()).isEqualTo(Task.MessageTypeCase.HTTP_REQUEST);
+        assertThat(task.getHttpRequest().getUrl()).isEqualTo("https://example.com/tasks");
+    }
+
+    @Test
+    void mapsFixedAppEngineTargetOptions() throws Exception {
+        Map<String, String> options = appEngineOptions();
+        options.put("app-engine.method", "PUT");
+        options.put("app-engine.headers.X-Origin", "table");
+        options.put("app-engine.service", "worker");
+        options.put("app-engine.version", "v2");
+        options.put("app-engine.instance", "instance-3");
+
+        Task task =
+                serialize(
+                        options,
+                        GenericRowData.of(StringData.fromString("order-1"), Integer.valueOf(17)));
+
+        assertThat(task.getMessageTypeCase())
+                .isEqualTo(Task.MessageTypeCase.APP_ENGINE_HTTP_REQUEST);
+        assertThat(task.getAppEngineHttpRequest().getRelativeUri()).isEqualTo("/tasks/default");
+        assertThat(task.getAppEngineHttpRequest().getHttpMethod())
+                .isEqualTo(com.google.cloud.tasks.v2.HttpMethod.PUT);
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .containsEntry("X-Origin", "table");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getService())
+                .isEqualTo("worker");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getVersion())
+                .isEqualTo("v2");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getInstance())
+                .isEqualTo("instance-3");
     }
 
     @ParameterizedTest(name = "format={0}")
@@ -117,6 +184,25 @@ class CloudTasksDynamicTableFactoryTest {
 
         assertThat(task.getHttpRequest().getBody().toStringUtf8()).isEqualTo("name=Alice+%26+Bob");
         assertThat(task.getHttpRequest().getHeadersMap())
+                .containsEntry("Content-Type", FormUrlEncodedFormatFactory.CONTENT_TYPE);
+    }
+
+    @Test
+    void passesTheFormContentTypeToTheAppEngineTarget() throws Exception {
+        Map<String, String> options = appEngineOptions();
+        options.put("format", FormUrlEncodedFormatFactory.IDENTIFIER);
+
+        Task task =
+                serialize(
+                        FORM_SCHEMA,
+                        options,
+                        GenericRowData.of(StringData.fromString("Alice & Bob")));
+
+        assertThat(task.getMessageTypeCase())
+                .isEqualTo(Task.MessageTypeCase.APP_ENGINE_HTTP_REQUEST);
+        assertThat(task.getAppEngineHttpRequest().getBody().toStringUtf8())
+                .isEqualTo("name=Alice+%26+Bob");
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
                 .containsEntry("Content-Type", FormUrlEncodedFormatFactory.CONTENT_TYPE);
     }
 
@@ -275,6 +361,57 @@ class CloudTasksDynamicTableFactoryTest {
     }
 
     @Test
+    void rejectsMixedAppEngineHeaderMapSyntax() {
+        Map<String, String> options = appEngineOptions();
+        options.put("app-engine.headers", "X-One:1");
+        options.put("app-engine.headers.X-Two", "2");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("either packed map syntax or prefixed entries");
+    }
+
+    @ParameterizedTest(name = "target.type={0} rejects {1}")
+    @CsvSource({
+        "http, app-engine.relative-uri, /tasks",
+        "app-engine, http.url, https://example.com"
+    })
+    void rejectsOptionsFromTheOtherTargetFamily(String targetType, String option, String value) {
+        Map<String, String> options = minimalOptions();
+        options.put("target.type", targetType);
+        if ("app-engine".equals(targetType)) {
+            options.remove("http.url");
+            options.put("app-engine.relative-uri", "/tasks");
+        }
+        options.put(option, value);
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("does not belong to target.type");
+    }
+
+    @ParameterizedTest(name = "app-engine.relative-uri={0}")
+    @ValueSource(strings = {"tasks", "/bad path", "/tasks#fragment"})
+    void rejectsMalformedFixedAppEngineRelativeUris(String relativeUri) {
+        Map<String, String> options = appEngineOptions();
+        options.put("app-engine.relative-uri", relativeUri);
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("app-engine.relative-uri");
+    }
+
+    @Test
+    void rejectsReservedFixedAppEngineHeaders() {
+        Map<String, String> options = appEngineOptions();
+        options.put("app-engine.headers.X-AppEngine-QueueName", "orders");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("set by Cloud Tasks and cannot be overridden");
+    }
+
+    @Test
     void rejectsCaseInsensitiveDuplicateFixedHeaders() {
         Map<String, String> options = minimalOptions();
         options.put("http.headers.X-Request-Id", "first");
@@ -293,7 +430,7 @@ class CloudTasksDynamicTableFactoryTest {
                 CloudTasksConnectorOptions.HTTP_HEADERS,
                 java.util.Collections.singletonMap(" ", "value"));
 
-        assertThatThrownBy(() -> TableHttpTarget.from(config))
+        assertThatThrownBy(() -> HttpTargetSpec.from(config))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("blank header name");
     }

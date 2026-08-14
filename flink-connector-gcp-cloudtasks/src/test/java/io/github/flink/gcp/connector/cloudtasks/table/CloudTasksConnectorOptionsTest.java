@@ -82,9 +82,12 @@ class CloudTasksConnectorOptionsTest {
     }
 
     @Test
-    void onlyTheHttpMethodCarriesATableDefault() {
+    void onlyTargetSelectionAndMethodsCarryTableDefaults() {
         assertThat(declaredOptions())
                 .filteredOn(ConfigOption::hasDefaultValue)
-                .containsExactly(CloudTasksConnectorOptions.HTTP_METHOD);
+                .containsExactlyInAnyOrder(
+                        CloudTasksConnectorOptions.TARGET_TYPE,
+                        CloudTasksConnectorOptions.HTTP_METHOD,
+                        CloudTasksConnectorOptions.APP_ENGINE_METHOD);
     }
 }

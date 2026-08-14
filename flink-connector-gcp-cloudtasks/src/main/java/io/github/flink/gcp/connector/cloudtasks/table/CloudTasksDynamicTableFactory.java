@@ -30,9 +30,11 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.SerializationFormatFactory;
 
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
+import io.github.flink.gcp.connector.cloudtasks.table.sink.AppEngineTargetSpec;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksDynamicSink;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksWriterOptionsMapper;
-import io.github.flink.gcp.connector.cloudtasks.table.sink.TableHttpTarget;
+import io.github.flink.gcp.connector.cloudtasks.table.sink.HttpTargetSpec;
+import io.github.flink.gcp.connector.cloudtasks.table.sink.TargetSpec;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -66,12 +68,19 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
         return new HashSet<>(
                 Arrays.asList(
                         CloudTasksConnectorOptions.HTTP_URL,
+                        CloudTasksConnectorOptions.TARGET_TYPE,
                         CloudTasksConnectorOptions.HTTP_METHOD,
                         CloudTasksConnectorOptions.HTTP_HEADERS,
                         CloudTasksConnectorOptions.HTTP_OIDC_SERVICE_ACCOUNT_EMAIL,
                         CloudTasksConnectorOptions.HTTP_OIDC_AUDIENCE,
                         CloudTasksConnectorOptions.HTTP_OAUTH_SERVICE_ACCOUNT_EMAIL,
                         CloudTasksConnectorOptions.HTTP_OAUTH_SCOPE,
+                        CloudTasksConnectorOptions.APP_ENGINE_RELATIVE_URI,
+                        CloudTasksConnectorOptions.APP_ENGINE_METHOD,
+                        CloudTasksConnectorOptions.APP_ENGINE_HEADERS,
+                        CloudTasksConnectorOptions.APP_ENGINE_SERVICE,
+                        CloudTasksConnectorOptions.APP_ENGINE_VERSION,
+                        CloudTasksConnectorOptions.APP_ENGINE_INSTANCE,
                         CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         CloudTasksConnectorOptions.EMULATOR_ENDPOINT,
                         CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS,
@@ -87,7 +96,8 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
 
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
-        validateHeadersSyntax(context);
+        validateHeadersSyntax(context, CloudTasksConnectorOptions.HTTP_HEADERS);
+        validateHeadersSyntax(context, CloudTasksConnectorOptions.APP_ENGINE_HEADERS);
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
         EncodingFormat<SerializationSchema<RowData>> format =
                 helper.discoverEncodingFormat(SerializationFormatFactory.class, FactoryUtil.FORMAT);
@@ -102,6 +112,12 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
 
         ReadableConfig config = helper.getOptions();
         validateCredentials(config);
+        CloudTasksTargetType targetType = config.get(CloudTasksConnectorOptions.TARGET_TYPE);
+        validateTargetFamily(context, targetType);
+        TargetSpec target =
+                targetType == CloudTasksTargetType.HTTP
+                        ? HttpTargetSpec.from(config, contentType)
+                        : AppEngineTargetSpec.from(config, contentType);
         return new CloudTasksDynamicSink(
                 context.getPhysicalRowDataType(),
                 format,
@@ -109,8 +125,8 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         config.get(CloudTasksConnectorOptions.PROJECT),
                         config.get(CloudTasksConnectorOptions.LOCATION),
                         config.get(CloudTasksConnectorOptions.QUEUE)),
-                TableHttpTarget.from(config, contentType),
-                hasNotNullUrlMetadata(context),
+                target,
+                hasNotNullAddressMetadata(context, targetType),
                 CloudTasksWriterOptionsMapper.map(config),
                 config.getOptional(CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                         .orElse(null),
@@ -118,12 +134,14 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                 config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
     }
 
-    private static boolean hasNotNullUrlMetadata(Context context) {
+    private static boolean hasNotNullAddressMetadata(
+            Context context, CloudTasksTargetType targetType) {
+        String addressKey = targetType.addressMetadataKey();
         for (Column column : context.getCatalogTable().getResolvedSchema().getColumns()) {
             if (column instanceof Column.MetadataColumn) {
                 Column.MetadataColumn metadata = (Column.MetadataColumn) column;
                 String key = metadata.getMetadataKey().orElse(metadata.getName());
-                if ("url".equals(key)
+                if (addressKey.equals(key)
                         && !metadata.isVirtual()
                         && !metadata.getDataType().getLogicalType().isNullable()) {
                     return true;
@@ -154,8 +172,9 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
         }
     }
 
-    private static void validateHeadersSyntax(Context context) {
-        String option = CloudTasksConnectorOptions.HTTP_HEADERS.key();
+    private static void validateHeadersSyntax(
+            Context context, ConfigOption<Map<String, String>> headersOption) {
+        String option = headersOption.key();
         Map<String, String> raw = context.getCatalogTable().getOptions();
         boolean packed = raw.containsKey(option);
         boolean prefixed = raw.keySet().stream().anyMatch(key -> key.startsWith(option + "."));
@@ -165,6 +184,18 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                             "Option '%s' must use either packed map syntax or prefixed entries,"
                                     + " not both.",
                             option));
+        }
+    }
+
+    private static void validateTargetFamily(Context context, CloudTasksTargetType targetType) {
+        String rejectedPrefix = targetType.rejectedOptionPrefix();
+        for (String key : context.getCatalogTable().getOptions().keySet()) {
+            if (key.startsWith(rejectedPrefix)) {
+                throw new ValidationException(
+                        String.format(
+                                "Option '%s' does not belong to target.type '%s'.",
+                                key, targetType));
+            }
         }
     }
 }

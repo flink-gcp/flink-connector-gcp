@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.tasks.v2.AppEngineRouting;
 import com.google.cloud.tasks.v2.HttpMethod;
+import io.github.flink.gcp.connector.cloudtasks.sink.AppEngineTargetChecks;
 
 import javax.annotation.Nullable;
 
@@ -43,8 +44,7 @@ public final class AppEngineTargetBuilder<T> {
     @Nullable private RoutingExtractor<? super T> routingExtractor;
 
     AppEngineTargetBuilder(String relativeUri) {
-        this.relativeUri =
-                AppEngineTargetTaskConverter.checkRelativeUri(relativeUri, "relativeUri");
+        this.relativeUri = AppEngineTargetChecks.checkRelativeUri(relativeUri, "relativeUri");
     }
 
     private AppEngineTargetBuilder(
@@ -128,7 +128,7 @@ public final class AppEngineTargetBuilder<T> {
      */
     public AppEngineTargetBuilder<T> withRouting(AppEngineRouting newRouting) {
         Preconditions.checkNotNull(newRouting, "routing must not be null");
-        routing = AppEngineTargetTaskConverter.normalizedRouting(newRouting, "routing");
+        routing = AppEngineTargetChecks.checkAndNormalizeRouting(newRouting, "routing");
         routingExtractor = null;
         return this;
     }

@@ -173,4 +173,64 @@ class CloudTasksTableSinkITCase extends AbstractCloudTasksEmulatorITCase {
                 .containsExactly(expected.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         assertThat(request.header("content-type")).isEqualTo("application/x-www-form-urlencoded");
     }
+
+    @Test
+    void sqlAppEngineMetadataCreatesAnInspectableInternalTargetTask() throws Exception {
+        QueueDestination queue = createPausedQueue("table-app-engine");
+        long scheduleMillis = Instant.now().plusSeconds(60).toEpochMilli();
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE app_tasks (\n"
+                        + "  payload STRING,\n"
+                        + "  target_path STRING NOT NULL METADATA FROM 'relative-uri',\n"
+                        + "  request_method STRING METADATA FROM 'http-method',\n"
+                        + "  request_headers MAP<STRING, STRING> METADATA FROM 'headers',\n"
+                        + "  service_name STRING METADATA FROM 'app-engine-service',\n"
+                        + "  version_name STRING METADATA FROM 'app-engine-version',\n"
+                        + "  instance_name STRING METADATA FROM 'app-engine-instance',\n"
+                        + "  schedule_at TIMESTAMP_LTZ(6) METADATA FROM 'schedule-time',\n"
+                        + "  dedupe_key STRING METADATA FROM 'task-id'\n"
+                        + ") WITH (\n"
+                        + queueOptions(queue)
+                        + ",\n"
+                        + "  'target.type' = 'app-engine',\n"
+                        + "  'app-engine.method' = 'POST',\n"
+                        + "  'app-engine.headers.Content-Type' = 'application/json',\n"
+                        + "  'app-engine.headers.X-Fixed' = 'fixed',\n"
+                        + "  'app-engine.service' = 'fixed-service',\n"
+                        + "  'app-engine.version' = 'fixed-version',\n"
+                        + "  'app-engine.instance' = 'fixed-instance'\n"
+                        + ")");
+
+        tEnv.executeSql(
+                        "INSERT INTO app_tasks VALUES ('hello', '/tasks/17?source=table', 'PUT',"
+                                + " MAP['x-fixed', 'row', 'X-Trace', 'trace-17'], 'row-service',"
+                                + " CAST(NULL AS STRING), '', TO_TIMESTAMP_LTZ("
+                                + scheduleMillis
+                                + ", 3), 'app-event-17')")
+                .await();
+
+        List<Task> tasks = listTasks(queue);
+        assertThat(tasks).hasSize(1);
+        Task task = tasks.get(0);
+        assertThat(task.getName()).matches(".*/tasks/[0-9a-f]{64}");
+        assertThat(task.getMessageTypeCase())
+                .isEqualTo(Task.MessageTypeCase.APP_ENGINE_HTTP_REQUEST);
+        assertThat(task.getAppEngineHttpRequest().getRelativeUri())
+                .isEqualTo("/tasks/17?source=table");
+        assertThat(task.getAppEngineHttpRequest().getHttpMethod()).isEqualTo(HttpMethod.PUT);
+        assertThat(task.getAppEngineHttpRequest().getBody().toStringUtf8())
+                .isEqualTo("{\"payload\":\"hello\"}");
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .containsEntry("Content-Type", "application/json")
+                .containsEntry("x-fixed", "row")
+                .containsEntry("X-Trace", "trace-17")
+                .doesNotContainKey("X-Fixed");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getService())
+                .isEqualTo("row-service");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getVersion())
+                .isEqualTo("fixed-version");
+        assertThat(task.getAppEngineHttpRequest().getAppEngineRouting().getInstance()).isEmpty();
+        assertThat(task.getScheduleTime().getSeconds()).isEqualTo(scheduleMillis / 1_000L);
+    }
 }

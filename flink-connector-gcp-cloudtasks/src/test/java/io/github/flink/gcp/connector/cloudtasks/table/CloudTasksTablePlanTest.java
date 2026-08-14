@@ -88,6 +88,71 @@ class CloudTasksTablePlanTest {
     }
 
     @Test
+    void appEngineRoutingMetadataAndANotNullRelativeUriCanBePlanned() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE app_tasks (\n"
+                        + "  payload STRING,\n"
+                        + "  target_path STRING NOT NULL METADATA FROM 'relative-uri',\n"
+                        + "  request_method STRING METADATA FROM 'http-method',\n"
+                        + "  service_name STRING METADATA FROM 'app-engine-service',\n"
+                        + "  version_name STRING METADATA FROM 'app-engine-version',\n"
+                        + "  instance_name STRING METADATA FROM 'app-engine-instance'\n"
+                        + ") WITH (\n"
+                        + QUEUE_OPTIONS
+                        + ",\n  'target.type' = 'app-engine'\n)");
+
+        assertThatCode(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO app_tasks VALUES ('payload', '/tasks/1',"
+                                                + " 'PUT', 'worker', 'v2', 'instance-3')"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void aNullableDynamicAppEngineRelativeUriIsRefused() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE app_tasks (\n"
+                        + "  payload STRING,\n"
+                        + "  target_path STRING METADATA FROM 'relative-uri'\n"
+                        + ") WITH (\n"
+                        + QUEUE_OPTIONS
+                        + ",\n  'target.type' = 'app-engine'\n)");
+
+        assertThatThrownBy(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO app_tasks VALUES ('payload', '/tasks/1')"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("app-engine.relative-uri")
+                .hasStackTraceContaining("STRING NOT NULL");
+    }
+
+    @Test
+    void metadataFromTheOtherTargetFamilyIsRefused() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE app_tasks (\n"
+                        + "  payload STRING,\n"
+                        + "  target_url STRING METADATA FROM 'url'\n"
+                        + ") WITH (\n"
+                        + QUEUE_OPTIONS
+                        + ",\n  'target.type' = 'app-engine',\n"
+                        + "  'app-engine.relative-uri' = '/tasks'\n)");
+
+        assertThatThrownBy(
+                        () ->
+                                tEnv.explainSql(
+                                        "INSERT INTO app_tasks VALUES ('payload',"
+                                                + " 'https://example.com/tasks')"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("url")
+                .hasStackTraceContaining("metadata");
+    }
+
+    @Test
     void aBodyFormatAndAuthenticatedFixedRequestParseTogether() {
         TableEnvironment tEnv = tableEnvironment();
 

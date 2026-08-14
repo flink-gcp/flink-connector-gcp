@@ -42,15 +42,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Insert-only table sink creating HTTP-target tasks in one fixed queue. */
+/** Insert-only table sink creating target tasks in one fixed queue. */
 @Internal
 public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWritingMetadata {
 
     private final DataType physicalDataType;
     private final EncodingFormat<SerializationSchema<RowData>> encodingFormat;
     private final QueueDestination queue;
-    private final TableHttpTarget target;
-    private final boolean urlMetadataNotNull;
+    private final TargetSpec target;
+    private final boolean addressMetadataNotNull;
     private final CloudTasksWriterOptions writerOptions;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
@@ -62,8 +62,8 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
             DataType physicalDataType,
             EncodingFormat<SerializationSchema<RowData>> encodingFormat,
             QueueDestination queue,
-            TableHttpTarget target,
-            boolean urlMetadataNotNull,
+            TargetSpec target,
+            boolean addressMetadataNotNull,
             CloudTasksWriterOptions writerOptions,
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
@@ -74,7 +74,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 Preconditions.checkNotNull(encodingFormat, "encodingFormat must not be null");
         this.queue = Preconditions.checkNotNull(queue, "queue must not be null");
         this.target = Preconditions.checkNotNull(target, "target must not be null");
-        this.urlMetadataNotNull = urlMetadataNotNull;
+        this.addressMetadataNotNull = addressMetadataNotNull;
         this.writerOptions =
                 Preconditions.checkNotNull(writerOptions, "writerOptions must not be null");
         this.serviceAccountKeyFile = serviceAccountKeyFile;
@@ -84,22 +84,32 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
 
     @Override
     public Map<String, DataType> listWritableMetadata() {
-        return WritableMetadata.listAll();
+        return target.writableMetadata();
     }
 
     @Override
     public void applyWritableMetadata(List<String> metadataKeys, DataType consumedDataType) {
         for (String key : metadataKeys) {
             WritableMetadata.of(key);
-        }
-        if (target.getUrl() == null) {
-            int urlPosition = metadataKeys.indexOf(WritableMetadata.URL.getKey());
-            if (urlPosition < 0) {
-                throw missingUrl();
-            }
-            if (!urlMetadataNotNull) {
+            if (!target.writableMetadata().containsKey(key)) {
                 throw new ValidationException(
-                        "A table without 'http.url' must declare its writable 'url' metadata"
+                        "Writable metadata '"
+                                + key
+                                + "' does not belong to the selected Cloud Tasks target family.");
+            }
+        }
+        if (target.fixedAddress() == null) {
+            int addressPosition = metadataKeys.indexOf(target.addressMetadata().getKey());
+            if (addressPosition < 0) {
+                throw missingAddress();
+            }
+            if (!addressMetadataNotNull) {
+                throw new ValidationException(
+                        "A table without '"
+                                + target.addressOptionKey()
+                                + "' must declare its writable '"
+                                + target.addressMetadata().getKey()
+                                + "' metadata"
                                 + " column as STRING NOT NULL, so no row can silently lose its"
                                 + " target.");
             }
@@ -114,8 +124,9 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-        if (target.getUrl() == null && !metadataKeys.contains(WritableMetadata.URL.getKey())) {
-            throw missingUrl();
+        if (target.fixedAddress() == null
+                && !metadataKeys.contains(target.addressMetadata().getKey())) {
+            throw missingAddress();
         }
         WritableMetadata[] selected =
                 metadataKeys.stream().map(WritableMetadata::of).toArray(WritableMetadata[]::new);
@@ -146,10 +157,13 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         return SinkV2Provider.of(sink, parallelism);
     }
 
-    private static ValidationException missingUrl() {
+    private ValidationException missingAddress() {
         return new ValidationException(
-                "A Cloud Tasks table requires either option 'http.url' or a writable 'url'"
-                        + " metadata column declared STRING NOT NULL.");
+                "A Cloud Tasks table requires either option '"
+                        + target.addressOptionKey()
+                        + "' or a writable '"
+                        + target.addressMetadata().getKey()
+                        + "' metadata column declared STRING NOT NULL.");
     }
 
     @Override
@@ -160,7 +174,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                         encodingFormat,
                         queue,
                         target,
-                        urlMetadataNotNull,
+                        addressMetadataNotNull,
                         writerOptions,
                         serviceAccountKeyFile,
                         emulatorEndpoint,
@@ -187,7 +201,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 && encodingFormat.equals(that.encodingFormat)
                 && queue.equals(that.queue)
                 && target.equals(that.target)
-                && urlMetadataNotNull == that.urlMetadataNotNull
+                && addressMetadataNotNull == that.addressMetadataNotNull
                 && writerOptions.equals(that.writerOptions)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
@@ -202,7 +216,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 encodingFormat,
                 queue,
                 target,
-                urlMetadataNotNull,
+                addressMetadataNotNull,
                 writerOptions,
                 serviceAccountKeyFile,
                 emulatorEndpoint,
