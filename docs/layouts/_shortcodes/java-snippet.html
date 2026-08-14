@@ -13,6 +13,10 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */}}
+{{/*
+The source-backed Java snippet contract is ADR-0115 under docs/adr/. Before changing this template,
+follow .agents/skills/maintain-doc-java-snippets and run the synthetic fixture suite.
+*/}}
 {{- $file := .Get "file" -}}
 {{- $tag := .Get "tag" -}}
 {{- if or (not $file) (not $tag) -}}

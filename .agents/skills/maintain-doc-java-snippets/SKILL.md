@@ -44,6 +44,30 @@ Classify the example before editing it.
    exists, model it in the repository's compatibility seam; never skip a matrix row or duplicate
    the displayed snippet per version.
 
+## Change the shortcode
+
+The source-backed snippet contract is recorded in
+`docs/adr/0115-runnable-documentation-snippets-render-one-exact-region-from-compiled-java-sources.md`.
+Preserve these boundaries when changing `docs/layouts/_shortcodes/java-snippet.html`:
+
+- Require non-empty named `file` and `tag` arguments and resolve the source from Hugo assets.
+- Recognize marker-only lines by exact equality after trimming whitespace. Require exactly one
+  start and one end marker, in that order, with a non-empty region between them.
+- Render only the lines inside the markers. Keep wrapper code, imports, support types and marker
+  comments out of the generated HTML.
+- After argument validation, keep failures actionable by naming the fixture page position, source
+  file and tag, plus the observed marker count when it distinguishes the failure.
+
+Extend `docs/tests/fixtures/java-snippet/` when adding or changing a validation branch. The fixture
+site must mount the repository shortcode rather than copy its parsing logic, and its pages and Java
+sources must remain outside Hugo's production content and static roots. Give each failing branch an
+independent page so the runner can invoke and assert that branch separately even when Hugo
+aggregates multiple template errors.
+
+Before trusting a new fixture, inject the defect it claims to catch into a committed shortcode,
+require the named fixture to fail for the intended assertion, and then restore the committed
+baseline. A compile failure alone is not evidence for a rendering or validation claim.
+
 ## Respond to failures
 
 - A Java compiler error naming a docs-validation source means the public example or its minimal
@@ -63,14 +87,13 @@ Run:
 ```bash
 just format
 just check-doc-snippets
+just test-java-snippet-shortcode
 just docs
 ```
 
-For a new mechanism or source-backed example, also make a production API member used by the
-displayed region nonexistent temporarily (for example, a builder method) and require a named
-compilation failure, then restore it from a committed baseline.
-Probe a missing marker and require `just docs` to name the page, file and tag. Confirm the rendered
-HTML contains the tagged code but not its wrapper, support types or marker comments.
+For a new source-backed example, also make a production API member used by the displayed region
+nonexistent temporarily (for example, a builder method) and require a named compilation failure,
+then restore it from a committed baseline.
 
 Run `just check-skill-frontmatter` after editing this skill. Cross-version verification belongs in
 the weekly `docs-snippets` matrix; run the affected supported versions locally when the example

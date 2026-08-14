@@ -18,6 +18,9 @@ on:
       # justfile is here because it holds the build command.
       - 'mise.toml'
       - 'justfile'
+      # This helper runs the synthetic fixture site below; docs/** already
+      # carries the fixtures and repository shortcode it exercises.
+      - 'scripts/test-java-snippet-shortcode.sh'
       - '.github/workflows/docs.yaml'
       # The site contains a generated API reference (#88), so the main sources
       # and the Maven build are inputs to it exactly as docs/ is — the same rule
@@ -134,6 +137,11 @@ jobs:
       # See the maintain-doc-java-snippets and maintain-javadoc-examples skills.
       - name: Check and compile Java snippets
         run: just check-doc-snippets
+
+      # Exercise the repository shortcode against synthetic pages and Java
+      # sources, including every validation failure branch.
+      - name: Test Java snippet shortcode
+        run: just test-java-snippet-shortcode
 
       # --panicOnWarning turns deprecations, unresolved relrefs and missing
       # shortcodes into build failures. The site is not published yet (GitHub

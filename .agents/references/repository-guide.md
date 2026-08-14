@@ -274,13 +274,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   its own stylesheet. Regenerate the palettes with `just docs-chroma`, which is where the two
   `hugo gen chromastyles` style names live (verbatim output; apache-rat excludes them)
 - **New or materially changed runnable Java guidance opts into one compiled source with
-  `java-snippet`** (#658). The source lives under
+  `java-snippet`** (#658; ADR-0115). The source lives under
   `flink-connector-gcp-docs-validation/src/test/java`, the shortcode renders the exact tagged
   region, and `just check-doc-snippets` compiles it against the current reactor. Ordinary fenced
   Java blocks are deliberately outside that check: use them for partial or pseudocode fragments
   and make that abbreviation clear in the surrounding prose. Existing ordinary fences remain
   unvalidated until they are migrated. Use `.agents/skills/maintain-doc-java-snippets/` when
-  adding, updating or repairing either form
+  adding, updating or repairing either form. `just test-java-snippet-shortcode` mounts the
+  repository shortcode into a synthetic Hugo site under `docs/tests/fixtures/` and holds its
+  rendering and error branches to fixture pages and Java sources instead of the live examples
 - **Every public Javadoc `<pre>{@code ...}</pre>` block is classified and synchronized** (#694).
   Runnable examples map to one exact tagged Java region under the docs-validation module;
   intentionally partial examples carry a visible `Abbreviated, not compiled:` label and a concrete
