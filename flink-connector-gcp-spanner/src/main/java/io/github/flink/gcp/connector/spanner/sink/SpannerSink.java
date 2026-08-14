@@ -29,9 +29,11 @@ import org.apache.flink.annotation.PublicEvolving;
  * <p><b>Replay is the serializer's problem to make harmless.</b> Spanner's batch write offers no
  * replay protection, so a mutation may be applied more than once — after a job restart, and also
  * within one attempt when a request whose outcome never arrived is retried. An {@code
- * insertOrUpdate}, {@code replace} or {@code delete} mutation is idempotent and makes the sink
- * effectively-once; a replayed {@code insert} is rejected with {@code ALREADY_EXISTS}, which is
- * routed to the failure handler as a per-mutation failure.
+ * insertOrUpdate}, {@code replace} or {@code delete} mutation is idempotent when that same mutation
+ * is replayed; a replayed {@code insert} is rejected with {@code ALREADY_EXISTS}, which is routed
+ * to the failure handler as a per-mutation failure. This per-mutation property is not a same-key
+ * ordering guarantee: separate {@code BatchWrite} mutation groups may be applied in an unspecified
+ * order.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
  * Under a dropping policy configured through {@link SpannerSinkBuilder#failedMutationHandler}, a

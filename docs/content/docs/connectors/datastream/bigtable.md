@@ -260,8 +260,8 @@ job pointed at a missing instance fails when the repair's own creation is refuse
 
 ## Delivery guarantees and state
 
-See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
-cross-connector comparison.
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the Table and DataStream API comparison.
 
 **At-least-once.** The writer is stateless — it stores nothing in Flink state — and `flush()` runs
 at every checkpoint barrier: it sends what the client has buffered and then waits until every

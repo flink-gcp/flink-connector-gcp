@@ -37,10 +37,11 @@ import java.io.Serializable;
  * The sink is at-least-once and Spanner's batch write offers no replay protection, so a mutation
  * may be applied more than once. {@link Mutation#newInsertOrUpdateBuilder(String)}, {@link
  * Mutation#newReplaceBuilder(String)} and {@link Mutation#delete(String,
- * com.google.cloud.spanner.Key)} are idempotent and make the sink effectively-once; {@link
+ * com.google.cloud.spanner.Key)} are idempotent when that same mutation is replayed; {@link
  * Mutation#newInsertBuilder(String)} is not, and a replayed insert is rejected with {@code
  * ALREADY_EXISTS}, which the sink routes to the configured failure handler as a per-mutation
- * failure.
+ * failure. Separate {@code BatchWrite} mutation groups may be applied in an unspecified order, so
+ * this per-mutation property does not order successive records for the same key.
  *
  * <p>Returning {@code null} <b>skips</b> the record: it is written nowhere, is not a failure, never
  * reaches the failure handler, and is counted by the {@code recordsSkipped} metric. Throwing marks

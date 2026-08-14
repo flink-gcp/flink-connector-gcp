@@ -746,12 +746,23 @@ A read reverses the convention through the same option —
 
 ## Delivery guarantees
 
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the cross-connector distinction between an insert-only changelog and destination-side
+insert-if-absent behavior.
+
 The sink is **at-least-once** and advertises **upsert** by default, including when the requested
 input contains inserts alone. A Bigtable write is an upsert on the row key by construction —
 `setCell` overwrites — and there is no retract path to offer instead. On Flink 2.x the upsert mode
 says a delete may carry the upsert key alone only when the DDL declares the primary key, which is
 what makes that key the row key; [The schema](#the-schema) above has the consequence for a job.
 Flink 1.20 has no such distinction and always completes the row first.
+
+An append-only row design must generate a unique row key for each logical event, because reusing a
+row key updates that row.
+An application that keeps cell history within one row must instead choose distinct qualifiers or
+stable event timestamps deliberately.
+A stable timestamp makes a replay target the same cell version, while omitting the timestamp uses
+the writer's wall clock and can create a new version after Flink recovery.
 
 A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
 key, so "this key is gone" is what a delete means here; removing only the declared cells would leave

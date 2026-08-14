@@ -71,12 +71,34 @@ Checkpointing must be enabled in a streaming job for that durability boundary to
 | [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) `FILE_LOADS` | Checkpointed staged objects become deterministic load and copy jobs through a committer | Restored jobs reuse deterministic object and job identities | Exactly-once service writes for batch and checkpoint-triggered streaming loads |
 | [BigQuery]({{< relref "docs/connectors/datastream/bigquery" >}}) `STORAGE_API_AT_LEAST_ONCE` | Stateless writer flushes the default stream before the barrier | The same row may be appended again | At-least-once |
 | [Pub/Sub]({{< relref "docs/connectors/datastream/pubsub" >}}) sink | Stateless writer flushes SDK publishers and waits for publish acknowledgements | A replay is a new publish with a new service-assigned message ID | At-least-once; no publisher-side idempotent mode |
-| [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` |
-| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A server-timestamped cell gains another version; an explicit timestamp overwrites the same version | At-least-once; selected cell writes and deletes can be idempotent |
+| [Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink | Stateless writer waits for every `CreateTask` request | Unnamed tasks can be created again; named tasks return `ALREADY_EXISTS` while the service remembers the name | At-least-once by default; bounded effectively-once **task creation** with `taskIdExtractor(...)` or Table API `task-id` metadata |
+| [Bigtable]({{< relref "docs/connectors/datastream/bigtable" >}}) sink | Stateless writer sends buffered `MutateRows` entries and waits for every entry | A writer-clock-timestamped cell gains another version; an explicit timestamp overwrites the same version | At-least-once; selected cell writes and deletes can be idempotent |
 | [Spanner]({{< relref "docs/connectors/datastream/spanner" >}}) sink | Stateless writer consumes `BatchWrite` responses before the barrier | Spanner documents no replay protection; the selected mutation operation may nevertheless be idempotent | At-least-once; `insertOrUpdate`, `replace`, `update`, and delete effects can be idempotent within their operation constraints |
 
 Follow the connector-specific delivery section for failure-handler behavior, state-loss hazards, and
 operation-specific caveats.
+
+## Write and key-collision semantics
+
+Flink's changelog contract and the destination's key-collision behavior are separate choices.
+Declaring a SQL `PRIMARY KEY` tells the planner how rows relate; it does not uniformly ask a
+destination to reject an existing key.
+Likewise, an insert-only changelog says which row kinds reach a sink, not whether the service
+implements insert-if-absent.
+
+| Connector API | How the identity and write shape are selected | Effect of submitting the identity again | Replay boundary |
+|---|---|---|---|
+| Spanner Table API | A declared `PRIMARY KEY` selects `insertOrUpdate` and key deletes; without one the sink accepts inserts only and uses `insert` | Replaying one upsert or delete repeats its effect idempotently; `insert` can return `ALREADY_EXISTS` | At-least-once submission; `BatchWrite` does not preserve the order of successive same-key mutation groups |
+| Spanner DataStream API | The serializer chooses the key and `Mutation` operation | Replaying one `insertOrUpdate`, `replace`, `update`, or delete can be idempotent within its operation constraints; `insert` can return `ALREADY_EXISTS` | At-least-once submission; replay safety belongs to each mutation, and `BatchWrite` does not preserve same-key group order |
+| Bigtable Table API | The one atomic column is always the row key; a declared `PRIMARY KEY` improves planner handling, while `sink.insert-only-input-mode` changes only the accepted changelog | The same row key is physically upserted; a stable explicit cell timestamp targets the same version, while an omitted timestamp uses the writer's wall clock and a Flink replay can create another version | At-least-once submission; no Table option provides destination-side insert-if-absent |
+| Bigtable DataStream API | The serializer chooses the `RowMutationEntry` row key, mutations, qualifiers, and cell timestamps | Repeating an explicit cell timestamp targets the same version; repeating a writer-clock-timestamped write can create another version | At-least-once submission; replay safety belongs to the mutation shape |
+| Cloud Tasks Table API | The sink accepts inserts only; writable `task-id` metadata optionally selects a stable task identity | A remembered ID returns `ALREADY_EXISTS`; the existing task is neither compared nor updated | At-least-once submission; bounded effectively-once task creation when `task-id` is selected |
+| Cloud Tasks DataStream API | `taskIdExtractor(...)` optionally selects a stable task identity; otherwise Cloud Tasks assigns one | A remembered extracted ID returns `ALREADY_EXISTS`; an unnamed replay creates another task | At-least-once submission; bounded effectively-once task creation with an extractor |
+
+None of these key choices turns a non-BigQuery connector into a checkpoint-coordinated
+exactly-once sink.
+They make a particular destination effect replay-safe only within the identity, operation, and
+retention constraints in the table.
 
 ## BigQuery and the Storage Write API example
 
@@ -231,14 +253,19 @@ Stage 1 ran against the real services on 2026-08-13 with the repository's pinned
 clients.
 These results measure the service primitives, not end-to-end Flink jobs, and none of the
 not-yet-implemented modes below is currently available through a connector builder.
+The observations remain evidence, but no additional performance stage or non-BigQuery
+exactly-once implementation is planned without a concrete non-idempotent requirement that the
+existing write shapes cannot satisfy.
 
-| Candidate | Stage 1 result | Next requirement |
+| Candidate | Stage 1 result | Current decision |
 |---|---|---|
-| Bigtable same-row conditional marker | Inconclusive: observed 119.4% of baseline throughput and 0.80x baseline p95, but keys were increasing rather than evenly distributed | Repeat Stage 1 with compliant key distribution |
-| Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Repeat Stage 1 with compliant key distribution |
-| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Repeat Stage 1 before changing the existing bounded-creation recommendation |
-| Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation |
+| Bigtable same-row conditional marker | Inconclusive: observed 119.4% of baseline throughput and 0.80x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing row-key and cell upserts; reopen measurement only for a concrete same-row non-idempotent effect |
+| Spanner 100-record ledger transaction | Inconclusive: observed 44.6% of baseline throughput and 3.12x baseline p95, but keys were increasing rather than evenly distributed | Keep the existing mutation choices; reopen measurement only for a concrete non-idempotent database effect |
+| Cloud Tasks deterministic task ID | Inconclusive: averages met the general gate, but throughput varied by 10.9% | Keep the existing bounded task-creation guarantee; no broader mode or repeat is planned |
+| Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in
 [ADR-0104](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md)
 and [issue #591](https://github.com/laughingman7743/flink-connector-gcp/issues/591).
+The current support decision is tracked by
+[#596]({{< param BookRepo >}}/issues/596).

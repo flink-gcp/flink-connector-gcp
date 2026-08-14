@@ -106,6 +106,9 @@ CREATE TABLE sales_orders (
 
 ## Mutation behavior
 
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the cross-connector distinction between a planner key and a destination write operation.
+
 A declared `PRIMARY KEY` makes the sink an upsert sink.
 `INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
 The key may be composite, but every member must map to a Spanner key type.
@@ -115,7 +118,9 @@ This preserves duplicate-key errors instead of pretending that an unknown physic
 As with other Flink connectors, `PRIMARY KEY ... NOT ENFORCED` describes the contract to the planner; the connector does not verify uniqueness.
 
 The delivery guarantee remains at-least-once.
-Upserts and deletes are idempotent under replay, while insert-only writes can fail on a replayed primary key.
+Replaying one upsert or delete is idempotent, while insert-only writes can fail on a replayed primary key.
+The writer submits records as separate `BatchWrite` mutation groups, whose application order is not
+guaranteed, so successive updates to the same key do not provide a latest-input-value guarantee.
 
 ## Type mapping
 
