@@ -217,6 +217,7 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 |---|---|---|
 | `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
 | `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
+| `sink.cdc.debezium-mysql.source-uuids` | List&lt;String&gt; | Ordered MySQL GTID source UUIDs. The append-only order assigns failover epochs for the Debezium MySQL sequence profile |
 | `sink.cdc.max-staleness` | Duration | `CdcTableOptions.maxStaleness(...)`. Absent means that the property is unmanaged |
 | `sink.cdc.clear-max-staleness` | Boolean | `CdcTableOptions.clearMaxStaleness()`. Explicitly removes a previous value and is mutually exclusive with `sink.cdc.max-staleness` |
 | `sink.cdc.table-reconciliation` | Enum | `cdcTableReconciliationPolicy(...)` — `verify-only` (default) or `reconcile`. Selects whether an existing table is only checked or has managed mutable CDC properties converged |
@@ -288,7 +289,7 @@ When selected, exactly one of these writable metadata columns may appear in the 
 | Metadata key | Data type | Meaning |
 |---|---|---|
 | `change-sequence-number` | `STRING` | An already formatted BigQuery `_CHANGE_SEQUENCE_NUMBER`: one to four slash-separated hexadecimal sections, each at most 16 digits |
-| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; the built-in profile accepts `connector=postgresql` |
+| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; built-in profiles accept `connector=postgresql` and `connector=mysql` |
 
 Writable metadata is appended to the runtime row by Flink and is not part of the physical
 BigQuery schema.
@@ -324,8 +325,10 @@ SELECT id, amount, formatted_sequence FROM ordered_changes;
 Flink's Debezium JSON format exposes connector-specific ordering fields through
 `value.source.properties` when it is used as a value format, while its Debezium Avro format does
 not retain those fields in the produced changelog.
-The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#debezium-postgresql-cdc-from-kafka)
-show how to retain a complete Avro envelope in DataStream and hand it to either API.
+The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#cdc-examples-by-source-connector)
+separate PostgreSQL, MySQL, TiCDC, and Spanner ordering contracts.
+The implemented PostgreSQL and MySQL sections show how to retain a complete Avro envelope in
+DataStream and hand it to either API.
 
 This page shows Kafka only to make Flink's `value.source.properties` hand-off explicit; this
 repository does not ship a Kafka connector.
@@ -352,10 +355,42 @@ when configuring that slot.
 A recreated slot or any transition that loses LSN continuity is unsupported because the source
 metadata carries no ordering epoch that could distinguish the new LSN history.
 
-MySQL GTID and repository-native Spanner profiles are tracked by
-[#631]({{< param BookRepo >}}/issues/631) and [#633]({{< param BookRepo >}}/issues/633),
-respectively.
-Until a profile is present, use `change-sequence-number` for that connector.
+The MySQL profile encodes four fixed-width unsigned hexadecimal sections: the configured source
+UUID epoch, GTID transaction id, binlog event position, and zero-based row within that event.
+Configure `sink.cdc.debezium-mysql.source-uuids` with the initial server UUID and append each
+non-interleaved failover UUID in causal order.
+Flink list options use semicolons, so a failover list is written as
+`'sink.cdc.debezium-mysql.source-uuids' = '24bc7850-2c16-11e6-a073-0242ac110002;3e11fa47-71ca-11e1-9e33-c80aa9429562'`.
+Never edit or reorder existing entries, because their positions define stable ordering epochs.
+Initial snapshot rows use epoch zero and are safe only when loading an empty destination; ad hoc
+snapshots into a populated target are unsupported.
+Streaming rows require an untagged single-source `UUID:transaction_id` GTID plus `pos` and `row`.
+DataStream applications can use `DebeziumMySqlCdcSequenceNumberProvider` with the same ordered
+UUID list.
+
+#### MySQL topology support
+
+The profile has these topology boundaries:
+
+| MySQL topology | Status | Ordering requirement |
+|---|---|---|
+| One source UUID | Supported | The UUID remains the only configured epoch |
+| Non-interleaved failover to a new source UUID | Supported | Append the new UUID before consuming its events; no event from an earlier UUID may follow |
+| Interleaved or multi-source GTID history | Unsupported | The source map has no causal epoch that can order concurrent or returning SIDs |
+| Group Replication primary change | Unsupported | Group transactions retain one group UUID, so the source map does not identify a primary epoch |
+| Group Replication multi-primary | Unsupported | Members reserve separate GTID transaction-number blocks, which do not provide a group-wide ordering coordinate |
+
+Tagged GTIDs, multi-source GTID sets, incremental snapshots, unknown UUIDs, and malformed
+coordinates fail explicitly.
+Interleaved histories and Group Replication cannot be detected from every individual source map,
+so applications must not send those topologies to this profile.
+Group Replication can become supportable if MySQL and Debezium can expose a durable group-wide
+ordering coordinate in source metadata.
+Until then, use `change-sequence-number` with an application-provided total order for that topology.
+
+The repository-native Spanner profile remains tracked by
+[#633]({{< param BookRepo >}}/issues/633).
+Until that profile is present, use `change-sequence-number` for Spanner.
 
 ### Table creation
 

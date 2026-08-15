@@ -24,6 +24,114 @@ limitations under the License.
 
 Starting from the [BigQuery quickstart]({{< relref "docs/quickstart/bigquery" >}}) job.
 
+## CDC examples by source connector
+
+Each CDC source has its own ordering contract and example section:
+
+| Source | Sequence profile | Example status |
+|---|---|---|
+| Debezium PostgreSQL | Last committed and current LSN | [Available below](#debezium-postgresql-cdc-from-kafka) |
+| Debezium MySQL | Source UUID epoch, GTID transaction, binlog position, and row | [Available below](#debezium-mysql-cdc-from-kafka) |
+| TiCDC Debezium protocol | TiDB commit TSO and cluster identity | [Planned in #717](https://github.com/laughingman7743/flink-connector-gcp/issues/717) |
+| Debezium Spanner and native Spanner Change Streams | Commit timestamp, record sequence, and mod number | [Planned in #633](https://github.com/laughingman7743/flink-connector-gcp/issues/633) |
+
+The implemented sections use complete source envelopes and do not substitute source timestamps or
+processing time when ordering metadata is absent.
+
+## Debezium MySQL CDC from Kafka
+
+Both examples consume Kafka values containing complete Debezium MySQL Avro envelopes and write the
+current row to a BigQuery table with a primary key.
+They forward `connector`, `snapshot`, `gtid`, `pos`, and `row` from the envelope's `source` record.
+
+### MySQL Kafka source
+
+Use Flink's Kafka connector and `ConfluentRegistryAvroDeserializationSchema.forGeneric(...)` to
+retain the complete envelope.
+Pass its Avro schema as `debeziumEnvelopeSchema`:
+
+{{< java-snippet file="BigQueryExamplesDebeziumMySqlCdc.java" tag="bigquery-debezium-mysql-cdc-kafka-source" >}}
+
+A Debezium tombstone produces no element through Kafka's value-only wrapper.
+Flink checkpoint restoration resumes from the Kafka positions stored in the checkpoint.
+Add a Kafka connector release compatible with the application's Flink version and
+`flink-avro-confluent-registry` to the job artifact.
+
+### MySQL DataStream API
+
+Pass the `KafkaSource<GenericRecord>` above as `kafkaSource` and the Avro schema for one physical
+row as `rowSchema`:
+
+{{< java-snippet file="BigQueryExamplesDebeziumMySqlCdc.java" tag="bigquery-debezium-mysql-cdc-datastream" >}}
+
+The sequence provider receives the complete source-properties map and applies the same strict GTID
+profile as the Table sink.
+The serializer selects `after` for snapshot, create, and update operations and `before` for a
+delete.
+The example uses the default stream because BigQuery CDC is supported only by
+`STORAGE_API_AT_LEAST_ONCE`.
+
+### MySQL SQL sink through a DataStream bridge
+
+Flink's Debezium Avro format does not currently retain the source metadata required by this
+profile, while the raw Avro format cannot produce the required delete row kinds through SQL alone.
+[Issue #706](https://github.com/laughingman7743/flink-connector-gcp/issues/706) tracks that format
+boundary.
+Until it changes, register a changelog view from the complete envelope stream:
+
+{{< java-snippet file="BigQueryExamplesDebeziumMySqlCdc.java" tag="bigquery-debezium-mysql-cdc-sql-bridge" >}}
+
+Define the BigQuery sink table and map the source-properties column to writable metadata:
+
+```sql
+CREATE TABLE current_mysql_orders (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING>
+    METADATA FROM 'debezium-source-properties',
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_mysql_orders',
+  'sink.cdc.enabled' = 'true',
+  'sink.cdc.debezium-mysql.source-uuids' = '24bc7850-2c16-11e6-a073-0242ac110002',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min',
+  'sink.cdc.table-reconciliation' = 'reconcile'
+);
+```
+
+Insert the changelog rows and their source metadata:
+
+```sql
+INSERT INTO current_mysql_orders
+SELECT id, amount, source_properties FROM mysql_source_changes;
+```
+
+The source UUID option and the DataStream provider use the same append-only epoch list.
+After a non-interleaved failover, append the new SID with Flink's semicolon delimiter, for example
+`'24bc7850-2c16-11e6-a073-0242ac110002;3e11fa47-71ca-11e1-9e33-c80aa9429562'`.
+Never edit or reorder an existing entry because the entry's position defines its ordering epoch.
+
+### MySQL envelope adapter
+
+The examples use these helpers to select the current row and retain only the MySQL ordering
+properties:
+
+{{< java-snippet file="BigQueryExamplesDebeziumMySqlCdc.java" tag="bigquery-debezium-mysql-cdc-adapter" >}}
+
+This adapter serializes the complete `before` record for a delete.
+Configure MySQL with `binlog_row_image=FULL`, or replace the adapter with one that emits only the
+declared BigQuery primary key for deletes.
+
+Initial snapshot rows target an empty BigQuery table.
+Tagged GTIDs, multi-source GTID sets, incremental snapshots, interleaved source histories, Group
+Replication primary changes, and Group Replication multi-primary histories are unsupported.
+See the [MySQL topology support table]({{< relref "docs/connectors/table/bigquery" >}}#mysql-topology-support)
+before selecting this profile.
+
 ## Debezium PostgreSQL CDC from Kafka
 
 Both examples consume Kafka values containing complete Debezium PostgreSQL Avro envelopes and write
@@ -154,6 +262,23 @@ replication slot across a PostgreSQL primary failover.
 A recreated or discontinuous slot starts another LSN history with no ordering epoch, which neither
 example can make safe; see the
 [BigQuery table CDC contract]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture).
+
+## TiCDC Debezium CDC from Kafka
+
+The TiCDC profile is tracked by
+[#717](https://github.com/laughingman7743/flink-connector-gcp/issues/717) and is not available yet.
+Its section will use TiCDC's complete Debezium-style row envelope and derive ordering from
+`source.commit_ts` while validating `source.cluster_id`.
+It will not reuse MySQL's GTID or source-UUID epoch configuration.
+
+## Spanner CDC ordering
+
+The Spanner profile is tracked by
+[#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633) and is not available yet.
+Its section will show both Debezium Spanner envelopes and this repository's native Spanner Change
+Streams metadata.
+Both routes will derive the same BigQuery sequence from commit timestamp, record sequence, and mod
+number.
 
 ## A table per day
 

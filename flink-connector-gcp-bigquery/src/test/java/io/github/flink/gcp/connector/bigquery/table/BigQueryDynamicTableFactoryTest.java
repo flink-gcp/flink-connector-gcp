@@ -29,6 +29,10 @@ import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
+import org.apache.flink.table.data.GenericMapData;
+import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
@@ -41,6 +45,7 @@ import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcSequenceNumberProvider;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
@@ -784,6 +789,62 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(sink.getConfig().getCreateDisposition().name()).isEqualTo("CREATE_NEVER");
         assertThat(sink.getConfig().getCdcTableReconciliationPolicy())
                 .isEqualTo(CdcTableReconciliationPolicy.RECONCILE);
+    }
+
+    @Test
+    void mysqlSourceUuidEpochsRequireCdcAndAreValidatedDuringPlanning() {
+        Map<String, String> withoutCdc = minimalOptions();
+        withoutCdc.put(
+                "sink.cdc.debezium-mysql.source-uuids", "24bc7850-2c16-11e6-a073-0242ac110002");
+        assertThatThrownBy(() -> built(withoutCdc))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Debezium MySQL CDC sequence options require")
+                .hasStackTraceContaining("sink.cdc.enabled");
+
+        Map<String, String> invalid = minimalOptions();
+        invalid.put("sink.cdc.enabled", "true");
+        invalid.put("sink.cdc.debezium-mysql.source-uuids", "not-a-uuid");
+        assertThatThrownBy(() -> built(withPrimaryKey(SCHEMA), invalid))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("canonical UUID");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void mysqlSourceUuidListSyntaxPreservesFailoverEpochOrder() {
+        String firstSid = "24bc7850-2c16-11e6-a073-0242ac110002";
+        String secondSid = "3e11fa47-71ca-11e1-9e33-c80aa9429562";
+        ResolvedSchema metadataSchema =
+                withPrimaryKey(
+                        ResolvedSchema.of(
+                                Column.physical("id", DataTypes.STRING()),
+                                Column.metadata(
+                                        "source_properties",
+                                        DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()),
+                                        "debezium-source-properties",
+                                        false)));
+        Map<String, String> options = minimalOptions();
+        options.put("sink.cdc.enabled", "true");
+        options.put("sink.create-disposition", "create-never");
+        options.put("sink.cdc.debezium-mysql.source-uuids", firstSid + ";" + secondSid);
+        BigQueryDefaultStreamSink<RowData> sink =
+                (BigQueryDefaultStreamSink<RowData>)
+                        builtWithMetadata(metadataSchema, options, "debezium-source-properties");
+        CdcSequenceNumberProvider<? super RowData> provider =
+                sink.getConfig().getCdcOptions().getSequenceNumberProvider();
+        Map<StringData, StringData> properties = new LinkedHashMap<>();
+        properties.put(StringData.fromString("connector"), StringData.fromString("mysql"));
+        properties.put(StringData.fromString("snapshot"), StringData.fromString("false"));
+        properties.put(StringData.fromString("gtid"), StringData.fromString(secondSid + ":1"));
+        properties.put(StringData.fromString("pos"), StringData.fromString("2"));
+        properties.put(StringData.fromString("row"), StringData.fromString("3"));
+
+        assertThat(
+                        provider.getSequenceNumber(
+                                GenericRowData.of(
+                                        StringData.fromString("id"),
+                                        new GenericMapData(properties))))
+                .isEqualTo("0000000000000002/0000000000000001/0000000000000002/0000000000000003");
     }
 
     @Test

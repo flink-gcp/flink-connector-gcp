@@ -5,6 +5,16 @@ Module-scoped guidance, read when working in this module. Repository-wide rules
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
+## Table CDC profiles (`docs/adr/0111`)
+
+- Debezium MySQL ordering uses the configured append-only source UUID list as causal epochs and
+  encodes epoch, GTID transaction, binlog position, and row.
+  Do not infer an epoch from timestamps or accept tagged, multi-source, or interleaved histories.
+  Group Replication primary changes and multi-primary histories remain unsupported until MySQL and
+  Debezium expose a durable group-wide ordering coordinate; the fixed group UUID cannot supply a
+  failover epoch.
+  Snapshot epoch zero is valid only for an empty destination.
+
 ## Facade and serializers (`docs/adr/0016`, `0023`–`0027`)
 
 - One builder, per-write-method SinkV2 implementations; connection multiplexing is the SDK

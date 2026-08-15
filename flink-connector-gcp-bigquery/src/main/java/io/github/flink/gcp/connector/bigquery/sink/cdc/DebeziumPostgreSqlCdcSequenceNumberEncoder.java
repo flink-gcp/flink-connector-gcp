@@ -31,7 +31,6 @@ import java.io.IOException;
 public final class DebeziumPostgreSqlCdcSequenceNumberEncoder {
 
     private static final GsonFactory JSON_FACTORY = GsonFactory.getDefaultInstance();
-    private static final char[] HEX_DIGITS = "0123456789ABCDEF".toCharArray();
 
     private DebeziumPostgreSqlCdcSequenceNumberEncoder() {}
 
@@ -61,18 +60,7 @@ public final class DebeziumPostgreSqlCdcSequenceNumberEncoder {
     }
 
     private static String formatPostgreSqlSequence(long lastCommitted, long current) {
-        char[] encoded = new char[33];
-        encoded[16] = '/';
-        writeUnsignedHex(lastCommitted, encoded, 0);
-        writeUnsignedHex(current, encoded, 17);
-        return new String(encoded);
-    }
-
-    private static void writeUnsignedHex(long value, char[] target, int offset) {
-        for (int i = 15; i >= 0; i--) {
-            target[offset + i] = HEX_DIGITS[(int) (value & 0x0F)];
-            value >>>= 4;
-        }
+        return CdcSequenceNumberSections.format(lastCommitted, current);
     }
 
     private static long[] parsePostgreSqlSequence(String sequence) {
@@ -104,30 +92,11 @@ public final class DebeziumPostgreSqlCdcSequenceNumberEncoder {
     }
 
     private static long parseLsn(String value, String name) {
-        if (!isDecimal(value)) {
-            throw invalidLsn(name);
-        }
         try {
-            return value.charAt(0) == '-' ? Long.parseLong(value) : Long.parseUnsignedLong(value);
+            return CdcSequenceNumberSections.parseSignedOrUnsignedDecimal(value);
         } catch (NumberFormatException e) {
             throw invalidLsn(name);
         }
-    }
-
-    private static boolean isDecimal(String value) {
-        if (value.isEmpty()) {
-            return false;
-        }
-        int firstDigit = value.charAt(0) == '-' ? 1 : 0;
-        if (firstDigit == value.length()) {
-            return false;
-        }
-        for (int i = firstDigit; i < value.length(); i++) {
-            if (value.charAt(i) < '0' || value.charAt(i) > '9') {
-                return false;
-            }
-        }
-        return true;
     }
 
     private static IllegalArgumentException malformedSequence() {
