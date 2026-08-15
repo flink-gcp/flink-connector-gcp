@@ -36,8 +36,14 @@ on:
       # Source-backed Java examples live in an internal test-only module rather
       # than below docs/, so their push must run both compilation and rendering.
       - 'flink-connector-gcp-docs-validation/src/test/**'
-      # Public Javadoc blocks map to those sources through this checker.
+      # Module READMEs retain ordinary fences for GitHub, and the checker keeps
+      # those copies synchronized with compiled sources.
+      - 'flink-*/README.md'
+      - 'scripts/check-readme-examples.py'
+      # Public Javadoc blocks map to compiled sources through this checker.
       - 'scripts/check-javadoc-examples.py'
+      # Both source-copy checkers share the Java tagged-region parser.
+      - 'scripts/java_example_regions.py'
       - 'pom.xml'
       - '**/pom.xml'
       - 'tools/**'
@@ -133,7 +139,8 @@ jobs:
       - name: Generate API reference
         run: just docs-javadoc
 
-      # This also checks the exact source backing of runnable public Javadoc.
+      # This also checks the exact source backing of runnable README and public
+      # Javadoc examples.
       # See the maintain-doc-java-snippets and maintain-javadoc-examples skills.
       - name: Check and compile Java snippets
         run: just check-doc-snippets

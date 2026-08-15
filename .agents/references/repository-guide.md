@@ -252,6 +252,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `just test-java-snippet-shortcode` mounts the repository shortcode into a synthetic Hugo site
   under `docs/tests/fixtures/` and holds its rendering and error branches to fixture pages and Java
   sources instead of the live examples
+- **Every module README Java fence is classified and synchronized** (#705; ADR-0120).
+  Runnable examples retain ordinary fenced Markdown so GitHub renders them, with a hidden
+  `readme-example` marker mapping the displayed copy to one exact tagged region in the
+  docs-validation module.
+  Intentionally partial examples carry a visible `Abbreviated, not compiled:` explanation and a
+  hidden reason instead.
+  `just check-readme-examples` checks every `flink-*/README.md` fence and
+  `just check-doc-snippets` runs that check before compiling the backing sources; the check does
+  not claim that an example is useful or correct at runtime
 - **Every public Javadoc `<pre>{@code ...}</pre>` block is classified and synchronized** (#694).
   Runnable examples map to one exact tagged Java region under the docs-validation module;
   intentionally partial examples carry a visible `Abbreviated, not compiled:` label and a concrete

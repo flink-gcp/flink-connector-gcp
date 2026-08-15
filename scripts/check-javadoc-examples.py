@@ -44,6 +44,14 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
+from java_example_regions import (
+    SourceRegion,
+    collect_source_regions,
+    line_at,
+    skip_quoted,
+    skip_text_block,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 JAVADOC_SOURCES = (
     ROOT
@@ -59,22 +67,11 @@ PARTIAL_MARKER = re.compile(r'<!-- javadoc-example partial="(?P<reason>[^"]+)" -
 ANY_MARKER = re.compile(r"<!--\s*javadoc-example\b.*?-->")
 BLOCK = re.compile(r"<pre>\{@code(?P<body>.*?)\}</pre>", re.DOTALL)
 VISIBLE_PARTIAL_LABEL = "<b>Abbreviated, not compiled:</b>"
-START_TAG = re.compile(r"^\s*// tag::(?P<tag>[a-z0-9-]+)\[\]\s*$")
-END_TAG = re.compile(r"^\s*// end::(?P<tag>[a-z0-9-]+)\[\]\s*$")
-ANY_SOURCE_TAG = re.compile(r"^\s*//\s*(?:tag|end)::")
 
 
 @dataclass(frozen=True)
 class LocatedText:
     path: Path
-    line: int
-    text: str
-
-
-@dataclass(frozen=True)
-class SourceRegion:
-    path: Path
-    tag: str
     line: int
     text: str
 
@@ -86,51 +83,17 @@ def relative(path: Path) -> str:
         return str(path)
 
 
-def line_at(source: str, offset: int) -> int:
-    return source.count("\n", 0, offset) + 1
-
-
-def _skip_quoted(source: str, start: int, quote: str) -> int:
-    """Return the first offset after a Java string or character literal."""
-    index = start + 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-        elif source[index] == quote:
-            return index + 1
-        else:
-            index += 1
-    return len(source)
-
-
-def _skip_text_block(source: str, start: int) -> int:
-    index = start + 3
-    while index < len(source):
-        end = source.find('"""', index)
-        if end < 0:
-            return len(source)
-        backslashes = 0
-        cursor = end - 1
-        while cursor >= 0 and source[cursor] == "\\":
-            backslashes += 1
-            cursor -= 1
-        if backslashes % 2 == 0:
-            return end + 3
-        index = end + 3
-    return len(source)
-
-
 def doc_comments(source: str, path: Path) -> list[LocatedText]:
     """Extract real Java doc comments, ignoring comment-shaped strings."""
     comments: list[LocatedText] = []
     index = 0
     while index < len(source):
         if source.startswith('"""', index):
-            index = _skip_text_block(source, index)
+            index = skip_text_block(source, index)
         elif source[index] == '"':
-            index = _skip_quoted(source, index, '"')
+            index = skip_quoted(source, index, '"')
         elif source[index] == "'":
-            index = _skip_quoted(source, index, "'")
+            index = skip_quoted(source, index, "'")
         elif source.startswith("//", index):
             newline = source.find("\n", index + 2)
             index = len(source) if newline < 0 else newline + 1
@@ -148,109 +111,19 @@ def doc_comments(source: str, path: Path) -> list[LocatedText]:
     return comments
 
 
-def line_comments(source: str) -> list[tuple[int, str]]:
-    """Extract Java line comments outside strings, text blocks, and block comments."""
-    comments: list[tuple[int, str]] = []
-    index = 0
-    while index < len(source):
-        if source.startswith('"""', index):
-            index = _skip_text_block(source, index)
-        elif source[index] == '"':
-            index = _skip_quoted(source, index, '"')
-        elif source[index] == "'":
-            index = _skip_quoted(source, index, "'")
-        elif source.startswith("//", index):
-            end = source.find("\n", index + 2)
-            if end < 0:
-                end = len(source)
-            line_start = source.rfind("\n", 0, index) + 1
-            comments.append((line_at(source, index), source[line_start:end]))
-            index = end
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            index = len(source) if end < 0 else end + 2
-        else:
-            index += 1
-    return comments
-
-
 def normalized_display(body: str) -> str:
     lines = body.splitlines()
     stripped = [re.sub(r"^[ \t]*\*[ ]?", "", line) for line in lines]
     return textwrap.dedent("\n".join(stripped)).strip()
 
 
-def normalized_source(lines: list[str]) -> str:
-    return textwrap.dedent("\n".join(lines)).strip()
-
-
 def source_regions() -> tuple[dict[tuple[str, str], SourceRegion], list[str]]:
-    if not JAVADOC_SOURCES.is_dir():
-        return {}, [f"{relative(JAVADOC_SOURCES)} does not exist."]
-
-    regions: dict[tuple[str, str], SourceRegion] = {}
-    problems: list[str] = []
-    files = sorted(JAVADOC_SOURCES.rglob("*.java"))
-    if not files:
-        return {}, [f"{relative(JAVADOC_SOURCES)} contains no Java sources."]
-
-    paths_by_name: dict[str, Path] = {}
-    for path in files:
-        if path.name in paths_by_name:
-            problems.append(
-                f"{relative(path)} duplicates backing file name `{path.name}` from "
-                f"{relative(paths_by_name[path.name])}; file names must be unique."
-            )
-        else:
-            paths_by_name[path.name] = path
-
-        source = path.read_text(encoding="utf-8")
-        lines = source.splitlines()
-        markers: dict[str, dict[str, list[int]]] = {}
-        for line_number, comment in line_comments(source):
-            match = START_TAG.fullmatch(comment)
-            kind = "start"
-            if match is None:
-                match = END_TAG.fullmatch(comment)
-                kind = "end"
-            if match is not None:
-                markers.setdefault(match.group("tag"), {"start": [], "end": []})[
-                    kind
-                ].append(line_number)
-            elif ANY_SOURCE_TAG.match(comment):
-                problems.append(
-                    f"{relative(path)}:{line_number}: malformed source tag `{comment.strip()}`."
-                )
-
-        if not markers:
-            problems.append(
-                f"{relative(path)} contains no tagged Javadoc example regions; delete the "
-                "stale source or add exact tag markers."
-            )
-
-        for tag, positions in sorted(markers.items()):
-            starts = positions["start"]
-            ends = positions["end"]
-            where = f"{relative(path)} tag `{tag}`"
-            if len(starts) != 1 or len(ends) != 1:
-                problems.append(
-                    f"{where} needs exactly one start and one end marker; found "
-                    f"{len(starts)} start and {len(ends)} end markers."
-                )
-                continue
-            start, end = starts[0], ends[0]
-            if end <= start:
-                problems.append(f"{where} has its end marker before its start marker.")
-                continue
-            content = normalized_source(lines[start : end - 1])
-            if not content:
-                problems.append(f"{where} has an empty tagged region.")
-                continue
-            key = (path.name, tag)
-            if key in regions:
-                continue
-            regions[key] = SourceRegion(path, tag, start + 1, content)
-    return regions, problems
+    return collect_source_regions(
+        JAVADOC_SOURCES,
+        relative,
+        require_tagged_files=True,
+        tagged_kind="Javadoc",
+    )
 
 
 def marker_before(comment: LocatedText, block: re.Match[str]):
