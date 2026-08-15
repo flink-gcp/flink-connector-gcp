@@ -103,7 +103,7 @@ limitations under the License.
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
              if we declare it. Pinned to what avro-parent ${avro.version} pins, so the codec and
              the library it drives are the pair Avro itself tests. -->
-        <zstd-jni.version>1.5.7-4</zstd-jni.version>
+        <zstd-jni.version>1.5.7-13</zstd-jni.version>
         <!-- The optional Parquet staging path (#284). `provided` everywhere: a deployment that
              selects StagingFormat.PARQUET places these on its own runtime classpath, guided by the
              docs, so no user pays for a format they did not ask for. -->
