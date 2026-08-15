@@ -14,9 +14,10 @@ names. Those references preserve the detailed constraints formerly loaded into e
 session; this file intentionally stays small enough for Codex's project-guidance budget.
 
 Before planning non-trivial repository work, use `$project-memory` to consult the private local
-Claude Code project-memory index when it exists. Read only task-relevant entries, verify their
-claims against current sources, and never copy local memory into tracked files without an explicit
-privacy and staleness review. The skill resolves the main checkout's memory from a worktree.
+agent memories when they exist: the Claude Code project memory and the Codex memory store. Read
+only task-relevant entries, verify their claims against current sources, and never copy local
+memory into tracked files without an explicit privacy and staleness review. The skill resolves
+both stores from a worktree and scopes the Codex store to this repository.
 
 ## Commands
 
