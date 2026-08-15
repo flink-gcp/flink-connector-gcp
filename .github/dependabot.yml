@@ -1,10 +1,27 @@
 version: 2
+
+# Minor and patch updates are grouped, major updates are not. A month of
+# ungrouped updates arrives as one pull request per dependency — nine at once on
+# 2026-08-15 — and each fans out to roughly sixteen jobs, which saturates the
+# runner pool: that burst put `verify / Build and test` behind 1213s of queueing
+# against 955s of building, measured on issue #453. Grouping collapses the burst
+# at its source without touching build time or the surefire fork reuse the
+# gated suites depend on.
+#
+# Major updates stay ungrouped deliberately. They need a judgement per
+# dependency, and bundling one into a green group is how it gets merged without
+# that judgement.
 updates:
   - package-ecosystem: maven
     directory: /
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    groups:
+      maven:
+        update-types:
+          - minor
+          - patch
     ignore:
       # flink.version is the supported floor, decided together with the version
       # matrix in .github/workflows/weekly.yaml — moving a minor changes what the
@@ -19,6 +36,13 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    groups:
+      github-actions:
+        update-types:
+          - minor
+          - patch
+  # No group here: docs/go.mod requires exactly one dependency, so a group could
+  # never collapse anything and would only rename the pull request.
   - package-ecosystem: gomod
     directory: /docs
     schedule:
