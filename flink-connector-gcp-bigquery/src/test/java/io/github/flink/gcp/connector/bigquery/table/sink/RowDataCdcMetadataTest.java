@@ -24,7 +24,9 @@ import org.apache.flink.types.RowKind;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -96,7 +98,37 @@ class RowDataCdcMetadataTest {
                                                 "sequence",
                                                 "[\"16\",\"17\"]")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Debezium connector 'mysql' is not supported");
+                .hasMessageContaining("requires sink.cdc.debezium-mysql.source-uuids");
+    }
+
+    @Test
+    void forwardsDebeziumSourcePropertiesToTheMySqlEncoder() {
+        String sid = "24bc7850-2c16-11e6-a073-0242ac110002";
+        assertThat(
+                        debeziumSequence(
+                                properties(
+                                        "connector",
+                                        "mysql",
+                                        "snapshot",
+                                        "false",
+                                        "gtid",
+                                        sid + ":16",
+                                        "pos",
+                                        "1081",
+                                        "row",
+                                        "2"),
+                                Collections.singletonList(sid)))
+                .isEqualTo("0000000000000001/0000000000000010/0000000000000439/0000000000000002");
+    }
+
+    @Test
+    void forwardsMySqlSnapshotStateWithoutRequiringStreamingCoordinates() {
+        String sid = "24bc7850-2c16-11e6-a073-0242ac110002";
+        assertThat(
+                        debeziumSequence(
+                                properties("connector", "mysql", "snapshot", "true"),
+                                Collections.singletonList(sid)))
+                .isEqualTo("0000000000000000/0000000000000000/0000000000000000/0000000000000000");
     }
 
     @Test
@@ -115,10 +147,15 @@ class RowDataCdcMetadataTest {
     }
 
     private static String debeziumSequence(Map<StringData, StringData> properties) {
+        return debeziumSequence(properties, Collections.emptyList());
+    }
+
+    private static String debeziumSequence(
+            Map<StringData, StringData> properties, List<String> mysqlSourceUuids) {
         GenericRowData row = GenericRowData.of(new GenericMapData(properties));
         RowDataCdcSequenceNumberProvider provider =
                 new RowDataCdcSequenceNumberProvider(
-                        WritableMetadata.DEBEZIUM_SOURCE_PROPERTIES, 0);
+                        WritableMetadata.DEBEZIUM_SOURCE_PROPERTIES, 0, mysqlSourceUuids);
         return provider.getSequenceNumber(row);
     }
 

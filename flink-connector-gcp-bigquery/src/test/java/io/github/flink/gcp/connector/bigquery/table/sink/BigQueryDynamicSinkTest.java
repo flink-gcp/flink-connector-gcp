@@ -158,6 +158,11 @@ class BigQueryDynamicSinkTest {
                                         .jsonFieldPaths(Collections.singletonList("id"))
                                         .build()));
         varied.put("cdcEnabled", a -> a.cdcEnabled(true));
+        varied.put(
+                "debeziumMySqlSourceUuids",
+                a ->
+                        a.debeziumMySqlSourceUuids(
+                                Collections.singletonList("24bc7850-2c16-11e6-a073-0242ac110002")));
         varied.put("primaryKeyIndexes", a -> a.primaryKeyIndexes(new int[] {1}));
         varied.put("writeMethod", a -> a.writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE));
         varied.put("createDisposition", a -> a.createDisposition(CreateDisposition.CREATE_NEVER));

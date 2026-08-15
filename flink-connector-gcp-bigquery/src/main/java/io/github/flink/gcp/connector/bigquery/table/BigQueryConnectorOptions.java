@@ -260,6 +260,16 @@ public final class BigQueryConnectorOptions {
                                     + " create-if-needed, the sink creates and verifies the CDC"
                                     + " table before writing.");
 
+    public static final ConfigOption<List<String>> SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS =
+            ConfigOptions.key("sink.cdc.debezium-mysql.source-uuids")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Debezium MySQL source UUIDs in causal order. The first UUID has"
+                                    + " epoch one; append a new UUID after a non-interleaved"
+                                    + " failover, and never edit or reorder existing entries.");
+
     public static final ConfigOption<Duration> SINK_CDC_MAX_STALENESS =
             ConfigOptions.key("sink.cdc.max-staleness")
                     .durationType()

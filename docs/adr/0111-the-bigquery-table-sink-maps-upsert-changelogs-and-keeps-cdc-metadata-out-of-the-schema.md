@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0111: The BigQuery table sink maps upsert changelogs and keeps CDC metadata out of the schema
 
 - Status: Accepted
-- Date: 2026-08-14; revised by [#629] (2026-08-15)
+- Date: 2026-08-14; revised by [#629] and [#631] (2026-08-15)
 - Issues: [#65](https://github.com/laughingman7743/flink-connector-gcp/issues/65),
   [#626](https://github.com/laughingman7743/flink-connector-gcp/issues/626),
-  [#629](https://github.com/laughingman7743/flink-connector-gcp/issues/629)
+  [#629](https://github.com/laughingman7743/flink-connector-gcp/issues/629),
+  [#631](https://github.com/laughingman7743/flink-connector-gcp/issues/631)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md#change-data-capture`
 
@@ -129,8 +130,25 @@ no timeline or ordering epoch that could disambiguate it.
 The user documentation links to Debezium's PostgreSQL failover guidance rather than duplicating its
 version-specific operational procedure.
 
-MySQL GTID and Spanner profiles refine this record through issues
-[#631](https://github.com/laughingman7743/flink-connector-gcp/issues/631) and
+**The MySQL profile assigns append-only source UUID epochs to GTID coordinates.**
+It encodes the epoch, transaction id, binlog position, and row as four unsigned 64-bit sections.
+Snapshot rows use the all-zero epoch and require an empty target.
+Streaming accepts one untagged `UUID:transaction_id`; tagged or multi-source values fail.
+Appending a failover UUID makes every event from it sort after every coordinate from an earlier
+UUID, so editing, reordering, and interleaving histories are unsafe.
+Group Replication does not fit that epoch model.
+Transactions originating in one replication group use the fixed group UUID, while each member
+reserves its own block of GTID transaction numbers.
+The Debezium source map therefore cannot identify a primary epoch or provide a group-wide ordering
+coordinate across primary changes or multi-primary histories.
+MySQL's GTID log event also contains logical-clock and commit-timestamp fields, and Debezium's
+binlog reader parses them.
+The logical sequence restarts in each local binlog file, however, and commit timestamps are not a
+unique total order; the MySQL connector currently retains only the GTID when handling that event.
+Those topologies remain unsupported until MySQL and Debezium can expose a durable group-wide
+ordering coordinate in source metadata.
+
+The Spanner profile refines this record through issue
 [#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633).
 
 **The changelog-mode compatibility seam is version-specific and internal.**
@@ -159,6 +177,19 @@ Runtime serialization supports key-only deletes on every supported version.
 - BigQuery documents one-to-four unsigned hexadecimal sections, lexicographic section comparison,
   and ingestion-time precedence for equal values in its
   [CDC ordering contract](https://cloud.google.com/bigquery/docs/change-data-capture).
+- MySQL documents that Group Replication transactions use the fixed group UUID while each member
+  reserves and consumes a separate block of consecutive GTIDs in
+  [GTIDs and Group Replication](https://dev.mysql.com/doc/refman/8.4/en/group-replication-gtids.html).
+- MySQL documents the GTID event's `last_committed`, `sequence_number`, and commit-timestamp fields
+  in its
+  [binary format](https://dev.mysql.com/doc/dev/mysql-server/8.4.9/classmysql_1_1binlog_1_1event_1_1Gtid__event.html),
+  and documents that `sequence_number` restarts in each binary log file in
+  [Binary Logging Options and Variables](https://dev.mysql.com/doc/refman/8.0/en/replication-options-binary-log.html).
+- Debezium's binlog dependency parses those fields in
+  [`GtidEventDataDeserializer`](https://github.com/debezium/mysql-binlog-connector-java/blob/main/src/main/java/com/github/shyiko/mysql/binlog/event/deserialization/GtidEventDataDeserializer.java),
+  while the MySQL connector's
+  [`handleGtidEvent`](https://github.com/debezium/debezium/blob/main/debezium-connector-mysql/src/main/java/io/debezium/connector/mysql/MySqlStreamingChangeEventSource.java)
+  retains the GTID rather than exposing the additional fields as source metadata.
 - Flink 2.2.1's pinned
   [`RegistryAvroFormatFactory`](https://github.com/apache/flink/blob/release-2.2.1/flink-formats/flink-avro-confluent-registry/src/main/java/org/apache/flink/formats/avro/registry/confluent/RegistryAvroFormatFactory.java)
   advertises an insert-only changelog, while its
@@ -180,6 +211,8 @@ Runtime serialization supports key-only deletes on every supported version.
   PostgreSQL snapshot and streaming source shapes, replay and continuous-slot failover ordering,
   unsigned boundaries, malformed metadata, and rejection of unsupported Debezium connectors
   without a timestamp fallback.
+- MySQL fixtures cover initial snapshots, create/update/delete streaming shapes, multi-row events,
+  replay, appended failover epochs, unsigned boundaries, and invalid topology metadata.
 
 ## Alternatives declined
 
@@ -219,6 +252,6 @@ DataStream jobs and the Table profile share the same strict PostgreSQL sequence 
 `DebeziumPostgreSqlCdcSequenceNumberProvider` rather than maintaining application-local parsers.
 Debezium JSON can forward `value.source.properties` directly, while Debezium Avro requires the
 complete-envelope adapter described above because Flink's standard changelog omits `source`.
+MySQL maps use the same adapter boundary with an explicit append-only source UUID list.
 Other Debezium maps become operational one connector profile at a time through
-[#631](https://github.com/laughingman7743/flink-connector-gcp/issues/631) and
 [#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633).

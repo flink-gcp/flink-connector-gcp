@@ -21,24 +21,47 @@ import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.StringData;
 
+import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumMySqlCdcSequenceNumberEncoder;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumPostgreSqlCdcSequenceNumberEncoder;
+
+import javax.annotation.Nullable;
+
+import java.io.Serializable;
+import java.util.List;
 
 /** Routes Debezium source properties to a connector-specific sequence encoder. */
 @Internal
-final class DebeziumCdcSequenceNumberResolver {
+final class DebeziumCdcSequenceNumberResolver implements Serializable {
+
+    private static final long serialVersionUID = 1L;
 
     private static final StringData CONNECTOR_KEY = StringData.fromString("connector");
     private static final StringData SEQUENCE_KEY = StringData.fromString("sequence");
     private static final StringData LSN_KEY = StringData.fromString("lsn");
+    private static final StringData SNAPSHOT_KEY = StringData.fromString("snapshot");
+    private static final StringData GTID_KEY = StringData.fromString("gtid");
+    private static final StringData POSITION_KEY = StringData.fromString("pos");
+    private static final StringData ROW_KEY = StringData.fromString("row");
 
-    private DebeziumCdcSequenceNumberResolver() {}
+    @Nullable private final DebeziumMySqlCdcSequenceNumberEncoder mySqlEncoder;
 
-    static String sequenceNumber(MapData properties) {
+    DebeziumCdcSequenceNumberResolver(List<String> mySqlSourceUuids) {
+        this.mySqlEncoder =
+                mySqlSourceUuids.isEmpty()
+                        ? null
+                        : new DebeziumMySqlCdcSequenceNumberEncoder(mySqlSourceUuids);
+    }
+
+    String sequenceNumber(MapData properties) {
         ArrayData keys = properties.keyArray();
         ArrayData values = properties.valueArray();
         String connector = null;
         String sequence = null;
         String lsn = null;
+        String snapshot = null;
+        String gtid = null;
+        String position = null;
+        String row = null;
         for (int i = 0; i < properties.size(); i++) {
             if (keys.isNullAt(i)) {
                 continue;
@@ -50,6 +73,14 @@ final class DebeziumCdcSequenceNumberResolver {
                 sequence = stringValue(values, i);
             } else if (LSN_KEY.equals(key)) {
                 lsn = stringValue(values, i);
+            } else if (SNAPSHOT_KEY.equals(key)) {
+                snapshot = stringValue(values, i);
+            } else if (GTID_KEY.equals(key)) {
+                gtid = stringValue(values, i);
+            } else if (POSITION_KEY.equals(key)) {
+                position = stringValue(values, i);
+            } else if (ROW_KEY.equals(key)) {
+                row = stringValue(values, i);
             }
         }
 
@@ -62,6 +93,13 @@ final class DebeziumCdcSequenceNumberResolver {
             case "postgresql":
                 return DebeziumPostgreSqlCdcSequenceNumberEncoder.sequenceNumber(
                         connector, sequence, lsn);
+            case "mysql":
+                if (mySqlEncoder == null) {
+                    throw new IllegalArgumentException(
+                            "Debezium MySQL sequence generation requires"
+                                    + " sink.cdc.debezium-mysql.source-uuids");
+                }
+                return mySqlEncoder.sequenceNumber(connector, snapshot, gtid, position, row);
             default:
                 throw new IllegalArgumentException(
                         "Debezium connector '"

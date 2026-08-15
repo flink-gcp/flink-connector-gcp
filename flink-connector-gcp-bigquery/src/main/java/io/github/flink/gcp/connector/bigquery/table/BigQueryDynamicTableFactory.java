@@ -129,6 +129,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
                         BigQueryConnectorOptions.SINK_CDC_ENABLED,
+                        BigQueryConnectorOptions.SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS,
                         BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS,
                         BigQueryConnectorOptions.SINK_CDC_CLEAR_MAX_STALENESS,
                         BigQueryConnectorOptions.SINK_CDC_TABLE_RECONCILIATION,
@@ -237,6 +238,11 @@ public class BigQueryDynamicTableFactory
                 .destination(destination)
                 .schemaOptions(schemaOptions(config))
                 .cdcEnabled(cdcEnabled)
+                .debeziumMySqlSourceUuids(
+                        config.getOptional(
+                                        BigQueryConnectorOptions
+                                                .SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS)
+                                .orElse(Collections.emptyList()))
                 .primaryKeyIndexes(context.getPrimaryKeyIndexes())
                 .writeMethod(configuredWriteMethod.orElse(null))
                 .createDisposition(configuredCreateDisposition.orElse(null))
@@ -272,6 +278,14 @@ public class BigQueryDynamicTableFactory
 
     private static void checkCdcConfiguration(
             Context context, ReadableConfig config, WriteMethod writeMethod, boolean cdcEnabled) {
+        if (!cdcEnabled
+                && config.getOptional(BigQueryConnectorOptions.SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS)
+                        .isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Debezium MySQL CDC sequence options require '%s' = 'true'.",
+                            BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
+        }
         if (!cdcEnabled
                 && (config.getOptional(BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS).isPresent()
                         || config.getOptional(BigQueryConnectorOptions.SINK_CDC_CLEAR_MAX_STALENESS)
