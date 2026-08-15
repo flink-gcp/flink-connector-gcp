@@ -139,7 +139,7 @@ limitations under the License.
              on the first test that touches a generated class, which is why no enforcer rule
              guards it. -->
         <protoc.version>4.33.2</protoc.version>
-        <protobuf-maven-plugin.version>5.1.7</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>5.1.8</protobuf-maven-plugin.version>
         <!-- Resolves the licence of every bundled dependency for the shaded modules,
              so scripts/check-notice.py can hold their generated META-INF/NOTICE and the
              sha256-pinned licence texts to it. Not managed by any BOM. -->
