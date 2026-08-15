@@ -282,6 +282,16 @@ The default-stream write method can apply **change data capture (CDC)** mutation
 has a BigQuery primary key.
 The sink adds BigQuery's `_CHANGE_TYPE` pseudocolumn and, when configured, the
 `_CHANGE_SEQUENCE_NUMBER` pseudocolumn to each non-skipped row.
+Both are write-only: they travel with the append request and never become table columns, so no
+query reads a sequence back.
+A `CdcSequenceNumberProvider` returns that sequence as one to four `/`-separated hexadecimal
+sections of at most 16 characters each, which BigQuery compares one section at a time as unsigned
+numbers, resolving equal values by ingestion order.
+Every built-in profile pads each section to 16 digits, as in
+`17306D33FB84D440/0000000000000001/0000000000000000`, so the strings sort the same way for BigQuery
+and for whoever reads them in a log.
+The [BigQuery table CDC contract]({{< relref "docs/connectors/table/bigquery" >}}#what-the-sequence-value-looks-like)
+states the format and shows what each profile writes.
 
 {{< java-snippet file="BigQueryCdcTableCreation.java" tag="bigquery-cdc-table-creation" >}}
 

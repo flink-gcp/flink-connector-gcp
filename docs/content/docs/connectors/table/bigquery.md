@@ -300,6 +300,31 @@ Once a sequence metadata column is selected, every emitted row must supply a non
 missing or invalid values enter the configured row-failure path.
 Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order.
 
+#### What the sequence value looks like
+
+Whichever route supplies it, the sink writes one string into BigQuery's `_CHANGE_SEQUENCE_NUMBER`
+pseudocolumn, and every built-in profile writes each section as exactly 16 uppercase hexadecimal
+digits:
+
+```text
+17306D33FB84D440/0000000000000001/0000000000000000
+```
+
+BigQuery accepts one to four sections separated by `/`, each at most 16 hexadecimal characters in
+either case, spanning `0/0/0/0` to
+`FFFFFFFFFFFFFFFF/FFFFFFFFFFFFFFFF/FFFFFFFFFFFFFFFF/FFFFFFFFFFFFFFFF`.
+It compares the first section, and the next one only when the previous sections are equal.
+Each section is compared as an unsigned number rather than as text, so a shorter section is the
+smaller value: `FFF/B` precedes `FFF/ABC`.
+The profiles pad to a fixed width anyway, which makes the strings sort identically whether a reader,
+a log search, or BigQuery compares them.
+Two rows whose sequences are equal are applied in BigQuery ingestion order, and mixing rows that
+carry a sequence with rows that do not leaves the order of that mix undefined.
+
+The pseudocolumn is write-only.
+It travels with the append request and never becomes a table column, so no query reads it back;
+project any ordering value a reader needs into an ordinary column as well.
+
 The formatted route is immediately usable when the query can construct or forward a valid
 sequence:
 
@@ -344,6 +369,8 @@ The PostgreSQL profile parses Debezium's `sequence` JSON array as the nullable l
 and required current LSN.
 It writes both positions as two fixed-width unsigned 64-bit hexadecimal sections and verifies the
 current position against `lsn` when that property is non-null.
+A `sequence` of `["16","17"]` becomes `0000000000000010/0000000000000011`, and a snapshot row,
+whose last committed position is null, becomes `0000000000000000/0000000000000010`.
 Missing, malformed, or contradictory values fail the row through the configured failure handler.
 DataStream applications can apply the same parser to a source-properties map with
 `DebeziumPostgreSqlCdcSequenceNumberProvider`.
@@ -367,6 +394,9 @@ Flink list options use semicolons, so a failover list is written as
 Never edit or reorder existing entries, because their positions define stable ordering epochs.
 Initial snapshot rows use epoch zero and are safe only when loading an empty destination; ad hoc
 snapshots into a populated target are unsupported.
+A snapshot row is therefore `0000000000000000/0000000000000000/0000000000000000/0000000000000000`,
+while the first configured UUID's GTID transaction 16 at binlog position 1081, row 2, becomes
+`0000000000000001/0000000000000010/0000000000000439/0000000000000002`.
 Streaming rows require an untagged single-source `UUID:transaction_id` GTID plus `pos` and `row`.
 DataStream applications can use `DebeziumMySqlCdcSequenceNumberProvider` with the same ordered
 UUID list.
@@ -398,6 +428,10 @@ TiCDC emits TiDB row changes in a Debezium-compatible envelope whose source map 
 Both TiDB fields are present from TiCDC v8.0.0 onwards.
 The profile writes the commit timestamp oracle value as one fixed-width unsigned 64-bit
 hexadecimal section, and rejects a missing, non-numeric, zero, or overflowing value.
+A `commit_ts` of `449574614268182531` becomes `063D35BACF7D0003`; the next logical counter within
+that same millisecond becomes `063D35BACF7D0004`, and the next physical millisecond
+`063D35BAD0410001`.
+The single section is what makes those two neighbours distinguishable at all.
 It never substitutes the source object's `ts_ms`, which truncates that same timestamp oracle value
 to milliseconds and so cannot order two transactions committed within one millisecond.
 DataStream applications can apply the same encoding to a source-properties map with
@@ -445,6 +479,10 @@ Spanner reaches this sink through two routes that share one ordering contract.
 Both encode three fixed-width unsigned 64-bit hexadecimal sections: the commit timestamp in
 nanoseconds since the epoch, the record sequence within the transaction, and the mod number within
 the change record.
+A change committed at `2022-12-13T18:18:51.785Z`, first in its transaction and first in its record,
+becomes `17306D33FB84D440/0000000000000001/0000000000000000`; the record after it in that
+transaction becomes `…/0000000000000002/0000000000000000`, and the second mod of the first record
+`…/0000000000000001/0000000000000001`.
 
 Debezium's Spanner connector supplies those coordinates as `ts_ns`, `sequence`, and `mod_number`
 under `connector=spanner`.
