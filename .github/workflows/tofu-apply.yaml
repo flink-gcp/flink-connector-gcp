@@ -84,7 +84,7 @@ jobs:
 
       - name: Set up tfaction
         id: setup
-        uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: setup
           github_token: ${{ github.token }}
@@ -97,13 +97,13 @@ jobs:
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
       - name: tofu init
-        uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: terraform-init
           github_token: ${{ github.token }}
 
       - name: tofu apply
-        uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: apply
           github_token: ${{ github.token }}
