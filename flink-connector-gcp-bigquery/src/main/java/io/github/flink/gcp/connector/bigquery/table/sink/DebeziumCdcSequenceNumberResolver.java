@@ -23,6 +23,7 @@ import org.apache.flink.table.data.StringData;
 
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumMySqlCdcSequenceNumberEncoder;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumPostgreSqlCdcSequenceNumberEncoder;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.TiCdcSequenceNumberEncoder;
 
 import javax.annotation.Nullable;
 
@@ -42,14 +43,20 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
     private static final StringData GTID_KEY = StringData.fromString("gtid");
     private static final StringData POSITION_KEY = StringData.fromString("pos");
     private static final StringData ROW_KEY = StringData.fromString("row");
+    private static final StringData COMMIT_TS_KEY = StringData.fromString("commit_ts");
+    private static final StringData CLUSTER_ID_KEY = StringData.fromString("cluster_id");
 
     @Nullable private final DebeziumMySqlCdcSequenceNumberEncoder mySqlEncoder;
+    @Nullable private final TiCdcSequenceNumberEncoder tiCdcEncoder;
 
-    DebeziumCdcSequenceNumberResolver(List<String> mySqlSourceUuids) {
+    DebeziumCdcSequenceNumberResolver(
+            List<String> mySqlSourceUuids, @Nullable String tiCdcClusterId) {
         this.mySqlEncoder =
                 mySqlSourceUuids.isEmpty()
                         ? null
                         : new DebeziumMySqlCdcSequenceNumberEncoder(mySqlSourceUuids);
+        this.tiCdcEncoder =
+                tiCdcClusterId == null ? null : new TiCdcSequenceNumberEncoder(tiCdcClusterId);
     }
 
     String sequenceNumber(MapData properties) {
@@ -62,6 +69,8 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
         String gtid = null;
         String position = null;
         String row = null;
+        String commitTs = null;
+        String clusterId = null;
         for (int i = 0; i < properties.size(); i++) {
             if (keys.isNullAt(i)) {
                 continue;
@@ -81,6 +90,10 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
                 position = stringValue(values, i);
             } else if (ROW_KEY.equals(key)) {
                 row = stringValue(values, i);
+            } else if (COMMIT_TS_KEY.equals(key)) {
+                commitTs = stringValue(values, i);
+            } else if (CLUSTER_ID_KEY.equals(key)) {
+                clusterId = stringValue(values, i);
             }
         }
 
@@ -100,6 +113,12 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
                                     + " sink.cdc.debezium-mysql.source-uuids");
                 }
                 return mySqlEncoder.sequenceNumber(connector, snapshot, gtid, position, row);
+            case "TiCDC":
+                if (tiCdcEncoder == null) {
+                    throw new IllegalArgumentException(
+                            "TiCDC sequence generation requires sink.cdc.ticdc.cluster-id");
+                }
+                return tiCdcEncoder.sequenceNumber(connector, snapshot, commitTs, clusterId);
             default:
                 throw new IllegalArgumentException(
                         "Debezium connector '"

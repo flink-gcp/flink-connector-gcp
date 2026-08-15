@@ -21,9 +21,6 @@ import org.apache.flink.table.data.RowData;
 
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcSequenceNumberProvider;
 
-import java.util.Collections;
-import java.util.List;
-
 /** Reads one selected writable metadata column as a BigQuery CDC sequence number. */
 @Internal
 final class RowDataCdcSequenceNumberProvider implements CdcSequenceNumberProvider<RowData> {
@@ -34,15 +31,11 @@ final class RowDataCdcSequenceNumberProvider implements CdcSequenceNumberProvide
     private final int position;
     private final DebeziumCdcSequenceNumberResolver debeziumResolver;
 
-    RowDataCdcSequenceNumberProvider(WritableMetadata source, int position) {
-        this(source, position, Collections.emptyList());
-    }
-
     RowDataCdcSequenceNumberProvider(
-            WritableMetadata source, int position, List<String> mySqlSourceUuids) {
+            WritableMetadata source, int position, DebeziumCdcSequenceNumberResolver resolver) {
         this.source = source;
         this.position = position;
-        this.debeziumResolver = new DebeziumCdcSequenceNumberResolver(mySqlSourceUuids);
+        this.debeziumResolver = resolver;
     }
 
     @Override

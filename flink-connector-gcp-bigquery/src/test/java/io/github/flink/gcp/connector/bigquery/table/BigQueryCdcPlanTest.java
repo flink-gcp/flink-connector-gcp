@@ -29,6 +29,8 @@ import org.apache.flink.types.RowKind;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -83,5 +85,60 @@ class BigQueryCdcPlanTest {
                 .contains("current_rows")
                 .contains("sequence")
                 .doesNotContain("DropUpdateBefore");
+    }
+
+    /**
+     * The SQL route documented for TiCDC reads a {@code debezium-json} source, whose changelog
+     * carries UPDATE_BEFORE. The sink rejects that row kind at runtime, so the plan has to drop it
+     * before the sink rather than leaving the job to fail on its first update.
+     */
+    @Test
+    void dropsUpdateBeforeFromAnAllChangesSourceCarryingDebeziumSourceProperties() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        Map<String, String> sourceProperties = new LinkedHashMap<>();
+        sourceProperties.put("connector", "TiCDC");
+        sourceProperties.put("commit_ts", "449574614268182531");
+        sourceProperties.put("cluster_id", "test_cluster");
+        DataStream<Row> changelog =
+                env.fromData(
+                        Arrays.asList(
+                                Row.ofKind(RowKind.UPDATE_BEFORE, "id", 1L, sourceProperties),
+                                Row.ofKind(RowKind.UPDATE_AFTER, "id", 2L, sourceProperties)),
+                        Types.ROW_NAMED(
+                                new String[] {"id", "amount", "source_properties"},
+                                Types.STRING,
+                                Types.LONG,
+                                Types.MAP(Types.STRING, Types.STRING)));
+        table.createTemporaryView(
+                "ticdc_changes",
+                table.fromChangelogStream(
+                        changelog,
+                        Schema.newBuilder()
+                                .column("id", DataTypes.STRING().notNull())
+                                .column("amount", DataTypes.BIGINT())
+                                .column(
+                                        "source_properties",
+                                        DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()))
+                                .primaryKey("id")
+                                .build(),
+                        ChangelogMode.all()));
+        table.executeSql(
+                "CREATE TABLE current_ticdc_rows ("
+                        + "id STRING NOT NULL, amount BIGINT, "
+                        + "source_properties MAP<STRING, STRING> "
+                        + "METADATA FROM 'debezium-source-properties', "
+                        + "PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                        + "'connector'='bigquery', 'project'='p', 'dataset'='d', "
+                        + "'table'='current_ticdc_rows', 'sink.cdc.enabled'='true', "
+                        + "'sink.cdc.ticdc.cluster-id'='test_cluster', "
+                        + "'emulator-endpoint'='localhost:1')");
+
+        String plan =
+                table.explainSql(
+                        "INSERT INTO current_ticdc_rows"
+                                + " SELECT id, amount, source_properties FROM ticdc_changes");
+
+        assertThat(plan).contains("debezium-source-properties").contains("DropUpdateBefore");
     }
 }

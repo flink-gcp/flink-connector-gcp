@@ -270,6 +270,19 @@ public final class BigQueryConnectorOptions {
                                     + " epoch one; append a new UUID after a non-interleaved"
                                     + " failover, and never edit or reorder existing entries.");
 
+    public static final ConfigOption<String> SINK_CDC_TICDC_CLUSTER_ID =
+            ConfigOptions.key("sink.cdc.ticdc.cluster-id")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The TiCDC cluster ID whose commit timestamp oracle values order this"
+                                    + " table, as the changefeed's server reports it in"
+                                    + " 'cluster_id'. A row change reporting another cluster is"
+                                    + " rejected rather than ordered against an unrelated oracle."
+                                    + " TiCDC defaults this identifier to 'default', so give each"
+                                    + " TiCDC cluster its own before routing more than one into"
+                                    + " one table.");
+
     public static final ConfigOption<Duration> SINK_CDC_MAX_STALENESS =
             ConfigOptions.key("sink.cdc.max-staleness")
                     .durationType()

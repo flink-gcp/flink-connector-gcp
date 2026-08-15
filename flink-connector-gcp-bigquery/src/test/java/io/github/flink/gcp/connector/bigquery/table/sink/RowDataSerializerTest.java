@@ -168,7 +168,10 @@ class RowDataSerializerTest {
                         CdcOptions.<GenericRowData>builder(RowDataCdcChangeTypeProvider.INSTANCE)
                                 .sequenceNumberProvider(
                                         new RowDataCdcSequenceNumberProvider(
-                                                WritableMetadata.CHANGE_SEQUENCE_NUMBER, 2))
+                                                WritableMetadata.CHANGE_SEQUENCE_NUMBER,
+                                                2,
+                                                new DebeziumCdcSequenceNumberResolver(
+                                                        java.util.Collections.emptyList(), null)))
                                 .build());
         GenericRowData delete =
                 GenericRowData.ofKind(
