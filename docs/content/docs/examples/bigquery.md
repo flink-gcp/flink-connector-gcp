@@ -281,8 +281,12 @@ It never falls back to the source object's `ts_ms`, which truncates the same val
 and so cannot order two transactions committed within one millisecond.
 
 Both examples below cover row changes only.
-Recent TiCDC releases also emit DDL events, and watermark events when the changefeed sets
-`enable-tidb-extension=true`.
+Whether anything else reaches the topic depends on the TiCDC deployment.
+Before TiDB v9.0.0, TiCDC's classic architecture sends row changes only in this protocol, so
+nothing below has to be configured against other events, while its new architecture sends DDL and
+watermark events from TiCDC v8.5.4-release.1.
+From TiDB v9.0.0 that new architecture is the only one, so DDL events always reach the topic.
+Watermark events additionally require the changefeed to set `enable-tidb-extension=true`.
 Neither carries a row to write, and neither is a shape Flink's `debezium-json` format can
 deserialize: a watermark's `op` value is unknown to it and a DDL event has no `op` field at all, so
 either one fails the job rather than being skipped.

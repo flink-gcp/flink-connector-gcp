@@ -132,7 +132,8 @@ final class BigQueryExamplesTiCdc {
         if ("d".equals(operation)) {
             return true;
         }
-        // TiCDC also emits DDL and watermark events, which carry no row to write.
+        // A DDL or watermark event carries no row to write; only TiCDC's new architecture
+        // emits them.
         throw new IllegalArgumentException("Unsupported TiCDC operation '" + operation + "'");
     }
 

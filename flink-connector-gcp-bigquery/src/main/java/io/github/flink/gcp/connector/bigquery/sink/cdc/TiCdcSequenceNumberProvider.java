@@ -49,8 +49,10 @@ import static java.util.Objects.requireNonNull;
  * admit such transactions must supply their own tie-breaker through the formatted {@code
  * change-sequence-number} route or a custom {@link CdcSequenceNumberProvider}.
  *
- * <p>This profile covers row-change events only. TiCDC's Debezium protocol also emits DDL and
- * watermark events, which carry no row to write, and it provides no initial snapshot stream.
+ * <p>This profile covers row-change events only. TiCDC's classic architecture emits nothing else in
+ * this protocol; its new architecture, which is the only one from TiDB v9.0.0, adds DDL events and,
+ * under {@code enable-tidb-extension}, watermark events. Neither carries a row to write, and the
+ * protocol provides no initial snapshot stream.
  *
  * @see <a href="https://docs.pingcap.com/tidb/stable/ticdc-debezium/">TiCDC Debezium protocol</a>
  * @see <a href="https://docs.pingcap.com/tidb/stable/ticdc-split-update-behavior/">TiCDC UPDATE

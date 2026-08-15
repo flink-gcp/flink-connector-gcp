@@ -23,6 +23,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   MySQL-inherited coordinates carry.
   The profile covers row changes only; DDL and watermark events carry no row and are shapes
   `debezium-json` cannot deserialize, and the protocol has no snapshot stream.
+  Only TiCDC's new architecture emits them, from v8.5.4-release.1, and it is the only architecture
+  from TiDB v9.0.0; watermarks additionally need `enable-tidb-extension`.
+  State both bounds: one TiDB version alone tells a classic-architecture reader the wrong thing.
 
 ## Facade and serializers (`docs/adr/0016`, `0023`–`0027`)
 
