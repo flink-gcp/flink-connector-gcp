@@ -120,7 +120,7 @@ jobs:
 
       # Unpinned, and install-action rather than mise: see the note on the same
       # step in verify.yaml.
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: just
 
@@ -175,7 +175,7 @@ jobs:
 
       # Unpinned, and install-action rather than mise: see the note on the same
       # step in verify.yaml.
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: just
 
@@ -211,7 +211,7 @@ jobs:
 
       # Unpinned, and install-action rather than mise: see the note on the same
       # step in verify.yaml.
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: just
 
@@ -246,7 +246,7 @@ jobs:
 
       # Unpinned, and install-action rather than mise: see the note on the same
       # step in verify.yaml.
-      - uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2.85.4
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
         with:
           tool: just
 
