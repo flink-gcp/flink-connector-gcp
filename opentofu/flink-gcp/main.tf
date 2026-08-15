@@ -21,7 +21,8 @@ locals {
 
   # Immutable numeric GitHub identifiers, pinned by the WIF provider condition
   # (wif.tf). Numbers rather than names, so renaming an account or repository
-  # can never redirect the trust they anchor.
-  github_repository_id       = "1305440656" # laughingman7743/flink-connector-gcp
-  github_repository_owner_id = "3115686"    # laughingman7743
+  # can never redirect the trust they anchor. A transfer preserves the
+  # repository ID and replaces the owner ID.
+  github_repository_id       = "1305440656" # flink-gcp/flink-connector-gcp
+  github_repository_owner_id = "311652635"  # flink-gcp
 }

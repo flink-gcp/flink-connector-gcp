@@ -55,8 +55,12 @@ jobs:
   # Compile and test against each end of the supported range, plus the next
   # unreleased Flink.
   compile_and_test:
-    # Scheduled workflows are inherited by forks; this keeps them from running there.
-    if: github.repository_owner == 'laughingman7743'
+    # Scheduled workflows are inherited by forks; this keeps them from running
+    # there. The immutable ID of flink-gcp/flink-connector-gcp, not the owner
+    # name: a fork gets its own ID, while a transfer or a rename changes the
+    # name and would switch a name guard off silently, leaving every job in
+    # this file green and idle. The three guards below are the same test.
+    if: github.repository_id == '1305440656'
     name: ${{ matrix.role }} (JDK ${{ matrix.jdk }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -154,7 +158,7 @@ jobs:
   # Floor and ceiling are the only two supported minors, so there is one pair to
   # check and no matrix. Widening the policy past two would bring one back.
   binary_compat:
-    if: github.repository_owner == 'laughingman7743'
+    if: github.repository_id == '1305440656'
     name: Binary compat (floor-built, run on the ceiling)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -196,7 +200,7 @@ jobs:
   # Deliberately independent of the jobs above rather than a dependency of them:
   # a new upstream release must not stop the current range from being verified.
   new_minor_check:
-    if: github.repository_owner == 'laughingman7743'
+    if: github.repository_id == '1305440656'
     name: New Flink minor released?
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -225,7 +229,7 @@ jobs:
   # Independent of the Flink-range jobs above on purpose: a broken upstream
   # ref must not stop the range from being verified, nor the other way round.
   notice_sources:
-    if: github.repository_owner == 'laughingman7743'
+    if: github.repository_id == '1305440656'
     name: Licence sources still serve the pinned texts?
     runs-on: ubuntu-latest
     timeout-minutes: 20

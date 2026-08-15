@@ -25,7 +25,7 @@
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "github"
   display_name              = "GitHub Actions"
-  description               = "Workflows of laughingman7743/flink-connector-gcp"
+  description               = "Workflows of flink-gcp/flink-connector-gcp"
 }
 
 resource "google_iam_workload_identity_pool_provider" "github_actions" {
