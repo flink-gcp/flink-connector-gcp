@@ -218,6 +218,7 @@ advertised; use `source.row-restriction` when a BigQuery-native server-side pred
 | `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
 | `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
 | `sink.cdc.debezium-mysql.source-uuids` | List&lt;String&gt; | Ordered MySQL GTID source UUIDs. The append-only order assigns failover epochs for the Debezium MySQL sequence profile |
+| `sink.cdc.ticdc.cluster-id` | String | The TiCDC cluster ID whose commit timestamp oracle values order this table, as the changefeed reports it in `cluster_id`. A row change reporting another cluster is rejected rather than ordered against an unrelated oracle. TiCDC defaults this identifier to `default` |
 | `sink.cdc.max-staleness` | Duration | `CdcTableOptions.maxStaleness(...)`. Absent means that the property is unmanaged |
 | `sink.cdc.clear-max-staleness` | Boolean | `CdcTableOptions.clearMaxStaleness()`. Explicitly removes a previous value and is mutually exclusive with `sink.cdc.max-staleness` |
 | `sink.cdc.table-reconciliation` | Enum | `cdcTableReconciliationPolicy(...)` — `verify-only` (default) or `reconcile`. Selects whether an existing table is only checked or has managed mutable CDC properties converged |
@@ -289,7 +290,7 @@ When selected, exactly one of these writable metadata columns may appear in the 
 | Metadata key | Data type | Meaning |
 |---|---|---|
 | `change-sequence-number` | `STRING` | An already formatted BigQuery `_CHANGE_SEQUENCE_NUMBER`: one to four slash-separated hexadecimal sections, each at most 16 digits |
-| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; built-in profiles accept `connector=postgresql` and `connector=mysql` |
+| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; built-in profiles accept `connector=postgresql`, `connector=mysql`, and `connector=TiCDC` |
 
 Writable metadata is appended to the runtime row by Flink and is not part of the physical
 BigQuery schema.
@@ -327,8 +328,9 @@ Flink's Debezium JSON format exposes connector-specific ordering fields through
 not retain those fields in the produced changelog.
 The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#cdc-examples-by-source-connector)
 separate PostgreSQL, MySQL, TiCDC, and Spanner ordering contracts.
-The implemented PostgreSQL and MySQL sections show how to retain a complete Avro envelope in
-DataStream and hand it to either API.
+The PostgreSQL and MySQL sections show how to retain a complete Avro envelope in DataStream and
+hand it to either API, while the TiCDC section reads its JSON envelope through `debezium-json`,
+which retains `value.source.properties` and needs no such bridge.
 
 This page shows Kafka only to make Flink's `value.source.properties` hand-off explicit; this
 repository does not ship a Kafka connector.
@@ -387,6 +389,48 @@ so applications must not send those topologies to this profile.
 Group Replication can become supportable if MySQL and Debezium can expose a durable group-wide
 ordering coordinate in source metadata.
 Until then, use `change-sequence-number` with an application-provided total order for that topology.
+
+#### TiCDC commit timestamp oracle values
+
+TiCDC emits TiDB row changes in a Debezium-compatible envelope whose source map carries
+`connector=TiCDC`, the numeric `commit_ts`, and `cluster_id`.
+Both TiDB fields are present from TiCDC v8.0.0 onwards.
+The profile writes the commit timestamp oracle value as one fixed-width unsigned 64-bit
+hexadecimal section, and rejects a missing, non-numeric, zero, or overflowing value.
+It never substitutes the source object's `ts_ms`, which truncates that same timestamp oracle value
+to milliseconds and so cannot order two transactions committed within one millisecond.
+DataStream applications can apply the same encoding to a source-properties map with
+`TiCdcSequenceNumberProvider`.
+
+A commit TSO orders every transaction within one TiDB cluster, and it is read from the change log
+rather than assigned by the process encoding it, so it survives a TiCDC process or node failover.
+This profile therefore needs no failover epoch and no equivalent of the MySQL source-UUID list.
+Configure `sink.cdc.ticdc.cluster-id` with the `cluster_id` the changefeed reports, and a row
+change from any other cluster fails through the configured failure handler rather than being
+ordered against an unrelated oracle.
+That identifier is TiCDC's own cluster ID rather than TiDB's: it defaults to `default` and follows
+`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$`, so give each TiCDC cluster its own before routing more than one
+of them into one table.
+Row changes of one transaction share its commit TSO and therefore its sequence, so the commit TSO
+is not a unique total order over events.
+TiDB writes each key at most once per transaction, but TiCDC splits an UPDATE that modifies a
+primary or unique key into a DELETE and an INSERT, which is the default for every sink except
+MySQL.
+A transaction that moves one key's value onto another key, such as a primary-key swap, therefore
+emits both a DELETE and an INSERT for one BigQuery primary key at one sequence, and BigQuery
+resolves that pair by ingestion time rather than by TiCDC's emission order.
+Applications that admit such transactions must supply their own tie-breaker through
+`change-sequence-number` or a custom `CdcSequenceNumberProvider`.
+See [TiCDC's UPDATE splitting behavior](https://docs.pingcap.com/tidb/stable/ticdc-split-update-behavior/)
+for the transactions that produce a split.
+
+This profile covers row changes only.
+Recent TiCDC releases also emit DDL events, and watermark events when the changefeed sets
+`enable-tidb-extension=true`; neither carries a row to write, and neither is a shape Flink's
+`debezium-json` format can deserialize, so a topic carrying them needs
+`value.debezium-json.ignore-parse-errors` or a changefeed that does not produce them.
+TiCDC provides no initial snapshot stream, so a populated destination needs a separate initial
+load, taken at the changefeed's start timestamp.
 
 The repository-native Spanner profile remains tracked by
 [#633]({{< param BookRepo >}}/issues/633).

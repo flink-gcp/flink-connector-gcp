@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcSequenceNumberProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumMySqlCdcSequenceNumberEncoder;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.TiCdcSequenceNumberEncoder;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
@@ -84,6 +85,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     private final boolean cdcEnabled;
     private final List<String> debeziumMySqlSourceUuids;
     private final int[] primaryKeyIndexes;
+    @Nullable private final String tiCdcClusterId;
     @Nullable private final WriteMethod writeMethod;
     @Nullable private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
@@ -111,6 +113,10 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 Collections.unmodifiableList(new ArrayList<>(builder.debeziumMySqlSourceUuids));
         if (!debeziumMySqlSourceUuids.isEmpty()) {
             new DebeziumMySqlCdcSequenceNumberEncoder(debeziumMySqlSourceUuids);
+        }
+        this.tiCdcClusterId = builder.tiCdcClusterId;
+        if (tiCdcClusterId != null) {
+            new TiCdcSequenceNumberEncoder(tiCdcClusterId);
         }
         this.primaryKeyIndexes = builder.primaryKeyIndexes.clone();
         this.writeMethod = builder.writeMethod;
@@ -190,7 +196,10 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 int position = DataType.getFieldCount(physicalDataType);
                 CdcSequenceNumberProvider<RowData> sequenceProvider =
                         new RowDataCdcSequenceNumberProvider(
-                                source, position, debeziumMySqlSourceUuids);
+                                source,
+                                position,
+                                new DebeziumCdcSequenceNumberResolver(
+                                        debeziumMySqlSourceUuids, tiCdcClusterId));
                 cdc.sequenceNumberProvider(sequenceProvider);
             }
             builder.cdcOptions(cdc.build());
@@ -248,6 +257,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 .schemaOptions(schemaOptions)
                 .cdcEnabled(cdcEnabled)
                 .debeziumMySqlSourceUuids(debeziumMySqlSourceUuids)
+                .tiCdcClusterId(tiCdcClusterId)
                 .primaryKeyIndexes(primaryKeyIndexes)
                 .writeMethod(writeMethod)
                 .createDisposition(createDisposition)
@@ -286,6 +296,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 && schemaOptions.equals(that.schemaOptions)
                 && cdcEnabled == that.cdcEnabled
                 && debeziumMySqlSourceUuids.equals(that.debeziumMySqlSourceUuids)
+                && Objects.equals(tiCdcClusterId, that.tiCdcClusterId)
                 && Arrays.equals(primaryKeyIndexes, that.primaryKeyIndexes)
                 && writeMethod == that.writeMethod
                 && createDisposition == that.createDisposition
@@ -313,6 +324,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                         schemaOptions,
                         cdcEnabled,
                         debeziumMySqlSourceUuids,
+                        tiCdcClusterId,
                         writeMethod,
                         createDisposition,
                         tableCreateOptions,
@@ -349,6 +361,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         private boolean cdcEnabled;
         private List<String> debeziumMySqlSourceUuids = Collections.emptyList();
         private int[] primaryKeyIndexes = new int[0];
+        @Nullable private String tiCdcClusterId;
         @Nullable private WriteMethod writeMethod;
         @Nullable private CreateDisposition createDisposition;
         @Nullable private TableCreateOptions tableCreateOptions;
@@ -409,6 +422,12 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         /** Sets the Debezium MySQL source UUIDs in causal epoch order. */
         public Builder debeziumMySqlSourceUuids(List<String> sourceUuids) {
             this.debeziumMySqlSourceUuids = new ArrayList<>(sourceUuids);
+            return this;
+        }
+
+        /** Sets the TiDB cluster ID whose TiCDC commit TSOs this sink orders. */
+        public Builder tiCdcClusterId(@Nullable String tiCdcClusterId) {
+            this.tiCdcClusterId = tiCdcClusterId;
             return this;
         }
 

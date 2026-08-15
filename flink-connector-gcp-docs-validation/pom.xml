@@ -109,6 +109,13 @@ limitations under the License.
             <version>${flink.version}</version>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- TiCDC's Debezium protocol is JSON, so its example reads the envelope with the
+                 same JSON boundary JsonDocumentSerializer accepts. -->
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <profiles>

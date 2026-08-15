@@ -798,7 +798,7 @@ class BigQueryDynamicTableFactoryTest {
                 "sink.cdc.debezium-mysql.source-uuids", "24bc7850-2c16-11e6-a073-0242ac110002");
         assertThatThrownBy(() -> built(withoutCdc))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("Debezium MySQL CDC sequence options require")
+                .hasStackTraceContaining("sink.cdc.debezium-mysql.source-uuids' requires")
                 .hasStackTraceContaining("sink.cdc.enabled");
 
         Map<String, String> invalid = minimalOptions();
@@ -845,6 +845,62 @@ class BigQueryDynamicTableFactoryTest {
                                         StringData.fromString("id"),
                                         new GenericMapData(properties))))
                 .isEqualTo("0000000000000002/0000000000000001/0000000000000002/0000000000000003");
+    }
+
+    @Test
+    void theTiCdcClusterIdRequiresCdcAndIsValidatedDuringPlanning() {
+        Map<String, String> withoutCdc = minimalOptions();
+        withoutCdc.put("sink.cdc.ticdc.cluster-id", "test_cluster");
+        assertThatThrownBy(() -> built(withoutCdc))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("sink.cdc.ticdc.cluster-id' requires")
+                .hasStackTraceContaining("sink.cdc.enabled");
+
+        Map<String, String> empty = minimalOptions();
+        empty.put("sink.cdc.enabled", "true");
+        empty.put("sink.cdc.ticdc.cluster-id", "");
+        assertThatThrownBy(() -> built(withPrimaryKey(SCHEMA), empty))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("sink.cdc.ticdc.cluster-id' must name the cluster");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theConfiguredTiCdcClusterIdReachesTheSequenceProvider() {
+        ResolvedSchema metadataSchema =
+                withPrimaryKey(
+                        ResolvedSchema.of(
+                                Column.physical("id", DataTypes.STRING()),
+                                Column.metadata(
+                                        "source_properties",
+                                        DataTypes.MAP(DataTypes.STRING(), DataTypes.STRING()),
+                                        "debezium-source-properties",
+                                        false)));
+        Map<String, String> options = minimalOptions();
+        options.put("sink.cdc.enabled", "true");
+        options.put("sink.create-disposition", "create-never");
+        options.put("sink.cdc.ticdc.cluster-id", "test_cluster");
+        BigQueryDefaultStreamSink<RowData> sink =
+                (BigQueryDefaultStreamSink<RowData>)
+                        builtWithMetadata(metadataSchema, options, "debezium-source-properties");
+        CdcSequenceNumberProvider<? super RowData> provider =
+                sink.getConfig().getCdcOptions().getSequenceNumberProvider();
+
+        assertThat(provider.getSequenceNumber(tiCdcRow("test_cluster")))
+                .isEqualTo("063D35BACF7D0003");
+        assertThatThrownBy(() -> provider.getSequenceNumber(tiCdcRow("other_cluster")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("other_cluster");
+    }
+
+    private static GenericRowData tiCdcRow(String clusterId) {
+        Map<StringData, StringData> properties = new LinkedHashMap<>();
+        properties.put(StringData.fromString("connector"), StringData.fromString("TiCDC"));
+        properties.put(StringData.fromString("snapshot"), StringData.fromString("false"));
+        properties.put(
+                StringData.fromString("commit_ts"), StringData.fromString("449574614268182531"));
+        properties.put(StringData.fromString("cluster_id"), StringData.fromString(clusterId));
+        return GenericRowData.of(StringData.fromString("id"), new GenericMapData(properties));
     }
 
     @Test

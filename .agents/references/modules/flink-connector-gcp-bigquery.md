@@ -14,6 +14,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Debezium expose a durable group-wide ordering coordinate; the fixed group UUID cannot supply a
   failover epoch.
   Snapshot epoch zero is valid only for an empty destination.
+- TiCDC ordering uses `commit_ts` alone, as one unsigned section, and validates `cluster_id`
+  against the configured `sink.cdc.ticdc.cluster-id`.
+  That field is the TiCDC cluster's own identifier, defaulting to `default`, not TiDB's.
+  Do not add an epoch list, a `ts_ms` tie-breaker, or acceptance of a zero timestamp; the commit
+  TSO already totally orders one cluster and survives TiCDC failover, while the source object's
+  `ts_ms` is that same value truncated to milliseconds and zero is what the protocol's unused
+  MySQL-inherited coordinates carry.
+  The profile covers row changes only; DDL and watermark events carry no row and are shapes
+  `debezium-json` cannot deserialize, and the protocol has no snapshot stream.
 
 ## Facade and serializers (`docs/adr/0016`, `0023`–`0027`)
 

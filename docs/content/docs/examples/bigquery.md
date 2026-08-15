@@ -32,7 +32,7 @@ Each CDC source has its own ordering contract and example section:
 |---|---|---|
 | Debezium PostgreSQL | Last committed and current LSN | [Available below](#debezium-postgresql-cdc-from-kafka) |
 | Debezium MySQL | Source UUID epoch, GTID transaction, binlog position, and row | [Available below](#debezium-mysql-cdc-from-kafka) |
-| TiCDC Debezium protocol | TiDB commit TSO and cluster identity | [Planned in #717](https://github.com/laughingman7743/flink-connector-gcp/issues/717) |
+| TiCDC Debezium protocol | TiDB commit TSO and cluster identity | [Available below](#ticdc-debezium-cdc-from-kafka) |
 | Debezium Spanner and native Spanner Change Streams | Commit timestamp, record sequence, and mod number | [Planned in #633](https://github.com/laughingman7743/flink-connector-gcp/issues/633) |
 
 The implemented sections use complete source envelopes and do not substitute source timestamps or
@@ -265,11 +265,147 @@ example can make safe; see the
 
 ## TiCDC Debezium CDC from Kafka
 
-The TiCDC profile is tracked by
-[#717](https://github.com/laughingman7743/flink-connector-gcp/issues/717) and is not available yet.
-Its section will use TiCDC's complete Debezium-style row envelope and derive ordering from
-`source.commit_ts` while validating `source.cluster_id`.
-It will not reuse MySQL's GTID or source-UUID epoch configuration.
+TiCDC replicates TiDB row changes to Kafka in a Debezium-compatible JSON envelope when the
+changefeed sets `protocol=debezium`.
+Its source object carries `connector=TiCDC`, the transaction's commit timestamp oracle value as
+`commit_ts`, and the reporting TiCDC cluster's `cluster_id`; both fields are present from TiCDC
+v8.0.0 onwards.
+The connector's `TiCdcSequenceNumberProvider` writes that commit TSO as the BigQuery change
+sequence, after checking that the event belongs to the configured cluster.
+That identifier is TiCDC's own cluster ID, which defaults to `default`, so give each TiCDC cluster
+its own before routing more than one of them into one table.
+
+The commit TSO orders every transaction within one TiDB cluster and survives a TiCDC process or
+node failover, so this profile configures no epoch list of the kind the MySQL GTID profile needs.
+It never falls back to the source object's `ts_ms`, which truncates the same value to milliseconds
+and so cannot order two transactions committed within one millisecond.
+
+Both examples below cover row changes only.
+Recent TiCDC releases also emit DDL events, and watermark events when the changefeed sets
+`enable-tidb-extension=true`.
+Neither carries a row to write, and neither is a shape Flink's `debezium-json` format can
+deserialize: a watermark's `op` value is unknown to it and a DDL event has no `op` field at all, so
+either one fails the job rather than being skipped.
+Where such a topic is unavoidable, set `'value.debezium-json.ignore-parse-errors' = 'true'` on the
+source table, accepting that it also hides a genuinely malformed row change.
+TiCDC provides no initial snapshot stream either, so load an already-populated table separately,
+taking that load at the changefeed's start timestamp.
+
+### TiCDC SQL
+
+Unlike the Debezium Avro sections above, this path needs no DataStream bridge.
+TiCDC's Debezium protocol is JSON only; its separate `avro` protocol carries TiCDC's own envelope
+rather than a Debezium one, so `debezium-avro-confluent` does not read it.
+Flink's `debezium-json` format produces the changelog row kinds and retains the source object as
+`value.source.properties`:
+
+```sql
+CREATE TABLE source_changes (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING>
+    METADATA FROM 'value.source.properties' VIRTUAL,
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'kafka',
+  'topic' = 'tidb_test.test.orders',
+  'properties.bootstrap.servers' = 'kafka:9092',
+  'properties.group.id' = 'bigquery-cdc-orders',
+  'scan.startup.mode' = 'earliest-offset',
+  'value.format' = 'debezium-json',
+  'value.debezium-json.schema-include' = 'true'
+);
+```
+
+Keep `value.debezium-json.schema-include` at `true` whatever the changefeed sets: TiCDC always
+wraps the change in a `payload` object, which is what that option describes, while
+`debezium-disable-schema=true` removes only the sibling `schema` object.
+Reading a `payload`-wrapped message with `schema-include` set to `false` fails every record.
+
+Define the BigQuery sink table with the cluster identity and the writable metadata column:
+
+```sql
+CREATE TABLE current_orders (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING>
+    METADATA FROM 'debezium-source-properties',
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_orders',
+  'sink.cdc.enabled' = 'true',
+  'sink.cdc.ticdc.cluster-id' = 'tidb-prod',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min',
+  'sink.cdc.table-reconciliation' = 'reconcile'
+);
+
+INSERT INTO current_orders
+SELECT id, amount, source_properties FROM source_changes;
+```
+
+### TiCDC Kafka source
+
+The DataStream example keeps the complete envelope by reading each message as text:
+
+{{< java-snippet file="BigQueryExamplesTiCdc.java" tag="bigquery-ticdc-cdc-kafka-source" >}}
+
+Add a Kafka connector release compatible with the application's Flink version to the job artifact;
+this repository does not ship one.
+The compiled example uses Kafka connector `3.4.0-1.20` with Flink 1.20 and `5.0.0-2.2` with Flink
+2.2 and 2.3.
+
+### TiCDC DataStream API
+
+Pass the `KafkaSource<String>` above as `kafkaSource`, and the destination table's schema as
+`rowSchema`, which is the Storage Write API's `TableSchema`:
+
+{{< java-snippet file="BigQueryExamplesTiCdc.java" tag="bigquery-ticdc-cdc-datastream" >}}
+
+The adapter selects `after` for create and update operations and `before` for a delete, and passes
+only that nested row to `JsonDocumentSerializer`.
+JSON carries no schema, so that serializer takes the destination schema rather than deriving one.
+The two CDC providers still receive the complete message and derive the operation and sequence from
+it.
+The example uses the default stream because BigQuery CDC is supported only by
+`STORAGE_API_AT_LEAST_ONCE`.
+
+A TiDB delete gives `before` the complete row image, so nothing corresponds to the PostgreSQL
+example's `REPLICA IDENTITY FULL` for deletes.
+An update is different: a changefeed with `sink.debezium.output-old-value=false` omits `before`
+from updates, which the SQL path's `debezium-json` format rejects.
+
+### TiCDC envelope adapter
+
+The DataStream example uses the following adapter helpers:
+
+{{< java-snippet file="BigQueryExamplesTiCdc.java" tag="bigquery-ticdc-cdc-adapter" >}}
+
+The job's checkpoint restores Kafka offsets after a Flink failure.
+Records between the restored offset and the last successful BigQuery append can be replayed, but
+the same TiCDC event produces the same change sequence number.
+
+Every row change of one transaction carries that transaction's commit TSO and therefore one
+sequence, and a later transaction always supersedes an earlier one.
+
+**NOTE:** One transaction can still produce two conflicting changes for one BigQuery primary key.
+TiDB writes each key at most once per transaction, but TiCDC splits an UPDATE that modifies a
+primary or unique key into a DELETE and an INSERT, which is the default for every sink except
+MySQL.
+A transaction that moves one key's value onto another key, such as the primary-key swap in
+[TiCDC's UPDATE splitting behavior](https://docs.pingcap.com/tidb/stable/ticdc-split-update-behavior/),
+emits both a DELETE and an INSERT for one key at one sequence, and BigQuery resolves that pair by
+ingestion time rather than by TiCDC's emission order.
+Where such transactions occur, supply an application tie-breaker through `change-sequence-number`
+or a custom `CdcSequenceNumberProvider`; see the
+[BigQuery table CDC contract]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture).
+
+See the [TiCDC Debezium protocol](https://docs.pingcap.com/tidb/stable/ticdc-debezium/),
+[TiDB timestamp oracle](https://docs.pingcap.com/tidb/stable/tso/),
+and [BigQuery CDC ordering format](https://cloud.google.com/bigquery/docs/change-data-capture).
 
 ## Spanner CDC ordering
 

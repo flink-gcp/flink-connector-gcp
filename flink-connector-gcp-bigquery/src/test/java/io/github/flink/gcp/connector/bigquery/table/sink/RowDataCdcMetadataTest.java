@@ -52,7 +52,10 @@ class RowDataCdcMetadataTest {
                         StringData.fromString("physical"),
                         StringData.fromString("0001/0000000000000002"));
         RowDataCdcSequenceNumberProvider provider =
-                new RowDataCdcSequenceNumberProvider(WritableMetadata.CHANGE_SEQUENCE_NUMBER, 1);
+                new RowDataCdcSequenceNumberProvider(
+                        WritableMetadata.CHANGE_SEQUENCE_NUMBER,
+                        1,
+                        resolver(Collections.emptyList(), null));
 
         assertThat(provider.getSequenceNumber(row)).isEqualTo("0001/0000000000000002");
     }
@@ -132,10 +135,113 @@ class RowDataCdcMetadataTest {
     }
 
     @Test
+    void forwardsDebeziumSourcePropertiesToTheTiCdcEncoder() {
+        assertThat(
+                        debeziumSequence(
+                                properties(
+                                        "connector",
+                                        "TiCDC",
+                                        "snapshot",
+                                        "false",
+                                        "commit_ts",
+                                        "449574614268182531",
+                                        "cluster_id",
+                                        "test_cluster",
+                                        "ts_ms",
+                                        "0"),
+                                "test_cluster"))
+                .isEqualTo("063D35BACF7D0003");
+    }
+
+    @Test
+    void rejectsATiCdcEventFromAnotherClusterThanTheConfiguredOne() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "TiCDC",
+                                                "commit_ts",
+                                                "449574614268182531",
+                                                "cluster_id",
+                                                "other_cluster"),
+                                        "test_cluster"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("other_cluster");
+    }
+
+    @Test
+    void forwardsTiCdcSnapshotStateToTheEncoderThatRejectsIt() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "TiCDC",
+                                                "snapshot",
+                                                "true",
+                                                "commit_ts",
+                                                "449574614268182531",
+                                                "cluster_id",
+                                                "test_cluster"),
+                                        "test_cluster"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'snapshot'");
+    }
+
+    /** A TiCDC release before v8.0.0 sends neither field, which must not order by anything else. */
+    @Test
+    void rejectsATiCdcEnvelopeWithoutTheTiDbSourceFields() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties("connector", "TiCDC", "ts_ms", "1714991051743"),
+                                        "test_cluster"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-empty 'cluster_id'");
+    }
+
+    @Test
+    void rejectsATiCdcEnvelopeWhoseCommitTsoTheMapDoesNotCarry() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "TiCDC",
+                                                "cluster_id",
+                                                "test_cluster",
+                                                "ts_ms",
+                                                "1714991051743"),
+                                        "test_cluster"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'commit_ts'");
+    }
+
+    @Test
+    void requiresAConfiguredClusterIdBeforeOrderingTiCdcEvents() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "TiCDC",
+                                                "commit_ts",
+                                                "449574614268182531",
+                                                "cluster_id",
+                                                "test_cluster")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires sink.cdc.ticdc.cluster-id");
+    }
+
+    @Test
     void aNullSequenceMetadataValueRemainsNullForTheCdcEncoderToReject() {
         GenericRowData row = GenericRowData.of((Object) null);
         RowDataCdcSequenceNumberProvider provider =
-                new RowDataCdcSequenceNumberProvider(WritableMetadata.CHANGE_SEQUENCE_NUMBER, 0);
+                new RowDataCdcSequenceNumberProvider(
+                        WritableMetadata.CHANGE_SEQUENCE_NUMBER,
+                        0,
+                        resolver(Collections.emptyList(), null));
 
         assertThat(provider.getSequenceNumber(row)).isNull();
     }
@@ -152,11 +258,30 @@ class RowDataCdcMetadataTest {
 
     private static String debeziumSequence(
             Map<StringData, StringData> properties, List<String> mysqlSourceUuids) {
+        return debeziumSequence(properties, mysqlSourceUuids, null);
+    }
+
+    private static String debeziumSequence(
+            Map<StringData, StringData> properties, String tiCdcClusterId) {
+        return debeziumSequence(properties, Collections.emptyList(), tiCdcClusterId);
+    }
+
+    private static String debeziumSequence(
+            Map<StringData, StringData> properties,
+            List<String> mysqlSourceUuids,
+            String tiCdcClusterId) {
         GenericRowData row = GenericRowData.of(new GenericMapData(properties));
         RowDataCdcSequenceNumberProvider provider =
                 new RowDataCdcSequenceNumberProvider(
-                        WritableMetadata.DEBEZIUM_SOURCE_PROPERTIES, 0, mysqlSourceUuids);
+                        WritableMetadata.DEBEZIUM_SOURCE_PROPERTIES,
+                        0,
+                        resolver(mysqlSourceUuids, tiCdcClusterId));
         return provider.getSequenceNumber(row);
+    }
+
+    private static DebeziumCdcSequenceNumberResolver resolver(
+            List<String> mysqlSourceUuids, String tiCdcClusterId) {
+        return new DebeziumCdcSequenceNumberResolver(mysqlSourceUuids, tiCdcClusterId);
     }
 
     private static Map<StringData, StringData> properties(String... entries) {

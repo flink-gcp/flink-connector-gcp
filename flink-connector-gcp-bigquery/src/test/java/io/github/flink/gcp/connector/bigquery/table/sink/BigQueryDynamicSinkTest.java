@@ -136,6 +136,25 @@ class BigQueryDynamicSinkTest {
                 .hasMessageContaining("Select exactly one BigQuery CDC sequence source");
     }
 
+    /**
+     * The factory rejects an empty option value with a message naming the key, but the sink
+     * validates its own sequence-profile configuration too, so a builder reached another way cannot
+     * produce a sink that fails only once a row arrives.
+     */
+    @Test
+    void rejectsAnUnusableSequenceProfileConfigurationWhenBuilt() {
+        assertThatThrownBy(() -> base().tiCdcClusterId("").build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("non-empty cluster ID");
+        assertThatThrownBy(
+                        () ->
+                                base().debeziumMySqlSourceUuids(
+                                                Collections.singletonList("not-a-uuid"))
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("canonical UUID");
+    }
+
     @Test
     void describesItselfByName() {
         assertThat(sink().asSummaryString()).isEqualTo("BigQuery table sink");
@@ -163,6 +182,7 @@ class BigQueryDynamicSinkTest {
                 a ->
                         a.debeziumMySqlSourceUuids(
                                 Collections.singletonList("24bc7850-2c16-11e6-a073-0242ac110002")));
+        varied.put("tiCdcClusterId", a -> a.tiCdcClusterId("test_cluster"));
         varied.put("primaryKeyIndexes", a -> a.primaryKeyIndexes(new int[] {1}));
         varied.put("writeMethod", a -> a.writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE));
         varied.put("createDisposition", a -> a.createDisposition(CreateDisposition.CREATE_NEVER));

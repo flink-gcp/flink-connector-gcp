@@ -130,6 +130,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_LOCATION,
                         BigQueryConnectorOptions.SINK_CDC_ENABLED,
                         BigQueryConnectorOptions.SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS,
+                        BigQueryConnectorOptions.SINK_CDC_TICDC_CLUSTER_ID,
                         BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS,
                         BigQueryConnectorOptions.SINK_CDC_CLEAR_MAX_STALENESS,
                         BigQueryConnectorOptions.SINK_CDC_TABLE_RECONCILIATION,
@@ -243,6 +244,9 @@ public class BigQueryDynamicTableFactory
                                         BigQueryConnectorOptions
                                                 .SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS)
                                 .orElse(Collections.emptyList()))
+                .tiCdcClusterId(
+                        config.getOptional(BigQueryConnectorOptions.SINK_CDC_TICDC_CLUSTER_ID)
+                                .orElse(null))
                 .primaryKeyIndexes(context.getPrimaryKeyIndexes())
                 .writeMethod(configuredWriteMethod.orElse(null))
                 .createDisposition(configuredCreateDisposition.orElse(null))
@@ -278,13 +282,19 @@ public class BigQueryDynamicTableFactory
 
     private static void checkCdcConfiguration(
             Context context, ReadableConfig config, WriteMethod writeMethod, boolean cdcEnabled) {
-        if (!cdcEnabled
-                && config.getOptional(BigQueryConnectorOptions.SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS)
-                        .isPresent()) {
+        if (!cdcEnabled) {
+            requireCdcEnabled(
+                    config, BigQueryConnectorOptions.SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS);
+            requireCdcEnabled(config, BigQueryConnectorOptions.SINK_CDC_TICDC_CLUSTER_ID);
+        }
+        if (config.getOptional(BigQueryConnectorOptions.SINK_CDC_TICDC_CLUSTER_ID)
+                .filter(String::isEmpty)
+                .isPresent()) {
             throw new ValidationException(
                     String.format(
-                            "Debezium MySQL CDC sequence options require '%s' = 'true'.",
-                            BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
+                            "Option '%s' must name the cluster the changefeed reports in"
+                                    + " 'cluster_id'.",
+                            BigQueryConnectorOptions.SINK_CDC_TICDC_CLUSTER_ID.key()));
         }
         if (!cdcEnabled
                 && (config.getOptional(BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS).isPresent()
@@ -318,6 +328,16 @@ public class BigQueryDynamicTableFactory
                                     + " KEY NOT ENFORCED. BigQuery applies each CDC mutation by"
                                     + " that key.",
                             BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
+        }
+    }
+
+    /** Rejects a sequence-profile option that only means something with CDC writes enabled. */
+    private static void requireCdcEnabled(ReadableConfig config, ConfigOption<?> option) {
+        if (config.getOptional(option).isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' requires '%s' = 'true'.",
+                            option.key(), BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
         }
     }
 

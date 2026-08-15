@@ -17,11 +17,12 @@ limitations under the License.
 # ADR-0111: The BigQuery table sink maps upsert changelogs and keeps CDC metadata out of the schema
 
 - Status: Accepted
-- Date: 2026-08-14; revised by [#629] and [#631] (2026-08-15)
+- Date: 2026-08-14; revised by [#629], [#631] and [#717] (2026-08-15)
 - Issues: [#65](https://github.com/laughingman7743/flink-connector-gcp/issues/65),
   [#626](https://github.com/laughingman7743/flink-connector-gcp/issues/626),
   [#629](https://github.com/laughingman7743/flink-connector-gcp/issues/629),
-  [#631](https://github.com/laughingman7743/flink-connector-gcp/issues/631)
+  [#631](https://github.com/laughingman7743/flink-connector-gcp/issues/631),
+  [#717](https://github.com/laughingman7743/flink-connector-gcp/issues/717)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md#change-data-capture`
 
@@ -148,6 +149,55 @@ unique total order; the MySQL connector currently retains only the GTID when han
 Those topologies remain unsupported until MySQL and Debezium can expose a durable group-wide
 ordering coordinate in source metadata.
 
+**The TiCDC profile encodes the commit timestamp oracle value as one section.**
+Only `connector=TiCDC` selects this profile, which reads the `commit_ts` and `cluster_id` fields
+TiCDC adds to its Debezium-compatible envelope from v8.0.0 onwards.
+`cluster_id` is the reporting TiCDC cluster's own identifier rather than TiDB's, and it defaults to
+`default`, so it separates configured changefeeds rather than proving a database identity.
+A commit TSO is a 46-bit physical millisecond timestamp with an 18-bit logical counter, allocated
+by one cluster's Placement Driver and therefore already a total order over that cluster's
+transactions.
+One unsigned 64-bit section carries it without loss, and the oracle survives a TiCDC process or
+node failover, so this profile needs neither the MySQL epoch model nor a second coordinate.
+
+The configured `sink.cdc.ticdc.cluster-id` is required and validated per event rather than trusted.
+Two TiDB clusters advance independent oracles, so ordering their events in one BigQuery table
+would interleave unrelated timestamps; rejecting the foreign event states that at the row instead
+of silently producing an ordering that means nothing.
+The check is only as strong as the deployment's identifiers: two TiCDC clusters that both keep the
+default `default` are indistinguishable in the envelope, which the option's documentation states.
+
+A zero `commit_ts` is rejected. Placement Driver timestamps are strictly positive, while zero is
+what the protocol's unused MySQL-inherited coordinates carry, so accepting it would let a
+misconfigured or non-TiCDC producer sort ahead of every real change.
+
+Row changes of one transaction share its commit TSO and therefore its sequence, so the commit TSO
+orders transactions rather than individual events.
+TiDB writes each key at most once per transaction, but TiCDC splits an UPDATE that modifies a
+primary or unique key into a DELETE and an INSERT, which is the default for every sink except
+MySQL.
+A transaction that moves one key's value onto another key, such as a primary-key swap, therefore
+emits both a DELETE and an INSERT for one BigQuery primary key at one sequence, and BigQuery
+resolves that pair by ingestion time.
+This profile cannot close that gap from source metadata: the protocol's `row` and `pos` are
+placeholder zeros, and its `ts_ms` is the same commit timestamp oracle value truncated to
+milliseconds. Like the PostgreSQL pair, it is deterministic
+and ordered for transaction progress without being a unique total order, and applications that
+admit such transactions supply a tie-breaker through the formatted metadata route or a custom
+DataStream provider.
+
+The source object's `ts_ms` is never a fallback: it truncates the same commit timestamp oracle
+value to milliseconds, so it cannot order two transactions committed within one millisecond, which
+is the collision the formatted-metadata route exists for.
+
+The profile covers row changes only.
+Recent releases also emit DDL events and, with `enable-tidb-extension=true`, watermark events;
+neither carries a row to write, and neither is a shape Flink's `debezium-json` format can
+deserialize, so such a topic needs `ignore-parse-errors` or a changefeed that does not produce
+them.
+The protocol provides no initial snapshot stream, so it has no counterpart to the MySQL profile's
+zero epoch.
+
 The Spanner profile refines this record through issue
 [#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633).
 
@@ -213,6 +263,21 @@ Runtime serialization supports key-only deletes on every supported version.
   without a timestamp fallback.
 - MySQL fixtures cover initial snapshots, create/update/delete streaming shapes, multi-row events,
   replay, appended failover epochs, unsigned boundaries, and invalid topology metadata.
+- PingCAP documents TiCDC's Debezium protocol, its `connector` value, and the added `commit_ts` and
+  `cluster_id` source fields in
+  [TiCDC Debezium Protocol](https://docs.pingcap.com/tidb/stable/ticdc-debezium/), and documents the
+  46-bit physical and 18-bit logical composition of a Placement Driver timestamp in
+  [TimeStamp Oracle](https://docs.pingcap.com/tidb/stable/tso/).
+- PingCAP documents that for every sink except MySQL, TiCDC splits an UPDATE modifying a primary or
+  non-null unique key into a DELETE followed by an INSERT, by default since v6.5.10, v7.1.6,
+  v7.5.3, and v8.1.1, and gives a primary-key swap whose one transaction deletes and rewrites the
+  same keys, in
+  [TiCDC behavior in splitting UPDATE events](https://docs.pingcap.com/tidb/stable/ticdc-split-update-behavior/).
+- TiCDC fixtures cover the documented envelope, its physical and logical timestamp components,
+  replay after a reversed arrival order, one transaction's row events sharing a sequence that a
+  later transaction supersedes, unsigned boundaries, and rejection of malformed, missing, zero,
+  overflowing, snapshot-state and foreign-cluster metadata without a timestamp fallback, including
+  through the table layer's metadata map for a pre-v8.0.0 envelope.
 
 ## Alternatives declined
 
@@ -237,6 +302,17 @@ Runtime serialization supports key-only deletes on every supported version.
 - **Claim that the two values form a unique total order.**
   Debezium itself tracks an event count outside `source.sequence` because multiple events can share
   one LSN; the connector cannot reconstruct an absent tie-breaker.
+- **Give TiCDC an ordered cluster-ID list like the MySQL source UUIDs.**
+  A failover within one TiDB cluster keeps the same Placement Driver oracle and cluster ID, so the
+  list would have exactly one entry; accepting several would ask the connector to order the
+  independent oracles of separate clusters, which no source field lets it do.
+- **Add the source object's `ts_ms` as a TiCDC tie-breaker below `commit_ts`.**
+  It is the same timestamp oracle value truncated to milliseconds, so it adds no ordering
+  information the leading section does not already carry.
+- **Accept `commit_ts` of zero as an ordinary early timestamp.**
+  Placement Driver timestamps are strictly positive, and zero is the value the protocol's unused
+  MySQL-inherited coordinates carry, so accepting it would sort a malformed or non-TiCDC envelope
+  ahead of every real change.
 
 ## Consequences
 
@@ -253,5 +329,8 @@ DataStream jobs and the Table profile share the same strict PostgreSQL sequence 
 Debezium JSON can forward `value.source.properties` directly, while Debezium Avro requires the
 complete-envelope adapter described above because Flink's standard changelog omits `source`.
 MySQL maps use the same adapter boundary with an explicit append-only source UUID list.
+TiCDC needs neither, because Flink's `debezium-json` format retains its JSON envelope's `source`
+object and the commit TSO orders one cluster without configured epochs; its configuration is the
+single cluster identity every event is checked against.
 Other Debezium maps become operational one connector profile at a time through
 [#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633).
