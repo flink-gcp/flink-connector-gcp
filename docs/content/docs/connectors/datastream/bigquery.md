@@ -359,6 +359,9 @@ layers built on this API.
 They are tracked by [#626]({{< param BookRepo >}}/issues/626),
 [#629]({{< param BookRepo >}}/issues/629), [#631]({{< param BookRepo >}}/issues/631) and
 [#633]({{< param BookRepo >}}/issues/633).
+The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#debezium-postgresql-cdc-from-kafka)
+show a DataStream adapter for complete Debezium PostgreSQL Avro envelopes and an SQL bridge that
+retains the source ordering metadata.
 
 ## Column modes
 

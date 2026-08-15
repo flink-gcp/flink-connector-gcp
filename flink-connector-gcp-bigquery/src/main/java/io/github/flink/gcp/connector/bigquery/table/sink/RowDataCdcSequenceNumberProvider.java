@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcSequenceNumberProvider;
@@ -45,8 +44,7 @@ final class RowDataCdcSequenceNumberProvider implements CdcSequenceNumberProvide
             case CHANGE_SEQUENCE_NUMBER:
                 return row.getString(position).toString();
             case DEBEZIUM_SOURCE_PROPERTIES:
-                MapData properties = row.getMap(position);
-                return DebeziumCdcSequenceNumberProvider.sequenceNumber(properties);
+                return DebeziumCdcSequenceNumberResolver.sequenceNumber(row.getMap(position));
             default:
                 throw new AssertionError("Unhandled writable metadata source " + source);
         }

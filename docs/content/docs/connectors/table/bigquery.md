@@ -288,7 +288,7 @@ When selected, exactly one of these writable metadata columns may appear in the 
 | Metadata key | Data type | Meaning |
 |---|---|---|
 | `change-sequence-number` | `STRING` | An already formatted BigQuery `_CHANGE_SEQUENCE_NUMBER`: one to four slash-separated hexadecimal sections, each at most 16 digits |
-| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL` |
+| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; the built-in profile accepts `connector=postgresql` |
 
 Writable metadata is appended to the runtime row by Flink and is not part of the physical
 BigQuery schema.
@@ -322,42 +322,10 @@ SELECT id, amount, formatted_sequence FROM ordered_changes;
 ```
 
 Flink's Debezium JSON format exposes connector-specific ordering fields through
-`value.source.properties` when it is used as a value format, for example:
-
-```sql
-CREATE TABLE source_changes (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING>
-    METADATA FROM 'value.source.properties' VIRTUAL,
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'kafka',
-  'topic' = 'orders',
-  'properties.bootstrap.servers' = 'broker:9092',
-  'value.format' = 'debezium-json'
-);
-
-CREATE TABLE current_orders_from_debezium (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING>
-    METADATA FROM 'debezium-source-properties',
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min',
-  'sink.cdc.table-reconciliation' = 'reconcile'
-);
-
-INSERT INTO current_orders_from_debezium
-SELECT id, amount, source_properties FROM source_changes;
-```
+`value.source.properties` when it is used as a value format, while its Debezium Avro format does
+not retain those fields in the produced changelog.
+The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#debezium-postgresql-cdc-from-kafka)
+show how to retain a complete Avro envelope in DataStream and hand it to either API.
 
 This page shows Kafka only to make Flink's `value.source.properties` hand-off explicit; this
 repository does not ship a Kafka connector.
@@ -365,10 +333,29 @@ The BigQuery sink owns the public `debezium-source-properties` name because it i
 metadata, while `value.source.properties` remains owned by the source format.
 Connector profiles choose ordering fields from that map instead of falling back to `ts_ms`, which
 can collide for changes in the same millisecond.
-PostgreSQL, MySQL GTID, and repository-native Spanner profiles are delivered by
-[#629]({{< param BookRepo >}}/issues/629), [#631]({{< param BookRepo >}}/issues/631), and
-[#633]({{< param BookRepo >}}/issues/633), respectively; until a profile is present, use
-`change-sequence-number` for that connector.
+
+The PostgreSQL profile parses Debezium's `sequence` JSON array as the nullable last committed LSN
+and required current LSN.
+It writes both positions as two fixed-width unsigned 64-bit hexadecimal sections and verifies the
+current position against `lsn` when that property is non-null.
+Missing, malformed, or contradictory values fail the row through the configured failure handler.
+DataStream applications can apply the same parser to a source-properties map with
+`DebeziumPostgreSqlCdcSequenceNumberProvider`.
+A replay of the same source event produces the same sequence, while a later position from the same
+logical replication slot produces a larger sequence.
+
+PostgreSQL primary failover therefore requires Debezium to continue from the same preserved and
+synchronized logical replication slot.
+Follow the
+[Debezium PostgreSQL failover guidance](https://debezium.io/documentation/reference/stable/connectors/postgresql.html)
+when configuring that slot.
+A recreated slot or any transition that loses LSN continuity is unsupported because the source
+metadata carries no ordering epoch that could distinguish the new LSN history.
+
+MySQL GTID and repository-native Spanner profiles are tracked by
+[#631]({{< param BookRepo >}}/issues/631) and [#633]({{< param BookRepo >}}/issues/633),
+respectively.
+Until a profile is present, use `change-sequence-number` for that connector.
 
 ### Table creation
 

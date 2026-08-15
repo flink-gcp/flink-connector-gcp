@@ -24,6 +24,137 @@ limitations under the License.
 
 Starting from the [BigQuery quickstart]({{< relref "docs/quickstart/bigquery" >}}) job.
 
+## Debezium PostgreSQL CDC from Kafka
+
+Both examples consume Kafka values containing complete Debezium PostgreSQL Avro envelopes and write
+the current row to a BigQuery table with a primary key.
+They fail rather than use `source.ts_ms` when the PostgreSQL ordering metadata is absent or
+contradictory.
+
+### Kafka source
+
+The examples use Flink's Kafka connector and
+`ConfluentRegistryAvroDeserializationSchema.forGeneric(...)` to retain the complete Debezium
+envelope, including `before`, `after`, `op`, and `source`.
+Pass the Avro schema for that complete envelope as `debeziumEnvelopeSchema`:
+
+{{< java-snippet file="BigQueryExamplesDebeziumPostgreSqlCdc.java" tag="bigquery-debezium-postgresql-cdc-kafka-source" >}}
+
+For a Debezium tombstone, the Confluent Avro deserializer returns `null` and Kafka's value-only
+wrapper emits no element.
+Flink checkpoint restoration takes precedence over the configured initial offsets, so a restarted
+job resumes the Kafka positions stored in its checkpoint.
+Add a Kafka connector release compatible with the application's Flink version and
+`flink-avro-confluent-registry` to the job artifact.
+The compiled example uses Kafka connector `3.4.0-1.20` with Flink 1.20 and `5.0.0-2.2` with Flink
+2.2 and 2.3; this repository does not ship either dependency in its connector artifacts.
+
+### DataStream API
+
+Pass the `KafkaSource<GenericRecord>` above as `kafkaSource`:
+
+{{< java-snippet file="BigQueryExamplesDebeziumPostgreSqlCdc.java" tag="bigquery-debezium-postgresql-cdc-datastream" >}}
+
+The adapter selects `after` for snapshot, create and update operations and `before` for a delete.
+The serializer passes only that nested row to `AvroRecordSerializer`; the two CDC providers still
+receive the complete envelope and derive the operation and sequence from it.
+The example uses the default stream because BigQuery CDC is supported only by
+`STORAGE_API_AT_LEAST_ONCE`.
+
+### SQL sink through a DataStream bridge
+
+**NOTE:** There is intentionally no Kafka source-table DDL in this example.
+Flink's `debezium-avro-confluent` format creates the correct changelog row kinds but does not retain
+`source.sequence` or `source.lsn` in its output.
+The raw `avro-confluent` format retains the envelope but exposes it as insert-only rows, so SQL DDL
+alone cannot produce both the Debezium changelog semantics and the source metadata required by this
+BigQuery CDC profile.
+Declaring that raw envelope as a source table does not close the gap.
+A `CASE` expression can select `before` or `after` from its `op` value, but SQL expressions cannot
+change an INSERT RowKind into the DELETE RowKind required for a Debezium delete.
+[Issue #706](https://github.com/laughingman7743/flink-connector-gcp/issues/706) tracks the upstream
+format improvement.
+
+#### Source changelog view
+
+Until that is available, pass the `KafkaSource<GenericRecord>` above to a DataStream adapter and
+register its output as the `source_changes` changelog view on the `tableEnv` that will execute the
+sink DDL and `INSERT` statement:
+
+{{< java-snippet file="BigQueryExamplesDebeziumPostgreSqlCdc.java" tag="bigquery-debezium-postgresql-cdc-sql-bridge" >}}
+
+The bridge emits the physical columns with Flink row kinds and a source-properties map.
+This registered view is the source relation for the remaining SQL statements.
+
+#### Sink table
+
+Define the BigQuery sink table and map the source-properties column to writable metadata:
+
+```sql
+CREATE TABLE current_orders (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING>
+    METADATA FROM 'debezium-source-properties',
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_orders',
+  'sink.cdc.enabled' = 'true',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min',
+  'sink.cdc.table-reconciliation' = 'reconcile'
+);
+```
+
+#### Insert query
+
+Forward the changelog rows and their ordering metadata from the source view into the sink table:
+
+```sql
+INSERT INTO current_orders
+SELECT id, amount, source_properties FROM source_changes;
+```
+
+The job's checkpoint restores Kafka offsets after a Flink failure.
+Records between the restored offset and the last successful BigQuery append can be replayed, but
+the same Debezium event produces the same change sequence number.
+
+The provider transcodes Debezium's decimal `sequence` pair into the hexadecimal sections required
+by BigQuery; it does not parse PostgreSQL's customary `X/Y` display form.
+PostgreSQL defines an LSN as a 64-bit WAL byte position, while Debezium defines `source.sequence`
+as the last committed LSN followed by the current LSN.
+Using both positions preserves transaction progress when adjacent operations share a current LSN.
+It does not create a unique total order for multiple events that share both positions.
+If distinct changes for the same BigQuery primary key can have an identical pair and can arrive out
+of order, provide an application-specific stable tie-breaker through the formatted
+`change-sequence-number` metadata or a custom `CdcSequenceNumberProvider`.
+See the [PostgreSQL `pg_lsn` type](https://www.postgresql.org/docs/current/datatype-pg-lsn.html),
+[Debezium PostgreSQL source metadata](https://debezium.io/documentation/reference/stable/connectors/postgresql.html),
+and [BigQuery CDC ordering format](https://cloud.google.com/bigquery/docs/change-data-capture).
+
+### Envelope adapter
+
+Both examples use the following adapter helpers.
+The DataStream path calls the connector's
+`DebeziumPostgreSqlCdcSequenceNumberProvider`, so it applies the same strict sequence parser as the
+SQL sink profile rather than maintaining a second implementation in the application.
+
+{{< java-snippet file="BigQueryExamplesDebeziumPostgreSqlCdc.java" tag="bigquery-debezium-postgresql-cdc-adapter" >}}
+
+This example serializes the complete `before` record for a delete, so set the PostgreSQL table to
+`REPLICA IDENTITY FULL` to make that complete row image available.
+A different adapter that serializes only the declared BigQuery primary key for deletes can use
+PostgreSQL's default replica identity when the source table has that primary key.
+
+Both APIs require the Debezium connector to continue the same preserved or synchronized logical
+replication slot across a PostgreSQL primary failover.
+A recreated or discontinuous slot starts another LSN history with no ordering epoch, which neither
+example can make safe; see the
+[BigQuery table CDC contract]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture).
+
 ## A table per day
 
 The writer context carries the record's event timestamp, which makes time-based routing expressible without the record carrying the routing key.

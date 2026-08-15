@@ -56,19 +56,47 @@ class RowDataCdcMetadataTest {
     }
 
     @Test
-    void rejectsDebeziumMapsWithoutAProfileInsteadOfUsingATimestampFallback() {
-        Map<StringData, StringData> properties = new LinkedHashMap<>();
-        properties.put(StringData.fromString("connector"), StringData.fromString("postgresql"));
-        properties.put(StringData.fromString("ts_ms"), StringData.fromString("1723593600000"));
-        GenericRowData row = GenericRowData.of(new GenericMapData(properties));
-        RowDataCdcSequenceNumberProvider provider =
-                new RowDataCdcSequenceNumberProvider(
-                        WritableMetadata.DEBEZIUM_SOURCE_PROPERTIES, 0);
+    void forwardsDebeziumSourcePropertiesToThePostgreSqlEncoder() {
+        assertThat(
+                        debeziumSequence(
+                                properties(
+                                        "connector",
+                                        "postgresql",
+                                        "sequence",
+                                        "[\"16\",\"17\"]",
+                                        "lsn",
+                                        "17")))
+                .isEqualTo("0000000000000010/0000000000000011");
+    }
 
-        assertThatThrownBy(() -> provider.getSequenceNumber(row))
+    @Test
+    void forwardsAContradictoryDebeziumLsnToThePostgreSqlEncoder() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "postgresql",
+                                                "sequence",
+                                                "[\"16\",\"17\"]",
+                                                "lsn",
+                                                "18")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("connector 'postgresql' is not supported")
-                .hasMessageNotContaining("ts_ms");
+                .hasMessageContaining("'lsn' does not match");
+    }
+
+    @Test
+    void routesDebeziumSourcePropertiesByConnectorName() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "mysql",
+                                                "sequence",
+                                                "[\"16\",\"17\"]")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Debezium connector 'mysql' is not supported");
     }
 
     @Test
@@ -84,5 +112,23 @@ class RowDataCdcMetadataTest {
         GenericRowData row = GenericRowData.of();
         row.setRowKind(kind);
         return RowDataCdcChangeTypeProvider.INSTANCE.getChangeType(row);
+    }
+
+    private static String debeziumSequence(Map<StringData, StringData> properties) {
+        GenericRowData row = GenericRowData.of(new GenericMapData(properties));
+        RowDataCdcSequenceNumberProvider provider =
+                new RowDataCdcSequenceNumberProvider(
+                        WritableMetadata.DEBEZIUM_SOURCE_PROPERTIES, 0);
+        return provider.getSequenceNumber(row);
+    }
+
+    private static Map<StringData, StringData> properties(String... entries) {
+        Map<StringData, StringData> properties = new LinkedHashMap<>();
+        for (int i = 0; i < entries.length; i += 2) {
+            properties.put(
+                    StringData.fromString(entries[i]),
+                    entries[i + 1] == null ? null : StringData.fromString(entries[i + 1]));
+        }
+        return properties;
     }
 }

@@ -100,7 +100,8 @@ limitations under the License.
             <artifactId>google-http-client</artifactId>
         </dependency>
         <dependency>
-            <!-- JSON request encoding for the conditional CDC label patch. -->
+            <!-- JSON request encoding for the conditional CDC label patch and Debezium sequence
+                 parsing. -->
             <groupId>com.google.http-client</groupId>
             <artifactId>google-http-client-gson</artifactId>
         </dependency>
