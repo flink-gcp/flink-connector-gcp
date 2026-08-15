@@ -247,7 +247,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   region with its common leading indentation removed, and `just check-doc-snippets` compiles it
   against the current reactor. Ordinary fenced Java blocks are deliberately outside that check:
   use them for partial or pseudocode fragments and make that abbreviation clear in the surrounding
-  prose. Existing ordinary fences remain unvalidated until they are migrated. Use
+  prose. Existing ordinary fences remain unvalidated until they are migrated. A comment inside a
+  tagged region is rendered to readers with the code and no checker reads what it asserts, so a
+  correction to a page's claims covers the regions that page renders as well as its Markdown. Use
   `.agents/skills/maintain-doc-java-snippets/` when adding, updating or repairing either form.
   `just test-java-snippet-shortcode` mounts the repository shortcode into a synthetic Hugo site
   under `docs/tests/fixtures/` and holds its rendering and error branches to fixture pages and Java
