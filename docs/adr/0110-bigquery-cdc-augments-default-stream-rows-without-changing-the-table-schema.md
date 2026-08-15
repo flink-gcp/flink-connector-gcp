@@ -105,5 +105,5 @@ the same API with dynamic destinations and evolving descriptors.
 The destination must have a BigQuery primary key.
 ADR-0112 records how `CREATE_IF_NEEDED` creates that key through the Tables API and applies optional
 maximum staleness through verified DDL because REST creation silently drops the setting.
-Flink SQL changelog conversion and Debezium PostgreSQL, MySQL and Spanner metadata mappings remain
-separate layers tracked by #626, #629, #631 and #633.
+Flink SQL changelog conversion and the PostgreSQL, MySQL, TiCDC and Spanner metadata mappings are
+separate layers, delivered by #626, #629, #631, #717 and #633.

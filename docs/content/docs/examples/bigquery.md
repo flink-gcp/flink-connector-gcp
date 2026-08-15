@@ -33,7 +33,7 @@ Each CDC source has its own ordering contract and example section:
 | Debezium PostgreSQL | Last committed and current LSN | [Available below](#debezium-postgresql-cdc-from-kafka) |
 | Debezium MySQL | Source UUID epoch, GTID transaction, binlog position, and row | [Available below](#debezium-mysql-cdc-from-kafka) |
 | TiCDC Debezium protocol | TiDB commit TSO and cluster identity | [Available below](#ticdc-debezium-cdc-from-kafka) |
-| Debezium Spanner and native Spanner Change Streams | Commit timestamp, record sequence, and mod number | [Planned in #633](https://github.com/laughingman7743/flink-connector-gcp/issues/633) |
+| Debezium Spanner and native Spanner Change Streams | Commit timestamp, record sequence, and mod number | [Available below](#spanner-cdc-from-either-route) |
 
 The implemented sections use complete source envelopes and do not substitute source timestamps or
 processing time when ordering metadata is absent.
@@ -411,14 +411,153 @@ See the [TiCDC Debezium protocol](https://docs.pingcap.com/tidb/stable/ticdc-deb
 [TiDB timestamp oracle](https://docs.pingcap.com/tidb/stable/tso/),
 and [BigQuery CDC ordering format](https://cloud.google.com/bigquery/docs/change-data-capture).
 
-## Spanner CDC ordering
+## Spanner CDC from either route
 
-The Spanner profile is tracked by
-[#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633) and is not available yet.
-Its section will show both Debezium Spanner envelopes and this repository's native Spanner Change
-Streams metadata.
-Both routes will derive the same BigQuery sequence from commit timestamp, record sequence, and mod
-number.
+Spanner changes reach BigQuery either through a Debezium Spanner connector on Kafka or through this
+repository's native Change Streams source.
+Both routes encode the same three coordinates of one Spanner mod — the commit timestamp in
+nanoseconds, the record sequence within the transaction, and the mod number within the record — so
+the same change produces the same BigQuery sequence whichever route wrote it.
+
+### Debezium Spanner Kafka source
+
+Use Flink's Kafka connector and `ConfluentRegistryAvroDeserializationSchema.forGeneric(...)` to
+retain the complete envelope.
+Pass its Avro schema as `debeziumEnvelopeSchema`:
+
+{{< java-snippet file="BigQueryExamplesDebeziumSpannerCdc.java" tag="bigquery-debezium-spanner-cdc-kafka-source" >}}
+
+### Debezium Spanner DataStream API
+
+`DebeziumSpannerCdcSequenceNumberProvider` reads `connector`, `ts_ns`, `sequence`, and `mod_number`
+from the envelope's `source` record:
+
+{{< java-snippet file="BigQueryExamplesDebeziumSpannerCdc.java" tag="bigquery-debezium-spanner-cdc-datastream" >}}
+
+### Debezium Spanner SQL sink through a DataStream bridge
+
+Registering the changelog as a view keeps the source properties available to SQL:
+
+{{< java-snippet file="BigQueryExamplesDebeziumSpannerCdc.java" tag="bigquery-debezium-spanner-cdc-sql-bridge" >}}
+
+```sql
+CREATE TABLE current_orders (
+  id STRING NOT NULL,
+  amount BIGINT,
+  source_properties MAP<STRING, STRING> METADATA FROM 'debezium-source-properties',
+  PRIMARY KEY (id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_orders',
+  'sink.cdc.enabled' = 'true',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min'
+);
+
+INSERT INTO current_orders
+SELECT id, amount, source_properties FROM source_changes;
+```
+
+### Debezium Spanner envelope adapter
+
+The adapter turns one envelope into the row to write and the source properties to order it by:
+
+{{< java-snippet file="BigQueryExamplesDebeziumSpannerCdc.java" tag="bigquery-debezium-spanner-cdc-adapter" >}}
+
+Copy the coordinates from the envelope's `source` record rather than from the payload.
+Debezium writes `ts_ms`, `ts_us`, and `ts_ns` in both places: inside `source` they carry the Spanner
+commit timestamp, while the siblings beside `source` carry the time the connector processed the
+event on its own clock.
+
+The adapter rejects every operation it does not recognize, which includes the `m` of the
+low-watermark stamps Debezium writes into this same topic under
+`gcp.spanner.low-watermark.enabled`.
+Those stamps carry no row and no ordering coordinates, so there is nothing to write and nothing to
+order them by; leave that option at its default `false` for a topic this example reads.
+
+### Native Change Streams DataStream API
+
+The native source hands the deserializer a typed `DataChangeRecord`, so the example emits one
+element per mod and keeps the mod's position as its mod number:
+
+{{< java-snippet file="BigQueryExamplesSpannerNativeCdc.java" tag="bigquery-spanner-native-cdc-deserializer" >}}
+
+`SpannerCdcSequenceNumber.of(...)` then encodes those coordinates without going through a
+Debezium-shaped map:
+
+{{< java-snippet file="BigQueryExamplesSpannerNativeCdc.java" tag="bigquery-spanner-native-cdc-datastream" >}}
+
+### Native Change Streams SQL
+
+The native route needs no DataStream bridge.
+The Debezium route needs one because Flink's Avro changelog drops the envelope's `source` record,
+whereas the Spanner source of this repository is a Flink table in its own right and already exposes
+its ordering coordinates as metadata columns.
+Source DDL, sink DDL, and the `INSERT` are therefore all the SQL below.
+
+Declare the change stream as a source table and expose its three ordering coordinates as metadata
+columns:
+
+```sql
+CREATE TABLE order_changes (
+  OrderId BIGINT,
+  Customer STRING,
+  Status STRING,
+  commit_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
+  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
+  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
+  PRIMARY KEY (OrderId) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'Orders',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.name' = 'order_changes',
+  'scan.change-stream.changelog-mode' = 'upsert',
+  'scan.startup.mode' = 'latest'
+);
+```
+
+Declare the BigQuery table and take the sequence as one row of writable metadata:
+
+```sql
+CREATE TABLE current_orders (
+  OrderId BIGINT NOT NULL,
+  Customer STRING,
+  Status STRING,
+  change_sequence ROW<commit_timestamp TIMESTAMP_LTZ(9), record_sequence STRING, mod_number INT>
+    METADATA FROM 'spanner-change-sequence',
+  PRIMARY KEY (OrderId) NOT ENFORCED
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'current_orders',
+  'sink.cdc.enabled' = 'true',
+  'sink.create-disposition' = 'create-if-needed',
+  'sink.cdc.max-staleness' = '10 min'
+);
+```
+
+Insert the changelog and build the sequence row from the three source metadata columns:
+
+```sql
+INSERT INTO current_orders
+SELECT OrderId, Customer, Status,
+       ROW(commit_timestamp, record_sequence, mod_number)
+FROM order_changes;
+```
+
+Two details in that DDL are load-bearing.
+The source runs in `upsert` changelog mode, because `full` also emits update-before rows, which the
+BigQuery CDC sink rejects.
+The commit-timestamp column is declared `TIMESTAMP_LTZ(9)` and carries no watermark: Flink permits
+watermark columns only through precision 3, and truncating the commit timestamp to milliseconds
+would let two changes of one key inside the same millisecond compare equal on their first section.
 
 ## A table per day
 

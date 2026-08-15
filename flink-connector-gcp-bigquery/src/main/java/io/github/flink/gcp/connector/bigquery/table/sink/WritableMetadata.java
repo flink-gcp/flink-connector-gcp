@@ -33,7 +33,17 @@ enum WritableMetadata {
     /** The map exposed by a Debezium format as {@code value.source.properties}. */
     DEBEZIUM_SOURCE_PROPERTIES(
             "debezium-source-properties",
-            DataTypes.MAP(DataTypes.STRING().nullable(), DataTypes.STRING().nullable()).nullable());
+            DataTypes.MAP(DataTypes.STRING().nullable(), DataTypes.STRING().nullable()).nullable()),
+
+    /** The typed ordering metadata of a native Spanner change-stream mod. */
+    SPANNER_CHANGE_SEQUENCE(
+            "spanner-change-sequence",
+            DataTypes.ROW(
+                            DataTypes.FIELD(
+                                    "commit_timestamp", DataTypes.TIMESTAMP_LTZ(9).nullable()),
+                            DataTypes.FIELD("record_sequence", DataTypes.STRING().nullable()),
+                            DataTypes.FIELD("mod_number", DataTypes.INT().nullable()))
+                    .nullable());
 
     private final String key;
     private final DataType dataType;
@@ -45,6 +55,10 @@ enum WritableMetadata {
 
     String getKey() {
         return key;
+    }
+
+    DataType getDataType() {
+        return dataType;
     }
 
     /** Returns the stable metadata inventory in planner iteration order. */

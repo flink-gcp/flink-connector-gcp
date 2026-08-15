@@ -354,16 +354,19 @@ the configured failure handler.
 The providers receive the original element, so this API also works with dynamic destinations and
 with serializers that derive different descriptors per destination.
 
-Three built-in providers derive that sequence from a change event's own source metadata, given a
+Four built-in providers derive that sequence from a change event's own source metadata, given a
 `Map<String, String>` of its source properties: `DebeziumPostgreSqlCdcSequenceNumberProvider` reads
 the replication-slot LSNs, `DebeziumMySqlCdcSequenceNumberProvider` reads GTID coordinates against
-a configured source-UUID epoch list, and `TiCdcSequenceNumberProvider` reads TiCDC's `commit_ts`
-against a configured TiCDC cluster ID.
+a configured source-UUID epoch list, `TiCdcSequenceNumberProvider` reads TiCDC's `commit_ts`
+against a configured TiCDC cluster ID, and `DebeziumSpannerCdcSequenceNumberProvider` reads
+Spanner's commit timestamp, record sequence, and mod number.
+An application reading the native Spanner Change Streams source already holds those three
+coordinates as typed values and passes them to `SpannerCdcSequenceNumber.of(...)`, which returns the
+same sequence the Debezium route returns for the same change.
 The [BigQuery table CDC contract]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture)
 states what each profile requires and rejects.
 
 The connector-neutral Flink SQL changelog mapping is a separate layer built on this API.
-The remaining Spanner profile is tracked by [#633]({{< param BookRepo >}}/issues/633).
 The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#cdc-examples-by-source-connector)
 show a DataStream adapter per source connector and an SQL bridge that retains the source ordering
 metadata.

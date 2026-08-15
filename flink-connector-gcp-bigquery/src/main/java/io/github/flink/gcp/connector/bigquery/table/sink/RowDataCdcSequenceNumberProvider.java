@@ -48,6 +48,8 @@ final class RowDataCdcSequenceNumberProvider implements CdcSequenceNumberProvide
                 return row.getString(position).toString();
             case DEBEZIUM_SOURCE_PROPERTIES:
                 return debeziumResolver.sequenceNumber(row.getMap(position));
+            case SPANNER_CHANGE_SEQUENCE:
+                return SpannerChangeSequenceResolver.sequenceNumber(row, position);
             default:
                 throw new AssertionError("Unhandled writable metadata source " + source);
         }
