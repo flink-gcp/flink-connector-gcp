@@ -230,8 +230,26 @@ case "${1:-}" in
                 fi
             done <<< "$tagged"
         fi
+        # The "slow" tag fails in the opposite direction from "gated". Forgetting
+        # "gated" costs money, loudly. Forgetting the lane that runs "slow" costs
+        # nothing and says nothing: the root pom excludes the tag everywhere, no
+        # workflow opts back in, every run stays green, and the coverage is gone.
+        # So what is checked here is that the opt-in exists — and, in the other
+        # direction, that the opt-in is not selecting an empty set.
+        slow_tagged=$(grep -rl --include='*.java' '@Tag("slow")' ./*/src/test/java | sort) || true
+        weekly=.github/workflows/weekly.yaml
+        if [ -n "$slow_tagged" ]; then
+            if ! grep -q 'test\.excluded\.groups=gated' "$weekly"; then
+                echo "::error::classes carry @Tag(\"slow\") but $weekly no longer passes -Dtest.excluded.groups=gated, so nothing runs them: the root pom excludes the tag and no lane opts back in. Restore the opt-in, or remove the tag from: $(echo "$slow_tagged" | tr '\n' ' ')" >&2
+                failed=1
+            fi
+        elif grep -q 'test\.excluded\.groups=gated' "$weekly"; then
+            echo "::error::$weekly opts into the \"slow\" lane but no test class carries @Tag(\"slow\"), so the flag selects nothing and this check would pass vacuously from here on. Drop the flag, or tag the classes it was added for." >&2
+            failed=1
+        fi
         if [ "$failed" -eq 0 ]; then
             echo "gated classes carrying both markers: $(printf '%s\n' "$env_gated" | wc -l | tr -d ' ')"
+            echo "slow classes the weekly lane runs: $(printf '%s' "$slow_tagged" | grep -c . || true)"
         fi
         exit "$failed"
         ;;

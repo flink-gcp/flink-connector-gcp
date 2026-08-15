@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.AbstractPubSubSourceEmulatorITCase;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,7 +93,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * a runner that delivered 318, 175 and 300 to arms this machine hands 151–195 (#440). The
  * break-even above is a rate of the right order, not a proven bound, and the arms are placed a
  * factor of five and three away from it for that reason.
+ *
+ * <p>Tagged {@code slow} and so run weekly rather than per pull request. The window is four permit
+ * holds and the waves it samples arrive one ack deadline apart, so the duration is the instrument
+ * and not padding a shorter run could recover. See the tag in the root pom.
  */
+@Tag("slow")
 class PubSubBackpressuredSplitBufferITCase extends AbstractPubSubSourceEmulatorITCase {
 
     private static final Logger LOG =
