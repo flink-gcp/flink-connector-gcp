@@ -97,15 +97,18 @@ Output, one `$GITHUB_OUTPUT`-style line each:
 
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
-  maven_args=...          empty = full reactor; else `-pl .,<modules>` in
-                          reactor order (`.` always included: the subset
-                          needs the parent pom, and its rat execution is what
-                          covers root-level and docs files).
-  notice_modules=<space-separated>   the shaded modules in the built set, in reactor order
-  check_notice=true|false whether the built set contains a shaded module —
-                          one whose directory carries a NOTICE.template —
-                          which is what decides whether verify.yaml runs
-                          `just check-notice`.
+  lanes=<json array>      the build matrix: one object per lane, each with a
+                          `name`, the `args` it builds (`-pl .,<modules>` in
+                          reactor order; `.` is always included, since the
+                          subset needs the parent pom and its rat execution is
+                          what covers root-level and docs files), and the
+                          `notice` modules — the shaded modules **that lane**
+                          built, space-separated, which is what decides whether
+                          it runs `just check-notice`.
+                          One lane per connector the selection builds, so an
+                          ordinary single-connector pull request still pays for
+                          one runner; a selection with no connector in it is one
+                          `root` lane.
   check_notice_sources=true|false   whether the change touches an input that
                           can move a pinned licence source — a pom.xml (the
                           resolved versions feed the {version} url templates),
@@ -167,6 +170,10 @@ GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
 
 # Rule 3: nothing Maven builds from these, but the root module's rat run does
 # scan them, so they select `-pl .` rather than nothing at all.
+# The `flink-connector-gcp-*` modules that are not connectors: every lane needs them,
+# so they are spine rather than a lane of their own.
+SPINE_SUFFIXES = frozenset({"base", "test-utils"})
+
 ROOT_ONLY_PREFIXES = ("docs/", "scripts/")
 ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
 
@@ -388,8 +395,7 @@ def main() -> None:
     if args.full:
         emit(
             run_build=True,
-            maven_args="",
-            notice_modules=shaded_modules(modules),
+            built=modules,
             check_notice_sources=False,
             reason="--full",
         )
@@ -408,8 +414,7 @@ def main() -> None:
     if everything:
         emit(
             run_build=True,
-            maven_args="",
-            notice_modules=shaded_modules(modules),
+            built=modules,
             check_notice_sources=fetch,
             reason=f"full reactor, forced by e.g. {everything[0]}",
         )
@@ -419,8 +424,7 @@ def main() -> None:
     if selected >= set(modules):
         emit(
             run_build=True,
-            maven_args="",
-            notice_modules=shaded_modules(modules),
+            built=modules,
             check_notice_sources=fetch,
             reason="all modules",
         )
@@ -428,22 +432,19 @@ def main() -> None:
     if not selected and not root_only:
         emit(
             run_build=False,
-            maven_args="",
-            notice_modules=[],
+            built=[],
             check_notice_sources=fetch,
             reason="nothing here can affect the Maven build",
         )
         return
 
     ordered = [m for m in modules if m in selected]
-    maven_args = "-pl " + ",".join(["."] + ordered)
     reason = (
         "modules " + ", ".join(ordered) if ordered else "root module only (rat check)"
     )
     emit(
         run_build=True,
-        maven_args=maven_args,
-        notice_modules=shaded_modules(ordered),
+        built=ordered,
         check_notice_sources=fetch,
         reason=reason,
     )
@@ -461,21 +462,91 @@ def shaded_modules(modules: list[str]) -> list[str]:
     return [m for m in modules if (ROOT / m / "NOTICE.template").is_file()]
 
 
+def pl(built: list[str]) -> str:
+    """The `-pl` argument for `built`, always explicit.
+
+    Never the empty string, which Maven reads as the whole reactor: an empty `built` is
+    the root-only case (`-pl .`, the rat check covering docs/ and scripts/, issue #253),
+    so emitting "" for it would silently turn the cheapest selection into the most
+    expensive one. The whole reactor is expressed by naming every module instead.
+    """
+    return "-pl " + ",".join(["."] + built)
+
+
+def lane_of(module: str) -> str | None:
+    """The lane a module belongs to: its connector's short name, or None for the spine.
+
+    A `flink-sql-connector-gcp-x` rides with `flink-connector-gcp-x`, which it must --
+    the uber-jar shades the connector it bundles. Everything else (the parent,
+    test-utils, base) is spine and rides in every lane.
+    """
+    for prefix in ("flink-sql-connector-gcp-", "flink-connector-gcp-"):
+        if module.startswith(prefix):
+            name = module[len(prefix) :]
+            return None if name in SPINE_SUFFIXES else name
+    return None
+
+
+def split_into_lanes(built: list[str]) -> list[dict[str, object]]:
+    """One lane per connector, in reactor order; the spine rides in each.
+
+    Derived, never configured -- the same rule the rest of this script follows. An
+    earlier draft carried a hand-balanced pair of groups, which meant a judgement about
+    which connectors to put together, a test to prove none had been forgotten, and a
+    balance that nothing pinned and that the first measured run was 17% off. Deriving
+    the lanes from the module list deletes all three: a connector added to the root pom
+    gets a lane from that commit, and there is no balance to get wrong.
+
+    Separate runners rather than a parallel reactor inside one: `-T 1C` was measured on
+    2026-08-15 and declined, because it made every module three to four times slower at
+    once -- four of them start testcontainers and the runner has four vCPUs. Runners do
+    not share cores.
+
+    A selection with no connector in it -- the root-only rat check -- is one lane.
+    """
+    lanes: dict[str, list[str]] = {}
+    spine: list[str] = []
+    for module in built:
+        name = lane_of(module)
+        if name is None:
+            spine.append(module)
+        else:
+            lanes.setdefault(name, []).append(module)
+
+    if not lanes:
+        return [{"name": "root", "args": pl(built), "notice": built}]
+    return [
+        {"name": name, "args": pl(spine + members), "notice": spine + members}
+        for name, members in lanes.items()
+    ]
+
+
 def emit(
     *,
     run_build: bool,
-    maven_args: str,
-    notice_modules: list[str],
+    built: list[str],
     check_notice_sources: bool,
     reason: str,
 ) -> None:
+    lanes = [
+        {
+            "name": lane["name"],
+            "args": lane["args"],
+            "notice": " ".join(shaded_modules(lane["notice"])),
+        }
+        for lane in (split_into_lanes(built) if run_build else [])
+    ]
     print(f"building: {reason}", file=sys.stderr)
+    for lane in lanes:
+        print(
+            f"  lane {lane['name']}: {lane['args'] or 'whole reactor'}", file=sys.stderr
+        )
     print(f"run_build={'true' if run_build else 'false'}")
-    print(f"maven_args={maven_args}")
-    # Kept beside the list because the workflow gates a setup-python step on it, and a shell
-    # emptiness test on a module list is the kind of thing that goes wrong quietly.
-    print(f"check_notice={'true' if notice_modules else 'false'}")
-    print(f"notice_modules={' '.join(notice_modules)}")
+    # One line of JSON, read by verify.yaml through fromJSON as the build matrix. Each
+    # lane carries its own NOTICE list rather than the workflow reading a shared one:
+    # with two lanes a shared list has each lane checking modules the other built, and
+    # the failure shape there is a lane that checks nothing while staying green.
+    print(f"lanes={json.dumps(lanes, separators=(',', ':'))}")
     print(f"check_notice_sources={'true' if check_notice_sources else 'false'}")
 
 

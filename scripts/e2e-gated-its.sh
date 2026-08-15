@@ -239,11 +239,17 @@ case "${1:-}" in
         slow_tagged=$(grep -rl --include='*.java' '@Tag("slow")' ./*/src/test/java | sort) || true
         weekly=.github/workflows/weekly.yaml
         if [ -n "$slow_tagged" ]; then
-            if ! grep -q 'test\.excluded\.groups=gated' "$weekly"; then
+            # Comment lines are stripped first, and the value is anchored: the
+            # explanatory comment beside the flag contains the same literal, and
+            # `=gated,slow` would re-exclude the tag while still matching a bare
+            # substring. Both were verified to defeat the unanchored form.
+            if ! grep -v '^[[:space:]]*#' "$weekly" \
+                | grep -Eq -- '-Dtest\.excluded\.groups=gated([[:space:]]|$)'; then
                 echo "::error::classes carry @Tag(\"slow\") but $weekly no longer passes -Dtest.excluded.groups=gated, so nothing runs them: the root pom excludes the tag and no lane opts back in. Restore the opt-in, or remove the tag from: $(echo "$slow_tagged" | tr '\n' ' ')" >&2
                 failed=1
             fi
-        elif grep -q 'test\.excluded\.groups=gated' "$weekly"; then
+        elif grep -v '^[[:space:]]*#' "$weekly" \
+            | grep -Eq -- '-Dtest\.excluded\.groups=gated([[:space:]]|$)'; then
             echo "::error::$weekly opts into the \"slow\" lane but no test class carries @Tag(\"slow\"), so the flag selects nothing and this check would pass vacuously from here on. Drop the flag, or tag the classes it was added for." >&2
             failed=1
         fi
