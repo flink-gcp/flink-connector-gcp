@@ -78,6 +78,12 @@ A change that makes a sentence false usually leaves that sentence alone. `grep` 
 and the sibling pages — for the term you changed, not just the paragraph you edited. Three
 untouched doc sentences have survived a round one this way.
 
+A page is more than its Markdown. A comment inside a tagged region a page renders is published
+prose, and no checker reads what it asserts, so sweep the backing sources under
+`flink-connector-gcp-docs-validation` too. Caught in draft on #717: a corrected page still rendered
+the superseded claim from a snippet comment a hundred lines below the correction, with every check
+green.
+
 Closing or re-scoping an issue includes rewording its rendered mentions in the same change, and a
 status word ("planned", "under investigation") may only appear beside the issue link that lets a
 reader check it.

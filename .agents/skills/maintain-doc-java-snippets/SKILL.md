@@ -1,6 +1,6 @@
 ---
 name: maintain-doc-java-snippets
-description: "Maintain Java examples in docs/content and module READMEs with their compiled source-backed snippets. Use when adding or editing a Java code block in documentation or a README, changing a java-snippet shortcode, readme-example marker, or tagged source in flink-connector-gcp-docs-validation, updating a connector API used by those examples, or responding to a just check-readme-examples, just check-doc-snippets, or Hugo snippet-marker failure."
+description: "Maintain Java examples in docs/content and module READMEs with their compiled source-backed snippets. Use when adding or editing a Java code block in documentation or a README, changing a java-snippet shortcode, readme-example marker, or tagged source in flink-connector-gcp-docs-validation, updating a connector API used by those examples, correcting a factual claim on a documentation page or README that renders a source-backed snippet, or responding to a just check-readme-examples, just check-doc-snippets, or Hugo snippet-marker failure."
 ---
 
 # Maintain Java documentation snippets
@@ -45,6 +45,25 @@ Classify the example before editing it.
 5. Keep the source on APIs common to the supported Flink range. If a real version difference
    exists, model it in the repository's compatibility seam; never skip a matrix row or duplicate
    the displayed snippet per version.
+
+## Comments inside a rendered region
+
+A comment between the markers reaches the reader with the code, so it is documentation prose that
+happens to live in a Java file. Such comments carry defaults, limits and rejection rules — an idle
+timeout's default value, the checkpoint interval below which a sink rejects the job — and they go
+stale exactly as page prose does.
+
+No checker reads what they assert. A README- or Javadoc-backed region has its comment text
+compared against the displayed copy, so the two copies cannot drift apart, but a claim that has
+become false is equally false in both and passes. Correcting a claim on a page therefore includes
+grepping the tagged regions that page renders under
+`flink-connector-gcp-docs-validation/src/test/java`, and changing a default or a limit includes
+grepping those sources beside the docs pages. Caught in draft on #717: a corrected page still
+rendered the superseded claim from a snippet comment about a hundred lines below the correction,
+with every check green.
+
+Keep such a comment to what the reader needs at that line. A note for a future editor belongs
+outside the markers, where it is not published.
 
 ## Change the shortcode
 
