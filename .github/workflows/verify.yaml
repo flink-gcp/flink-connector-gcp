@@ -149,8 +149,31 @@ jobs:
       # interpolation is weekly.yaml's passthrough shape). Integration tests
       # use testcontainers-based emulators and require no cloud credentials,
       # so this job is safe to run on any pull request.
+      # MEASUREMENT SCAFFOLDING for issue #453 — delete before this branch merges.
+      # The reason the issue asks for peak memory is that -T runs several
+      # testcontainers stacks on one runner at once, and starvation shows up as
+      # timeout flakes rather than as an out-of-memory error.
+      - name: Start the memory sampler
+        run: |
+          nproc
+          free -m | head -2
+          ( while :; do awk '/MemAvailable/ {print $2}' /proc/meminfo; sleep 5; done \
+              > /tmp/mem-samples.txt ) &
+          echo "SAMPLER_PID=$!" >> "$GITHUB_ENV"
+
       - name: Build and verify
         run: just verify ${{ needs.changes.outputs.maven_args }}
+
+      # MEASUREMENT SCAFFOLDING for issue #453 — delete before this branch merges.
+      - name: Report peak memory
+        if: always()
+        run: |
+          kill "${SAMPLER_PID}" 2>/dev/null || true
+          total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+          low=$(sort -n /tmp/mem-samples.txt | head -1)
+          echo "samples: $(wc -l < /tmp/mem-samples.txt)"
+          echo "MemTotal:  $((total / 1024)) MiB"
+          echo "peak used: $(((total - low) / 1024)) MiB"
 
       # Holds each shaded module's generated META-INF/NOTICE and pinned licence
       # texts to what Maven resolves for its bundle. A step of its own rather than part of

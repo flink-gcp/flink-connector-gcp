@@ -45,7 +45,7 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-mvn := "./mvnw -ntp"
+mvn := "./mvnw -ntp -T 1C"
 
 # List the recipes.
 default:
