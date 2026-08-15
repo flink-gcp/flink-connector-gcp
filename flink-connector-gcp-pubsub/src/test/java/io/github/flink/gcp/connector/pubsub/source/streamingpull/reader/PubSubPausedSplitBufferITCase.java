@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import io.github.flink.gcp.connector.testutils.Awaits;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubSplitReaders;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,7 +77,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * there; and that supersede is the only thing incrementing {@code messagesNacked} while a split is
  * paused. So {@code messagesReceived} is the buffer, and {@code messagesReceived - pendingAcks} is
  * how much of it is redelivered copies of what the connector already held.
+ *
+ * <p>Tagged {@code slow} and so run weekly rather than per pull request, for the same reason as its
+ * backpressured sibling: the expiry waves it samples arrive one ack deadline apart. See the tag in
+ * the root pom.
  */
+@Tag("slow")
 class PubSubPausedSplitBufferITCase extends AbstractPubSubSourceEmulatorITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubPausedSplitBufferITCase.class);

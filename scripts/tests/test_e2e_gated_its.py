@@ -63,8 +63,22 @@ REPORT = '<?xml version="1.0"?>\n<testsuite name="{fqcn}" tests="{tests}" skippe
 def tree(tmp_path):
     """A synthetic module tree the script is run against, plus a runner."""
 
+    def weekly(opt_in=True):
+        """The lane that runs @Tag("slow"), or a copy of it that forgot to."""
+        path = tmp_path / ".github" / "workflows" / "weekly.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flag = " -Dtest.excluded.groups=gated" if opt_in else ""
+        path.write_text(f"jobs:\n  compile_and_test:\n    run: just verify{flag}\n")
+        return path
+
     def add(
-        name, *, module="flink-connector-gcp-fake", gate=None, tag=False, javadoc=False
+        name,
+        *,
+        module="flink-connector-gcp-fake",
+        gate=None,
+        tag=False,
+        slow=False,
+        javadoc=False,
     ):
         source = tmp_path / module / "src" / "test" / "java" / "p" / f"{name}.java"
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -77,6 +91,8 @@ def tree(tmp_path):
             ]
         if tag:
             body += ['@Tag("gated")']
+        if slow:
+            body += ['@Tag("slow")']
         if gate:
             body += [f'@EnabledIfEnvironmentVariable(named = "{gate}", matches = ".+")']
         body += [f"class {name} {{}}", ""]
@@ -104,6 +120,7 @@ def tree(tmp_path):
 
     run.add = add
     run.report = report
+    run.weekly = weekly
     return run
 
 
@@ -123,6 +140,40 @@ def test_paired_markers_pass(tree):
     result = tree("--check-tags")
     assert result.returncode == 0, result.stderr
     assert str(len(sources)) in result.stdout
+
+
+def test_slow_tag_with_its_lane_passes(tree):
+    full_suite(tree)
+    tree.weekly()
+    tree.add("SlowITCase", slow=True)
+    result = tree("--check-tags")
+    assert result.returncode == 0, result.stderr
+    assert "slow classes the weekly lane runs: 1" in result.stdout
+
+
+def test_slow_tag_without_its_lane_fails(tree):
+    """The failure this whole tag needs a check for.
+
+    Nothing else notices: the pom excludes "slow" everywhere, so dropping the
+    weekly opt-in leaves the classes running in no lane at all, with every
+    workflow still green.
+    """
+    full_suite(tree)
+    tree.weekly(opt_in=False)
+    tree.add("SlowITCase", slow=True)
+    result = tree("--check-tags")
+    assert result.returncode == 1
+    assert "no longer passes -Dtest.excluded.groups=gated" in result.stderr
+    assert "SlowITCase" in result.stderr
+
+
+def test_the_lane_without_any_slow_tag_fails(tree):
+    """The mirror: a flag that selects nothing would pass vacuously forever."""
+    full_suite(tree)
+    tree.weekly()
+    result = tree("--check-tags")
+    assert result.returncode == 1
+    assert "no test class carries" in result.stderr
 
 
 def test_environment_gate_without_tag_fails(tree):
@@ -314,7 +365,11 @@ def test_the_build_excludes_the_gated_tag_by_default():
         el.tag.split("}")[-1]: (el.text or "").strip()
         for el in properties  # type: ignore[union-attr]
     }
-    assert values["test.excluded.groups"] == "gated"
+    # Both tags, and "gated" first: weekly.yaml narrows this to exactly "gated"
+    # to opt the "slow" classes back in, so the two are not interchangeable and
+    # a reordering here would leave that flag meaning something else.
+    excluded_tags = values["test.excluded.groups"].split(",")
+    assert excluded_tags == ["gated", "slow"]
 
     surefire = [
         plugin

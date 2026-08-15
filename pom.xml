@@ -156,8 +156,18 @@ limitations under the License.
              `./mvnw verify` as much as for `just verify`; `just e2e` — and the manual probe
              documented in BigQueryDefaultStreamSchemaEvolutionITCase — opt in by clearing
              this property with -Dtest.excluded.groups=. Every gated class carries both
-             markers, which `just check-gated-tags` enforces in both directions. -->
-        <test.excluded.groups>gated</test.excluded.groups>
+             markers, which `just check-gated-tags` enforces in both directions.
+
+             "slow" is the second tag, and it costs wall clock rather than money: a
+             class whose measurement is an elapsed-time observation, so its duration is
+             the instrument and cannot be tuned away. The two Pub/Sub split-buffer
+             classes observe permit-expiry waves, which arrive one ack-deadline apart,
+             and 40 s of that is 6% of a warm full-reactor build. weekly.yaml opts back
+             in with -Dtest.excluded.groups=gated, so they run against every supported
+             Flink version once a week instead of on every pull request; the same
+             `just check-gated-tags` fails if that opt-in ever disappears, because a
+             tag excluded everywhere runs nowhere and nothing goes red. -->
+        <test.excluded.groups>gated,slow</test.excluded.groups>
     </properties>
 
     <dependencyManagement>

@@ -143,8 +143,17 @@ jobs:
       # The floor row passes no arguments at all, so what it tests is whatever
       # the pom pins — that is the point, and `just verify` takes the rest
       # through to Maven unchanged.
+      #
+      # -Dtest.excluded.groups=gated narrows the root pom's `gated,slow` back to
+      # `gated`, which is what makes this the lane the `slow` classes run in.
+      # Dropping it would fail nothing here: those classes would simply stop
+      # running anywhere and every workflow would stay green, so
+      # `just check-gated-tags` fails on this file if the opt-in disappears while
+      # a `slow` tag still exists.
       - name: Build and verify
-        run: just verify -Pdocs-snippets ${{ steps.resolve.outputs.args }}
+        run: >-
+          just verify -Pdocs-snippets -Dtest.excluded.groups=gated
+          ${{ steps.resolve.outputs.args }}
 
   # Does one artifact cover the whole supported range?
   #
