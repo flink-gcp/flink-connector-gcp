@@ -120,7 +120,38 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: maven
+
+      # Not setup-java's `cache: maven`, which stood here before: its key is a
+      # hash of the POMs and it carries no restore-keys, so every pull request
+      # that edits a pom.xml misses completely and re-downloads the whole
+      # dependency tree. Measured on the full reactor 2026-08-15: 11:10 warm
+      # against 14:33 cold. A prefix fallback turns that miss into a near-hit —
+      # the changed dependency is fetched, everything else is restored.
+      #
+      # The path is docs.yaml's, for the reasons stated there: ~/.m2/wrapper joins
+      # it because the wrapper is `distributionType=only-script`, and this
+      # project's own artifacts are excluded so that a cached SNAPSHOT can never
+      # satisfy a resolution that should have come from the reactor. `just verify`
+      # runs `mvn verify`, which installs nothing, so the exclusion keeps that a
+      # property of the configuration rather than of today's step list.
+      #
+      # Restore always, save only on the default branch. A cache written from a
+      # pull request is scoped to that pull request's ref, so no other branch can
+      # ever read it — while it still counts against the repository's 10 GB quota
+      # and evicts, by least-recently-used, the caches on main that every pull
+      # request *does* read. Measured 2026-08-15: 9.14 GB of the 10 GB used, of
+      # which six pull-request-scoped Maven entries held 2108 MiB between them.
+      # Saving only on main removes that eviction pressure; a pull request keeps
+      # the restore, which is the half that saves the download.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: maven_cache
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: maven-verify-
 
       # install-action rather than mise: this drops one binary on PATH and
       # creates no shims at all, which is the simplest thing that can work in a
@@ -151,6 +182,21 @@ jobs:
       # so this job is safe to run on any pull request.
       - name: Build and verify
         run: just verify ${{ needs.changes.outputs.maven_args }}
+
+      # The save half of the restore above. `github.ref` is the caller's, so this
+      # is `refs/heads/main` for a push and `refs/pull/N/merge` for a pull
+      # request reaching here through ci.yaml. Skipped on an exact-key hit
+      # because the entry already exists and keys are immutable.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >-
+          github.ref == 'refs/heads/main'
+          && steps.maven_cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
 
       # Holds each shaded module's generated META-INF/NOTICE and pinned licence
       # texts to what Maven resolves for its bundle. A step of its own rather than part of
