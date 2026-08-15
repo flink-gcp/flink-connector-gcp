@@ -76,9 +76,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       run_build: ${{ steps.derive.outputs.run_build }}
-      maven_args: ${{ steps.derive.outputs.maven_args }}
-      check_notice: ${{ steps.derive.outputs.check_notice }}
-      notice_modules: ${{ steps.derive.outputs.notice_modules }}
+      lanes: ${{ steps.derive.outputs.lanes }}
       check_notice_sources: ${{ steps.derive.outputs.check_notice_sources }}
     steps:
       # A pull_request checkout is the base-into-head merge commit
@@ -107,12 +105,25 @@ jobs:
 
   # Java sources only: spotless and checkstyle run inside `verify`. scripts/ and
   # anything else Maven does not see are linted by lint.yaml.
+  # A matrix over the lanes the changes job derived: one per connector the selection
+  # builds, so an ordinary single-connector pull request is still one runner. Separate
+  # runners rather than -T inside one, because -T made every module three to four times
+  # slower at once (measured, #453) -- runners do not share cores. fail-fast is off so a
+  # failure in one lane still reports the others.
   build:
-    name: Build and test
+    name: Build and test (${{ matrix.lane.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: changes
-    if: needs.changes.outputs.run_build == 'true'
+    # Emptiness tested directly rather than through run_build: an empty matrix vector is
+    # a workflow-level error, not a skipped job, and a workflow that errors never reports
+    # -- the shape verify_passed exists to prevent. tofu-plan.yaml guards the same trap
+    # the same way.
+    if: needs.changes.outputs.lanes != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(needs.changes.outputs.lanes) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -176,20 +187,30 @@ jobs:
       # Runs the exact Java-header check followed by the full lifecycle:
       # spotless/checkstyle (validate), compile, unit tests (test), packaging,
       # integration tests (integration-test) and apache-rat (verify) — over the modules
-      # the changes job selected (empty args = the whole reactor; the
-      # interpolation is weekly.yaml's passthrough shape). Integration tests
+      # the changes job selected. Integration tests
       # use testcontainers-based emulators and require no cloud credentials,
       # so this job is safe to run on any pull request.
       - name: Build and verify
-        run: just verify ${{ needs.changes.outputs.maven_args }}
+        run: just verify ${{ matrix.lane.args }}
 
       # The save half of the restore above. `github.ref` is the caller's, so this
       # is `refs/heads/main` for a push and `refs/pull/N/merge` for a pull
       # request reaching here through ci.yaml. Skipped on an exact-key hit
       # because the entry already exists and keys are immutable.
+      # One lane saves, not all of them. The key is shared, so without the index every
+      # lane would race to reserve it on a push to main: four lose with "already
+      # exists", and which lane's downloads end up in the entry is arbitrary. Lane 0
+      # restores the accumulated union through the prefix first, so what it writes back
+      # is that union plus its own additions rather than a slice.
+      #
+      # Not a key per lane, which is the other way to remove the race: each lane restores
+      # the union and would save a near-full copy of it, so five entries of ~428 MiB per
+      # pom hash — against a quota already at 9.6 GiB of 10 GB, which would evict the
+      # docs and toolchain caches to buy nothing.
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: >-
           github.ref == 'refs/heads/main'
+          && strategy.job-index == 0
           && steps.maven_cache.outputs.cache-hit != 'true'
         with:
           path: |
@@ -220,8 +241,9 @@ jobs:
       # file fails the step.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: >-
-          needs.changes.outputs.check_notice == 'true' ||
-          needs.changes.outputs.check_notice_sources == 'true'
+          matrix.lane.notice != '' ||
+          (needs.changes.outputs.check_notice_sources == 'true'
+           && strategy.job-index == 0)
         with:
           python-version: '3.12'
 
@@ -237,9 +259,9 @@ jobs:
       # Through the environment, not interpolated into the script: the value is a
       # workflow output, and `run:` interpolation is a script-injection shape.
       - name: Check the SQL connector NOTICEs
-        if: needs.changes.outputs.check_notice == 'true'
+        if: matrix.lane.notice != ''
         env:
-          NOTICE_MODULES: ${{ needs.changes.outputs.notice_modules }}
+          NOTICE_MODULES: ${{ matrix.lane.notice }}
         run: |
           for module in $NOTICE_MODULES; do
             just check-notice "$module"
@@ -254,8 +276,14 @@ jobs:
       # other pull request stays off the network; the weekly job owns the fetch
       # that needs no change to trigger (a deleted tag, an edited archived
       # head).
+      # One lane only. The condition is a run-level output, so without the index both
+      # lanes would compile the reactor and fetch all fourteen pinned sources -- doubling
+      # the exposure to a transient upstream failure the comment above is at pains to
+      # keep off ordinary pull requests.
       - name: Verify the licence pins against their sources
-        if: needs.changes.outputs.check_notice_sources == 'true'
+        if: >-
+          needs.changes.outputs.check_notice_sources == 'true'
+          && strategy.job-index == 0
         run: just check-notice-sources
 
   # This workflow's own verdict, which is what makes its result trustworthy
