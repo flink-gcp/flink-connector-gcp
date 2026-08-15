@@ -425,10 +425,16 @@ See [TiCDC's UPDATE splitting behavior](https://docs.pingcap.com/tidb/stable/tic
 for the transactions that produce a split.
 
 This profile covers row changes only.
-Recent TiCDC releases also emit DDL events, and watermark events when the changefeed sets
-`enable-tidb-extension=true`; neither carries a row to write, and neither is a shape Flink's
-`debezium-json` format can deserialize, so a topic carrying them needs
-`value.debezium-json.ignore-parse-errors` or a changefeed that does not produce them.
+Which other events reach the topic depends on the TiCDC deployment rather than on this connector.
+Before TiDB v9.0.0, TiCDC's classic architecture sends row changes only in this protocol, ignoring
+DDL and watermark events, while its new architecture sends both from TiCDC v8.5.4-release.1.
+From TiDB v9.0.0 that new architecture is the only one, so DDL events always reach the topic.
+Watermark events additionally require the changefeed to set `enable-tidb-extension=true`.
+Neither carries a row to write, and neither is a shape Flink's `debezium-json` format can
+deserialize, so a topic carrying them needs `value.debezium-json.ignore-parse-errors` or a
+changefeed that does not produce them.
+Before v9.0.0 the two architectures are separate deployments, so which one is running is a
+question for whoever operates the changefeed rather than something the topic reveals.
 TiCDC provides no initial snapshot stream, so a populated destination needs a separate initial
 load, taken at the changefeed's start timestamp.
 

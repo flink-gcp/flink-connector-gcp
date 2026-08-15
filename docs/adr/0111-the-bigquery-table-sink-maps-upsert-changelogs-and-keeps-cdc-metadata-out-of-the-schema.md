@@ -191,8 +191,11 @@ value to milliseconds, so it cannot order two transactions committed within one 
 is the collision the formatted-metadata route exists for.
 
 The profile covers row changes only.
-Recent releases also emit DDL events and, with `enable-tidb-extension=true`, watermark events;
-neither carries a row to write, and neither is a shape Flink's `debezium-json` format can
+Before TiDB v9.0.0, TiCDC's classic architecture emits nothing else in this protocol while its new
+architecture adds DDL and watermark events from v8.5.4-release.1; from TiDB v9.0.0 that new
+architecture is the only one, so DDL events always arrive, and watermark events additionally
+require `enable-tidb-extension`.
+Neither carries a row to write, and neither is a shape Flink's `debezium-json` format can
 deserialize, so such a topic needs `ignore-parse-errors` or a changefeed that does not produce
 them.
 The protocol provides no initial snapshot stream, so it has no counterpart to the MySQL profile's
@@ -265,7 +268,12 @@ Runtime serialization supports key-only deletes on every supported version.
   replay, appended failover epochs, unsigned boundaries, and invalid topology metadata.
 - PingCAP documents TiCDC's Debezium protocol, its `connector` value, and the added `commit_ts` and
   `cluster_id` source fields in
-  [TiCDC Debezium Protocol](https://docs.pingcap.com/tidb/stable/ticdc-debezium/), and documents the
+  [TiCDC Debezium Protocol](https://docs.pingcap.com/tidb/stable/ticdc-debezium/) — which also
+  states that the classic architecture "only supports Row Changed events and directly ignores DDL
+  events and WATERMARK events", while the new architecture sends both from v8.5.4-release.1, a
+  split its
+  [development version](https://docs.pingcap.com/tidb/dev/ticdc-debezium/) drops in favour of
+  "starting from v9.0.0, TiCDC supports DDL events and WATERMARK events" — and documents the
   46-bit physical and 18-bit logical composition of a Placement Driver timestamp in
   [TimeStamp Oracle](https://docs.pingcap.com/tidb/stable/tso/).
 - PingCAP documents that for every sink except MySQL, TiCDC splits an UPDATE modifying a primary or
