@@ -56,14 +56,27 @@ workflow-level filter. The pieces:
   (today, the PR template) rather than mirroring the rule, because GitHub's `!` negation in
   `paths-ignore` is order-sensitive and a mistake there silently stops CI on a real workflow
   change — while the cost of under-ignoring is one full build per merge of such a file.
+- **A broad selection is split across at most two lanes** ([#453]), added 2026-08-15. The
+  build job is a matrix over the lanes `ci-maven-args.py` emits; a selection touching one
+  half of `LANE_ROOTS` still yields one lane, so the ordinary single-connector pull request
+  pays one runner. Two runners rather than a parallel reactor inside one: `-T 1C` was
+  measured and declined on PR #744 — it bought 18-24% of wall clock by making every module
+  three to four times slower at once, because four of them start testcontainers and the
+  runner has four vCPUs, so it spent timeout headroom to buy wall clock. Separate runners
+  do not share cores. The groups are static rather than weighted, because a weight table
+  goes stale in silence where a partition is checkable. **Measured 2026-08-15**: one
+  sequential build of 10:53 became lanes of 5:31 and 6:28, a whole workflow of 7:55 —
+  against 719s of runner time where one lane spent 653s, so wall clock fell 41% and billed
+  minutes rose about 18%. That trade is only worth making because the repository is public
+  and standard runners are free on it.
 - **A root-only change builds `-pl .` alone** ([#253]): `docs/**`, `scripts/**` and the root
   uv project (`pyproject.toml`, `uv.lock`) are the paths whose only Maven-relevant consumer
   is the root module's rat run, which scans the whole working tree and is their only
   pre-merge licence check — a `scripts/tests/`-only pull request had been paying 7m41s of
   full reactor for it. **Two files are deliberately outside that class**,
   `scripts/config/licence-sources.toml` and `scripts/check-notice.py`: the NOTICE check is a step
-  *inside* the `build` job gated on `check_notice`, which is false when no shaded module is
-  built, so routing them root-only would skip the licence check on exactly the change that
+  *inside* the `build` job gated on each lane's own `notice` list, which is empty when no
+  shaded module is built, so routing them root-only would skip the licence check on exactly the change that
   edits the licence pins. That the other checkers' scripts *are* in the class is the same
   fact from the other side — the checker jobs are unconditional, so nothing about them
   depends on what the deriver picks. The `justfile` stays full-reactor too: it carries the
@@ -108,3 +121,5 @@ workflow-level filter. The pieces:
 [#243]: https://github.com/laughingman7743/flink-connector-gcp/issues/243
 [#249]: https://github.com/laughingman7743/flink-connector-gcp/issues/249
 [#253]: https://github.com/laughingman7743/flink-connector-gcp/issues/253
+
+[#453]: https://github.com/flink-gcp/flink-connector-gcp/issues/453

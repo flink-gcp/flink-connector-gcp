@@ -83,6 +83,9 @@ green; use the clean-state procedures in that guide for such changes.
 - Tests that call a production `createWriter` path must configure an emulator endpoint.
 - `*Test` is a unit test; `*ITCase` runs in the integration-test execution. Credential-gated
   real-GCP tests also carry `@Tag("gated")` and are run only by `just e2e`.
+- A test whose *duration is the instrument* — an elapsed-time observation that cannot be tuned
+  down — carries `@Tag("slow")`, is excluded from ordinary builds, and runs in `weekly.yaml`'s
+  lane. Ordinary `just verify` does not run it; `-Dtest.excluded.groups=gated` does.
 - New `scripts/*.py` checkers require synthetic tests under `scripts/tests/`; do not make checker
   tests assert against the live repository tree.
 

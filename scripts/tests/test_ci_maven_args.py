@@ -289,22 +289,50 @@ def outputs(result):
     return dict(line.split("=", 1) for line in result.stdout.splitlines())
 
 
+def lanes(out):
+    """The build matrix the script emitted."""
+    return json.loads(out["lanes"])
+
+
+def only_lane(out):
+    """The single lane a narrow selection must produce -- one runner, not two."""
+    got = lanes(out)
+    assert len(got) == 1, f"expected one lane, got {[lane['name'] for lane in got]}"
+    return got[0]
+
+
+def built_anywhere(out):
+    """Every lane's -pl string, for asking whether a module is built at all."""
+    return " ".join(lane["args"] for lane in lanes(out))
+
+
+def notices_anywhere(out):
+    """Every lane's NOTICE modules, flattened."""
+    return [m for lane in lanes(out) for m in lane["notice"].split()]
+
+
 def test_full_mode_builds_everything(ci_maven_args):
     # check_notice_sources stays false with no diff: --full has no
     # licence-input signal, and the weekly notice_sources job owns the fetch
     # that needs no change to trigger.
     out = outputs(run_cli("--full"))
-    assert out == {
-        "run_build": "true",
-        "maven_args": "",
-        "check_notice": "true",
-        "notice_modules": (
-            "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
-            " flink-sql-connector-gcp-cloudtasks flink-sql-connector-gcp-bigtable"
-            " flink-sql-connector-gcp-spanner"
-        ),
-        "check_notice_sources": "false",
-    }
+    assert out["run_build"] == "true"
+    assert out["check_notice_sources"] == "false"
+    # Two lanes, and between them every module and every NOTICE the single-lane
+    # contract used to carry: splitting the build must not narrow what it covers.
+    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]
+    assert sorted(notices_anywhere(out)) == [
+        "flink-sql-connector-gcp-bigquery",
+        "flink-sql-connector-gcp-bigtable",
+        "flink-sql-connector-gcp-cloudtasks",
+        "flink-sql-connector-gcp-pubsub",
+        "flink-sql-connector-gcp-spanner",
+    ]
+    # And no lane checks a NOTICE for a module it did not build, which is the
+    # failure a shared list would produce silently.
+    for lane in lanes(out):
+        for module in lane["notice"].split():
+            assert module in lane["args"], f"{lane['name']} checks unbuilt {module}"
 
 
 def test_one_sql_module_builds_its_slice(ci_maven_args):
@@ -313,20 +341,20 @@ def test_one_sql_module_builds_its_slice(ci_maven_args):
             "--files", json.dumps(["flink-sql-connector-gcp-cloudtasks/src/X.java"])
         )
     )
-    assert out["maven_args"] == (
+    assert only_lane(out)["args"] == (
         "-pl .,flink-connector-gcp-test-utils,flink-connector-gcp-base,"
         "flink-connector-gcp-cloudtasks,flink-sql-connector-gcp-cloudtasks"
     )
-    assert out["notice_modules"] == "flink-sql-connector-gcp-cloudtasks"
-    assert out["check_notice"] == "true"
+    assert notices_anywhere(out) == ["flink-sql-connector-gcp-cloudtasks"]
+    assert notices_anywhere(out)
 
 
 def test_pubsub_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-pubsub/pom.xml"]))
     )
-    assert "flink-sql-connector-gcp-pubsub" in out["maven_args"]
-    assert out["check_notice"] == "true"
+    assert "flink-sql-connector-gcp-pubsub" in built_anywhere(out)
+    assert notices_anywhere(out)
 
 
 def test_only_the_selected_shaded_modules_are_named(ci_maven_args):
@@ -336,17 +364,17 @@ def test_only_the_selected_shaded_modules_are_named(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-pubsub/pom.xml"]))
     )
-    assert out["notice_modules"] == "flink-sql-connector-gcp-pubsub"
-    assert out["check_notice"] == "true"
+    assert notices_anywhere(out) == ["flink-sql-connector-gcp-pubsub"]
+    assert notices_anywhere(out)
 
 
 def test_cloudtasks_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-cloudtasks/pom.xml"]))
     )
-    assert "flink-sql-connector-gcp-cloudtasks" in out["maven_args"]
-    assert out["notice_modules"] == "flink-sql-connector-gcp-cloudtasks"
-    assert out["check_notice"] == "true"
+    assert "flink-sql-connector-gcp-cloudtasks" in built_anywhere(out)
+    assert notices_anywhere(out) == ["flink-sql-connector-gcp-cloudtasks"]
+    assert notices_anywhere(out)
 
 
 def test_bigquery_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
@@ -357,8 +385,8 @@ def test_bigquery_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-bigquery/pom.xml"]))
     )
-    assert "flink-sql-connector-gcp-bigquery" in out["maven_args"]
-    assert out["check_notice"] == "true"
+    assert "flink-sql-connector-gcp-bigquery" in built_anywhere(out)
+    assert notices_anywhere(out)
 
 
 def test_bigtable_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
@@ -366,26 +394,27 @@ def test_bigtable_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-bigtable/pom.xml"]))
     )
-    assert "flink-sql-connector-gcp-bigtable" in out["maven_args"]
-    assert out["notice_modules"] == "flink-sql-connector-gcp-bigtable"
-    assert out["check_notice"] == "true"
+    assert "flink-sql-connector-gcp-bigtable" in built_anywhere(out)
+    assert notices_anywhere(out) == ["flink-sql-connector-gcp-bigtable"]
+    assert notices_anywhere(out)
 
 
 def test_spanner_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-spanner/pom.xml"]))
     )
-    assert "flink-sql-connector-gcp-spanner" in out["maven_args"]
-    assert out["notice_modules"] == "flink-sql-connector-gcp-spanner"
-    assert out["check_notice"] == "true"
+    assert "flink-sql-connector-gcp-spanner" in built_anywhere(out)
+    assert notices_anywhere(out) == ["flink-sql-connector-gcp-spanner"]
+    assert notices_anywhere(out)
 
 
 def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-base/src/X.java"]))
     )
-    assert out["maven_args"] == ""
-    assert out["check_notice"] == "true"
+    # base fans out to everything, which now means both lanes.
+    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]
+    assert notices_anywhere(out)
 
 
 @pytest.mark.parametrize(
@@ -400,13 +429,10 @@ def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
 )
 def test_root_only_changes_build_the_root_rat_check(ci_maven_args, files):
     out = outputs(run_cli("--files", json.dumps(files)))
-    assert out == {
-        "run_build": "true",
-        "maven_args": "-pl .",
-        "check_notice": "false",
-        "notice_modules": "",
-        "check_notice_sources": "false",
-    }
+    # The root module alone: one lane, nothing shaded in it, so no NOTICE check.
+    assert out["run_build"] == "true"
+    assert out["check_notice_sources"] == "false"
+    assert only_lane(out) == {"name": "all", "args": "-pl .", "notice": ""}
 
 
 def test_a_root_only_path_does_not_swallow_a_module_selection(ci_maven_args):
@@ -416,28 +442,27 @@ def test_a_root_only_path_does_not_swallow_a_module_selection(ci_maven_args):
             json.dumps(["scripts/tests/test_ci_gate.py", "flink-connector-gcp-base/x"]),
         )
     )
-    assert out["maven_args"] == ""  # base fans out to everything
-    assert out["check_notice"] == "true"
+    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]  # base fans out
+    assert notices_anywhere(out)
 
 
 def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
     # The regression this class's boundary exists to prevent (#253): the NOTICE
-    # check runs inside the build job behind check_notice, so a licence-pin
-    # change must keep the reactor that makes it true.
+    # check runs inside the build job behind each lane's own notice list, so a
+    # licence-pin change must keep the reactor that populates them.
     out = outputs(
         run_cli("--files", json.dumps(["scripts/config/licence-sources.toml"]))
     )
-    assert out == {
-        "run_build": "true",
-        "maven_args": "",
-        "check_notice": "true",
-        "notice_modules": (
-            "flink-sql-connector-gcp-bigquery flink-sql-connector-gcp-pubsub"
-            " flink-sql-connector-gcp-cloudtasks flink-sql-connector-gcp-bigtable"
-            " flink-sql-connector-gcp-spanner"
-        ),
-        "check_notice_sources": "true",
-    }
+    assert out["run_build"] == "true"
+    assert out["check_notice_sources"] == "true"
+    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]
+    assert sorted(notices_anywhere(out)) == [
+        "flink-sql-connector-gcp-bigquery",
+        "flink-sql-connector-gcp-bigtable",
+        "flink-sql-connector-gcp-cloudtasks",
+        "flink-sql-connector-gcp-pubsub",
+        "flink-sql-connector-gcp-spanner",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -478,11 +503,11 @@ def test_everything_else_stays_off_the_network(ci_maven_args, path):
 
 def test_ignored_only_skips_the_build(ci_maven_args):
     out = outputs(run_cli("--files", json.dumps(["opentofu/main.tf", "README.md"])))
+    # No build at all, so no lanes: the gate job turns run_build=false into an
+    # explicit green rather than leaving a skipped job to read as a pass.
     assert out == {
         "run_build": "false",
-        "maven_args": "",
-        "check_notice": "false",
-        "notice_modules": "",
+        "lanes": "[]",
         "check_notice_sources": "false",
     }
 
@@ -508,8 +533,8 @@ def test_a_skill_edit_builds_nothing(tmp_path):
         run_cli("--files", json.dumps([".agents/skills/push-pr-branch/SKILL.md"]))
     )
 
-    assert out["maven_args"] == ""
-    assert out["check_notice"] == "false"
+    assert lanes(out) == []
+    assert not notices_anywhere(out)
 
 
 def test_a_skill_edit_beside_a_module_change_still_builds_that_module(tmp_path):
@@ -529,5 +554,136 @@ def test_a_skill_edit_beside_a_module_change_still_builds_that_module(tmp_path):
         )
     )
 
-    assert "flink-connector-gcp-cloudtasks" in out["maven_args"]
-    assert "flink-connector-gcp-bigquery" not in out["maven_args"]
+    assert "flink-connector-gcp-cloudtasks" in built_anywhere(out)
+    assert "flink-connector-gcp-bigquery" not in built_anywhere(out)
+
+
+# --- the two-lane split (issue #453) ---
+
+
+def lane_members(ci_maven_args, built):
+    """What split_into_lanes actually puts in each lane -- the code, not a copy of it."""
+    return {
+        lane["name"]: [m for m in built if f",{m}" in lane["args"]]
+        for lane in ci_maven_args.split_into_lanes(built)
+    }
+
+
+def test_every_module_lands_in_exactly_one_lane(ci_maven_args):
+    """The reason the split is static groups rather than computed weights.
+
+    Exercised through split_into_lanes rather than by re-reading LANE_ROOTS: a test that
+    reimplements the matching pins the data and not the code, and would pass while the
+    partition itself changed underneath it.
+    """
+    modules = ci_maven_args.pom_modules()
+    members = lane_members(ci_maven_args, modules)
+    assert sorted(members) == ["a", "b"]
+    shared = {"flink-connector-gcp-base", "flink-connector-gcp-test-utils"}
+    for module in modules:
+        lanes_with = [name for name, built in members.items() if module in built]
+        if module in shared:
+            assert lanes_with == ["a", "b"], f"{module} must ride in both lanes"
+        else:
+            assert len(lanes_with) == 1, (
+                f"{module} is in {lanes_with}, want exactly one"
+            )
+
+
+def test_a_connector_and_its_uber_jar_ride_together(ci_maven_args):
+    """The uber-jar shades the connector, so a lane holding one without the other
+    could not build it."""
+    members = lane_members(ci_maven_args, ci_maven_args.pom_modules())
+    for name, built in members.items():
+        for module in built:
+            sibling = module.replace("flink-connector-", "flink-sql-connector-", 1)
+            if sibling != module and sibling in ci_maven_args.pom_modules():
+                assert sibling in built, (
+                    f"{sibling} is not in lane {name} with {module}"
+                )
+
+
+def test_a_full_reactor_splits_and_loses_no_module(ci_maven_args):
+    out = outputs(run_cli("--full"))
+    everywhere = built_anywhere(out)
+    for module in ci_maven_args.pom_modules():
+        assert module in everywhere, f"{module} is built by no lane"
+
+
+def test_both_lanes_rebuild_the_shared_spine(ci_maven_args):
+    """Each lane is an independent `-pl` set, so it needs the modules it depends on.
+
+    A `-pl` subset cannot resolve a reactor sibling the list omits, which is the same
+    fact the justfile's binary-compat and e2e install lists document.
+    """
+    for lane in lanes(outputs(run_cli("--full"))):
+        assert lane["args"].startswith("-pl .,")
+        assert "flink-connector-gcp-base" in lane["args"]
+        assert "flink-connector-gcp-test-utils" in lane["args"]
+
+
+def test_a_single_connector_stays_on_one_runner(ci_maven_args):
+    """The common case must not pay a second runner for nothing."""
+    for module in ("flink-connector-gcp-pubsub", "flink-connector-gcp-bigquery"):
+        out = outputs(run_cli("--files", json.dumps([f"{module}/src/X.java"])))
+        lane = only_lane(out)
+        # Not just the lane's name: a lane that built only the spine would still be
+        # called "all", finish green in a minute, and run none of the module's tests.
+        assert module in lane["args"]
+        assert (
+            module.replace("flink-connector-", "flink-sql-connector-") in lane["args"]
+        )
+
+
+def test_a_change_spanning_both_groups_splits(ci_maven_args):
+    out = outputs(
+        run_cli(
+            "--files",
+            json.dumps(
+                [
+                    "flink-connector-gcp-pubsub/src/X.java",
+                    "flink-connector-gcp-bigtable/src/Y.java",
+                ]
+            ),
+        )
+    )
+    got = lanes(out)
+    assert [lane["name"] for lane in got] == ["a", "b"]
+    assert "flink-connector-gcp-pubsub" in got[0]["args"]
+    assert "flink-connector-gcp-pubsub" not in got[1]["args"]
+    assert "flink-connector-gcp-bigtable" in got[1]["args"]
+
+
+def test_a_derived_split_loses_nothing_either(ci_maven_args):
+    """The three --full invariants, on the path every pull request actually takes.
+
+    A change stripping the uber-jars from derived lanes only -- leaving --full correct --
+    survived this whole file before this test existed, while each lane went on naming a
+    NOTICE module it no longer built.
+    """
+    out = outputs(
+        run_cli(
+            "--files",
+            json.dumps(
+                [
+                    "flink-connector-gcp-pubsub/src/X.java",
+                    "flink-connector-gcp-bigtable/src/Y.java",
+                ]
+            ),
+        )
+    )
+    got = lanes(out)
+    assert [lane["name"] for lane in got] == ["a", "b"]
+    for lane in got:
+        for module in lane["notice"].split():
+            assert module in lane["args"], f"{lane['name']} checks unbuilt {module}"
+    everywhere = built_anywhere(out)
+    for module in (
+        "flink-connector-gcp-pubsub",
+        "flink-sql-connector-gcp-pubsub",
+        "flink-connector-gcp-bigtable",
+        "flink-sql-connector-gcp-bigtable",
+        "flink-connector-gcp-base",
+        "flink-connector-gcp-test-utils",
+    ):
+        assert module in everywhere, f"{module} is built by no lane"

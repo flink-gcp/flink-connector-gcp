@@ -97,15 +97,17 @@ Output, one `$GITHUB_OUTPUT`-style line each:
 
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
-  maven_args=...          empty = full reactor; else `-pl .,<modules>` in
-                          reactor order (`.` always included: the subset
-                          needs the parent pom, and its rat execution is what
-                          covers root-level and docs files).
-  notice_modules=<space-separated>   the shaded modules in the built set, in reactor order
-  check_notice=true|false whether the built set contains a shaded module —
-                          one whose directory carries a NOTICE.template —
-                          which is what decides whether verify.yaml runs
-                          `just check-notice`.
+  lanes=<json array>      the build matrix: one object per lane, each with a
+                          `name`, the `args` it builds (`-pl .,<modules>` in
+                          reactor order; `.` is always included, since the
+                          subset needs the parent pom and its rat execution is
+                          what covers root-level and docs files), and the
+                          `notice` modules — the shaded modules **that lane**
+                          built, space-separated, which is what decides whether
+                          it runs `just check-notice`.
+                          One lane unless the selection spans both halves of
+                          LANE_ROOTS, so an ordinary single-connector pull
+                          request still pays for one runner.
   check_notice_sources=true|false   whether the change touches an input that
                           can move a pinned licence source — a pom.xml (the
                           resolved versions feed the {version} url templates),
@@ -167,6 +169,18 @@ GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
 
 # Rule 3: nothing Maven builds from these, but the root module's rat run does
 # scan them, so they select `-pl .` rather than nothing at all.
+# The two halves a broad build is split across (issue #453). Static groups rather than
+# weights computed from timings: a weight table goes stale in silence the first time a
+# module gets slower, where a partition is checkable -- a connector in neither group
+# fails a test, and the balance is re-measured on the issue when it matters.
+#
+# Matched by suffix so a connector and its `flink-sql-connector-gcp-*` ride together,
+# which they must: the SQL module shades the connector it bundles.
+LANE_ROOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("a", ("-gcp-pubsub", "-gcp-spanner")),
+    ("b", ("-gcp-bigquery", "-gcp-bigtable", "-gcp-cloudtasks")),
+)
+
 ROOT_ONLY_PREFIXES = ("docs/", "scripts/")
 ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
 
@@ -388,8 +402,7 @@ def main() -> None:
     if args.full:
         emit(
             run_build=True,
-            maven_args="",
-            notice_modules=shaded_modules(modules),
+            built=modules,
             check_notice_sources=False,
             reason="--full",
         )
@@ -408,8 +421,7 @@ def main() -> None:
     if everything:
         emit(
             run_build=True,
-            maven_args="",
-            notice_modules=shaded_modules(modules),
+            built=modules,
             check_notice_sources=fetch,
             reason=f"full reactor, forced by e.g. {everything[0]}",
         )
@@ -419,8 +431,7 @@ def main() -> None:
     if selected >= set(modules):
         emit(
             run_build=True,
-            maven_args="",
-            notice_modules=shaded_modules(modules),
+            built=modules,
             check_notice_sources=fetch,
             reason="all modules",
         )
@@ -428,22 +439,19 @@ def main() -> None:
     if not selected and not root_only:
         emit(
             run_build=False,
-            maven_args="",
-            notice_modules=[],
+            built=[],
             check_notice_sources=fetch,
             reason="nothing here can affect the Maven build",
         )
         return
 
     ordered = [m for m in modules if m in selected]
-    maven_args = "-pl " + ",".join(["."] + ordered)
     reason = (
         "modules " + ", ".join(ordered) if ordered else "root module only (rat check)"
     )
     emit(
         run_build=True,
-        maven_args=maven_args,
-        notice_modules=shaded_modules(ordered),
+        built=ordered,
         check_notice_sources=fetch,
         reason=reason,
     )
@@ -461,21 +469,78 @@ def shaded_modules(modules: list[str]) -> list[str]:
     return [m for m in modules if (ROOT / m / "NOTICE.template").is_file()]
 
 
+def pl(built: list[str]) -> str:
+    """The `-pl` argument for `built`, always explicit.
+
+    Never the empty string, which Maven reads as the whole reactor: an empty `built` is
+    the root-only case (`-pl .`, the rat check covering docs/ and scripts/, issue #253),
+    so emitting "" for it would silently turn the cheapest selection into the most
+    expensive one. The whole reactor is expressed by naming every module instead.
+    """
+    return "-pl " + ",".join(["."] + built)
+
+
+def split_into_lanes(built: list[str]) -> list[dict[str, str]]:
+    """Partition `built` into at most two independent `-pl` sets, in reactor order.
+
+    Two lanes on two runners, each sequential within itself, is what a parallel reactor
+    is not. Measured 2026-08-15: `-T 1C` bought 18-24% of wall clock by making every
+    module three to four times slower at once, because four of them start testcontainers
+    and the runner has four vCPUs. Separate runners do not share cores, so a lane costs
+    what it always cost.
+
+    The groups are static rather than computed from timings: a weight table would go
+    stale silently the first time a module got slower, and `LANE_ROOTS` naming every
+    connector is checkable where a weight is not.
+
+    A selection touching only one group returns **one** lane -- the ordinary
+    single-connector pull request must not pay a second runner for nothing.
+    """
+    lanes: dict[str, list[str]] = {name: [] for name, _ in LANE_ROOTS}
+    shared: list[str] = []
+    for module in built:
+        for name, roots in LANE_ROOTS:
+            if any(module.endswith(root) for root in roots):
+                lanes[name].append(module)
+                break
+        else:
+            shared.append(module)
+
+    occupied = [name for name, members in lanes.items() if members]
+    if len(occupied) < 2:
+        return [{"name": "all", "args": pl(built), "notice": built}]
+    return [
+        {"name": name, "args": pl(shared + lanes[name]), "notice": shared + lanes[name]}
+        for name in occupied
+    ]
+
+
 def emit(
     *,
     run_build: bool,
-    maven_args: str,
-    notice_modules: list[str],
+    built: list[str],
     check_notice_sources: bool,
     reason: str,
 ) -> None:
+    lanes = [
+        {
+            "name": lane["name"],
+            "args": lane["args"],
+            "notice": " ".join(shaded_modules(lane["notice"])),
+        }
+        for lane in (split_into_lanes(built) if run_build else [])
+    ]
     print(f"building: {reason}", file=sys.stderr)
+    for lane in lanes:
+        print(
+            f"  lane {lane['name']}: {lane['args'] or 'whole reactor'}", file=sys.stderr
+        )
     print(f"run_build={'true' if run_build else 'false'}")
-    print(f"maven_args={maven_args}")
-    # Kept beside the list because the workflow gates a setup-python step on it, and a shell
-    # emptiness test on a module list is the kind of thing that goes wrong quietly.
-    print(f"check_notice={'true' if notice_modules else 'false'}")
-    print(f"notice_modules={' '.join(notice_modules)}")
+    # One line of JSON, read by verify.yaml through fromJSON as the build matrix. Each
+    # lane carries its own NOTICE list rather than the workflow reading a shared one:
+    # with two lanes a shared list has each lane checking modules the other built, and
+    # the failure shape there is a lane that checks nothing while staying green.
+    print(f"lanes={json.dumps(lanes, separators=(',', ':'))}")
     print(f"check_notice_sources={'true' if check_notice_sources else 'false'}")
 
 
