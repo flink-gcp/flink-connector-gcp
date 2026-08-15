@@ -30,8 +30,9 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just verify-module <module>`: verify a module and its reactor dependencies; keep its `-am`.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
-- `just check-doc-snippets`: check and compile source-backed Java examples rendered in the docs
-  and public Javadoc.
+- `just check-readme-examples`: check module README Java examples against compiled source.
+- `just check-doc-snippets`: check and compile source-backed Java examples rendered in the docs,
+  module READMEs, and public Javadoc.
 - `just test-java-snippet-shortcode`: test the Hugo shortcode against synthetic fixtures.
 - `just lint`: lint scripts, workflows, rendered Markdown, and OpenTofu.
 - `just test-scripts`: run the Python checker test suite.
@@ -50,11 +51,13 @@ green; use the clean-state procedures in that guide for such changes.
 ## Documentation and design
 
 - Current behavior and user-facing rationale belong in `docs/content/`.
-- Before adding or changing Java examples in docs, or when `just check-doc-snippets` fails, use
+- Before adding or changing Java examples in docs or a module README, or when
+  `just check-readme-examples` or `just check-doc-snippets` fails, use
   `$maintain-doc-java-snippets`. New or materially changed runnable API guidance is source-backed;
   intentionally partial or pseudocode examples remain ordinary fenced blocks and must be
-  described as abbreviated. Existing ordinary fences remain unvalidated until they are migrated.
-  When the shortcode itself changes, run its synthetic fixture suite.
+  described as abbreviated. Existing ordinary docs fences remain unvalidated until migrated;
+  every module README Java fence is classified. When the shortcode itself changes, run its
+  synthetic fixture suite.
 - Before adding or changing a public Javadoc code block, or for a Javadoc-specific
   `just check-doc-snippets` failure, use `$maintain-javadoc-examples`. Runnable blocks map to exact
   compiled backing regions; abbreviated blocks are visibly classified and explain their omission.

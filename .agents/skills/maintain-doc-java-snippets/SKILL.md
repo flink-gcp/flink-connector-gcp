@@ -1,6 +1,6 @@
 ---
 name: maintain-doc-java-snippets
-description: "Maintain Java examples in docs/content and their compiled source-backed snippets. Use when adding or editing a Java code block in the documentation, changing a java-snippet shortcode or tagged source in flink-connector-gcp-docs-validation, updating a connector API used by those examples, or responding to a just check-doc-snippets or Hugo snippet-marker failure."
+description: "Maintain Java examples in docs/content and module READMEs with their compiled source-backed snippets. Use when adding or editing a Java code block in documentation or a README, changing a java-snippet shortcode, readme-example marker, or tagged source in flink-connector-gcp-docs-validation, updating a connector API used by those examples, or responding to a just check-readme-examples, just check-doc-snippets, or Hugo snippet-marker failure."
 ---
 
 # Maintain Java documentation snippets
@@ -19,8 +19,10 @@ Classify the example before editing it.
   correction or whitespace-only edit does not require migration, but changing their displayed Java
   tokens or what they tell a reader to call does. Partial or pseudocode fences remain ordinary when
   edited, with their omissions kept explicit.
-- Do not copy the same runnable code into Markdown and Java. The shortcode is the only rendered
-  reference to source-backed code.
+- In Hugo content, do not copy the same runnable code into Markdown and Java. The shortcode is the
+  only rendered reference to source-backed code.
+- In a module README, keep the ordinary fence that GitHub can render and map its checked copy to
+  the tagged Java source as described below.
 
 ## Add or update runnable guidance
 
@@ -70,6 +72,40 @@ Before trusting a new fixture, inject the defect it claims to catch into a commi
 require the named fixture to fail for the intended assertion, and then restore the committed
 baseline. A compile failure alone is not evidence for a rendering or validation claim.
 
+## Maintain a module README example
+
+Every Java fence in `flink-*/README.md` chooses one form immediately above its opening fence.
+Keep the marker and fence at the README top level; the checker rejects list- or quote-nested Java
+fences so it cannot silently mistake their container prefixes for displayed Java.
+
+Map runnable guidance to a compiled region by file name and tag:
+
+````text
+<!-- readme-example file="Example.java" tag="example-name" -->
+```java
+// The exact tagged source region is copied here for GitHub.
+```
+````
+
+The displayed copy may differ from the source only by container indentation.
+Run `just format` on the backing source first, then copy the formatted tagged region without its
+marker comments.
+One backing region may also serve a Hugo page, but it may not serve two README blocks.
+
+Keep intentionally partial guidance outside compilation only when visible prose immediately before
+the marker names the omission:
+
+````text
+Abbreviated, not compiled: application-specific schema setup is omitted.
+
+<!-- readme-example partial="application-specific schema setup" -->
+```java
+call(...);
+```
+````
+
+The hidden reason supports maintenance but does not replace the reader-visible explanation.
+
 ## Respond to failures
 
 - A Java compiler error naming a docs-validation source means the public example or its minimal
@@ -78,6 +114,9 @@ baseline. A compile failure alone is not evidence for a rendering or validation 
   example is stale.
 - A missing, duplicate, reversed or empty marker means the file/tag contract is broken. Correct the
   shortcode or markers; do not fall back to copying code into Markdown.
+- A `just check-readme-examples` failure names the README fence and its backing identity. Restore
+  the exact displayed copy, add the missing classification, or make a partial example's omission
+  visible; do not weaken the comparison or add an allowlist.
 - When an API change breaks an existing example, update the example in the same change as the API.
 - Keep `flink-connector-gcp-docs-validation` behind the `docs-snippets` profile and keep its deploy
   skip. It is never a Maven Central artifact.
@@ -88,14 +127,19 @@ Run:
 
 ```bash
 just format
+just check-readme-examples
 just check-doc-snippets
 just test-java-snippet-shortcode
 just docs
 ```
 
-For a new source-backed example, also make a production API member used by the displayed region
-nonexistent temporarily (for example, a builder method) and require a named compilation failure,
-then restore it from a committed baseline.
+For a new mechanism or source-backed example, also make a production API member used by the
+displayed region nonexistent temporarily (for example, a builder method) and require a named
+compilation failure, then restore it from a committed baseline.
+Probe a missing Hugo marker and require `just docs` to name the page, file and tag. Confirm the
+rendered HTML contains the tagged code but not its wrapper, support types or marker comments.
+For a README mapping, change one displayed token and require `just check-readme-examples` to name
+the README, line, file, and tag before restoring the committed baseline.
 
 Run `just check-skill-frontmatter` after editing this skill. Cross-version verification belongs in
 the weekly `docs-snippets` matrix; run the affected supported versions locally when the example

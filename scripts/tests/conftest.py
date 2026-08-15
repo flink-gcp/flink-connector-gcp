@@ -25,6 +25,8 @@ from pathlib import Path
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parent.parent
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
 
 def load_script(filename: str):
@@ -75,3 +77,8 @@ def check_java_license_headers():
 @pytest.fixture(scope="session")
 def check_javadoc_examples():
     return load_script("check-javadoc-examples.py")
+
+
+@pytest.fixture(scope="session")
+def check_readme_examples():
+    return load_script("check-readme-examples.py")

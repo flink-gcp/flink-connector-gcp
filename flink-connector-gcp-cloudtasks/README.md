@@ -14,15 +14,17 @@ service executes later, paced by the queue's rate limit.
 | Form-encoded SQL body format | Implemented ([#606](https://github.com/laughingman7743/flink-connector-gcp/issues/606)) |
 | Shaded SQL connector jar | Implemented ([#607](https://github.com/laughingman7743/flink-connector-gcp/issues/607)) |
 
+<!-- readme-example file="CloudTasksReadmeOverview.java" tag="cloud-tasks-readme-overview" -->
 ```java
 Sink<OrderEvent> sink =
         CloudTasksSink.<OrderEvent>builder()
                 .queue(QueueDestination.of("my-project", "asia-northeast1", "webhooks"))
                 .serializer(
-                        CloudTasksSerializationSchema
-                                .httpTarget("https://api.example.com/v1/orders")
+                        CloudTasksSerializationSchema.httpTarget(
+                                        "https://api.example.com/v1/orders")
                                 .withBody(new MyEventJsonSerializationSchema())
-                                .withOidcToken("dispatcher@my-project.iam.gserviceaccount.com"))
+                                .withOidcToken(
+                                        "dispatcher@my-project.iam.gserviceaccount.com"))
                 .build();
 ```
 

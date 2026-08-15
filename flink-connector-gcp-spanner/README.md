@@ -20,6 +20,7 @@ Both dialects, GoogleSQL and PostgreSQL.
 | Gated real-GCP integration tests | Implemented ([#224](https://github.com/laughingman7743/flink-connector-gcp/issues/224)) |
 | Change-stream CDC changelog scan, readable metadata, and source watermarks in the Table API and SQL | Implemented ([#582](https://github.com/laughingman7743/flink-connector-gcp/issues/582), [#583](https://github.com/laughingman7743/flink-connector-gcp/issues/583)) |
 
+<!-- readme-example file="SpannerReadmeOverview.java" tag="spanner-readme-overview" -->
 ```java
 Sink<OrderEvent> sink =
         SpannerSink.<OrderEvent>builder()
@@ -27,8 +28,10 @@ Sink<OrderEvent> sink =
                 .serializer(
                         (event, context) ->
                                 Mutation.newInsertOrUpdateBuilder("Orders")
-                                        .set("OrderId").to(event.id())
-                                        .set("Total").to(event.total())
+                                        .set("OrderId")
+                                        .to(event.id())
+                                        .set("Total")
+                                        .to(event.total())
                                         .build())
                 .build();
 ```

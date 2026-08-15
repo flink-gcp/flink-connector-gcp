@@ -11,12 +11,15 @@ One builder dispatches to a write-method implementation at job-graph constructio
 | `STORAGE_API_EXACTLY_ONCE` | Implemented, including dynamic destinations and mid-stream schema evolution ([#30](https://github.com/laughingman7743/flink-connector-gcp/issues/30), [#76](https://github.com/laughingman7743/flink-connector-gcp/issues/76), [#77](https://github.com/laughingman7743/flink-connector-gcp/issues/77)) |
 | `FILE_LOADS` | Implemented ([#14](https://github.com/laughingman7743/flink-connector-gcp/issues/14) batch, [#69](https://github.com/laughingman7743/flink-connector-gcp/issues/69) streaming, [#646](https://github.com/laughingman7743/flink-connector-gcp/issues/646) metadata-preserving batch replacement) |
 
+<!-- readme-example file="BigQueryConnectorOverview.java" tag="bigquery-connector-overview" -->
 ```java
 Sink<MyEvent> sink =
         BigQuerySink.<MyEvent>builder()
                 .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
                 .destinationResolver(
-                        (e, ctx) -> TableDestination.of("my-project", "my_dataset", e.tableName()))
+                        (e, ctx) ->
+                                TableDestination.of(
+                                        "my-project", "my_dataset", e.tableName()))
                 .serializer(new MyEventProtoSerializer())
                 .build();
 ```
@@ -35,6 +38,7 @@ as text.
 | Reading the result of a query rather than a table, which is the only way to read a view: a query job first, then its result table, landing either in BigQuery's anonymous dataset or in one you name — plus opt-in `materializeViews()` for a name that turns out to be a view | Implemented ([#392](https://github.com/laughingman7743/flink-connector-gcp/issues/392)) |
 | Arrow wire format, measured against the Avro path: faster only for a reader that never asks for a row, and Flink asks for one | Declined ([#393](https://github.com/laughingman7743/flink-connector-gcp/issues/393)) |
 
+<!-- readme-example file="BigQueryReadmeSource.java" tag="bigquery-readme-source" -->
 ```java
 Source<GenericRecord, ?, ?> source =
         BigQuerySource.<GenericRecord>builder()

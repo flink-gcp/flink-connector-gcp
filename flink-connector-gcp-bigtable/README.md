@@ -17,6 +17,7 @@ checkpoints the service's moving partition topology and continuation tokens.
 | Per-record table destinations (`destinationResolver`) | Implemented ([#232](https://github.com/laughingman7743/flink-connector-gcp/issues/232)) |
 | Change Streams source | Implemented ([#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35)) |
 
+<!-- readme-example file="BigtableReadmeExamples.java" tag="bigtable-readme-sink" -->
 ```java
 Sink<OrderEvent> sink =
         BigtableSink.<OrderEvent>builder()
@@ -24,16 +25,21 @@ Sink<OrderEvent> sink =
                 .serializer(
                         (event, context) ->
                                 RowMutationEntry.create("order#" + event.id())
-                                        .setCell("cf", "payload", event.timestampMicros(),
+                                        .setCell(
+                                                "cf",
+                                                "payload",
+                                                event.timestampMicros(),
                                                 event.body()))
                 .build();
 ```
 
+<!-- readme-example file="BigtableReadmeExamples.java" tag="bigtable-readme-source" -->
 ```java
 Source<OrderEvent, ?, ?> source =
         BigtableSource.<OrderEvent>builder()
                 .table(TableDestination.of("my-project", "my-instance", "orders"))
-                // Zero or more records per row, so the schema declares its produced type too.
+                // Zero or more records per row, so the schema declares its produced type
+                // too.
                 .deserializer(new OrderEventRows())
                 .prefix("order#")
                 .build();
