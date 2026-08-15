@@ -63,7 +63,10 @@ jobs:
   real_gcp:
     # Scheduled workflows are inherited by forks; this keeps them from running
     # there (a fork could not authenticate anyway — see the WIF note above).
-    if: github.repository_owner == 'laughingman7743'
+    # The immutable ID of flink-gcp/flink-connector-gcp, not the owner name: a
+    # fork gets its own ID, while a transfer or a rename changes the name and
+    # would switch a name guard off silently, leaving the job green and idle.
+    if: github.repository_id == '1305440656'
     name: Real-GCP gated ITCases
     runs-on: ubuntu-latest
     # Raised from 30 when the Bigtable suite joined, and again when Spanner's

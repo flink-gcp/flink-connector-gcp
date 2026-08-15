@@ -57,8 +57,10 @@ jobs:
   sweep:
     # Scheduled workflows are inherited by forks; a fork could not authenticate
     # anyway (the provider condition pins the repository and owner IDs), but
-    # this keeps them from trying.
-    if: github.repository_owner == 'laughingman7743'
+    # this keeps them from trying. The immutable ID of
+    # flink-gcp/flink-connector-gcp, not the owner name: a transfer or a rename
+    # changes the name and would switch a name guard off silently.
+    if: github.repository_id == '1305440656'
     name: Clean up billed E2E fixtures
     runs-on: ubuntu-latest
     timeout-minutes: 15
