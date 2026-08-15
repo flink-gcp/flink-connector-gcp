@@ -320,7 +320,7 @@ def test_full_mode_builds_everything(ci_maven_args):
     assert out["check_notice_sources"] == "false"
     # Two lanes, and between them every module and every NOTICE the single-lane
     # contract used to carry: splitting the build must not narrow what it covers.
-    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]
+    assert sorted(lane["name"] for lane in lanes(out)) == CONNECTOR_LANES
     assert sorted(notices_anywhere(out)) == [
         "flink-sql-connector-gcp-bigquery",
         "flink-sql-connector-gcp-bigtable",
@@ -413,7 +413,7 @@ def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
         run_cli("--files", json.dumps(["flink-connector-gcp-base/src/X.java"]))
     )
     # base fans out to everything, which now means both lanes.
-    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]
+    assert sorted(lane["name"] for lane in lanes(out)) == CONNECTOR_LANES
     assert notices_anywhere(out)
 
 
@@ -432,7 +432,7 @@ def test_root_only_changes_build_the_root_rat_check(ci_maven_args, files):
     # The root module alone: one lane, nothing shaded in it, so no NOTICE check.
     assert out["run_build"] == "true"
     assert out["check_notice_sources"] == "false"
-    assert only_lane(out) == {"name": "all", "args": "-pl .", "notice": ""}
+    assert only_lane(out) == {"name": "root", "args": "-pl .", "notice": ""}
 
 
 def test_a_root_only_path_does_not_swallow_a_module_selection(ci_maven_args):
@@ -442,7 +442,9 @@ def test_a_root_only_path_does_not_swallow_a_module_selection(ci_maven_args):
             json.dumps(["scripts/tests/test_ci_gate.py", "flink-connector-gcp-base/x"]),
         )
     )
-    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]  # base fans out
+    assert (
+        sorted(lane["name"] for lane in lanes(out)) == CONNECTOR_LANES
+    )  # base fans out
     assert notices_anywhere(out)
 
 
@@ -455,7 +457,7 @@ def test_a_licence_pin_change_still_runs_the_notice_check(ci_maven_args):
     )
     assert out["run_build"] == "true"
     assert out["check_notice_sources"] == "true"
-    assert [lane["name"] for lane in lanes(out)] == ["a", "b"]
+    assert sorted(lane["name"] for lane in lanes(out)) == CONNECTOR_LANES
     assert sorted(notices_anywhere(out)) == [
         "flink-sql-connector-gcp-bigquery",
         "flink-sql-connector-gcp-bigtable",
@@ -561,6 +563,9 @@ def test_a_skill_edit_beside_a_module_change_still_builds_that_module(tmp_path):
 # --- the two-lane split (issue #453) ---
 
 
+CONNECTOR_LANES = ["bigquery", "bigtable", "cloudtasks", "pubsub", "spanner"]
+
+
 def lane_members(ci_maven_args, built):
     """What split_into_lanes actually puts in each lane -- the code, not a copy of it."""
     return {
@@ -578,12 +583,14 @@ def test_every_module_lands_in_exactly_one_lane(ci_maven_args):
     """
     modules = ci_maven_args.pom_modules()
     members = lane_members(ci_maven_args, modules)
-    assert sorted(members) == ["a", "b"]
+    assert sorted(members) == CONNECTOR_LANES
     shared = {"flink-connector-gcp-base", "flink-connector-gcp-test-utils"}
     for module in modules:
         lanes_with = [name for name, built in members.items() if module in built]
         if module in shared:
-            assert lanes_with == ["a", "b"], f"{module} must ride in both lanes"
+            assert sorted(lanes_with) == CONNECTOR_LANES, (
+                f"{module} must ride in every lane"
+            )
         else:
             assert len(lanes_with) == 1, (
                 f"{module} is in {lanes_with}, want exactly one"
@@ -648,7 +655,7 @@ def test_a_change_spanning_both_groups_splits(ci_maven_args):
         )
     )
     got = lanes(out)
-    assert [lane["name"] for lane in got] == ["a", "b"]
+    assert sorted(lane["name"] for lane in got) == ["bigtable", "pubsub"]
     assert "flink-connector-gcp-pubsub" in got[0]["args"]
     assert "flink-connector-gcp-pubsub" not in got[1]["args"]
     assert "flink-connector-gcp-bigtable" in got[1]["args"]
@@ -673,7 +680,7 @@ def test_a_derived_split_loses_nothing_either(ci_maven_args):
         )
     )
     got = lanes(out)
-    assert [lane["name"] for lane in got] == ["a", "b"]
+    assert sorted(lane["name"] for lane in got) == ["bigtable", "pubsub"]
     for lane in got:
         for module in lane["notice"].split():
             assert module in lane["args"], f"{lane['name']} checks unbuilt {module}"

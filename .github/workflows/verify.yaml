@@ -105,13 +105,13 @@ jobs:
 
   # Java sources only: spotless and checkstyle run inside `verify`. scripts/ and
   # anything else Maven does not see are linted by lint.yaml.
-  # A matrix over the lanes the changes job chose: one for an ordinary
-  # single-connector pull request, two when the selection spans both halves of
-  # LANE_ROOTS. Two runners rather than -T inside one, because -T made every module
-  # three to four times slower at once (measured, #453) -- separate runners do not
-  # share cores. fail-fast is off so a failure in one lane still reports the other.
+  # A matrix over the lanes the changes job derived: one per connector the selection
+  # builds, so an ordinary single-connector pull request is still one runner. Separate
+  # runners rather than -T inside one, because -T made every module three to four times
+  # slower at once (measured, #453) -- runners do not share cores. fail-fast is off so a
+  # failure in one lane still reports the others.
   build:
-    name: Build and test${{ matrix.lane.name != 'all' && format(' ({0})', matrix.lane.name) || '' }}
+    name: Build and test (${{ matrix.lane.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: changes

@@ -105,9 +105,10 @@ Output, one `$GITHUB_OUTPUT`-style line each:
                           `notice` modules — the shaded modules **that lane**
                           built, space-separated, which is what decides whether
                           it runs `just check-notice`.
-                          One lane unless the selection spans both halves of
-                          LANE_ROOTS, so an ordinary single-connector pull
-                          request still pays for one runner.
+                          One lane per connector the selection builds, so an
+                          ordinary single-connector pull request still pays for
+                          one runner; a selection with no connector in it is one
+                          `root` lane.
   check_notice_sources=true|false   whether the change touches an input that
                           can move a pinned licence source — a pom.xml (the
                           resolved versions feed the {version} url templates),
@@ -169,17 +170,9 @@ GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
 
 # Rule 3: nothing Maven builds from these, but the root module's rat run does
 # scan them, so they select `-pl .` rather than nothing at all.
-# The two halves a broad build is split across (issue #453). Static groups rather than
-# weights computed from timings: a weight table goes stale in silence the first time a
-# module gets slower, where a partition is checkable -- a connector in neither group
-# fails a test, and the balance is re-measured on the issue when it matters.
-#
-# Matched by suffix so a connector and its `flink-sql-connector-gcp-*` ride together,
-# which they must: the SQL module shades the connector it bundles.
-LANE_ROOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("a", ("-gcp-pubsub", "-gcp-spanner")),
-    ("b", ("-gcp-bigquery", "-gcp-bigtable", "-gcp-cloudtasks")),
-)
+# The `flink-connector-gcp-*` modules that are not connectors: every lane needs them,
+# so they are spine rather than a lane of their own.
+SPINE_SUFFIXES = frozenset({"base", "test-utils"})
 
 ROOT_ONLY_PREFIXES = ("docs/", "scripts/")
 ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
@@ -480,38 +473,51 @@ def pl(built: list[str]) -> str:
     return "-pl " + ",".join(["."] + built)
 
 
-def split_into_lanes(built: list[str]) -> list[dict[str, str]]:
-    """Partition `built` into at most two independent `-pl` sets, in reactor order.
+def lane_of(module: str) -> str | None:
+    """The lane a module belongs to: its connector's short name, or None for the spine.
 
-    Two lanes on two runners, each sequential within itself, is what a parallel reactor
-    is not. Measured 2026-08-15: `-T 1C` bought 18-24% of wall clock by making every
-    module three to four times slower at once, because four of them start testcontainers
-    and the runner has four vCPUs. Separate runners do not share cores, so a lane costs
-    what it always cost.
-
-    The groups are static rather than computed from timings: a weight table would go
-    stale silently the first time a module got slower, and `LANE_ROOTS` naming every
-    connector is checkable where a weight is not.
-
-    A selection touching only one group returns **one** lane -- the ordinary
-    single-connector pull request must not pay a second runner for nothing.
+    A `flink-sql-connector-gcp-x` rides with `flink-connector-gcp-x`, which it must --
+    the uber-jar shades the connector it bundles. Everything else (the parent,
+    test-utils, base) is spine and rides in every lane.
     """
-    lanes: dict[str, list[str]] = {name: [] for name, _ in LANE_ROOTS}
-    shared: list[str] = []
-    for module in built:
-        for name, roots in LANE_ROOTS:
-            if any(module.endswith(root) for root in roots):
-                lanes[name].append(module)
-                break
-        else:
-            shared.append(module)
+    for prefix in ("flink-sql-connector-gcp-", "flink-connector-gcp-"):
+        if module.startswith(prefix):
+            name = module[len(prefix) :]
+            return None if name in SPINE_SUFFIXES else name
+    return None
 
-    occupied = [name for name, members in lanes.items() if members]
-    if len(occupied) < 2:
-        return [{"name": "all", "args": pl(built), "notice": built}]
+
+def split_into_lanes(built: list[str]) -> list[dict[str, object]]:
+    """One lane per connector, in reactor order; the spine rides in each.
+
+    Derived, never configured -- the same rule the rest of this script follows. An
+    earlier draft carried a hand-balanced pair of groups, which meant a judgement about
+    which connectors to put together, a test to prove none had been forgotten, and a
+    balance that nothing pinned and that the first measured run was 17% off. Deriving
+    the lanes from the module list deletes all three: a connector added to the root pom
+    gets a lane from that commit, and there is no balance to get wrong.
+
+    Separate runners rather than a parallel reactor inside one: `-T 1C` was measured on
+    2026-08-15 and declined, because it made every module three to four times slower at
+    once -- four of them start testcontainers and the runner has four vCPUs. Runners do
+    not share cores.
+
+    A selection with no connector in it -- the root-only rat check -- is one lane.
+    """
+    lanes: dict[str, list[str]] = {}
+    spine: list[str] = []
+    for module in built:
+        name = lane_of(module)
+        if name is None:
+            spine.append(module)
+        else:
+            lanes.setdefault(name, []).append(module)
+
+    if not lanes:
+        return [{"name": "root", "args": pl(built), "notice": built}]
     return [
-        {"name": name, "args": pl(shared + lanes[name]), "notice": shared + lanes[name]}
-        for name in occupied
+        {"name": name, "args": pl(spine + members), "notice": spine + members}
+        for name, members in lanes.items()
     ]
 
 
