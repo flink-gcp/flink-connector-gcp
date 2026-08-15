@@ -102,12 +102,20 @@ class BigQueryDynamicSinkTest {
     }
 
     @Test
-    void exposesTheTwoAlternativeCdcSequenceMetadataColumns() {
+    void exposesEveryAlternativeCdcSequenceMetadataColumn() {
         Map<String, DataType> expected = new LinkedHashMap<>();
         expected.put("change-sequence-number", DataTypes.STRING().nullable());
         expected.put(
                 "debezium-source-properties",
                 DataTypes.MAP(DataTypes.STRING().nullable(), DataTypes.STRING().nullable())
+                        .nullable());
+        expected.put(
+                "spanner-change-sequence",
+                DataTypes.ROW(
+                                DataTypes.FIELD(
+                                        "commit_timestamp", DataTypes.TIMESTAMP_LTZ(9).nullable()),
+                                DataTypes.FIELD("record_sequence", DataTypes.STRING().nullable()),
+                                DataTypes.FIELD("mod_number", DataTypes.INT().nullable()))
                         .nullable());
 
         assertThat(((SupportsWritingMetadata) sink()).listWritableMetadata())
@@ -134,6 +142,26 @@ class BigQueryDynamicSinkTest {
                                         ROW))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Select exactly one BigQuery CDC sequence source");
+        assertThatThrownBy(
+                        () ->
+                                cdc.applyWritableMetadata(
+                                        List.of(
+                                                "debezium-source-properties",
+                                                "spanner-change-sequence"),
+                                        ROW))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "but found [debezium-source-properties, spanner-change-sequence]");
+    }
+
+    @Test
+    void retainsTheNativeSpannerSequenceColumnSelectedOnItsOwn() {
+        BigQueryDynamicSink cdc = sinkWith(builder -> builder.cdcEnabled(true));
+        BigQueryDynamicSink withoutMetadata = (BigQueryDynamicSink) cdc.copy();
+        cdc.applyWritableMetadata(Collections.singletonList("spanner-change-sequence"), ROW);
+
+        assertThat(cdc).isNotEqualTo(withoutMetadata);
+        assertThat(cdc.copy()).isEqualTo(cdc);
     }
 
     /**

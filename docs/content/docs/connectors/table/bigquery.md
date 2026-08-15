@@ -290,14 +290,15 @@ When selected, exactly one of these writable metadata columns may appear in the 
 | Metadata key | Data type | Meaning |
 |---|---|---|
 | `change-sequence-number` | `STRING` | An already formatted BigQuery `_CHANGE_SEQUENCE_NUMBER`: one to four slash-separated hexadecimal sections, each at most 16 digits |
-| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; built-in profiles accept `connector=postgresql`, `connector=mysql`, and `connector=TiCDC` |
+| `debezium-source-properties` | `MAP<STRING, STRING>` | The Debezium format's source metadata map, normally forwarded from a source column declared `METADATA FROM 'value.source.properties' VIRTUAL`; built-in profiles accept `connector=postgresql`, `connector=mysql`, `connector=TiCDC`, and `connector=spanner` |
+| `spanner-change-sequence` | `ROW<commit_timestamp TIMESTAMP_LTZ(9), record_sequence STRING, mod_number INT>` | The typed ordering metadata of one Spanner change-stream mod, normally forwarded from the native Spanner source's `commit-timestamp`, `sequence`, and `mod-number` metadata columns |
 
 Writable metadata is appended to the runtime row by Flink and is not part of the physical
 BigQuery schema.
-Selecting both sequence sources fails during planning.
+Selecting more than one sequence source fails during planning.
 Once a sequence metadata column is selected, every emitted row must supply a non-null valid value;
 missing or invalid values enter the configured row-failure path.
-Without either one, BigQuery resolves colliding mutations for a primary key by arrival order.
+Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order.
 
 The formatted route is immediately usable when the query can construct or forward a valid
 sequence:
@@ -438,9 +439,62 @@ question for whoever operates the changefeed rather than something the topic rev
 TiCDC provides no initial snapshot stream, so a populated destination needs a separate initial
 load, taken at the changefeed's start timestamp.
 
-The repository-native Spanner profile remains tracked by
-[#633]({{< param BookRepo >}}/issues/633).
-Until that profile is present, use `change-sequence-number` for Spanner.
+#### Spanner commit timestamps, record sequences, and mod numbers
+
+Spanner reaches this sink through two routes that share one ordering contract.
+Both encode three fixed-width unsigned 64-bit hexadecimal sections: the commit timestamp in
+nanoseconds since the epoch, the record sequence within the transaction, and the mod number within
+the change record.
+
+Debezium's Spanner connector supplies those coordinates as `ts_ns`, `sequence`, and `mod_number`
+under `connector=spanner`.
+`ts_ns` inside the `source` object is Debezium's rendering of the Spanner commit timestamp, and it
+keeps the nanoseconds `ts_ms` would truncate.
+The identically named field beside `source` in the payload is the connector's own processing time
+and never reaches a source-properties map.
+DataStream applications can apply the same parser with `DebeziumSpannerCdcSequenceNumberProvider`.
+
+The native Change Streams source of this repository already exposes those coordinates as typed
+metadata, so it uses `spanner-change-sequence` instead and needs no Debezium-shaped map.
+Forward the source's `commit-timestamp`, `sequence`, and `mod-number` metadata columns into that
+row.
+Declare the commit-timestamp column as `TIMESTAMP_LTZ(9)`: a watermark declaration forces precision
+3, and a millisecond-truncated commit timestamp makes two changes of one key within one millisecond
+compare equal on their first section.
+DataStream applications reading the native source call `SpannerCdcSequenceNumber.of(...)` with the
+same three values.
+Both routes produce the same sequence for the same change; a record sequence is compared
+numerically, so Spanner's zero-padded form and Debezium's unpadded form agree.
+
+Missing, negative, non-numeric, and overflowing values fail through the configured failure handler.
+The profile never substitutes a processing timestamp.
+That matters because Debezium's Spanner connector writes low-watermark stamps into the same data
+change topic when `gcp.spanner.low-watermark.enabled` is set: they carry `op` `m`, no row, and a
+`source` object whose record sequence and mod number are absent and whose timestamps Debezium fills
+from the connector's own clock.
+This profile rejects such a record rather than ordering rows against that clock, and the example
+adapter below rejects it one step earlier on its unsupported operation.
+Leave that option at its default `false`, or give the reading job a failure policy for those
+records, because Flink's `debezium-json` format cannot deserialize a row-less envelope either.
+The profile needs no configuration, because Spanner assigns commit timestamps itself and a
+change-stream reader inherits that order without a failover epoch.
+
+The three sections order every record of one transaction, and order two transactions whose commit
+timestamps differ.
+Spanner assigns [distinct commit timestamps to transactions that write overlapping sets of
+fields](https://cloud.google.com/spanner/docs/commit-timestamp), so repeated changes to one set of
+columns are ordered by the first section alone.
+Two transactions that write *disjoint* fields may share a commit timestamp, and a record sequence
+counts within its own transaction rather than across transactions, so a pair like that can encode
+to one sequence.
+BigQuery then resolves it by ingestion order, in the same way it resolves the PostgreSQL profile's
+shared LSN and the TiCDC profile's shared commit TSO.
+A workload that updates one row from two transactions touching different columns, and that needs
+those two ordered, must supply its own total order through `change-sequence-number` or a custom
+`CdcSequenceNumberProvider`.
+
+The `snapshot` property is ignored: the Spanner connector streams a change stream and has no
+snapshot phase whose value could select a different ordering.
 
 ### Table creation
 

@@ -26,6 +26,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Only TiCDC's new architecture emits them, from v8.5.4-release.1, and it is the only architecture
   from TiDB v9.0.0; watermarks additionally need `enable-tidb-extension`.
   State both bounds: one TiDB version alone tells a classic-architecture reader the wrong thing.
+- Spanner ordering uses commit timestamp nanoseconds, record sequence, and mod number as three
+  sections, and needs no configuration.
+  Read the timestamp from `source.ts_ns`, never from the same-named field beside `source`, which is
+  the connector's own processing time.
+  Both the Debezium route and the native `spanner-change-sequence` metadata row must reach BigQuery
+  through the one internal encoder, so their equivalence stays true by construction.
+  Reject a negative commit timestamp rather than preserving its bits as the PostgreSQL LSN profile
+  does, and do not add a `ts_ms` fallback, a snapshot policy, or an epoch list: Spanner assigns the
+  commit timestamps.
+  Never state the sections as a total order per primary key.
+  Spanner's uniqueness guarantee is over sets of fields, so two transactions writing disjoint
+  columns of one row may share a commit timestamp and encode to one sequence; that residual tie is
+  documented, and `server_transaction_id` cannot break it because it is a distinguisher, not an
+  order.
 
 ## Facade and serializers (`docs/adr/0016`, `0023`–`0027`)
 

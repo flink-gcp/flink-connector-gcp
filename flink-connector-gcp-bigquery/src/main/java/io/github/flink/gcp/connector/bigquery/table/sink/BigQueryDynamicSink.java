@@ -166,8 +166,11 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         }
         if (selected.size() > 1) {
             throw new ValidationException(
-                    "Select exactly one BigQuery CDC sequence source: 'change-sequence-number'"
-                            + " or 'debezium-source-properties', not both.");
+                    "Select exactly one BigQuery CDC sequence source among "
+                            + WritableMetadata.listAll().keySet()
+                            + " but found "
+                            + selected
+                            + ".");
         }
         return Collections.unmodifiableList(selected);
     }

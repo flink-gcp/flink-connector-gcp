@@ -19,11 +19,13 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 import org.apache.flink.table.data.GenericMapData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.types.RowKind;
 
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -244,6 +246,177 @@ class RowDataCdcMetadataTest {
                         resolver(Collections.emptyList(), null));
 
         assertThat(provider.getSequenceNumber(row)).isNull();
+    }
+
+    @Test
+    void forwardsDebeziumSpannerSourcePropertiesToTheSpannerEncoder() {
+        assertThat(
+                        debeziumSequence(
+                                properties(
+                                        "connector",
+                                        "spanner",
+                                        "ts_ns",
+                                        "1670955531785000000",
+                                        "sequence",
+                                        "1",
+                                        "mod_number",
+                                        "0",
+                                        "ts_ms",
+                                        "1670955531785")))
+                .isEqualTo("17306D33FB84D440/0000000000000001/0000000000000000");
+    }
+
+    @Test
+    void rejectsADebeziumSpannerEnvelopeWithoutItsOrderingCoordinates() {
+        assertThatThrownBy(
+                        () ->
+                                debeziumSequence(
+                                        properties(
+                                                "connector",
+                                                "spanner",
+                                                "ts_ms",
+                                                "1670955531785",
+                                                "low_watermark",
+                                                "1670955471635")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'ts_ns'");
+    }
+
+    /**
+     * The native change-stream source forwards its typed {@code commit-timestamp}, {@code sequence}
+     * and {@code mod-number} metadata columns, which must order identically to the Debezium
+     * envelope of the same change.
+     */
+    @Test
+    void derivesTheSameSequenceFromNativeSpannerMetadataAsFromTheDebeziumEnvelope() {
+        String nativeSequence =
+                spannerChangeSequence(
+                        TimestampData.fromInstant(Instant.ofEpochSecond(1670955531L, 785000000)),
+                        StringData.fromString("00000001"),
+                        0);
+
+        assertThat(nativeSequence)
+                .isEqualTo("17306D33FB84D440/0000000000000001/0000000000000000")
+                .isEqualTo(
+                        debeziumSequence(
+                                properties(
+                                        "connector",
+                                        "spanner",
+                                        "ts_ns",
+                                        "1670955531785000000",
+                                        "sequence",
+                                        "1",
+                                        "mod_number",
+                                        "0")));
+    }
+
+    @Test
+    void ordersNativeSpannerMetadataWithinATransactionAndWithinARecord() {
+        TimestampData commitTimestamp =
+                TimestampData.fromInstant(Instant.ofEpochSecond(1670955531L, 785000000));
+        String firstMod =
+                spannerChangeSequence(commitTimestamp, StringData.fromString("00000001"), 0);
+        String secondMod =
+                spannerChangeSequence(commitTimestamp, StringData.fromString("00000001"), 1);
+        String nextRecord =
+                spannerChangeSequence(commitTimestamp, StringData.fromString("00000002"), 0);
+        String nextNanosecond =
+                spannerChangeSequence(
+                        TimestampData.fromInstant(Instant.ofEpochSecond(1670955531L, 785000001)),
+                        StringData.fromString("00000001"),
+                        0);
+
+        assertThat(firstMod).isLessThan(secondMod);
+        assertThat(secondMod).isLessThan(nextRecord);
+        assertThat(nextRecord).isLessThan(nextNanosecond);
+    }
+
+    @Test
+    void rejectsANativeSpannerMetadataRowMissingAnyCoordinate() {
+        TimestampData commitTimestamp =
+                TimestampData.fromInstant(Instant.ofEpochSecond(1670955531L, 785000000));
+
+        assertThatThrownBy(() -> spannerChangeSequence(null, StringData.fromString("00000001"), 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'commit_timestamp'");
+        assertThatThrownBy(() -> spannerChangeSequence(commitTimestamp, null, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'record_sequence'");
+        assertThatThrownBy(
+                        () ->
+                                spannerChangeSequence(
+                                        commitTimestamp, StringData.fromString("00000001"), null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("'mod_number'");
+    }
+
+    @Test
+    void rejectsANativeSpannerCommitTimestampOutsideTheOrderableRange() {
+        assertThatThrownBy(
+                        () ->
+                                spannerChangeSequence(
+                                        TimestampData.fromInstant(Instant.EPOCH.minusNanos(1)),
+                                        StringData.fromString("00000001"),
+                                        0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("1970-01-01T00:00:00Z");
+        assertThatThrownBy(
+                        () ->
+                                spannerChangeSequence(
+                                        TimestampData.fromEpochMillis(Long.MAX_VALUE / 1000),
+                                        StringData.fromString("00000001"),
+                                        0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("64-bit");
+    }
+
+    @Test
+    void aNullSpannerChangeSequenceColumnRemainsNullForTheCdcEncoderToReject() {
+        GenericRowData row = GenericRowData.of((Object) null);
+        RowDataCdcSequenceNumberProvider provider =
+                new RowDataCdcSequenceNumberProvider(
+                        WritableMetadata.SPANNER_CHANGE_SEQUENCE,
+                        0,
+                        resolver(Collections.emptyList(), null));
+
+        assertThat(provider.getSequenceNumber(row)).isNull();
+    }
+
+    /**
+     * The planner appends the metadata column after the physical row, so the provider is built at
+     * the physical arity rather than at zero.
+     */
+    @Test
+    void readsTheSpannerChangeSequenceAppendedAfterThePhysicalColumns() {
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("order-1"),
+                        42L,
+                        GenericRowData.of(
+                                TimestampData.fromInstant(
+                                        Instant.ofEpochSecond(1670955531L, 785000000)),
+                                StringData.fromString("00000001"),
+                                0));
+        RowDataCdcSequenceNumberProvider provider =
+                new RowDataCdcSequenceNumberProvider(
+                        WritableMetadata.SPANNER_CHANGE_SEQUENCE,
+                        2,
+                        resolver(Collections.emptyList(), null));
+
+        assertThat(provider.getSequenceNumber(row))
+                .isEqualTo("17306D33FB84D440/0000000000000001/0000000000000000");
+    }
+
+    private static String spannerChangeSequence(
+            TimestampData commitTimestamp, StringData recordSequence, Integer modNumber) {
+        GenericRowData row =
+                GenericRowData.of(GenericRowData.of(commitTimestamp, recordSequence, modNumber));
+        RowDataCdcSequenceNumberProvider provider =
+                new RowDataCdcSequenceNumberProvider(
+                        WritableMetadata.SPANNER_CHANGE_SEQUENCE,
+                        0,
+                        resolver(Collections.emptyList(), null));
+        return provider.getSequenceNumber(row);
     }
 
     private static CdcChangeType changeType(RowKind kind) {

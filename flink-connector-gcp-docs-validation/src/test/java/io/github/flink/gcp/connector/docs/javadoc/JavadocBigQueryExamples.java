@@ -28,6 +28,9 @@ import com.google.protobuf.GeneratedMessage;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.SpannerCdcSequenceNumber;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
@@ -36,6 +39,7 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
 import java.io.IOException;
+import java.time.Instant;
 
 final class JavadocBigQueryExamples {
 
@@ -85,10 +89,48 @@ final class JavadocBigQueryExamples {
         return options;
     }
 
+    static CdcOptions<SpannerChange> spannerCdcSequence() {
+        CdcOptions<SpannerChange> options =
+                // tag::spanner-cdc-sequence[]
+                CdcOptions.<SpannerChange>builder(
+                                change ->
+                                        change.isDeletion()
+                                                ? CdcChangeType.DELETE
+                                                : CdcChangeType.UPSERT)
+                        .sequenceNumberProvider(
+                                change ->
+                                        SpannerCdcSequenceNumber.of(
+                                                change.commitTimestamp(),
+                                                change.recordSequence(),
+                                                change.modNumber()))
+                        .build();
+        // end::spanner-cdc-sequence[]
+        return options;
+    }
+
     private static final class MyEvent {
 
         String tableName() {
             return "orders";
+        }
+    }
+
+    private static final class SpannerChange {
+
+        boolean isDeletion() {
+            return false;
+        }
+
+        Instant commitTimestamp() {
+            return Instant.EPOCH;
+        }
+
+        String recordSequence() {
+            return "00000000";
+        }
+
+        int modNumber() {
+            return 0;
         }
     }
 

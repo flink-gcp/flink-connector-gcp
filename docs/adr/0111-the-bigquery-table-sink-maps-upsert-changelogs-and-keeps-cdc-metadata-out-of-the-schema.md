@@ -60,10 +60,10 @@ The full-row converter continues to build a fully initialized protobuf message, 
 upserts retain their existing required-field validation.
 
 **Writable CDC metadata is separate from the physical row type.**
-The sink exposes `change-sequence-number` as a nullable string and
-`debezium-source-properties` as a nullable string map.
-The planner may select no sequence source or exactly one; selecting either while CDC is disabled
-or selecting both fails during planning.
+The sink exposes `change-sequence-number` as a nullable string, `debezium-source-properties` as a
+nullable string map, and `spanner-change-sequence` as a nullable row.
+The planner may select no sequence source or exactly one; selecting one while CDC is disabled or
+selecting more than one fails during planning.
 The physical row type remains the sole input to BigQuery schema derivation, and the selected
 metadata value is read at the physical arity after Flink appends it to the runtime row.
 
@@ -91,7 +91,8 @@ a `GenericRecord` and either calls the public
 `DebeziumPostgreSqlCdcSequenceNumberProvider` from its DataStream CDC configuration or registers a
 changelog DataStream carrying the source-properties map before entering SQL.
 This adapter boundary is shared by the PostgreSQL, MySQL and Debezium Spanner profiles; the native
-Spanner source instead exposes its own typed ordering metadata under #633.
+Spanner source instead exposes its own typed ordering metadata through the `spanner-change-sequence`
+column recorded below.
 
 **The PostgreSQL profile transcodes Debezium's two-part sequence into BigQuery sections.**
 Only `connector=postgresql` selects this profile.
@@ -201,8 +202,49 @@ them.
 The protocol provides no initial snapshot stream, so it has no counterpart to the MySQL profile's
 zero epoch.
 
-The Spanner profile refines this record through issue
-[#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633).
+**The Spanner profile encodes one contract for two routes.**
+A Spanner change is ordered by three fixed-width unsigned 64-bit sections: the commit timestamp in
+nanoseconds since the epoch, the record sequence within the transaction, and the mod number within
+the change record.
+Both routes call one internal encoder over those three values, so equivalence between them holds by
+construction rather than by parallel implementations agreeing.
+Debezium supplies them as `ts_ns`, `sequence` and `mod_number` under `connector=spanner`; the native
+Change Streams source supplies them through the typed `spanner-change-sequence` row and never
+converts to a Debezium-shaped map.
+A record sequence is parsed numerically, which makes Spanner's zero-padded rendering and Debezium's
+unpadded `Long.toString` rendering the same section.
+
+The commit-timestamp section rejects negative values instead of preserving their bit pattern as the
+PostgreSQL profile does for LSNs.
+An LSN is an opaque 64-bit position whose signed decimal spelling is a rendering artifact, while a
+commit timestamp is a physical instant: a negative value would mean a pre-1970 commit, and BigQuery
+compares sections as unsigned, so accepting one would sort it after every real timestamp.
+The section is therefore bounded at `Long.MAX_VALUE` on both routes, which is also the largest
+instant either `TimestampData` or `Instant` can express in nanoseconds.
+`snapshot` is ignored: the connector streams a change stream with no snapshot phase, so no value of
+that property could select a different ordering.
+Nothing falls back to a processing timestamp, which is why a Debezium record without a record
+sequence or mod number, such as a low-watermark stamp, is rejected rather than ordered by the
+connector's clock — Debezium substitutes its own clock for a missing source timestamp, and that
+substitution is not detectable downstream.
+
+The profile needs no configuration.
+Spanner assigns commit timestamps itself and a change-stream reader inherits that order, so there is
+no counterpart to the MySQL source-UUID epoch list or the TiCDC cluster identity.
+
+The sections are not a total order over every pair of changes to one primary key, and the profile
+does not claim to be.
+Spanner's uniqueness guarantee is stated over sets of fields rather than over rows: transactions
+writing overlapping fields receive distinct commit timestamps, while transactions writing disjoint
+fields may share one.
+A record sequence is unique and monotonic within one transaction — across that transaction's
+partitions, not within a partition — so it does not compare two different transactions.
+Two transactions that update disjoint columns of one row at one commit timestamp therefore encode
+to the same sequence, and BigQuery resolves them by ingestion order.
+That is the same residual tie the PostgreSQL profile carries for a shared LSN and the TiCDC profile
+carries for a split primary-key update at one commit TSO, and it is documented rather than papered
+over: `server_transaction_id` distinguishes such transactions but is not an order, so no fourth
+section could break the tie correctly.
 
 **The changelog-mode compatibility seam is version-specific and internal.**
 Flink 2.x receives an upsert mode that advertises key-only deletes, while Flink 1.20 receives the
@@ -340,5 +382,6 @@ MySQL maps use the same adapter boundary with an explicit append-only source UUI
 TiCDC needs neither, because Flink's `debezium-json` format retains its JSON envelope's `source`
 object and the commit TSO orders one cluster without configured epochs; its configuration is the
 single cluster identity every event is checked against.
-Other Debezium maps become operational one connector profile at a time through
-[#633](https://github.com/laughingman7743/flink-connector-gcp/issues/633).
+Spanner needs no configuration either, and it is the one source whose native connector in this
+repository can bypass the Debezium map entirely through typed metadata.
+Any further Debezium map becomes operational one connector profile at a time.

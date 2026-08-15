@@ -23,6 +23,7 @@ import org.apache.flink.table.data.StringData;
 
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumMySqlCdcSequenceNumberEncoder;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumPostgreSqlCdcSequenceNumberEncoder;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.SpannerCdcSequenceNumberEncoder;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.TiCdcSequenceNumberEncoder;
 
 import javax.annotation.Nullable;
@@ -45,6 +46,8 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
     private static final StringData ROW_KEY = StringData.fromString("row");
     private static final StringData COMMIT_TS_KEY = StringData.fromString("commit_ts");
     private static final StringData CLUSTER_ID_KEY = StringData.fromString("cluster_id");
+    private static final StringData TIMESTAMP_NS_KEY = StringData.fromString("ts_ns");
+    private static final StringData MOD_NUMBER_KEY = StringData.fromString("mod_number");
 
     @Nullable private final DebeziumMySqlCdcSequenceNumberEncoder mySqlEncoder;
     @Nullable private final TiCdcSequenceNumberEncoder tiCdcEncoder;
@@ -71,6 +74,8 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
         String row = null;
         String commitTs = null;
         String clusterId = null;
+        String timestampNs = null;
+        String modNumber = null;
         for (int i = 0; i < properties.size(); i++) {
             if (keys.isNullAt(i)) {
                 continue;
@@ -94,6 +99,10 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
                 commitTs = stringValue(values, i);
             } else if (CLUSTER_ID_KEY.equals(key)) {
                 clusterId = stringValue(values, i);
+            } else if (TIMESTAMP_NS_KEY.equals(key)) {
+                timestampNs = stringValue(values, i);
+            } else if (MOD_NUMBER_KEY.equals(key)) {
+                modNumber = stringValue(values, i);
             }
         }
 
@@ -119,6 +128,9 @@ final class DebeziumCdcSequenceNumberResolver implements Serializable {
                             "TiCDC sequence generation requires sink.cdc.ticdc.cluster-id");
                 }
                 return tiCdcEncoder.sequenceNumber(connector, snapshot, commitTs, clusterId);
+            case "spanner":
+                return SpannerCdcSequenceNumberEncoder.debeziumSequenceNumber(
+                        connector, timestampNs, sequence, modNumber);
             default:
                 throw new IllegalArgumentException(
                         "Debezium connector '"
