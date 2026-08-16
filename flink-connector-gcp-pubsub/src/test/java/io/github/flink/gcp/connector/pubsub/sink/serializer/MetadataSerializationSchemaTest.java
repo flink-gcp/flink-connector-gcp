@@ -165,6 +165,26 @@ class MetadataSerializationSchemaTest {
                 .hasMessageContaining("valid");
     }
 
+    /**
+     * The twin of the case above, which had no test: only the null-<em>value</em> check was ever
+     * driven, so deleting the null-<em>key</em> one left the whole module suite passing. Without it
+     * the protobuf builder raises the failure instead, and its whole message is {@code "map key"} —
+     * measured, not supposed — which names neither the extractor that produced the entry nor the
+     * fact that it was null. Hence the exact message assertion: both are {@code
+     * NullPointerException}, so the type alone does not tell the connector's diagnostic from the
+     * vendor's.
+     */
+    @Test
+    void rejectsANullAttributeKeyWithAClearMessage() {
+        Map<String, String> attributes = new HashMap<>();
+        attributes.put(null, "value");
+        PubSubSerializationSchema<String> schema = dataOnly().withAttributes(element -> attributes);
+
+        assertThatThrownBy(() -> schema.serialize("hello"))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("The attributes extractor returned a null key.");
+    }
+
     @Test
     void roundTripsJavaSerialization() throws Exception {
         PubSubSerializationSchema<String> schema =

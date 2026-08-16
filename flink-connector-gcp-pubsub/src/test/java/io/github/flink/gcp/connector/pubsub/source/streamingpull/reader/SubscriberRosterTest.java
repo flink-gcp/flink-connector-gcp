@@ -121,6 +121,33 @@ class SubscriberRosterTest {
         roster.closeAll();
     }
 
+    /**
+     * The buffer gauges sum over a registry shared by every roster the reader's supplier makes, so
+     * a roster removing a split it never held must leave that registry alone. Nothing drove the
+     * guard before #786 — every removal here was of a split the roster owned.
+     *
+     * <p>The two halves catch different things, which is worth saying because they are not
+     * interchangeable. Deleting the guard outright is caught by the removal call itself, which
+     * dereferences the absent slot; it never reaches the gauge assertion. What the gauge assertion
+     * covers is the eviction moving <em>above</em> the guard — the arrangement the production
+     * comment beside it warns against, which throws nothing and would otherwise drop another
+     * fetcher's live subscriber out of {@code bufferedMessages} silently.
+     */
+    @Test
+    void removingASplitThisRosterNeverHeldLeavesAnotherRostersGaugesAlone() throws Exception {
+        SubscriberRoster owner = roster(Long.MAX_VALUE);
+        SubscriberRoster other = roster(Long.MAX_VALUE);
+        owner.addSplit(SPLIT);
+        subscribers.get(SPLIT.splitId()).deliver(message("1"), message("2"));
+        assertThat(readerMetrics.gauge("bufferedMessages")).isEqualTo(2);
+
+        other.removeSplit(SPLIT);
+
+        assertThat(readerMetrics.gauge("bufferedMessages")).isEqualTo(2);
+        owner.closeAll();
+        other.closeAll();
+    }
+
     @Test
     void aPauseForAnUnassignedSplitIsDroppedNotStored() throws Exception {
         // SplitFetcherManager filters requested ids through the fetcher's assignedSplits, so this

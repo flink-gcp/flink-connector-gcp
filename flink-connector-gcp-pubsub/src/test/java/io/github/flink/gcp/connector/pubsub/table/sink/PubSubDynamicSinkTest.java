@@ -38,10 +38,12 @@ import org.apache.flink.table.types.DataType;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Optional;
@@ -415,7 +417,34 @@ class PubSubDynamicSinkTest {
                                 defaults,
                                 null,
                                 null))
+                // The two fields this test left null on both sides until #786: a mutant dropping
+                // either one from equals passed the whole module suite. A field outside a table
+                // sink's identity is one the planner may reuse a plan across. serviceAccountKeyFile
+                // needs the nine-argument constructor, which the eight-argument one omits it from.
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE,
+                                FORMAT,
+                                TOPIC,
+                                null,
+                                TopicCreateOptions.builder()
+                                        .messageRetention(Duration.ofDays(3))
+                                        .build(),
+                                defaults,
+                                null,
+                                null))
                 .isNotEqualTo(sink(other))
+                .isNotEqualTo(
+                        new PubSubDynamicSink(
+                                PHYSICAL_DATA_TYPE,
+                                FORMAT,
+                                TOPIC,
+                                null,
+                                null,
+                                defaults,
+                                "/keys/sa.json",
+                                null,
+                                null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
                                 PHYSICAL_DATA_TYPE,

@@ -21,6 +21,7 @@ import org.apache.flink.util.InstantiationUtil;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -233,6 +234,45 @@ class PubSubSubscriberOptionsTest {
                 .isNotEqualTo(PubSubSubscriberOptions.defaults());
     }
 
+    /**
+     * One variation per knob, so a knob dropped from {@code equals} fails here by name. The pair
+     * above cannot do it: {@code fullyPopulated()} and {@code defaults()} already differ on the
+     * first comparison in the chain, so it short-circuits there and no later knob is ever compared
+     * unequal — a mutant dropping any of the other eleven left the whole module suite passing.
+     *
+     * <p>These options reach the table planner through {@code PubSubDynamicSource}, which compares
+     * them in its own {@code equals}, so a knob outside the identity makes two sources configured
+     * differently compare equal.
+     */
+    @Test
+    void everyKnobIsPartOfTheIdentity() {
+        assertThat(variedBy(builder -> builder.maxRecordsPerFetch(251)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.awaitAckConfirmation(Duration.ofSeconds(21))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.flowControlMaxOutstandingElementCount(501)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.flowControlMaxOutstandingRequestBytes(1_048_577)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.pausedSplitBufferMaxMessages(401)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.pausedSplitBufferMaxBytes(524_289)))
+                .isNotEqualTo(fullyPopulated());
+        // The one knob the shared fixture leaves unset, so this varies it from null.
+        assertThat(variedBy(builder -> builder.parallelPullCount(2)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.maxAckExtensionPeriod(Duration.ofMinutes(31))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.minDurationPerAckExtension(Duration.ofSeconds(16))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.maxDurationPerAckExtension(Duration.ofSeconds(61))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.shutdownTimeout(Duration.ofSeconds(4))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.firstCheckpointTimeout(Duration.ofMinutes(3))))
+                .isNotEqualTo(fullyPopulated());
+    }
+
     @Test
     void roundTripsJavaSerialization() throws Exception {
         PubSubSubscriberOptions options = fullyPopulated();
@@ -244,12 +284,21 @@ class PubSubSubscriberOptionsTest {
                 .isEqualTo(options);
     }
 
+    private static PubSubSubscriberOptions variedBy(
+            UnaryOperator<PubSubSubscriberOptions.Builder> variation) {
+        return variation.apply(fullyPopulatedBuilder()).build();
+    }
+
     /**
      * Every knob set to a non-default value except {@code parallelPullCount}, which is the one with
      * a cross-option constraint (the source builder rejects it under ordered consumption), so the
      * fixture stays combinable with any ordering mode. Reused by {@link PubSubSourceBuilderTest}.
      */
     static PubSubSubscriberOptions fullyPopulated() {
+        return fullyPopulatedBuilder().build();
+    }
+
+    private static PubSubSubscriberOptions.Builder fullyPopulatedBuilder() {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(500)
                 .flowControlMaxOutstandingRequestBytes(1_048_576)
@@ -261,7 +310,6 @@ class PubSubSubscriberOptionsTest {
                 .awaitAckConfirmation(Duration.ofSeconds(20))
                 .shutdownTimeout(Duration.ofSeconds(3))
                 .maxRecordsPerFetch(250)
-                .firstCheckpointTimeout(Duration.ofMinutes(2))
-                .build();
+                .firstCheckpointTimeout(Duration.ofMinutes(2));
     }
 }
