@@ -40,6 +40,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,8 +52,25 @@ class CloudTasksDynamicSinkTest {
     private static final DataType PHYSICAL_TYPE =
             DataTypes.ROW(DataTypes.FIELD("payload", DataTypes.STRING()));
 
+    /**
+     * Equal by name, as the Pub/Sub twin is. Two independently built sinks can then compare equal
+     * at all — a {@code copy()} shares the format reference, and a shared reference short-circuits
+     * every field comparison behind it, which is why neither target spec's {@code equals} ran
+     * before this — while two differently named formats stay unequal, which is what makes the
+     * format itself part of an assertable identity.
+     */
     private static final class ConstantEncodingFormat
             implements EncodingFormat<SerializationSchema<RowData>> {
+
+        private final String name;
+
+        private ConstantEncodingFormat() {
+            this("format-a");
+        }
+
+        private ConstantEncodingFormat(String name) {
+            this.name = name;
+        }
 
         @Override
         public SerializationSchema<RowData> createRuntimeEncoder(
@@ -64,6 +82,104 @@ class CloudTasksDynamicSinkTest {
         public ChangelogMode getChangelogMode() {
             return ChangelogMode.insertOnly();
         }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ConstantEncodingFormat
+                    && name.equals(((ConstantEncodingFormat) o).name);
+        }
+
+        @Override
+        public int hashCode() {
+            return name.hashCode();
+        }
+    }
+
+    private static final DataType OTHER_PHYSICAL_TYPE =
+            DataTypes.ROW(DataTypes.FIELD("other", DataTypes.INT()));
+
+    /**
+     * The nine constructor arguments as named setters, so an identity case reads as "this field
+     * varied" rather than as one more nine-argument call whose changed position has to be counted.
+     * Test-local on purpose: the production type takes its arguments positionally.
+     */
+    private static final class SinkArgs {
+
+        private DataType physicalDataType = PHYSICAL_TYPE;
+        private EncodingFormat<SerializationSchema<RowData>> encodingFormat =
+                new ConstantEncodingFormat();
+        private QueueDestination queue = QueueDestination.of("project", "location", "queue");
+        // Qualified: this class declares a target(TargetSpec) setter, which would otherwise shadow
+        // the enclosing target(String) helper.
+        private TargetSpec target = CloudTasksDynamicSinkTest.target("https://example.com");
+        private boolean addressMetadataNotNull;
+        private CloudTasksWriterOptions writerOptions = CloudTasksWriterOptions.builder().build();
+        private String serviceAccountKeyFile;
+        private String emulatorEndpoint;
+        private Integer parallelism;
+
+        private SinkArgs physicalDataType(DataType physicalDataType) {
+            this.physicalDataType = physicalDataType;
+            return this;
+        }
+
+        private SinkArgs encodingFormat(
+                EncodingFormat<SerializationSchema<RowData>> encodingFormat) {
+            this.encodingFormat = encodingFormat;
+            return this;
+        }
+
+        private SinkArgs queue(QueueDestination queue) {
+            this.queue = queue;
+            return this;
+        }
+
+        private SinkArgs target(TargetSpec target) {
+            this.target = target;
+            return this;
+        }
+
+        private SinkArgs addressMetadataNotNull(boolean addressMetadataNotNull) {
+            this.addressMetadataNotNull = addressMetadataNotNull;
+            return this;
+        }
+
+        private SinkArgs writerOptions(CloudTasksWriterOptions writerOptions) {
+            this.writerOptions = writerOptions;
+            return this;
+        }
+
+        private SinkArgs serviceAccountKeyFile(String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
+            return this;
+        }
+
+        private SinkArgs emulatorEndpoint(String emulatorEndpoint) {
+            this.emulatorEndpoint = emulatorEndpoint;
+            return this;
+        }
+
+        private SinkArgs parallelism(Integer parallelism) {
+            this.parallelism = parallelism;
+            return this;
+        }
+
+        private CloudTasksDynamicSink build() {
+            return new CloudTasksDynamicSink(
+                    physicalDataType,
+                    encodingFormat,
+                    queue,
+                    target,
+                    addressMetadataNotNull,
+                    writerOptions,
+                    serviceAccountKeyFile,
+                    emulatorEndpoint,
+                    parallelism);
+        }
+    }
+
+    private static CloudTasksDynamicSink variedSink(UnaryOperator<SinkArgs> variation) {
+        return variation.apply(new SinkArgs()).build();
     }
 
     private static HttpTargetSpec target(String url) {
@@ -256,5 +372,67 @@ class CloudTasksDynamicSinkTest {
         assertThat(original.getChangelogMode(ChangelogMode.all()))
                 .isEqualTo(ChangelogMode.insertOnly());
         assertThat(original.copy()).isEqualTo(original).isNotSameAs(original);
+    }
+
+    @Test
+    void sinksBuiltFromTheSameOptionsAreEqualAndDifferingOnesAreNot() {
+        // A copy shares every reference, so it compares equal without any field being read. Two
+        // independently built sinks are what drives the field chain - and the target spec's own,
+        // which the copy comparison never reached. Flink hashes and compares the sink inside a
+        // DynamicTableSinkSpec, so an identity missing a field is observable there.
+        assertThat(sink("https://example.com"))
+                .isEqualTo(sink("https://example.com"))
+                .hasSameHashCodeAs(sink("https://example.com"))
+                .isNotEqualTo(sink("https://example.com/other"))
+                .isNotEqualTo(sink("https://example.com", true))
+                .isNotEqualTo(appEngineSink("/tasks/default", false));
+    }
+
+    @Test
+    void everyFieldOfTheSinkIsPartOfItsIdentity() {
+        // One variation per constructor argument, because the equal pair above holds however many
+        // fields equals forgets: Flink hashes and compares the sink inside a DynamicTableSinkSpec,
+        // where two sinks the connector considers the same are one entry.
+        assertThat(sink("https://example.com"))
+                .isNotEqualTo(variedSink(builder -> builder.physicalDataType(OTHER_PHYSICAL_TYPE)))
+                .isNotEqualTo(
+                        variedSink(
+                                builder ->
+                                        builder.encodingFormat(
+                                                new ConstantEncodingFormat("format-b"))))
+                .isNotEqualTo(
+                        variedSink(
+                                builder ->
+                                        builder.queue(
+                                                QueueDestination.of(
+                                                        "project", "location", "other-queue"))))
+                .isNotEqualTo(
+                        variedSink(builder -> builder.target(target("https://example.com/x"))))
+                .isNotEqualTo(variedSink(builder -> builder.addressMetadataNotNull(true)))
+                .isNotEqualTo(
+                        variedSink(
+                                builder ->
+                                        builder.writerOptions(
+                                                CloudTasksWriterOptions.builder()
+                                                        .maxInFlightTasks(7)
+                                                        .build())))
+                .isNotEqualTo(variedSink(builder -> builder.serviceAccountKeyFile("/keys/sa.json")))
+                .isNotEqualTo(variedSink(builder -> builder.emulatorEndpoint("localhost:8123")))
+                .isNotEqualTo(variedSink(builder -> builder.parallelism(3)));
+    }
+
+    @Test
+    void aMetadataSelectionIsPartOfTheSinkIdentity() {
+        // The selection reaches the runtime converter, so two sinks differing only in it are two
+        // different sinks - and applyWritableMetadata mutates in place, which is why this is
+        // asserted against a sink that has not been through it.
+        CloudTasksDynamicSink selected = sink("https://example.com");
+        selected.applyWritableMetadata(
+                java.util.Collections.singletonList("task-id"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("payload", DataTypes.STRING()),
+                        DataTypes.FIELD("dedupe", DataTypes.STRING())));
+
+        assertThat(selected).isNotEqualTo(sink("https://example.com"));
     }
 }
