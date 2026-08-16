@@ -538,10 +538,14 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   compares a `NOTICE.template` with its generated `META-INF/NOTICE` and never with the POM. So the
   headers and the uber-jars are guarded while `<organization>` and the NOTICE prose are not: those
   two can drift alone, and only reading a built jar would show it
-- **Third-party holders on adapted files may not be rewritten.** Thirteen Pub/Sub sources keep
+- **Third-party holders on adapted files may not be rewritten.** Nine Pub/Sub sources keep
   `Copyright 2023 Google LLC`; each is recorded in its module README's provenance section, and
   `PRESERVED_HOLDERS` in the checker is what stops an unattributed third-party header passing as an
-  ordinary one. Add to that list only alongside the README record
+  ordinary one. Add to that list only alongside the README record. A notice is *retired* only when
+  its file has stopped carrying upstream expression, measured against upstream and never inferred
+  from how much has changed, and where the audit leaves room for judgement the notice stays;
+  `docs/adr/0123` records that audit, the four files it retired and why
+  the rest keep theirs
 - Files written for this project carry the plain Apache-2.0 header. Files copied from Apache
   projects keep their ASF header.
   Apache RAT enforces the approved licence families over the whole tree (configuration overridden

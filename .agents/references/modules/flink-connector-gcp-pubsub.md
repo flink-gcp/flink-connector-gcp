@@ -7,11 +7,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Provenance
 
-- The base implementation is vendored from `GoogleCloudPlatform/pubsub` `flink-connector/`
-  (decision record: issues #17 and #31); the Apache connector is only a design reference
-  (table-factory plumbing, emulator harness). All packages are normalized to
-  `io.github.flink.gcp.connector.pubsub.*`. Keep the README's provenance section and `NOTICE`
-  accurate on any further adaptation.
+- The module began as an adaptation of `GoogleCloudPlatform/pubsub` `flink-connector/` (issues #17
+  and #31); the Apache connector is only a design reference (table-factory plumbing, emulator
+  harness). All packages are normalized to `io.github.flink.gcp.connector.pubsub.*`.
+- Parts of it have since been rewritten. **Nine files still carry `Copyright 2023 Google LLC`.
+  Eight must keep it**; the ninth, `PubSubNotifyingPullSubscriber`, is deferred rather than settled
+  and is re-measured by the pull request that rewrites it. Four files were retired on an audit
+  against upstream (`docs/adr/0123`), which also states the rule and its bias: a notice goes only
+  when nothing upstream-specific survives, never because a lot has changed, and where the audit
+  leaves room for judgement the notice stays. Keep the README's provenance section and `NOTICE`
+  accurate on any further adaptation, and re-measure rather than assume when a rewrite touches one
+  of the nine.
 
 ## Sink (`docs/adr/0004`–`0008`, `0052`)
 

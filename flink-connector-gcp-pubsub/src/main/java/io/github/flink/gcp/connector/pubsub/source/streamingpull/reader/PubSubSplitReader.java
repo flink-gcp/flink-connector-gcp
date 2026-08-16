@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Google LLC
+ * Copyright 2026 The flink-gcp authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,12 +61,10 @@ import java.util.concurrent.TimeoutException;
  * on a lost signal is never woken again on the shutdown path, which would leave the subscribers
  * open and their messages unnacked.
  *
- * <p>Adapted from the Flink connector in <a
- * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0).
- * Deviations: one shared signal instead of a per-subscriber notification future composed on every
- * fetch (which accumulated callbacks on idle subscribers), draining many messages per fetch instead
- * of exactly one per split, and support for split removal and for pausing splits (watermark
- * alignment), which upstream rejects and omits respectively.
+ * <p>Every subscriber shares that one signal. Composing a notification future per subscriber on
+ * each fetch would accumulate callbacks on the ones with nothing to deliver, which is why the
+ * signal is reader-wide; a fetch then drains up to {@code maxRecordsPerFetch} messages from each
+ * split rather than one.
  */
 @Internal
 public class PubSubSplitReader implements SplitReader<PubsubMessage, SubscriptionSplit> {
