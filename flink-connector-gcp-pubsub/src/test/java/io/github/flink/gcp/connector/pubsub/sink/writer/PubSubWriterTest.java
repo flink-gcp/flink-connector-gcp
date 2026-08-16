@@ -85,7 +85,7 @@ class PubSubWriterTest {
     private PubSubWriter<String> newWriter(DestinationResolver<? super String> resolver) {
         return newWriter(
                 resolver,
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                 PubSubPublisherOptions.defaults());
     }
 

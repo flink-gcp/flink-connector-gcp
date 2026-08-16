@@ -178,7 +178,7 @@ class MetadataSerializationSchemaTest {
     void rejectsANullAttributeKeyWithAClearMessage() {
         Map<String, String> attributes = new HashMap<>();
         attributes.put(null, "value");
-        PubSubSerializationSchema<String> schema = dataOnly().withAttributes(element -> attributes);
+        PubSubSerializationSchema<String> schema = payload().withAttributes(element -> attributes);
 
         assertThatThrownBy(() -> schema.serialize("hello"))
                 .isInstanceOf(NullPointerException.class)
