@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFuture;
-import com.google.api.core.ApiFutures;
 import com.google.cloud.pubsub.v1.AckResponse;
 
 import javax.annotation.Nullable;
@@ -36,9 +35,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * {@link AckTracker} keeping the acknowledgement handles in memory until their checkpoint
@@ -70,7 +66,7 @@ public class PubSubAckTracker implements AckTracker {
     private final SortedMap<Long, List<TrackedAck>> checkpoints = new TreeMap<>();
 
     private final PubSubSourceReaderMetrics metrics;
-    @Nullable private final Duration awaitAckConfirmation;
+    @Nullable private final AckConfirmationWait confirmationWait;
 
     /**
      * Creates the tracker.
@@ -82,7 +78,8 @@ public class PubSubAckTracker implements AckTracker {
     public PubSubAckTracker(
             PubSubSourceReaderMetrics metrics, @Nullable Duration awaitAckConfirmation) {
         this.metrics = metrics;
-        this.awaitAckConfirmation = awaitAckConfirmation;
+        this.confirmationWait =
+                awaitAckConfirmation != null ? new AckConfirmationWait(awaitAckConfirmation) : null;
     }
 
     @Override
@@ -167,7 +164,7 @@ public class PubSubAckTracker implements AckTracker {
             }
         }
         List<ApiFuture<AckResponse>> confirmations =
-                awaitAckConfirmation != null ? new ArrayList<>(toAck.size()) : null;
+                confirmationWait != null ? new ArrayList<>(toAck.size()) : null;
         for (TrackedAck ack : toAck) {
             ApiFuture<AckResponse> confirmation = ack.handle.ack();
             if (confirmations != null) {
@@ -182,58 +179,7 @@ public class PubSubAckTracker implements AckTracker {
         }
         metrics.messagesAcked(toAck.size());
         if (confirmations != null && !confirmations.isEmpty()) {
-            awaitConfirmations(confirmations, checkpointId);
-        }
-    }
-
-    /**
-     * Waits for the server to confirm the acknowledgements of one completed checkpoint.
-     *
-     * <p>On a subscription without exactly-once delivery a failed acknowledgement never completes
-     * its future, so the timeout — not an error — is what surfaces the failure.
-     */
-    private void awaitConfirmations(List<ApiFuture<AckResponse>> confirmations, long checkpointId)
-            throws IOException {
-        try {
-            List<AckResponse> responses =
-                    ApiFutures.allAsList(confirmations)
-                            .get(awaitAckConfirmation.toMillis(), TimeUnit.MILLISECONDS);
-            for (AckResponse response : responses) {
-                if (response != AckResponse.SUCCESSFUL) {
-                    throw new IOException(
-                            "Pub/Sub rejected an acknowledgement of checkpoint "
-                                    + checkpointId
-                                    + " with "
-                                    + response
-                                    + ".");
-                }
-            }
-        } catch (TimeoutException e) {
-            throw new IOException(
-                    "Pub/Sub did not confirm the acknowledgements of checkpoint "
-                            + checkpointId
-                            + " within "
-                            + awaitAckConfirmation
-                            + " ("
-                            + confirmations.size()
-                            + " messages). On a subscription without exactly-once delivery a"
-                            + " failed acknowledgement never completes its future, so this timeout"
-                            + " is the only signal there is — the acknowledgements may have"
-                            + " failed, or merely be slow. Raise"
-                            + " PubSubSubscriberOptions.awaitAckConfirmation(...) if the"
-                            + " subscription is simply slow to respond.",
-                    e);
-        } catch (ExecutionException e) {
-            throw new IOException(
-                    "Failed to acknowledge the messages of checkpoint " + checkpointId + ".",
-                    e.getCause());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException(
-                    "Interrupted while confirming the acknowledgements of checkpoint "
-                            + checkpointId
-                            + ".",
-                    e);
+            confirmationWait.await(confirmations, checkpointId);
         }
     }
 
