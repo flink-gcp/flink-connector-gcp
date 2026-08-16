@@ -96,9 +96,14 @@ method was picked. The reconcile schedule is already this write method's budget 
 exactly that quota, since the etag race `updateSchema` loses is the same per-table budget a creation
 spends; a third `recovery*` family here would be a knob nothing distinguishes.
 
-**Only `create` retries.** `getSchema` and `updateSchema` pass through: the latter reports its own
-lost race as `false` precisely so the caller re-reads and re-derives, and a blind repeat inside the
-wrap would re-submit a proposal built against a snapshot known to be stale.
+**`create` retries; `getSchema` and `updateSchema` do not.** The latter reports its own lost race as
+`false` precisely so the caller re-reads and re-derives, and a blind repeat inside the wrap would
+re-submit a proposal built against a snapshot known to be stale. Widened by ADR-0112 ([#65]):
+`ensureCdcTable` joined the wrapped set when CDC provisioning arrived, on the same schedule and for
+the same reason as `create` — it is the creating call for a CDC table, and it is the one that meets
+the per-table metadata-update quota this ADR exists to bound. That the *pass-through* half is what
+this paragraph fixes has not changed; only "`create` alone" has. Read `RetryingTableAdmin`'s javadoc
+for the current set rather than counting the wrapped methods from here.
 
 **The budget is always the recovery schedule**, whichever budget the repair around it is running
 on. This is `scheduleFor`'s reasoning from ADR-0030 applied one level down: a rate limit on table
@@ -184,3 +189,4 @@ Three things not to re-derive:
   caller reads the return. The move also gave the 409-is-success rule its first unit test.
 
 [#383]: https://github.com/laughingman7743/flink-connector-gcp/issues/383
+[#65]: https://github.com/flink-gcp/flink-connector-gcp/issues/65
