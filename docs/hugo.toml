@@ -49,7 +49,13 @@ title = "GCP Connectors for Apache Flink"
   # is left unset; only genuine departures are listed. The theme's own default
   # is a light theme, so "auto" is a real choice.
   BookTheme = "auto"
-  BookRepo = "https://github.com/laughingman7743/flink-connector-gcp"
+  # Reaches further than its name suggests: BookEditLink below builds every
+  # "Edit this page" target from it, and sixteen content pages build their issue
+  # links as `{{< param BookRepo >}}/issues/N`. All of those pointed at the
+  # pre-transfer owner until #727 — resolving, because GitHub redirects a moved
+  # repository, but sending a reader who inspects the link to an address this
+  # project no longer claims.
+  BookRepo = "https://github.com/flink-gcp/flink-connector-gcp"
   BookEditLink = '{{ .Site.Params.BookRepo }}/edit/main/docs/{{ .Path }}'
 
   # The generated API reference (#88). `just docs-javadoc` writes it to

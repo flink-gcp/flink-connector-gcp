@@ -265,7 +265,7 @@ existing write shapes cannot satisfy.
 | Pub/Sub publisher | No candidate because the service exposes no publisher idempotency key or publish transaction | No connector-only implementation is planned |
 
 The raw repetitions, replay checks, declined alternatives, and cleanup evidence are in
-[ADR-0104](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md)
-and [issue #591](https://github.com/laughingman7743/flink-connector-gcp/issues/591).
+[ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md)
+and [issue #591]({{< param BookRepo >}}/issues/591).
 The current support decision is tracked by
 [#596]({{< param BookRepo >}}/issues/596).
