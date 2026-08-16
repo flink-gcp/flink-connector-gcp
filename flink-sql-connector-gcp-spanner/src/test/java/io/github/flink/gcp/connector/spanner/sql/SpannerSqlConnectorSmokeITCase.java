@@ -28,6 +28,7 @@ import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
+import io.github.flink.gcp.connector.testutils.spanner.SpannerEmulatorContainers;
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorSmokeITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
 import org.junit.jupiter.api.AfterAll;
@@ -37,7 +38,6 @@ import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.SpannerEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.time.Duration;
 import java.util.List;
@@ -57,8 +57,7 @@ class SpannerSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
 
     @Container
     private static final SpannerEmulatorContainer EMULATOR =
-            new SpannerEmulatorContainer(
-                    DockerImageName.parse("gcr.io/cloud-spanner-emulator/emulator:1.5.56"));
+            SpannerEmulatorContainers.newContainer();
 
     private static Spanner spanner;
     private static DatabaseClient databaseClient;
