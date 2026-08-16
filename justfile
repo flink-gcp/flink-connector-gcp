@@ -1,4 +1,4 @@
-# Copyright 2026 laughingman7743
+# Copyright 2026 The flink-gcp authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -64,13 +64,13 @@ alias help := default
 #
 # Full build: format and license checks, unit tests, integration tests.
 verify *args:
-    @just check-java-license-headers
+    @just check-license-headers
     {{ mvn }} {{ args }} verify
 
 # RAT identifies the approved licence family from one distinctive line. This stricter
 # check holds every Java source to a complete copyright-bearing or ASF header.
-check-java-license-headers:
-    python3 scripts/check-java-license-headers.py
+check-license-headers:
+    python3 scripts/check-license-headers.py
 
 # A 1.x version also selects the flink1 compat source root (see the
 # flink.compat property in pom.xml) — forgetting that flag by hand is exactly

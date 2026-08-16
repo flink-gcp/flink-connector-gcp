@@ -1,4 +1,4 @@
-# Copyright 2026 laughingman7743
+# Copyright 2026 The flink-gcp authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -70,8 +70,8 @@ def check_skill_frontmatter():
 
 
 @pytest.fixture(scope="session")
-def check_java_license_headers():
-    return load_script("check-java-license-headers.py")
+def check_license_headers():
+    return load_script("check-license-headers.py")
 
 
 @pytest.fixture(scope="session")
