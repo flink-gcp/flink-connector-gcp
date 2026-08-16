@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMu
 import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -208,6 +209,69 @@ class ChangeStreamMutationSerializerTest {
     }
 
     @Test
+    void aNegativeByteStringLengthIsRejectedRatherThanSized() throws Exception {
+        byte[] state = serializedEmptyMutation();
+        // The stream opens with the row key's length, which is zero for this mutation. Asserting
+        // that first keeps a reordered format from turning the corruption below into a no-op.
+        assertThat(Arrays.copyOf(state, 4)).containsExactly(0, 0, 0, 0);
+        state[0] = (byte) 0xFF;
+        state[1] = (byte) 0xFF;
+        state[2] = (byte) 0xFF;
+        state[3] = (byte) 0xFF;
+
+        assertThatThrownBy(
+                        () ->
+                                new ChangeStreamMutationSerializer()
+                                        .deserialize(new DataInputDeserializer(state)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Negative byte string length");
+        assertThatThrownBy(
+                        () ->
+                                new ChangeStreamMutationSerializer()
+                                        .copy(
+                                                new DataInputDeserializer(state),
+                                                new DataOutputSerializer(64)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Negative byte string length");
+    }
+
+    @Test
+    void anUnknownMutationTypeIsRejectedInsteadOfCopiedOn() throws Exception {
+        byte[] state = serializedEmptyMutation();
+        // An empty row key occupies its four length bytes alone, so the mutation type follows it.
+        assertThat(state[4]).isEqualTo((byte) 1);
+        state[4] = 9;
+
+        assertThatThrownBy(
+                        () ->
+                                new ChangeStreamMutationSerializer()
+                                        .copy(
+                                                new DataInputDeserializer(state),
+                                                new DataOutputSerializer(64)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Unknown Bigtable Change Streams mutation type: 9");
+    }
+
+    @Test
+    void anUnknownEntryTagIsRejectedInsteadOfCopiedOn() throws Exception {
+        byte[] empty = serializedEmptyMutation();
+        // The entry count closes an entryless stream, so one entry can be appended behind it.
+        byte[] state = Arrays.copyOf(empty, empty.length + 1);
+        assertThat(empty[empty.length - 1]).isZero();
+        state[empty.length - 1] = 1;
+        state[empty.length] = 9;
+
+        assertThatThrownBy(
+                        () ->
+                                new ChangeStreamMutationSerializer()
+                                        .copy(
+                                                new DataInputDeserializer(state),
+                                                new DataOutputSerializer(64)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Unknown Bigtable Change Streams entry tag: 9");
+    }
+
+    @Test
     void theTypeAnnotationSelectsTheConnectorSerializerWithoutReflectiveKryo() {
         TypeInformation<ChangeStreamMutation> builtIn =
                 new ChangeStreamMutationDeserializationSchema().getProducedType();
@@ -217,5 +281,21 @@ class ChangeStreamMutationSerializerTest {
         assertThat(annotated).isEqualTo(builtIn);
         assertThat(annotated.createSerializer(new SerializerConfigImpl()))
                 .isInstanceOf(ChangeStreamMutationSerializer.class);
+    }
+
+    private static byte[] serializedEmptyMutation() throws IOException {
+        ChangeStreamMutation mutation =
+                new ChangeStreamMutation(
+                        ByteString.EMPTY,
+                        ChangeStreamMutation.MutationType.USER,
+                        "cluster",
+                        Instant.EPOCH,
+                        0,
+                        "token",
+                        Instant.EPOCH,
+                        Collections.emptyList());
+        DataOutputSerializer output = new DataOutputSerializer(128);
+        new ChangeStreamMutationSerializer().serialize(mutation, output);
+        return output.getCopyOfBuffer();
     }
 }

@@ -35,6 +35,7 @@ class ChangeStreamPartitionReconcilerTest {
     private static final ByteStringRange WHOLE = ByteStringRange.unbounded();
     private static final ByteStringRange LEFT = ByteStringRange.unbounded().endOpen("m");
     private static final ByteStringRange RIGHT = ByteStringRange.unbounded().startClosed("m");
+    private static final ByteStringRange GAP = ByteStringRange.create("a", "z");
     private static final Instant NOW = Instant.parse("2026-08-11T00:30:00Z");
     private final ChangeStreamPartitionReconciler reconciler =
             new ChangeStreamPartitionReconciler();
@@ -190,6 +191,202 @@ class ChangeStreamPartitionReconcilerTest {
                                     .isEqualTo(RowRanges.format(ByteStringRange.create("m", "n")));
                             assertThat(recovery.tokenless).isTrue();
                         });
+    }
+
+    @Test
+    void recoversAGapBetweenTwoCoveredStretchesOfOnePartition() {
+        ByteStringRange service = ByteStringRange.create("a", "z");
+        MissingPartition old =
+                new MissingPartition(
+                        service,
+                        NOW.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                        NOW.minusSeconds(30));
+
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Collections.singletonList(service),
+                        Arrays.asList(
+                                split("head", ByteStringRange.create("a", "m")),
+                                split("tail", ByteStringRange.create("t", "z"))),
+                        Collections.emptyList(),
+                        Collections.singletonList(old),
+                        NOW,
+                        NOW);
+
+        assertThat(result.recoveries)
+                .singleElement()
+                .satisfies(
+                        recovery ->
+                                assertThat(RowRanges.format(recovery.partition))
+                                        .isEqualTo(
+                                                RowRanges.format(
+                                                        ByteStringRange.create("m", "t"))));
+    }
+
+    @Test
+    void coversAPartitionWhoseLedgerRangesArriveOutOfOrder() {
+        ByteStringRange service = ByteStringRange.create("a", "z");
+
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Collections.singletonList(service),
+                        Arrays.asList(
+                                split("tail", ByteStringRange.create("m", "z")),
+                                split("head", ByteStringRange.create("a", "m"))),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        NOW,
+                        NOW.minusSeconds(60));
+
+        assertThat(result.missing).isEmpty();
+        assertThat(result.recoveries).isEmpty();
+    }
+
+    @Test
+    void aFirstObservedGapStartsItsTimerAtTheFallbackLowWatermark() {
+        Instant fallback = NOW.minusSeconds(120);
+
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Collections.singletonList(WHOLE),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        NOW,
+                        fallback);
+
+        assertThat(result.recoveries).isEmpty();
+        assertThat(result.missing)
+                .singleElement()
+                .satisfies(
+                        missing -> {
+                            assertThat(missing.getFirstObserved()).isEqualTo(NOW);
+                            assertThat(missing.getLowWatermark()).isEqualTo(fallback);
+                        });
+    }
+
+    @Test
+    void tokensStartingInsideTheGapDoNotRecoverIt() {
+        assertThat(
+                        ChangeStreamPartitionReconciler.tokensCover(
+                                GAP,
+                                Collections.singletonList(
+                                        TestChangeStreamTokens.token(
+                                                ByteStringRange.create("b", "z"), "late"))))
+                .isFalse();
+    }
+
+    @Test
+    void tokensLeavingAHoleInTheMiddleDoNotRecoverTheGap() {
+        assertThat(
+                        ChangeStreamPartitionReconciler.tokensCover(
+                                GAP,
+                                Arrays.asList(
+                                        TestChangeStreamTokens.token(
+                                                ByteStringRange.create("a", "m"), "head"),
+                                        TestChangeStreamTokens.token(
+                                                ByteStringRange.create("t", "z"), "tail"))))
+                .isFalse();
+    }
+
+    @Test
+    void tokensEndingInsideTheGapDoNotRecoverIt() {
+        assertThat(
+                        ChangeStreamPartitionReconciler.tokensCover(
+                                GAP,
+                                Collections.singletonList(
+                                        TestChangeStreamTokens.token(
+                                                ByteStringRange.create("a", "t"), "short"))))
+                .isFalse();
+    }
+
+    @Test
+    void aTokenStartingBeforeTheGapIsNotAdopted() {
+        PendingMerge merge =
+                new PendingMerge(
+                        WHOLE,
+                        Collections.singletonList(
+                                TestChangeStreamTokens.token(
+                                        ByteStringRange.create("a", "m"), "wide")),
+                        NOW.minusSeconds(20));
+
+        assertThat(
+                        ChangeStreamPartitionReconciler.compatibleTokens(
+                                ByteStringRange.create("b", "m"), Collections.singletonList(merge)))
+                .isEmpty();
+    }
+
+    @Test
+    void aTokenReachingPastTheGapIsNotAdopted() {
+        PendingMerge merge =
+                new PendingMerge(
+                        WHOLE,
+                        Collections.singletonList(
+                                TestChangeStreamTokens.token(
+                                        ByteStringRange.create("c", "z"), "wide")),
+                        NOW.minusSeconds(20));
+
+        assertThat(
+                        ChangeStreamPartitionReconciler.compatibleTokens(
+                                ByteStringRange.create("b", "m"), Collections.singletonList(merge)))
+                .isEmpty();
+    }
+
+    @Test
+    void aTokenReportedByTwoMergesIsAdoptedOnce() {
+        PendingMerge first =
+                new PendingMerge(
+                        WHOLE,
+                        Collections.singletonList(TestChangeStreamTokens.token(LEFT, "left")),
+                        NOW.minusSeconds(20));
+        PendingMerge second =
+                new PendingMerge(
+                        WHOLE,
+                        Arrays.asList(
+                                TestChangeStreamTokens.token(LEFT, "left"),
+                                TestChangeStreamTokens.token(RIGHT, "right")),
+                        NOW.minusSeconds(20));
+
+        assertThat(
+                        ChangeStreamPartitionReconciler.compatibleTokens(
+                                WHOLE, Arrays.asList(first, second)))
+                .containsExactly(
+                        TestChangeStreamTokens.token(LEFT, "left"),
+                        TestChangeStreamTokens.token(RIGHT, "right"));
+    }
+
+    @Test
+    void adoptsTheEarliestLowWatermarkOfEveryContributingMerge() {
+        Instant earliest = NOW.minusSeconds(300);
+        PendingMerge left =
+                new PendingMerge(
+                        WHOLE,
+                        Collections.singletonList(TestChangeStreamTokens.token(LEFT, "left")),
+                        earliest);
+        // Listed second and later, so a version keeping the last contributor rather than the
+        // earliest resumes 290 s of this keyspace past changes the left parent had not seen.
+        PendingMerge right =
+                new PendingMerge(
+                        WHOLE,
+                        Collections.singletonList(TestChangeStreamTokens.token(RIGHT, "right")),
+                        NOW.minusSeconds(10));
+
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Collections.singletonList(WHOLE),
+                        Collections.emptyList(),
+                        Arrays.asList(left, right),
+                        Collections.singletonList(
+                                new MissingPartition(
+                                        WHOLE,
+                                        NOW.minus(ChangeStreamPartitionReconciler.TOKEN_GRACE),
+                                        NOW.minusSeconds(30))),
+                        NOW,
+                        NOW);
+
+        assertThat(result.recoveries)
+                .singleElement()
+                .satisfies(recovery -> assertThat(recovery.lowWatermark).isEqualTo(earliest));
     }
 
     private static ChangeStreamPartitionSplit split(String id, ByteStringRange partition) {

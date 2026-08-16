@@ -17,12 +17,16 @@
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.bigtable.admin.v2.ChangeStreamConfig;
 import com.google.cloud.bigtable.admin.v2.models.AppProfile;
 import com.google.cloud.bigtable.admin.v2.models.Table;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.Duration;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.testutils.LogCapture;
+import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -122,6 +126,33 @@ class DefaultChangeStreamCoordinatorClientTest {
         assertThat(client.instanceAdminSettings().getCredentialsProvider()).isSameAs(provider);
     }
 
+    @Test
+    void unreadableAppProfileMetadataLeavesTheCheckToBigtable() throws Exception {
+        FakeOperations operations = new FakeOperations();
+        operations.appProfileFailure =
+                new PermissionDeniedException(
+                        new RuntimeException("denied"),
+                        GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
+                        false);
+
+        // Preflight must not fail — a data-plane-only principal can stream without reading profile
+        // metadata — but the skip is invisible unless it says so, which is the whole of the arm.
+        try (LogCapture capture = LogCapture.of(DefaultChangeStreamCoordinatorClient.class)) {
+            client(operations).validateSingleClusterAppProfile();
+
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .satisfies(message -> assertThat(message).contains("profile"));
+        }
+    }
+
+    @Test
+    void rejectsAnEmptyApplicationProfileId() {
+        assertThatThrownBy(() -> new DefaultChangeStreamCoordinatorClient(DESTINATION, ""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("appProfileId must not be empty");
+    }
+
     private static DefaultChangeStreamCoordinatorClient client(FakeOperations operations) {
         return new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile", operations);
     }
@@ -143,12 +174,16 @@ class DefaultChangeStreamCoordinatorClientTest {
             implements DefaultChangeStreamCoordinatorClient.Operations {
 
         private AppProfile appProfile;
+        private RuntimeException appProfileFailure;
         private Table table;
         private List<ByteStringRange> partitions = Collections.emptyList();
         private boolean closed;
 
         @Override
         public AppProfile getAppProfile() {
+            if (appProfileFailure != null) {
+                throw appProfileFailure;
+            }
             return appProfile;
         }
 
