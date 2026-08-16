@@ -26,10 +26,8 @@ import java.time.Duration;
  *
  * <p>All of them are about a {@link Duration} a user hands a builder, and all of them exist so the
  * failure lands on the client rather than on a TaskManager, where a job has already started. Each
- * clears the base module's multiple-consumer bar on its own: the ceiling has nine call sites across
- * base, pubsub and bigquery, positivity has thirty-one across pubsub and bigquery, and the
- * millisecond floor thirty-one across pubsub, cloudtasks, bigtable and bigquery — eleven of them
- * through the zero-tolerant variant, across pubsub and bigquery (ADR-0068).
+ * clears the base module's multiple-consumer bar on its own; ADR-0068 carries the dated call-site
+ * survey behind that claim.
  *
  * <p>What they replace is not merely repetition. The ceiling constant stood in six files with its
  * message written out in eight, so a new budget knob was correct only if its author remembered to
