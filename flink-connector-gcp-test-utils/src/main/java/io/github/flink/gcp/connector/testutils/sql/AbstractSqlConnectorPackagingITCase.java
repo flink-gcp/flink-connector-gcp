@@ -387,7 +387,7 @@ public abstract class AbstractSqlConnectorPackagingITCase {
             // holder being the whole point, since the parent's defaults name the ASF.
             assertThat(head.get(project + 1))
                     .as("Copyright <inception year, or a range from it> <organization>")
-                    .matches("Copyright 2026(-\\d{4})? laughingman7743");
+                    .matches("Copyright 2026(-\\d{4})? The flink-gcp authors");
             assertThat(head)
                     .as("the header block must not name the ASF as this artifact's origin")
                     .noneMatch(line -> line.contains("The Apache Software Foundation"));
