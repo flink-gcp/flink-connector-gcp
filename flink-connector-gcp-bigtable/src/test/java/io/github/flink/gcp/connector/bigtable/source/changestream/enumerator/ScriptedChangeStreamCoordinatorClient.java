@@ -33,6 +33,7 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     private int generationCalls;
     private int retentionCalls;
     private int closeCalls;
+    private RuntimeException failNextGeneration;
 
     static ScriptedChangeStreamCoordinatorClient with(ByteStringRange... partitions) {
         return new ScriptedChangeStreamCoordinatorClient(
@@ -58,12 +59,22 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
     @Override
     public List<ByteStringRange> generateInitialPartitions() {
         generationCalls++;
+        RuntimeException failure = failNextGeneration;
+        if (failure != null) {
+            failNextGeneration = null;
+            throw failure;
+        }
         return new ArrayList<>(partitions);
     }
 
     @Override
     public void close() {
         closeCalls++;
+    }
+
+    /** Fails the next partition generation, as a scan against a live table can. */
+    void failNextGenerationWith(RuntimeException failure) {
+        failNextGeneration = failure;
     }
 
     int validationCalls() {

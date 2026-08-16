@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
@@ -26,6 +27,7 @@ import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
@@ -643,6 +645,159 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.close();
     }
 
+    @Test
+    void aProgressEventOlderThanTheAssignedPositionDoesNotRewindIt() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit assigned = context.assignedSplits(0).get(0);
+        Instant advanced = assigned.getLowWatermark().plusSeconds(60);
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionProgressEvent(
+                        assigned.splitId(),
+                        TestChangeStreamTokens.token(WHOLE, "recent"),
+                        advanced));
+
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionProgressEvent(
+                        assigned.splitId(),
+                        TestChangeStreamTokens.token(WHOLE, "stale"),
+                        advanced.minusSeconds(30)));
+
+        assertThat(enumerator.snapshotState(1).getAssignedSplits())
+                .singleElement()
+                .satisfies(
+                        split -> {
+                            assertThat(split.getLowWatermark()).isEqualTo(advanced);
+                            assertThat(split.getContinuationTokens())
+                                    .containsExactly(TestChangeStreamTokens.token(WHOLE, "recent"));
+                        });
+        enumerator.close();
+    }
+
+    @Test
+    void aSourceEventOfAnUnknownKindIsRejected() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+
+        assertThatThrownBy(() -> enumerator.handleSourceEvent(0, new SourceEvent() {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported Bigtable Change Streams source event");
+        enumerator.close();
+    }
+
+    @Test
+    void aRepeatedTransitionDoesNotReapplyItsSuccessors() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        PartitionTransitionEvent transition =
+                transition(parent, successor(LEFT, "left"), successor(RIGHT, "right"));
+
+        enumerator.handleSourceEvent(0, transition);
+        enumerator.handleSourceEvent(0, transition);
+
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1", "change-stream-2");
+        enumerator.close();
+    }
+
+    /**
+     * A tokenless restart may not ask for a position the change stream no longer retains, so the
+     * recovery starts at the retention edge instead.
+     *
+     * <p>The position is older than retention because it was <em>restored</em>: unlike a restored
+     * split or pending merge, a restored missing partition is not put through {@code
+     * StartPositionResolver.resolveRestored}, so ADR-0094's expiry rejection does not see it. That
+     * asymmetry is what makes this state reachable, and it is recorded on #726 rather than settled
+     * here — this test pins the clamp, not the omission that lets an expired position reach it.
+     */
+    @Test
+    void aTokenlessRestartOlderThanRetentionStartsAtTheRetentionEdge() throws Exception {
+        Instant now = Instant.parse("2026-08-11T12:00:00Z");
+        Duration retention = Duration.ofHours(1);
+        BigtableChangeStreamEnumeratorState restored =
+                restoredWithMissing(
+                        now.minusSeconds(60),
+                        7,
+                        new MissingPartition(
+                                WHOLE,
+                                now.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                                now.minus(Duration.ofDays(3))));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                reconciling(
+                        context,
+                        new ScriptedChangeStreamCoordinatorClient(
+                                retention, Collections.singletonList(WHOLE)),
+                        restored,
+                        now);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+
+        context.runPeriodicAsyncCalls();
+
+        assertThat(context.assignedSplits(0))
+                .singleElement()
+                .satisfies(
+                        split ->
+                                assertThat(split.getLowWatermark())
+                                        .isEqualTo(now.minus(retention).plusSeconds(60)));
+        enumerator.close();
+    }
+
+    @Test
+    void aFailedReconciliationScanKeepsTheMissingPartitionForTheNextOne() throws Exception {
+        Instant now = Instant.parse("2026-08-11T12:00:00Z");
+        MissingPartition missing =
+                new MissingPartition(
+                        WHOLE,
+                        now.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                        now.minusSeconds(90));
+        BigtableChangeStreamEnumeratorState restored =
+                restoredWithMissing(now.minusSeconds(60), 7, missing);
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedChangeStreamCoordinatorClient client =
+                ScriptedChangeStreamCoordinatorClient.with(WHOLE);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                reconciling(context, client, restored, now);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        client.failNextGenerationWith(new IllegalStateException("scripted scan failure"));
+
+        context.runPeriodicAsyncCalls();
+
+        assertThat(context.assignedSplits(0)).isEmpty();
+        assertThat(enumerator.snapshotState(1).getMissingPartitions()).containsExactly(missing);
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
+                .isZero();
+
+        // The timer the failed scan preserved is what the next one recovers from, which is the
+        // reason to keep it rather than an incidental consequence of returning early.
+        context.runPeriodicAsyncCalls();
+
+        assertThat(context.assignedSplits(0)).hasSize(1);
+        assertThat(enumerator.snapshotState(2).getMissingPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
+                .isEqualTo(1);
+        enumerator.close();
+    }
+
     private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
                 new FakeSplitEnumeratorContext<>(parallelism);
@@ -660,15 +815,43 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 context, client, StartPosition.latest(), Optional.empty(), restored);
     }
 
+    private static BigtableChangeStreamSplitEnumerator reconciling(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            ScriptedChangeStreamCoordinatorClient client,
+            BigtableChangeStreamEnumeratorState restored,
+            Instant now) {
+        return new BigtableChangeStreamSplitEnumerator(
+                context,
+                client,
+                StartPosition.latest(),
+                Optional.empty(),
+                restored,
+                false,
+                true,
+                Clock.fixed(now, ZoneOffset.UTC));
+    }
+
+    private static BigtableChangeStreamEnumeratorState restoredWithMissing(
+            Instant startTime, long nextSplitId, MissingPartition missing) {
+        return new BigtableChangeStreamEnumeratorState(
+                true,
+                startTime,
+                nextSplitId,
+                Collections.emptyList(),
+                Collections.emptyList(),
+                Collections.emptyList(),
+                Collections.singletonList(missing));
+    }
+
     private static ChangeStreamPartitionSplit restoredSplit(
             String id, ByteStringRange partition, Instant lowWatermark) {
         return new ChangeStreamPartitionSplit(id, partition, Collections.emptyList(), lowWatermark);
     }
 
     private static PartitionTransitionEvent transition(
-            ChangeStreamPartitionSplit parent, PartitionTransitionEvent.Successor successor) {
+            ChangeStreamPartitionSplit parent, PartitionTransitionEvent.Successor... successors) {
         return new PartitionTransitionEvent(
-                parent.splitId(), parent.getLowWatermark(), Collections.singletonList(successor));
+                parent.splitId(), parent.getLowWatermark(), Arrays.asList(successors));
     }
 
     private static PartitionTransitionEvent.Successor successor(

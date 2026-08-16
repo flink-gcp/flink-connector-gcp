@@ -54,6 +54,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -250,17 +251,6 @@ class BigtableDynamicSourceTest {
         assertThat(result.getAcceptedFilters()).containsExactly(filter);
         assertThat(result.getRemainingFilters()).isEmpty();
         assertThat(rangesOf(configOf(source))).containsExactly("(*, b)", "[y, *)");
-    }
-
-    @Test
-    void aLiteralOnTheLeftReversesTheRowKeyComparison() {
-        BigtableDynamicSource source = minimal().build();
-        ResolvedExpression filter =
-                call(BuiltInFunctionDefinitions.LESS_THAN, literal("b"), rowKey());
-
-        source.applyFilters(java.util.Collections.singletonList(filter));
-
-        assertThat(rangesOf(configOf(source))).containsExactly("(b, *)");
     }
 
     @Test
@@ -745,5 +735,156 @@ class BigtableDynamicSourceTest {
                         () -> source.getLookupRuntimeProvider(lookupContext(new int[][] {{1, 0}})))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("row-key column 'rowkey'");
+    }
+
+    @Test
+    void aConjunctionCallIntersectsItsRowKeyRanges() {
+        BigtableDynamicSource source = minimal().build();
+        ResolvedExpression filter =
+                call(
+                        BuiltInFunctionDefinitions.AND,
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("b")),
+                        call(BuiltInFunctionDefinitions.LESS_THAN, rowKey(), literal("m")));
+
+        SupportsFilterPushDown.Result result =
+                source.applyFilters(java.util.Collections.singletonList(filter));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(filter);
+        assertThat(result.getRemainingFilters()).isEmpty();
+        assertThat(rangesOf(configOf(source))).containsExactly("[b, m)");
+    }
+
+    @Test
+    void aConjunctionCallChainsEveryQualifierItCanPrefilterOn() {
+        NestedFieldReferenceExpression other =
+                new NestedFieldReferenceExpression(
+                        new String[] {"cf2", "m"}, new int[] {2, 0}, DataTypes.DOUBLE());
+        ResolvedExpression filter =
+                call(
+                        BuiltInFunctionDefinitions.AND,
+                        call(BuiltInFunctionDefinitions.EQUALS, qualifier(), literal("alice")),
+                        call(BuiltInFunctionDefinitions.IS_NOT_NULL, other));
+
+        BigtableFilterPushDown.State state =
+                BigtableFilterPushDown.translate(
+                        SCHEMA, java.util.Collections.singletonList(filter));
+
+        assertThat(state.cellPredicate().toProto())
+                .isEqualTo(
+                        FILTERS.condition(
+                                        FILTERS.chain()
+                                                .filter(FILTERS.family().exactMatch("cf1"))
+                                                .filter(FILTERS.qualifier().exactMatch("a")))
+                                .then(
+                                        FILTERS.chain()
+                                                .filter(FILTERS.family().exactMatch("cf2"))
+                                                .filter(FILTERS.qualifier().exactMatch("m")))
+                                .toProto());
+    }
+
+    @Test
+    void aRowKeyIsNotNullTestKeepsEveryRow() {
+        BigtableDynamicSource source = minimal().build();
+
+        source.applyFilters(
+                java.util.Collections.singletonList(
+                        call(BuiltInFunctionDefinitions.IS_NOT_NULL, rowKey())));
+
+        // Not the same as no row-key pushdown: the sibling IS NULL test blocks every row, and this
+        // one has to keep them, so the scan is the whole table rather than the block filter.
+        assertThat(rangesOf(configOf(source))).containsExactly("(*, *)");
+        assertThat(configOf(source).getFilter().toProto()).isNotEqualTo(FILTERS.block().toProto());
+    }
+
+    @Test
+    void anInclusiveUpperBoundKeepsItsOwnRowKey() {
+        BigtableDynamicSource source = minimal().build();
+
+        source.applyFilters(
+                java.util.Collections.singletonList(
+                        call(
+                                BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("m"))));
+
+        assertThat(rangesOf(configOf(source))).containsExactly("(*, m]");
+    }
+
+    @Test
+    void aLiteralOnTheLeftReversesEveryOrderedComparison() {
+        BigtableDynamicSource below = minimal().build();
+        BigtableDynamicSource atMost = minimal().build();
+        BigtableDynamicSource above = minimal().build();
+        BigtableDynamicSource atLeast = minimal().build();
+
+        below.applyFilters(
+                java.util.Collections.singletonList(
+                        call(BuiltInFunctionDefinitions.LESS_THAN, literal("b"), rowKey())));
+        atMost.applyFilters(
+                java.util.Collections.singletonList(
+                        call(
+                                BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                                literal("b"),
+                                rowKey())));
+        above.applyFilters(
+                java.util.Collections.singletonList(
+                        call(BuiltInFunctionDefinitions.GREATER_THAN, literal("b"), rowKey())));
+        atLeast.applyFilters(
+                java.util.Collections.singletonList(
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                literal("b"),
+                                rowKey())));
+
+        assertThat(rangesOf(configOf(below))).containsExactly("(b, *)");
+        assertThat(rangesOf(configOf(atMost))).containsExactly("[b, *)");
+        assertThat(rangesOf(configOf(above))).containsExactly("(*, b)");
+        assertThat(rangesOf(configOf(atLeast))).containsExactly("(*, b]");
+    }
+
+    @Test
+    void aPredicateOnAFamilyColumnIsNeverARowKeyRange() {
+        ResolvedExpression filter =
+                call(
+                        BuiltInFunctionDefinitions.EQUALS,
+                        new FieldReferenceExpression("cf1", PHYSICAL.getChildren().get(1), 0, 1),
+                        literal("alice"));
+
+        BigtableFilterPushDown.State state =
+                BigtableFilterPushDown.translate(
+                        SCHEMA, java.util.Collections.singletonList(filter));
+
+        assertThat(state.rowKeyRanges()).isNull();
+        assertThat(state.result().getAcceptedFilters()).isEmpty();
+        assertThat(state.result().getRemainingFilters()).containsExactly(filter);
+    }
+
+    @Test
+    void fixedWidthTemporalEqualityIncludesEveryIgnoredSuffixByte() {
+        DataType physical = DataTypes.ROW(DataTypes.FIELD("rowkey", DataTypes.DATE()));
+        BigtableTableSchema schema = BigtableTableSchema.of((RowType) physical.getLogicalType());
+        FieldReferenceExpression rowKey =
+                new FieldReferenceExpression("rowkey", DataTypes.DATE(), 0, 0);
+        ValueLiteralExpression day =
+                new ValueLiteralExpression(LocalDate.ofEpochDay(7), DataTypes.DATE().notNull());
+        ByteString canonical = ByteString.copyFrom(new byte[] {0, 0, 0, 7});
+        ByteString suffixed = canonical.concat(ByteString.copyFrom(new byte[] {42}));
+
+        BigtableFilterPushDown.State state =
+                BigtableFilterPushDown.translate(
+                        schema,
+                        java.util.Collections.singletonList(
+                                call(BuiltInFunctionDefinitions.EQUALS, rowKey, day)));
+
+        assertThat(state.rowKeyRanges())
+                .singleElement()
+                .satisfies(
+                        range -> {
+                            assertThat(RowRanges.contains(range, canonical)).isTrue();
+                            assertThat(RowRanges.contains(range, suffixed)).isTrue();
+                        });
     }
 }
