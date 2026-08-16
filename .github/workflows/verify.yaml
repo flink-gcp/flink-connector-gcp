@@ -343,8 +343,50 @@ jobs:
         with:
           tool: just
 
+      # The audit fetches the sources jars of exactly flink.version, so that —
+      # not the whole pom.xml — keys the cache below: hashing the pom would
+      # save a duplicate immutable entry on every unrelated dependency bump
+      # that reaches main, against a quota already near its ceiling (see the
+      # Maven cache note above). Read through the script so its parsing has
+      # one owner and this step cannot drift from it.
+      - name: Read flink.version
+        id: flink_version
+        run: |
+          version="$(python3 scripts/check-flink-api-tiers.py --print-flink-version)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Maven Central rate-limits the shared egress IPs of GitHub-hosted
+      # runners, and a 429 here fails the lane on changes that touched nothing
+      # tier-related (issue #769): a hit makes this job issue zero Maven
+      # Central requests. Restore always, save only on main, for the Maven
+      # cache's reason above. No bare restore-keys fallback across
+      # flink.version: another version's jars have different filenames, so
+      # restoring them buys nothing.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: tier_jars
+        with:
+          path: target/flink-api-tiers
+          key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
+          restore-keys: api-tier-jars-${{ steps.flink_version.outputs.version }}-
+
       - name: Audit the Flink API tiers the main sources depend on
         run: just check-flink-api-tiers
+
+      # Saved only after a successful audit, so a body that failed to open as
+      # a zip (a truncated download, an outage page) cannot enter the cache:
+      # build_index() evicts it and fails the job, and this step's implicit
+      # success() then skips the save. Exact-key hits skip for the Maven
+      # save's reason above; a restore through the prefix reports cache-hit
+      # false, so a tier-list edit reaching main is promoted to its new exact
+      # key here.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >-
+          github.ref == 'refs/heads/main'
+          && steps.tier_jars.outputs.cache-hit != 'true'
+        with:
+          path: target/flink-api-tiers
+          key: api-tier-jars-${{ steps.flink_version.outputs.version }}-${{ hashFiles('scripts/config/flink-api-tiers.toml') }}
 
   # Is every skill's frontmatter strict YAML (ADR-0069)? A skill that any reader
   # disagrees about fails silently: the file stays valid markdown, no build step

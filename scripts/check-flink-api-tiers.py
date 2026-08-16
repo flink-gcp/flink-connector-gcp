@@ -45,6 +45,8 @@ import argparse
 import http.client
 import re
 import sys
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -62,6 +64,15 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path(__file__).resolve().parent / "config" / "flink-api-tiers.toml"
 CACHE = ROOT / "target" / "flink-api-tiers"
 MAVEN = "https://repo1.maven.org/maven2/org/apache/flink"
+
+# Maven Central rate-limits the shared egress IPs of GitHub-hosted runners, so
+# a download can fail with HTTP 429 on a change that touched nothing this
+# script reads (issue #769). Retries sleep these delays in order — at most
+# ~14 s per download against the CI job's ten-minute timeout, and only for
+# responses that arrived: a hung connection is an OSError, which is not
+# retried at all.
+RETRY_DELAYS = (2.0, 4.0, 8.0)
+RETRY_ATTEMPTS = len(RETRY_DELAYS) + 1
 
 TIERS = ("Public", "PublicEvolving", "Experimental", "Internal")
 UNANNOTATED = "unannotated"
@@ -130,11 +141,15 @@ def infra(message: str) -> "sys.NoReturn":
 
 
 def flink_version() -> str:
+    # Stripped here, at the single owner: the regex tolerates whitespace
+    # inside the tags, and the jar URLs, the cache filenames and the CI cache
+    # key all want the bare version.
     pom = (ROOT / "pom.xml").read_text(encoding="utf-8")
     match = re.search(r"<flink\.version>([^<]+)</flink\.version>", pom)
-    if not match:
+    version = match.group(1).strip() if match else ""
+    if not version:
         infra("pom.xml no longer declares <flink.version>; this script reads it.")
-    return match.group(1)
+    return version
 
 
 def collect_imports() -> set[str]:
@@ -157,16 +172,45 @@ def sources_jar(artifact: str, version: str) -> Path:
     request = urllib.request.Request(
         url, headers={"User-Agent": "flink-connector-gcp-api-tiers"}
     )
-    # HTTPException covers what OSError does not: a truncated body raises
-    # http.client.IncompleteRead, which is not an OSError.
-    try:
-        body = urllib.request.urlopen(request, timeout=30).read()
-    except (OSError, http.client.HTTPException) as error:
-        infra(
-            f"Downloading {url} failed ({error}). A 404 usually means the "
-            f"artifacts list in {CONFIG.name} names an artifact that does not "
-            f"exist at this flink.version."
-        )
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        # HTTPError before the broad handler below, which would otherwise
+        # swallow it: HTTPError is an OSError subclass. It is also the only
+        # failure worth retrying — a 429 or 5xx is Maven Central's state, not
+        # this repository's. HTTPException covers what OSError does not: a
+        # truncated body raises http.client.IncompleteRead, which is not an
+        # OSError.
+        try:
+            body = urllib.request.urlopen(request, timeout=30).read()
+            break
+        except urllib.error.HTTPError as error:
+            error.close()  # an HTTPError carries an open response body
+            if not (error.code == 429 or 500 <= error.code < 600):
+                # Fatal without retry, and the hint only where it applies: a
+                # retried 404 would hide a wrong entry in the artifacts list,
+                # and the same hint on a 429 sent an earlier reader hunting a
+                # config problem that was not there.
+                hint = (
+                    f" A 404 usually means the artifacts list in "
+                    f"{CONFIG.name} names an artifact that does not exist at "
+                    f"this flink.version."
+                    if error.code == 404
+                    else ""
+                )
+                infra(f"Downloading {url} failed ({error}).{hint}")
+            if attempt == RETRY_ATTEMPTS:
+                infra(
+                    f"Downloading {url} failed ({error}) after "
+                    f"{RETRY_ATTEMPTS} attempts."
+                )
+            delay = RETRY_DELAYS[attempt - 1]
+            print(
+                f"HTTP {error.code} from Maven Central for {url}; retrying "
+                f"in {delay:.0f} s (attempt {attempt} of {RETRY_ATTEMPTS}).",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+        except (OSError, http.client.HTTPException) as error:
+            infra(f"Downloading {url} failed ({error}).")
     partial = jar.with_suffix(".part")
     partial.write_bytes(body)
     partial.rename(jar)
@@ -242,7 +286,17 @@ def classify(source: str, entry: str, nested: list[str]) -> str:
 
 
 def main() -> int:
-    argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--print-flink-version",
+        action="store_true",
+        help="print pom.xml's flink.version and exit; CI keys the sources-jar "
+        "cache on it, and going through this script keeps one owner of the "
+        "parsing",
+    )
+    if parser.parse_args().print_flink_version:
+        print(flink_version())
+        return 0
 
     with CONFIG.open("rb") as handle:
         try:

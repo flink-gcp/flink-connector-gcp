@@ -30,6 +30,7 @@ Exit codes: 0 clean, 1 policy violation, 2 infrastructure or config authoring.
 
 import http.client
 import io
+import urllib.error
 import zipfile
 
 import pytest
@@ -254,6 +255,18 @@ def test_the_flink_version_comes_from_the_pom(root, check_flink_api_tiers):
     assert check_flink_api_tiers.flink_version() == VERSION
 
 
+def test_the_flink_version_is_stripped_of_surrounding_whitespace(
+    root, check_flink_api_tiers
+):
+    # The regex tolerates whitespace inside the tags; the jar URLs, the cache
+    # filenames and the CI cache key (a $GITHUB_OUTPUT `key=value` line, which
+    # a newline would malform) all want the bare version.
+    (root / "pom.xml").write_text(
+        POM.format(property=f"<flink.version>\n  {VERSION}\n</flink.version>")
+    )
+    assert check_flink_api_tiers.flink_version() == VERSION
+
+
 def test_a_pom_without_a_flink_version_is_an_infrastructure_error(
     root, check_flink_api_tiers
 ):
@@ -261,6 +274,20 @@ def test_a_pom_without_a_flink_version_is_an_infrastructure_error(
     with pytest.raises(SystemExit) as error:
         check_flink_api_tiers.flink_version()
     assert error.value.code == 2
+
+
+def test_the_version_flag_prints_it_and_audits_nothing(
+    root, check_flink_api_tiers, monkeypatch, capsys
+):
+    # CI keys the sources-jar cache on flink.version through this flag, so
+    # the workflow and the audit cannot disagree about how the pom is read.
+    # No config, imports or jars exist under `root`, so anything beyond
+    # printing the version would fail loudly here.
+    monkeypatch.setattr(
+        "sys.argv", ["check-flink-api-tiers.py", "--print-flink-version"]
+    )
+    assert exit_code(check_flink_api_tiers) == 0
+    assert capsys.readouterr().out.strip() == VERSION
 
 
 def test_the_first_jar_owning_an_entry_wins(root, check_flink_api_tiers):
@@ -308,6 +335,38 @@ def test_a_download_lands_in_the_cache_leaving_no_partial_file(
     assert [path.name for path in sorted((root / "cache").iterdir())] == [jar.name]
 
 
+def http_error(code, body=None):
+    """A urllib HTTPError carrying an open response body, as urlopen raises."""
+    return urllib.error.HTTPError(
+        url="https://repo1.example/sources.jar",
+        code=code,
+        msg="from Maven Central",
+        hdrs=None,
+        fp=body if body is not None else io.BytesIO(b"response body"),
+    )
+
+
+def stub_download(check_flink_api_tiers, monkeypatch, responses):
+    """Feed urlopen one scripted response per call, recording calls and sleeps.
+
+    An exception in `responses` is raised, bytes are returned as the body. A
+    call past the end of the script raises IndexError, so a retry the test
+    did not budget for fails rather than looping.
+    """
+    calls, sleeps = [], []
+
+    def urlopen(*args, **kwargs):
+        calls.append(args)
+        response = responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return io.BytesIO(response)
+
+    monkeypatch.setattr(check_flink_api_tiers.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(check_flink_api_tiers.time, "sleep", sleeps.append)
+    return calls, sleeps
+
+
 @pytest.mark.parametrize(
     "error",
     [
@@ -320,16 +379,101 @@ def test_a_download_lands_in_the_cache_leaving_no_partial_file(
 def test_a_failed_download_is_an_infrastructure_error(
     root, check_flink_api_tiers, monkeypatch, error
 ):
-    def raise_it(*args, **kwargs):
-        raise error
-
-    monkeypatch.setattr(check_flink_api_tiers.urllib.request, "urlopen", raise_it)
+    calls, sleeps = stub_download(check_flink_api_tiers, monkeypatch, [error])
     with pytest.raises(SystemExit) as raised:
         check_flink_api_tiers.sources_jar("flink-core", VERSION)
     assert raised.value.code == 2
+    # A transport failure is not retried: only a status Maven Central chose to
+    # send (429/5xx) says anything about trying again.
+    assert len(calls) == 1
+    assert sleeps == []
     # And nothing reaches the cache, so the next run retries rather than
     # reusing whatever the failure left.
     assert list((root / "cache").iterdir()) == []
+
+
+def test_a_rate_limited_download_is_retried_with_backoff(
+    root, check_flink_api_tiers, monkeypatch, capsys
+):
+    # The failure mode of issue #769: Maven Central rate-limits the shared
+    # egress IPs of GitHub-hosted runners, so a 429 says nothing about the
+    # change under test and is worth a second try.
+    body = b"PK\x03\x04 pretend jar"
+    error_bodies = [io.BytesIO(b"slow down"), io.BytesIO(b"slow down")]
+    # The list holds the errors alive: were they reclaimed, the interpreter
+    # would close their bodies itself and the closure assertion below would
+    # pass without error.close() in the code under test.
+    errors = [http_error(429, error_body) for error_body in error_bodies]
+    calls, sleeps = stub_download(check_flink_api_tiers, monkeypatch, [*errors, body])
+    jar = check_flink_api_tiers.sources_jar("flink-core", VERSION)
+    assert jar.read_bytes() == body
+    assert [path.name for path in sorted((root / "cache").iterdir())] == [jar.name]
+    assert len(calls) == 3
+    assert sleeps == [2.0, 4.0]
+    # Each abandoned attempt closed its response body rather than leaking it.
+    assert all(error_body.closed for error_body in error_bodies)
+    # A slow CI run explains itself in the log, and the log tells the truth
+    # about what was slept and which attempt it was.
+    err = capsys.readouterr().err
+    attempts = check_flink_api_tiers.RETRY_ATTEMPTS
+    assert f"retrying in 2 s (attempt 1 of {attempts})" in err
+    assert f"retrying in 4 s (attempt 2 of {attempts})" in err
+
+
+@pytest.mark.parametrize("code", [429, 500, 503])
+def test_persistent_rate_limiting_exhausts_the_retries(
+    root, check_flink_api_tiers, monkeypatch, capsys, code
+):
+    attempts = check_flink_api_tiers.RETRY_ATTEMPTS
+    calls, sleeps = stub_download(
+        check_flink_api_tiers,
+        monkeypatch,
+        [http_error(code) for _ in range(attempts)],
+    )
+    with pytest.raises(SystemExit) as raised:
+        check_flink_api_tiers.sources_jar("flink-core", VERSION)
+    assert raised.value.code == 2
+    assert len(calls) == attempts
+    assert sleeps == [2.0, 4.0, 8.0]
+    err = capsys.readouterr().err
+    assert f"after {attempts} attempts" in err
+    assert str(code) in err
+    # The 404 hint would mislead here: the artifacts list is not the problem.
+    assert "artifacts list" not in err
+    assert list((root / "cache").iterdir()) == []
+
+
+def test_a_missing_artifact_is_fatal_without_retry(
+    root, check_flink_api_tiers, monkeypatch, capsys
+):
+    # A 404 means the artifacts list names something that does not exist at
+    # this flink.version; retrying would hide exactly that.
+    error_body = io.BytesIO(b"not found")
+    error = http_error(404, error_body)  # held alive, as in the retry test
+    calls, sleeps = stub_download(check_flink_api_tiers, monkeypatch, [error])
+    with pytest.raises(SystemExit) as raised:
+        check_flink_api_tiers.sources_jar("flink-core", VERSION)
+    assert raised.value.code == 2
+    assert len(calls) == 1
+    assert sleeps == []
+    assert error_body.closed
+    assert "A 404 usually means" in capsys.readouterr().err
+
+
+def test_a_client_error_other_than_404_is_fatal_without_retry(
+    root, check_flink_api_tiers, monkeypatch, capsys
+):
+    # A 403 is neither the repository's fault (404's hint would mislead) nor
+    # transient (retrying would just wait through three backoffs to fail).
+    calls, sleeps = stub_download(check_flink_api_tiers, monkeypatch, [http_error(403)])
+    with pytest.raises(SystemExit) as raised:
+        check_flink_api_tiers.sources_jar("flink-core", VERSION)
+    assert raised.value.code == 2
+    assert len(calls) == 1
+    assert sleeps == []
+    err = capsys.readouterr().err
+    assert "403" in err
+    assert "artifacts list" not in err
 
 
 # --- config authoring ---
@@ -427,3 +571,29 @@ def test_an_artifact_owning_no_imported_type_fails(root, check_flink_api_tiers, 
     write_jar(root, "flink-metrics-core", {"org/apache/flink/metrics/Counter.java": ""})
     assert exit_code(check_flink_api_tiers) == 1
     assert "flink-metrics-core owns no imported type" in capsys.readouterr().err
+
+
+# --- the wiring verify.yaml's cache steps share with this script ---
+
+
+def test_the_ci_cache_wiring_matches_this_scripts_constants(check_flink_api_tiers):
+    # verify.yaml's api_tiers job caches the directory this script downloads
+    # into, keys it on the config file this script reads, and derives the
+    # version through this script's own flag. None of that is visible to the
+    # audit itself — a drifted path or key still passes, it just re-downloads
+    # on every run, which is the silent failure issue #769 exists to close —
+    # so the coupling is pinned here, in the style of test_ci_gate.py's
+    # wiring tests. Deliberately not the `root` fixture: this reads the real
+    # tree the workflow runs against.
+    module_root = check_flink_api_tiers.ROOT
+    text = (module_root / ".github" / "workflows" / "verify.yaml").read_text()
+    cache_dir = check_flink_api_tiers.CACHE.relative_to(module_root).as_posix()
+    config = check_flink_api_tiers.CONFIG.relative_to(module_root).as_posix()
+    version = "${{ steps.flink_version.outputs.version }}"
+    key = "api-tier-jars-" + version + "-${{ hashFiles('" + config + "') }}"
+    # Counted, not just present: restore and save each repeat the path and
+    # the key, so a substring match would hold while one of the pair drifts.
+    assert text.count(f"path: {cache_dir}") == 2
+    assert text.count(f"key: {key}") == 2
+    assert f"restore-keys: api-tier-jars-{version}-" in text
+    assert "--print-flink-version" in text
