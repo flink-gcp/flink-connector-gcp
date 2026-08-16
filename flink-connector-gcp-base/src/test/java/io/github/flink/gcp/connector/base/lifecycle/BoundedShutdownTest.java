@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.base.lifecycle;
 
+import io.github.flink.gcp.connector.testutils.Awaits;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -381,6 +382,62 @@ class BoundedShutdownTest {
         // A teardown that finished is not residue, so it must not inflate the count — the half that
         // makes a non-zero reading mean something.
         assertThat(abandoned.sum()).isEqualTo(1);
+    }
+
+    /**
+     * Past the give-up there is no caller left to throw to — {@code close()} has returned — so this
+     * warning is the whole of what a failing teardown gets, cause included. The give-up line before
+     * it says the resources leak; without this one, the operator never learns the shutdown then
+     * failed outright, which is a different fault with a different fix.
+     */
+    @Test
+    void aShutdownFailingAfterTheGiveUpIsStillReportedWithItsCause() throws Exception {
+        CountDownLatch blocked = new CountDownLatch(1);
+        IllegalStateException failure = new IllegalStateException("shutdown blew up too late");
+        BoundedShutdown teardown =
+                new BoundedShutdown(
+                        () -> {
+                            awaitUninterruptibly(blocked);
+                            throw failure;
+                        },
+                        (t, unit) -> true,
+                        DESCRIPTION,
+                        null,
+                        Duration.ofMillis(50),
+                        abandoned);
+
+        try (LogCapture capture = LogCapture.of(BoundedShutdown.class)) {
+            teardown.close();
+
+            assertThat(abandoned.sum()).isEqualTo(1);
+            assertThat(capture.getEvents()).hasSize(1);
+
+            // Only now does the shutdown fail, on the thread close() stopped waiting for. The
+            // report is that thread's, so it is awaited rather than assumed to have landed - well
+            // inside the class timeout, and carrying what did land, because a lost report is
+            // otherwise indistinguishable from a capture that never attached.
+            blocked.countDown();
+            Awaits.await(
+                    "the abandoned teardown to report its failure",
+                    Duration.ofSeconds(10),
+                    () -> capture.getEvents().size() >= 2,
+                    () -> "captured: " + capture.getEvents());
+
+            assertThat(capture.getEvents())
+                    .element(1)
+                    .satisfies(
+                            event -> {
+                                assertThat(event.getMessage())
+                                        .contains(DESCRIPTION)
+                                        .contains("already given up");
+                                assertThat(event.getThrowable()).isSameAs(failure);
+                            });
+        } finally {
+            // Every other blocking case here releases the latch in a finally: an assertion failing
+            // above would otherwise leave the shutdown thread parked for a minute and then log into
+            // whichever sibling's capture is open by then.
+            blocked.countDown();
+        }
     }
 
     /**

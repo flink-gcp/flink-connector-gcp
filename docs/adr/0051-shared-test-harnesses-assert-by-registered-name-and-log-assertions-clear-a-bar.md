@@ -54,15 +54,17 @@ limitations under the License.
   — *not* the `getNumCommittables*Counter` accessor names; [#210]'s issue text called them
   `numCommittables*`, and a docs page written from that would have named metrics no reporter
   emits.
-- **`LogCapture` is the shared log-assertion harness** ([#323]), **deliberately narrow: 8 of the
-  repository's 25 `LOG.warn`/`LOG.error` sites**. The bar: the log is the report — remove the
-  assertion and the branch has nothing identifying the event left. Today's sites: `FailureHandlers.LogAndDrop` (the log is the whole behaviour), the Bigtable batcher's absorbed shutdown report ([#238]), `BoundedShutdown`'s two warnings ([#265]/[#312]), the two FILE_LOADS quota warnings, `LoadJobOrchestrator`'s live-schema warning, and the Pub/Sub sink's stalled-wait warning ([#333], ADR-0052 — a publish that never answers is never counted as a failure, so no counter names the state). The bar exists because the
+- **`LogCapture` is the shared log-assertion harness** ([#323]), **deliberately narrow: 9 asserted
+  sites, against 59 `warn`/`error` sites in the main trees (recounted 2026-08-16; 25 when this was
+  written, so the ratio has widened rather than the bar having moved)**. The bar: the log is the report — remove the
+  assertion and the branch has nothing identifying the event left. Today's sites: `FailureHandlers.LogAndDrop` (the log is the whole behaviour), the Bigtable batcher's absorbed shutdown report ([#238]), `BoundedShutdown`'s three warnings ([#265]/[#312], and the failure a shutdown reports after `close()` has already given up — the ninth site, added by [#726], where nothing else survives to name the failure at all), the two FILE_LOADS quota warnings, `LoadJobOrchestrator`'s live-schema warning, and the Pub/Sub sink's stalled-wait warning ([#333], ADR-0052 — a publish that never answers is never counted as a failure, so no counter names the state). The bar exists because the
   cost is real: an assertion couples a test to the *wording* of a message. Measured 2026-08-06
   over the 24 sites that existed then: 13 were already driven by an existing test, and for 9 of those the same
   test already asserts a counter, a returned value or an absorbed exception — asserting the log
-  there was tried and **reverted**; do not re-add them. **The other 17 sites are unasserted on
-  purpose, and nothing tracks them as a gap** ([#336] proposed opening injection points to reach
-  five of them and was closed; [#337] gave `BigQueryLoadJobRunner` — the class holding two of the seventeen — its first unit test and **added no log assertion**, which is the bar applied rather than skipped: its swallowed temporary-table delete is identified by the test that scripts the failure and sees nothing escape, and its probe warning by the sequence of ids the test reads back). The backend is log4j2 and both mechanisms [#323] proposed are
+  there was tried and **reverted**; do not re-add them. **The remaining sites are unasserted on
+  purpose, and nothing tracks them as a gap** — a count is not carried here, because it goes stale
+  every time a connector logs ([#336] proposed opening injection points to reach
+  five of them and was closed; [#337] gave `BigQueryLoadJobRunner` — the class holding two of them — its first unit test and **added no log assertion**, which is the bar applied rather than skipped: its swallowed temporary-table delete is identified by the test that scripts the failure and sees nothing escape, and its probe warning by the sequence of ids the test reads back). The backend is log4j2 and both mechanisms [#323] proposed are
   unavailable (logback absent; log4j's `ListAppender` ships only in a test-jar this build does
   not resolve), so the appender is hand-rolled; `log4j-core` is deliberately not declared in the
   pom (nothing manages a log4j version, and a hand pin that drifts from Flink's runtime

@@ -196,7 +196,9 @@ class LogCaptureTest {
     void closingTheInnerCaptureLeavesTheOuterOneAttached() {
         // Kills the mutant that hardcodes one appender name: LoggerConfig.removeAppender(name)
         // removes every control carrying that name, so the inner close would detach both.
-        // Also the only case that drives the branch for a LoggerConfig that already exists.
+        // The first of three cases on the branch for a LoggerConfig that already exists. Both
+        // captures are at WARN here, so what the level handling does on that branch is
+        // unobservable; the two below ask for different levels, in each direction.
         try (LogCapture outer = LogCapture.of(Fixture.class)) {
             LogCapture inner = LogCapture.of(Fixture.class);
             try {
@@ -214,6 +216,62 @@ class LogCaptureTest {
             // rather than removing the LoggerConfig, so a skipped detach leaves the closed
             // capture's appender collecting - which only the closed capture can reveal.
             assertThat(inner.getMessages()).containsExactly("seen by both");
+        }
+    }
+
+    @Test
+    void anInnerCaptureDoesNotNarrowWhatTheOuterOneWidened() {
+        // Kills the mutant that narrows the shared LoggerConfig to the inner threshold. The
+        // enclosing capture asked for more than the inner one, which is what makes the narrowing
+        // observable at all: it would go blind for as long as the inner capture ran - a capture
+        // seeing less than it should, which reads as code that never logged.
+        try (LogCapture outer = LogCapture.of(Fixture.class, LogCapture.Level.DEBUG)) {
+            LogCapture inner = LogCapture.of(Fixture.class);
+            try {
+                Fixture.LOG.debug("below the inner threshold");
+                // Beside the empty assertion, so an inner capture that attached to nothing at all
+                // would not satisfy this method: the WARN proves the inner one is collecting, and
+                // only then does the missing DEBUG mean its threshold excluded it.
+                Fixture.LOG.warn("at the inner threshold");
+
+                assertThat(inner.getMessages()).containsExactly("at the inner threshold");
+            } finally {
+                inner.close();
+            }
+
+            Fixture.LOG.debug("after the inner capture closed");
+
+            assertThat(outer.getMessages())
+                    .containsExactly(
+                            "below the inner threshold",
+                            "at the inner threshold",
+                            "after the inner capture closed");
+        }
+    }
+
+    @Test
+    void anInnerCaptureWidensTheConfigTheOuterOneOwns() {
+        // The other direction, and the one JaCoCo shows unreached: the level is set on a config the
+        // outer capture already created, not on a fresh one. Kills the mutant that drops that
+        // setLevel - the inner capture would then silently see nothing below the outer's WARN,
+        // which is what asking for DEBUG was for.
+        try (LogCapture outer = LogCapture.of(Fixture.class)) {
+            LogCapture inner = LogCapture.of(Fixture.class, LogCapture.Level.DEBUG);
+            try {
+                Fixture.LOG.debug("asked for by the inner capture");
+
+                assertThat(inner.getMessages()).containsExactly("asked for by the inner capture");
+            } finally {
+                inner.close();
+            }
+
+            // The widening is the inner capture's, so closing it puts the outer's own level back.
+            assertThat(LoggerFactory.getLogger(Fixture.class).isDebugEnabled()).isFalse();
+            Fixture.LOG.warn("after the inner capture closed");
+
+            // The level was widened on the shared config, but each capture still filters at its own
+            // appender: the enclosing one asked for WARN and gets only the WARN.
+            assertThat(outer.getMessages()).containsExactly("after the inner capture closed");
         }
     }
 

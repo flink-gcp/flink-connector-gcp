@@ -128,6 +128,25 @@ class StartPositionResolverTest {
     }
 
     @Test
+    void anUnrepresentableRetentionHasAConfigurationError() {
+        // The retention twin of the case above, which the retention path did not have.
+        // validateRetention bounds a retention from below only, and a connector can hand over a
+        // caller-supplied one - Spanner's absentRetentionFallback is validated by exactly that
+        // method - so without this the operator meets a bare arithmetic failure from inside the
+        // resolver rather than a message naming the retention and the startup instant.
+        Duration retention = Duration.ofSeconds(Long.MAX_VALUE);
+        StartPositionResolver resolver = resolver(() -> retention);
+
+        assertThatThrownBy(() -> resolver.resolve(StartPosition.earliest()))
+                .isInstanceOf(IllegalArgumentException.class)
+                // Names the guard that fired, so a future misrouting fails here rather than passing
+                // on the two operands that validateRetention's own message also carries.
+                .hasMessageContaining("cannot be represented")
+                .hasMessageContaining(retention.toString())
+                .hasMessageContaining(NOW.toString());
+    }
+
+    @Test
     void rejectsAnInvalidRetentionResult() {
         StartPositionResolver tooShort =
                 resolver(() -> StartPositionResolver.RETENTION_SAFETY_MARGIN);
@@ -278,6 +297,23 @@ class StartPositionResolverTest {
         assertThat(second.getUnavailableRange()).isEqualTo(Duration.ofHours(1));
         assertThat(resolver.resolveFallback(StartPosition.latest())).isEqualTo(NOW);
         assertThat(retentionLookups).hasValue(1);
+    }
+
+    @Test
+    void anEmptyRestoredPartitionIsRejectedRatherThanReported() {
+        // The guard runs before any retention work, so an expired position only makes the case
+        // realistic - what is asserted is that neither entry point gets as far as reporting an
+        // expiry naming no partition at all. Both are driven because resolveRestored reaches the
+        // guard by delegating, and a second path there would lose it silently.
+        StartPositionResolver resolver = resolver(() -> RETENTION);
+        Instant restored = EARLIEST.minus(Duration.ofHours(1));
+
+        assertThatThrownBy(() -> resolver.inspectRestored("", restored))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("partition must not be empty");
+        assertThatThrownBy(() -> resolver.resolveRestored("", restored, Optional.empty()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("partition must not be empty");
     }
 
     private static StartPositionResolver resolver(
