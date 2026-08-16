@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Entry point for building Pub/Sub sources.
@@ -31,7 +31,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .build();
  * }</pre>
  */
-@PublicEvolving
+@Public
 public final class PubSubSource {
 
     private PubSubSource() {}

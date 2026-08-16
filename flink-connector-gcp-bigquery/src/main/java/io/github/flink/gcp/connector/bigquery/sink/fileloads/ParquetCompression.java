@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * How {@link StagingFormat#PARQUET} staging files are compressed. Rejected when the staging format
@@ -27,7 +27,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * {@code parquet-hadoop} goes through {@code CodecFactory.getCodec}, which is Hadoop's {@code
  * CompressionCodec} SPI — measured, and true of gzip and snappy as well as zstd.
  */
-@PublicEvolving
+@Public
 public enum ParquetCompression {
 
     /** Zstandard. The default, and what the size comparison against Avro is measured with. */

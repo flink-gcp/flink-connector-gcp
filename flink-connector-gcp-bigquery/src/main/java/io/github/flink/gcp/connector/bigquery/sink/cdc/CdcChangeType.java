@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.cdc;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /** A mutation applied by BigQuery change data capture. */
-@PublicEvolving
+@Public
 public enum CdcChangeType {
 
     /** Inserts a new primary key or replaces the row currently stored for it. */

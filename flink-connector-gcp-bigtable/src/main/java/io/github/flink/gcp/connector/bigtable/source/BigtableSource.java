@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Reads rows from a Cloud Bigtable table.
@@ -35,7 +35,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * as batch-only — a bounded source runs inside a streaming pipeline and simply ends, which is what
  * makes reading a Bigtable table and joining it against an unbounded stream work.
  */
-@PublicEvolving
+@Public
 public final class BigtableSource {
 
     private BigtableSource() {}

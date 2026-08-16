@@ -16,14 +16,14 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * How data lands in a destination table that already contains data. Mirrors the BigQuery load-job
  * write dispositions; only {@link io.github.flink.gcp.connector.bigquery.sink.WriteMethod
  * WriteMethod.FILE_LOADS} consults it (the Storage Write API methods always append).
  */
-@PublicEvolving
+@Public
 public enum WriteDisposition {
 
     /** Appends loaded rows to the existing table data. The default. */

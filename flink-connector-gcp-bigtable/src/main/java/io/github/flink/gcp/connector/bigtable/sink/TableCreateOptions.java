@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
@@ -48,7 +48,7 @@ import java.util.Objects;
  * Bigtable's own name grammar and limits are left to the service, whose rejection names the field
  * and the limit. Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class TableCreateOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -100,7 +100,7 @@ public final class TableCreateOptions implements Serializable {
     }
 
     /** Builder for {@link TableCreateOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private final LinkedHashMap<String, GcRule> columnFamilies = new LinkedHashMap<>();

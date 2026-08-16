@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Whether the sink may create the destination table when it does not exist.
@@ -32,7 +32,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option spelling
  * the same way.
  */
-@PublicEvolving
+@Public
 public enum CreateDisposition {
 
     /**

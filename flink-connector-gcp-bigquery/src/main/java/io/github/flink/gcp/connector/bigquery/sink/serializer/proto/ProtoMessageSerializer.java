@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
@@ -50,7 +50,7 @@ import java.io.IOException;
  *
  * @param <T> the protobuf message type of the records
  */
-@PublicEvolving
+@Public
 public final class ProtoMessageSerializer<T extends Message> extends BigQueryProtoSerializer<T> {
 
     private static final long serialVersionUID = 1L;

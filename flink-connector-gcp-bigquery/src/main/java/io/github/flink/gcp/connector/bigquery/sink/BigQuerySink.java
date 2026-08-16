@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Entry point for building a BigQuery sink.
@@ -56,7 +56,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .build();
  * }</pre>
  */
-@PublicEvolving
+@Public
 public final class BigQuerySink {
 
     private BigQuerySink() {}

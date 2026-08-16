@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /** The mechanism used to write records to BigQuery. */
-@PublicEvolving
+@Public
 public enum WriteMethod {
 
     /**

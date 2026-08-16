@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 
 /**
@@ -27,7 +27,7 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
  * record type, so every method after it — {@code withUrl}, {@code withHeaders} — infers the record
  * type from the body schema and needs no explicit type witness.
  */
-@PublicEvolving
+@Public
 public final class HttpTargetBuilder {
 
     private final String url;

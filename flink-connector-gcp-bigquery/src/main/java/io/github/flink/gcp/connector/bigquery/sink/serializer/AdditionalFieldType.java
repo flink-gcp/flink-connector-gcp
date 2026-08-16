@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Supported BigQuery types for singular additional physical fields.
@@ -24,7 +24,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * <p>The value returned by a field provider must have the Java type documented on the enum
  * constant. {@link #TIMESTAMP} uses BigQuery's microsecond-precision representation.
  */
-@PublicEvolving
+@Public
 public enum AdditionalFieldType {
     /** A {@link Boolean}. */
     BOOL,

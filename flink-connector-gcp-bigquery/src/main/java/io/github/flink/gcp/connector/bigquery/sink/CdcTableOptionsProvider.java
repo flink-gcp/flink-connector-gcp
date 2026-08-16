@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.Serializable;
 
@@ -28,7 +28,7 @@ import java.io.Serializable;
  * that destination stays active.
  */
 @FunctionalInterface
-@PublicEvolving
+@Public
 public interface CdcTableOptionsProvider extends Serializable {
 
     /**

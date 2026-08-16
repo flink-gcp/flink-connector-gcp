@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Entry point for building a Bigtable sink.
@@ -54,7 +54,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .build();
  * }</pre>
  */
-@PublicEvolving
+@Public
 public final class BigtableSink {
 
     private BigtableSink() {}

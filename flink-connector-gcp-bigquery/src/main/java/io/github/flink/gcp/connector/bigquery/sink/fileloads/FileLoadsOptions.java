@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -63,7 +63,7 @@ import java.util.regex.Pattern;
  *
  * <p>Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class FileLoadsOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -339,7 +339,7 @@ public final class FileLoadsOptions implements Serializable {
     }
 
     /** Builder for {@link FileLoadsOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private String stagingPath;

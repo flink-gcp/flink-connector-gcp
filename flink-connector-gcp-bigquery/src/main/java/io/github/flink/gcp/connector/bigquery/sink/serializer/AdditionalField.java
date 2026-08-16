@@ -16,14 +16,14 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
 import java.util.regex.Pattern;
 
 /** One physical BigQuery column appended after the configured serializer emits a row. */
-@PublicEvolving
+@Public
 public final class AdditionalField<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;

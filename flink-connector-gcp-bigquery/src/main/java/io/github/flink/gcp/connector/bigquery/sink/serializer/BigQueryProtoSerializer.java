@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -59,7 +59,7 @@ import java.io.Serializable;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 public abstract class BigQueryProtoSerializer<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;

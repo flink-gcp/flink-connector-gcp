@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.tasks.v2.Task;
@@ -42,7 +42,7 @@ import javax.annotation.Nullable;
  *
  * <p>Instances are created by the sink and are not serializable.
  */
-@PublicEvolving
+@Public
 public final class FailedTask implements FailedElement {
 
     private final QueueDestination destination;

@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.typeinfo.TypeInfo;
 import org.apache.flink.util.Preconditions;
 
@@ -31,7 +31,7 @@ import java.util.Objects;
 import java.util.OptionalLong;
 
 /** One complete logical row mutation returned by Bigtable Change Streams. */
-@PublicEvolving
+@Public
 @TypeInfo(ChangeStreamMutationTypeInfoFactory.class)
 public final class ChangeStreamMutation implements Serializable {
 
@@ -102,14 +102,14 @@ public final class ChangeStreamMutation implements Serializable {
         return entries;
     }
 
-    @PublicEvolving
+    @Public
     public enum MutationType {
         USER,
         GARBAGE_COLLECTION
     }
 
     /** One ordered mutation entry. */
-    @PublicEvolving
+    @Public
     public abstract static class Entry implements Serializable {
         private static final long serialVersionUID = 1L;
 
@@ -119,7 +119,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Writes one cell version. */
-    @PublicEvolving
+    @Public
     public static final class SetCellEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -175,7 +175,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Deletes cell versions in one timestamp range. */
-    @PublicEvolving
+    @Public
     public static final class DeleteCellsEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -225,7 +225,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Deletes every cell in one family. */
-    @PublicEvolving
+    @Public
     public static final class DeleteFamilyEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -253,7 +253,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Adds an aggregate input to one cell. */
-    @PublicEvolving
+    @Public
     public static final class AddToCellEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -308,7 +308,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Merges an aggregate input into one cell. */
-    @PublicEvolving
+    @Public
     public static final class MergeToCellEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -363,7 +363,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** One typed value used by an aggregate entry. */
-    @PublicEvolving
+    @Public
     public abstract static class Value implements Serializable {
         private static final long serialVersionUID = 1L;
 
@@ -372,7 +372,7 @@ public final class ChangeStreamMutation implements Serializable {
         public abstract ValueType getType();
     }
 
-    @PublicEvolving
+    @Public
     public enum ValueType {
         RAW_VALUE,
         RAW_TIMESTAMP,
@@ -380,7 +380,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Arbitrary bytes in an aggregate entry. */
-    @PublicEvolving
+    @Public
     public static final class RawValue extends Value {
         private static final long serialVersionUID = 1L;
 
@@ -411,7 +411,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** A raw microsecond timestamp in an aggregate entry. */
-    @PublicEvolving
+    @Public
     public static final class RawTimestamp extends Value {
         private static final long serialVersionUID = 1L;
 
@@ -442,7 +442,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** A signed 64-bit integer in an aggregate entry. */
-    @PublicEvolving
+    @Public
     public static final class Int64Value extends Value {
         private static final long serialVersionUID = 1L;
 
@@ -473,7 +473,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** One timestamp-range boundary. */
-    @PublicEvolving
+    @Public
     public static final class TimestampBound implements Serializable {
         private static final long serialVersionUID = 1L;
 
@@ -520,7 +520,7 @@ public final class ChangeStreamMutation implements Serializable {
         }
     }
 
-    @PublicEvolving
+    @Public
     public enum BoundType {
         OPEN,
         CLOSED,
@@ -528,7 +528,7 @@ public final class ChangeStreamMutation implements Serializable {
     }
 
     /** Timestamp range affected by a cell deletion. */
-    @PublicEvolving
+    @Public
     public static final class TimestampRange implements Serializable {
         private static final long serialVersionUID = 1L;
 

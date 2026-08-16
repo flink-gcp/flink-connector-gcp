@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * A bounded source reading a BigQuery table through the Storage Read API.
@@ -45,7 +45,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * env.fromSource(source, WatermarkStrategy.noWatermarks(), "BigQuery");
  * }</pre>
  */
-@PublicEvolving
+@Public
 public final class BigQuerySource {
 
     private BigQuerySource() {}

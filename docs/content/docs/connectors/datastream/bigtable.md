@@ -61,7 +61,7 @@ The record-to-mutation step is the whole public surface beyond the builder:
 The following signature excerpt omits its package declaration, imports, and Javadocs.
 
 ```java
-@PublicEvolving
+@Public
 public interface BigtableSerializationSchema<T> extends Serializable {
     default void open(SerializationSchema.InitializationContext context) throws Exception {}
 

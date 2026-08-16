@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
@@ -61,7 +61,7 @@ import java.io.Serializable;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 public interface BigtableSerializationSchema<T> extends Serializable {
 
     /**

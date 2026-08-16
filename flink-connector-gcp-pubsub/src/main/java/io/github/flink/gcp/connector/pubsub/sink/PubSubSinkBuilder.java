@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
@@ -36,7 +36,7 @@ import javax.annotation.Nullable;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 public class PubSubSinkBuilder<T> {
 
     private DestinationResolver<? super T> destinationResolver;

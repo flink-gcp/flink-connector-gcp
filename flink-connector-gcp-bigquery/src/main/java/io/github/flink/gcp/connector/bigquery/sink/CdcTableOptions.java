@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -42,7 +42,7 @@ import java.util.Set;
  * created. Maximum staleness is unmanaged by default; callers may set a duration or explicitly
  * clear the table option.
  */
-@PublicEvolving
+@Public
 public final class CdcTableOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -122,7 +122,7 @@ public final class CdcTableOptions implements Serializable {
     }
 
     /** Builder for {@link CdcTableOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private List<String> primaryKeyColumns = Collections.emptyList();

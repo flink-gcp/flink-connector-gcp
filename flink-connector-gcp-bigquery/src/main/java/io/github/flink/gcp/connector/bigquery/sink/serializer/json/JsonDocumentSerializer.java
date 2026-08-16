@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.json;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.Schema;
@@ -54,7 +54,7 @@ import java.io.IOException;
  * <p>Conversion costs a JSON parse plus a pass over each record. Where the input format is yours to
  * choose and throughput matters, a native protobuf record avoids both.
  */
-@PublicEvolving
+@Public
 public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String> {
 
     private static final long serialVersionUID = 1L;

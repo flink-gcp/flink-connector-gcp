@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
@@ -67,7 +67,7 @@ import java.util.Map;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 public final class HttpTargetSerializationSchema<T> implements CloudTasksSerializationSchema<T> {
 
     private static final long serialVersionUID = 1L;
@@ -378,7 +378,7 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
      *
      * @param <T> type of the records written by the sink
      */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     public interface UrlExtractor<T> extends Serializable {
 
@@ -396,7 +396,7 @@ public final class HttpTargetSerializationSchema<T> implements CloudTasksSeriali
      *
      * @param <T> type of the records written by the sink
      */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     public interface HeadersExtractor<T> extends Serializable {
 

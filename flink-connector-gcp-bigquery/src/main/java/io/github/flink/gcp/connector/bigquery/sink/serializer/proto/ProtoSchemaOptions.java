@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
@@ -72,7 +72,7 @@ import java.util.Set;
  * AvroSchemaOptions} carries the same default and the same {@code deriveRequiredColumns()} name;
  * only the signal differs — a {@code ["null", T]} union there, field presence here.
  */
-@PublicEvolving
+@Public
 public final class ProtoSchemaOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -241,7 +241,7 @@ public final class ProtoSchemaOptions implements Serializable {
     }
 
     /** Builder for {@link ProtoSchemaOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();

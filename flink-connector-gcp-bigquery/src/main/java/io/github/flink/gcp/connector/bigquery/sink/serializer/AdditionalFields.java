@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
@@ -28,7 +28,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /** Ordered physical fields appended to every destination row and table schema. */
-@PublicEvolving
+@Public
 public final class AdditionalFields<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -61,7 +61,7 @@ public final class AdditionalFields<T> implements Serializable {
     }
 
     /** Builder for {@link AdditionalFields}. */
-    @PublicEvolving
+    @Public
     public static final class Builder<T> {
 
         private final List<AdditionalField<? super T>> fields = new ArrayList<>();

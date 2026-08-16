@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.failure;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 
 /** A record-specific BigQuery sink failure handled by the configured failure policy. */
-@PublicEvolving
+@Public
 public interface BigQueryFailure extends FailedElement {}

@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -44,7 +44,7 @@ import java.util.Objects;
  * created {@code flink-connector-gcp-base} — a type moves there only once it has multiple
  * consumers, and nothing consumes destination identity across modules.
  */
-@PublicEvolving
+@Public
 public final class SubscriptionDestination implements Serializable {
 
     private static final long serialVersionUID = 1L;

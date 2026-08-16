@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.base.failure;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -70,7 +70,7 @@ import java.io.Serializable;
  *
  * @param <F> the connector's concrete failure type
  */
-@PublicEvolving
+@Public
 @FunctionalInterface
 public interface FailureHandler<F extends FailedElement> extends Serializable {
 

@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * The file format {@link io.github.flink.gcp.connector.bigquery.sink.WriteMethod#FILE_LOADS
@@ -32,7 +32,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * <p>The format travels in each committable, so a file is always loaded as the format it was
  * actually written in, and load jobs are grouped on it.
  */
-@PublicEvolving
+@Public
 public enum StagingFormat {
 
     /** Avro container files. The default, and the only format with no unshipped dependencies. */

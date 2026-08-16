@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -50,13 +50,13 @@ import java.util.stream.Collectors;
  * <p>Validation is shape-only (positivity, arity); nesting depth and any service-side limits are
  * left to Bigtable, whose rejection names what it refused. Instances are immutable.
  */
-@PublicEvolving
+@Public
 public final class GcRule implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
     /** The rule shapes Bigtable's admin API takes. */
-    @PublicEvolving
+    @Public
     public enum Kind {
         MAX_VERSIONS,
         MAX_AGE,

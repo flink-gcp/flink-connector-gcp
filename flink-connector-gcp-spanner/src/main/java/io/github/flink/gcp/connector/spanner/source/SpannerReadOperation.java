@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.KeySet;
@@ -53,7 +53,7 @@ import java.util.Objects;
  * root-partitionable is refused by the service when the source plans, with a message naming the
  * reason, and the source fails rather than silently reading it on one subtask.
  */
-@PublicEvolving
+@Public
 public final class SpannerReadOperation implements Serializable {
 
     private static final long serialVersionUID = 1L;

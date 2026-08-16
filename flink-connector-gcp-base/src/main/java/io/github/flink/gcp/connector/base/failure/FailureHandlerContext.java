@@ -16,14 +16,14 @@
 
 package io.github.flink.gcp.connector.base.failure;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.metrics.MetricGroup;
 
 /**
  * What a {@link FailureHandler} or {@link DeadLetterQueue} learns about its surroundings when it is
  * opened: enough to stamp per-subtask output and to register its own metrics, and nothing more.
  */
-@PublicEvolving
+@Public
 public interface FailureHandlerContext {
 
     /** Returns the index of the sink writer subtask driving the handler. */

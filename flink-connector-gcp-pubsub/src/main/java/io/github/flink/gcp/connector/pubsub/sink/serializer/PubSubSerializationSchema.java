@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 
 import com.google.pubsub.v1.PubsubMessage;
@@ -48,7 +48,7 @@ import java.util.Map;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 public interface PubSubSerializationSchema<T> extends Serializable {
 
     /**
@@ -56,7 +56,7 @@ public interface PubSubSerializationSchema<T> extends Serializable {
      *
      * @param <T> type of the records written by the sink
      */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     interface AttributesExtractor<T> extends Serializable {
 
@@ -75,7 +75,7 @@ public interface PubSubSerializationSchema<T> extends Serializable {
      *
      * @param <T> type of the records written by the sink
      */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     interface OrderingKeyExtractor<T> extends Serializable {
 

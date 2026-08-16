@@ -111,6 +111,13 @@ limitations under the License.
              the second flag itself for 1.x versions); see the version policy in AGENTS.md
              and issue #32. -->
         <flink.compat>flink2</flink.compat>
+        <!-- The published predecessor japicmp compares every connector jar against
+             (issue #728, ADR-0124). Every release bumps this to the version it just
+             published and wipes any accumulated compatibility <exclude> entries from
+             the japicmp declaration below. Until this version exists on Maven Central
+             the parent's ignoreNonResolvableArtifacts=true makes the check log a
+             warning and pass. -->
+        <japicmp.referenceVersion>1.0.0</japicmp.referenceVersion>
         <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.1</avro.version>
@@ -784,6 +791,37 @@ limitations under the License.
             </plugin>
 
             <plugin>
+                <!-- Backward-compatibility check of the published API against
+                     ${japicmp.referenceVersion} (issue #728, ADR-0124). The connector parent
+                     configures this plugin in pluginManagement only, so nothing runs until it
+                     is declared here; the managed execution binds japicmp:cmp to the verify
+                     phase, checking @Public types. oldVersion is re-declared because the
+                     parent hardcodes org.apache.flink as the groupId of the compared
+                     predecessor (the same workaround as directory-maven-plugin above). A
+                     deliberate, documented break adds an entry under
+                     <excludes combine.children="append"> inside <parameter> here; the next
+                     release wipes it. Skip locally with -Djapicmp.skip=true — the parent's
+                     `fast` profile skips only the stale io.github.zentol.japicmp fork
+                     coordinates and does not affect this plugin. A release build whose own
+                     version equals ${japicmp.referenceVersion} MUST pass -Djapicmp.skip=true:
+                     Maven resolves the reference artifact from the reactor itself, japicmp
+                     then reads the old side's whole compile classpath as the old API, and
+                     Flink's own @Public classes report as thousands of removals (measured on
+                     the #728 staging rehearsal). -->
+                <groupId>com.github.siom79.japicmp</groupId>
+                <artifactId>japicmp-maven-plugin</artifactId>
+                <configuration>
+                    <oldVersion>
+                        <dependency>
+                            <!-- artifactId, version and type merge in from the parent's
+                                 pluginManagement; only the groupId needs replacing. -->
+                            <groupId>io.github.flink-gcp</groupId>
+                        </dependency>
+                    </oldVersion>
+                </configuration>
+            </plugin>
+
+            <plugin>
                 <!-- License header check over the whole tree. The configuration of the Flink
                      connector parent is overridden here because this project is not developed
                      at the ASF: our own files carry the plain Apache-2.0 header, while files
@@ -946,6 +984,41 @@ limitations under the License.
             <modules>
                 <module>flink-connector-gcp-docs-validation</module>
             </modules>
+        </profile>
+
+        <!-- Patch-release compatibility gate (ADR-0124): a patch release must not break
+             @PublicEvolving types either, so cutting one runs the check with that
+             annotation included — `just verify -Pjapicmp-patch` against the release being
+             patched. Ordinary builds check @Public only; between minor releases
+             @PublicEvolving may change with a release-notes entry. The includes and
+             excludes lists are re-declared wholesale because Maven replaces, not merges,
+             list-valued plugin configuration. -->
+        <profile>
+            <id>japicmp-patch</id>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>com.github.siom79.japicmp</groupId>
+                            <artifactId>japicmp-maven-plugin</artifactId>
+                            <configuration>
+                                <parameter>
+                                    <includes>
+                                        <include>@org.apache.flink.annotation.Public</include>
+                                        <include>@org.apache.flink.annotation.PublicEvolving</include>
+                                    </includes>
+                                    <excludes>
+                                        <exclude>@java.lang.Deprecated</exclude>
+                                        <exclude>*.scala</exclude>
+                                        <exclude>@org.apache.flink.annotation.Experimental</exclude>
+                                        <exclude>@org.apache.flink.annotation.Internal</exclude>
+                                    </excludes>
+                                </parameter>
+                            </configuration>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+            </build>
         </profile>
 
         <!-- Resolves Flink SNAPSHOT builds, for the early-warning row of the version

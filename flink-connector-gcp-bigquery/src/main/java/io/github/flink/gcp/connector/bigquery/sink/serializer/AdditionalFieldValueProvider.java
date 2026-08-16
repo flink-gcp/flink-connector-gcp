@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import javax.annotation.Nullable;
 
@@ -24,7 +24,7 @@ import java.io.Serializable;
 
 /** Extracts one additional physical-field value from the original input record. */
 @FunctionalInterface
-@PublicEvolving
+@Public
 public interface AdditionalFieldValueProvider<T> extends Serializable {
 
     /** Returns the value for {@code element}, or {@code null} under a nullable field policy. */

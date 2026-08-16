@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.typeinfo.TypeInfo;
 import org.apache.flink.util.Preconditions;
 
@@ -33,7 +33,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /** One data-change record returned by a Spanner Change Streams read function. */
-@PublicEvolving
+@Public
 @TypeInfo(DataChangeRecordTypeInfoFactory.class)
 public final class DataChangeRecord implements Serializable {
 
@@ -152,7 +152,7 @@ public final class DataChangeRecord implements Serializable {
     }
 
     /** Per-record description of one watched column. */
-    @PublicEvolving
+    @Public
     public static final class ColumnType implements Serializable {
 
         private static final long serialVersionUID = 1L;

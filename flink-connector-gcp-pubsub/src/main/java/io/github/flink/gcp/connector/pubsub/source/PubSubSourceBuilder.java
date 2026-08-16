@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.Preconditions;
 
@@ -44,7 +44,7 @@ import java.util.Set;
  *
  * @param <T> type of the records produced by the source
  */
-@PublicEvolving
+@Public
 public class PubSubSourceBuilder<T> {
 
     private final List<SubscriptionDestination> subscriptions = new ArrayList<>();

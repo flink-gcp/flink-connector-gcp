@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.json;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.Serializable;
 
@@ -30,7 +30,7 @@ import java.io.Serializable;
  * schema is supplied to {@link JsonDocumentSerializer} directly and already says what each column
  * is — {@code JSON} columns included.
  */
-@PublicEvolving
+@Public
 public final class JsonDocumentSerializerOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -60,7 +60,7 @@ public final class JsonDocumentSerializerOptions implements Serializable {
     }
 
     /** Builder for {@link JsonDocumentSerializerOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private boolean ignoreUnknownFields;

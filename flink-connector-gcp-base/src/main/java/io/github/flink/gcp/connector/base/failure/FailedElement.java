@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.base.failure;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import com.google.protobuf.ByteString;
 
@@ -36,7 +36,7 @@ import javax.annotation.Nullable;
  * <p>Failures reach handlers on the task thread and are not serializable. Depending on the
  * connector contract, the sink or a user-supplied resolver may create the concrete instance.
  */
-@PublicEvolving
+@Public
 public interface FailedElement {
 
     /**

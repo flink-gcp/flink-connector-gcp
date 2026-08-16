@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.Serializable;
 
@@ -40,7 +40,7 @@ import java.io.Serializable;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 @FunctionalInterface
 public interface TaskIdExtractor<T> extends Serializable {
 

@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.base.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
@@ -38,7 +38,7 @@ import java.util.Objects;
  * source. {@link #at(Instant)} names an absolute instant, and {@link #ago(Duration)} names an
  * instant relative to resolution time.
  */
-@PublicEvolving
+@Public
 public final class StartPosition implements Serializable {
 
     private static final long serialVersionUID = 1L;

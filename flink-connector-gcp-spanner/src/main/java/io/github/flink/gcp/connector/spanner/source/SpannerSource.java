@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Reads rows from a Cloud Spanner database.
@@ -43,7 +43,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * was given. There is no column to split on and no bounds to supply: where the divisions fall is
  * the service's decision, made from how the data is actually stored.
  */
-@PublicEvolving
+@Public
 public final class SpannerSource {
 
     private SpannerSource() {}

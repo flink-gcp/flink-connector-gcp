@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
@@ -34,7 +34,7 @@ import java.io.Serializable;
  * recordsSkipped} once. Collected records must be non-null. The collector is valid only for the
  * synchronous duration of the call; an implementation must not retain it.
  */
-@PublicEvolving
+@Public
 public interface BigtableChangeStreamDeserializationSchema<T>
         extends Serializable, ResultTypeQueryable<T> {
 
