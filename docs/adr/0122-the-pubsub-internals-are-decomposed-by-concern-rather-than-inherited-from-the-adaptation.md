@@ -83,7 +83,7 @@ be had without touching them.
 | `PubSubWriter` | kept, reduced | the writer lifecycle and every verdict: what a record, a mail and a failure mean |
 | `InFlightTracker` | new | the in-flight ledger, the capacity gate and ADR-0052's progress-bounded waits |
 | `DestinationState` | inner class promoted | one topic's publisher and repair debt, including the publish-sequence ordering of parked messages |
-| `TopicRepairer` | new | the repair loop, the isolation pass and the recovery budget, behind a three-method context (`republish`, `drainInFlight`, `releaseParked`) — the fourth method this record first planned, a batched-send flush, stayed with the writer because its only caller, `repairPendingTopics`, never moved |
+| `TopicRepairer` | new | the repair loop, the isolation pass and the recovery budget, behind a three-method context (`republish`, `drainInFlight`, `releaseParked`) — the fourth method this record first planned, a batched-send flush, stayed with the writer because its only repair-side caller, `repairPendingTopics`, never moved |
 
 ### Invariants that change house without changing behavior
 
@@ -177,9 +177,11 @@ anything.
 
 ## Consequences
 
-- Six pull requests, each independently green, each carrying its own mutation batch. The
-  integration tests against the emulator and real GCP are the decomposition-agnostic behavioral
-  net and are not edited in any production-change pull request.
+- Six pull requests, each independently green; the five that move production code each carry
+  their own mutation batch, and the sixth closes this record. The integration tests against the
+  emulator and real GCP are the decomposition-agnostic behavioral net: no production-change pull
+  request edits their behavior or assertions — [#765] retargeted renamed types in three of them,
+  nothing more.
 - The renaming pull requests additionally build against Flink 1.20.4, which selects a different
   source root, and build the downstream `flink-sql-connector-gcp-pubsub`, which a module-scoped
   verification does not reach.
@@ -194,6 +196,48 @@ anything.
   decomposition — ADR-0123 is that audit. A later reader should not mistake this record for that
   determination, in either direction.
 
+## Outcome
+
+The series completed on 2026-08-16. Five pull requests moved the code — [#761], [#764], [#765],
+[#767] and [#768] — and the sixth closed this record with the two tables below. (The notice
+retirement [#763] and the agent-guidance scoping [#766] landed inside the series but moved no
+production code; [#763]'s determination belongs to ADR-0123.) The structure the Decision tables
+plan is the structure that landed.
+
+The name map, for a reader holding an old stack trace, test name or link against the new tree:
+
+| Before | After | Pull request |
+|---|---|---|
+| `PubSubAckTracker` (confirmation wait inline) | + `AckConfirmationWait` | [#761] |
+| `PubSubWriter` (ledger and waits inline) | + `InFlightTracker` | [#764] |
+| `NotifyingPullSubscriber` | `PullSubscriber` | [#765] |
+| `PubSubNotifyingPullSubscriber` | `StreamingPullSubscriber` + `SubscriberTeardown` | [#765] |
+| `PubSubWriter.DestinationState` (inner) | `DestinationState` (top-level) | [#767] |
+| `PubSubWriter.repairDestination` | `TopicRepairer.repair` | [#767] |
+| `PubSubSplitReader.AssignedSplit` (inner) | `SubscriberSlot` | [#768] |
+| `PubSubSplitReader.SubscriberOpener` (inner) | `PullSubscriberOpener` + `DefaultPullSubscriberOpener` | [#768] |
+| `PubSubSplitReader` signal fields and methods (`signalDataAvailable` et al.) | `DataAvailabilitySignal` | [#768] |
+| `PubSubSplitReader` roster policy | `SubscriberRoster` | [#768] |
+
+And the promised list of every place literal motion was impossible, with the invariant each
+adaptation keeps and the test that pins it:
+
+| Adaptation | Invariant kept | Pinning test |
+|---|---|---|
+| [#764]: the tracker logs through the writer's injected `Logger`, not its own | 8 — the extracted waits log under the writer's category | `InFlightTrackerTest.aStalledWaitWarnsUnderTheWritersLogCategory` |
+| [#764]: `sendWhatIsStillBatched` is injected as an idle hook used by `awaitCapacity` alone; the drains stay pre-flushed by their callers | 6 — the capacity wait flushes once; the drains do not | `InFlightTrackerTest.onlyTheCapacityWaitAsksForWhatIsStillBatched` |
+| [#764]: `checkAsyncError` is wired into the tracker as an injected failure check rather than moved | ADR-0052's waits abort on a failure captured off-thread | `InFlightTrackerTest.bothWaitsSurfaceACapturedFailureEvenWithNothingInFlight` |
+| [#764]: the writer's `maxConsecutiveRejections` precondition stays ahead of the tracker's construction, so a doubly invalid configuration still reports the writer's message first | construction-time validation, unchanged in which message wins | none — deliberately unpinned, recorded in [#764]'s review record: a test sees only the one exception that fires |
+| [#765]: the teardown takes a live `isAlreadyReported` predicate that reads the latch under the subscriber's monitor at classification time, never a construction-time snapshot | 5 — the teardown reads the already-reported latch live | `SubscriberTeardownTest.absorbsTheClientsReportOfTheFailureItAlreadyDelivered` |
+| [#767]: `RepairContext` is three methods, not the four first planned — the batched-send flush stayed with the writer because its only repair-side caller, `repairPendingTopics`, never moved | 6's asymmetry — the flush placement stays caller-owned | `PubSubWriterProgressTimeoutTest.theRepairsOwnDrainAlsoSendsWhatIsStillBatched`, which cannot complete unless `repairPendingTopics` flushes before its leading drain |
+| [#767]: the solo/batched verdict crosses `RepairContext.republish` as an explicit parameter rather than being re-derived inside the repairer | 7 — the isolation verdict is data at the seam | `TopicRepairerTest.theIsolationPassPublishesSoloAndDrainsOncePerMessage` |
+| [#767] and [#768]: the repairer and the roster log through the injected writer and reader `Logger` | 8, applied to both halves — operator-facing lines keep their categories | the roster's half by `PubSubSplitReaderTest.aPausedSplitOutgrowingItsMessageBoundHasItsSubscriberStopped` (a `LogCapture` against the reader's category); the repairer's half has no category oracle — its message text is pinned by `TopicRepairerTest`'s exhaustion tests and the category was verified in [#767]'s review |
+| [#768]: the park's `pausedSplits.isEmpty()` fast path becomes lazy list allocation — the set no longer exists; the allocation half of the base property is kept, and the per-fetch O(assigned splits) walk is stated in the roster comment rather than claimed neutral | 3 — one `Closers.closeAll` list per park | `PubSubSplitReaderTest.parkingSeveralSplitsAtOnceShutsThemAllDownBeforeWaitingOnAny` |
+| [#768]: the [#348] guard's iteration-order comment is reworded — it argued from `HashSet` vs `LinkedHashMap`, structures that no longer both exist | the reproducibility contract and the `SplitFetcherManager` belt-and-braces citation are kept, comment-only | none — a comment rewording with nothing behavioral to pin: the iteration source, the assignment-ordered slot map, is the same map the base iterated |
+| [#768]: `pauseOrResume` drops a pause for an unassigned split instead of recording its id — a slot can only pause an assigned split | unreachable in production (the `SplitFetcherManager` filtering argument), so dropped and stored must be indistinguishable there | `SubscriberRosterTest.aPauseForAnUnassignedSplitIsDroppedNotStored`, which assigns the split *after* the stray pause |
+| [#768]: javadoc cross-references retargeted where the classes split | prose only; no behavior | none — nothing to pin |
+| [#768], added in review: `SubscriberSlot.resume()` carries its own precondition, so parked-implies-paused is enforced at both ends rather than by caller ordering | 2 — parked implies paused, by construction | `SubscriberSlotTest.resumingWhileStillParkedThrows` |
+
 [#17]: https://github.com/flink-gcp/flink-connector-gcp/issues/17
 [#31]: https://github.com/flink-gcp/flink-connector-gcp/issues/31
 [#79]: https://github.com/flink-gcp/flink-connector-gcp/issues/79
@@ -207,4 +251,11 @@ anything.
 [#377]: https://github.com/flink-gcp/flink-connector-gcp/issues/377
 [#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
+[#761]: https://github.com/flink-gcp/flink-connector-gcp/pull/761
+[#763]: https://github.com/flink-gcp/flink-connector-gcp/pull/763
+[#764]: https://github.com/flink-gcp/flink-connector-gcp/pull/764
+[#765]: https://github.com/flink-gcp/flink-connector-gcp/pull/765
+[#766]: https://github.com/flink-gcp/flink-connector-gcp/pull/766
+[#767]: https://github.com/flink-gcp/flink-connector-gcp/pull/767
+[#768]: https://github.com/flink-gcp/flink-connector-gcp/pull/768
 [upstream]: https://github.com/GoogleCloudPlatform/pubsub
