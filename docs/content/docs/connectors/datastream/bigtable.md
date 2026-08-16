@@ -725,6 +725,12 @@ its first-observed time. Compatible parent tokens may reconstruct it after two m
 low watermark, emit a WARN, and increment `changeStreamTokenlessRestarts`. These intervals are
 internal protocol constants rather than public tuning options.
 
+A tracked low watermark that falls before one minute inside the retention window is moved forward
+to that point, because the service answers no request for a position it no longer retains. Such a
+restart skips the changes between the position it tracked and the one it starts from, and nothing
+tells the two apart: `changeStreamTokenlessRestarts` counts a clamped restart and an unclamped one
+alike, and the WARN names the position the restart used rather than the one it replaced.
+
 Change Streams cover every column family. Garbage-collection changes can therefore appear beside
 application writes. Bigtable preserves the service's per-partition order, but records from
 different partitions have no connector-imposed global order. Delivery is at least once across a

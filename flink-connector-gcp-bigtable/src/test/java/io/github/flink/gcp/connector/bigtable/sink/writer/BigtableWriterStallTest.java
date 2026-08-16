@@ -78,14 +78,27 @@ class BigtableWriterStallTest {
     private final TestClock clock = new TestClock();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
+    /** What a step staged behind the wait threw, since a throw over there reaches no assertion. */
+    private volatile Throwable stagingFailure;
+
     @AfterEach
-    void stopTheScheduler() {
+    void stopTheSchedulerAndReportWhatItSaw() throws InterruptedException {
         scheduler.shutdownNow();
         // One test interrupts this thread on purpose, and a flag left set would make every later
         // test in this surefire fork see a cancellation that never happened (#316's shared-state
         // hazard in another shape). Read-and-clear unconditionally, since an earlier assertion
-        // failing would skip a clear placed inside the test.
+        // failing would skip a clear placed inside the test — and before the await below, which
+        // would otherwise throw on that flag rather than joining anything.
         Thread.interrupted();
+        // Joining the staging thread is what orders its write to stagingFailure before the read;
+        // a second @AfterEach would run in an order JUnit deliberately leaves unspecified, and
+        // could report this teardown's own interrupt as what the staged step saw.
+        scheduler.awaitTermination(10, TimeUnit.SECONDS);
+        Throwable failure = stagingFailure;
+        stagingFailure = null;
+        if (failure != null) {
+            throw new AssertionError("the step staged behind the wait failed", failure);
+        }
     }
 
     @Test
@@ -103,7 +116,7 @@ class BigtableWriterStallTest {
             onceTheWaitHasBegun(
                     () -> {
                         clock.advance(WARN_AFTER.plusSeconds(1));
-                        pause();
+                        awaitStallWarnings(capture, 1);
                         batcher.succeed(0);
                     });
 
@@ -228,10 +241,13 @@ class BigtableWriterStallTest {
             onceTheWaitHasBegun(
                     () -> {
                         clock.advance(WARN_AFTER.plusSeconds(1));
-                        pause();
+                        awaitStallWarnings(capture, 1);
                         // A second threshold's worth of silence earns a second line, and no more,
                         // however many hundreds of passes the wait makes around them.
                         clock.advance(WARN_AFTER.plusSeconds(1));
+                        awaitStallWarnings(capture, 2);
+                        // The pass that follows the second line is what a rate limit that counted
+                        // passes rather than time would say a third thing about.
                         pause();
                         batcher.succeed(0);
                     });
@@ -312,6 +328,31 @@ class BigtableWriterStallTest {
                 .collect(Collectors.toList());
     }
 
+    /**
+     * Waits until the wait has emitted {@code count} stall warnings.
+     *
+     * <p>Where a step expects the wait to <em>say</em> something, this is what pacing it costs:
+     * {@link #pause()} would be a guess at how long the wait needs to be scheduled, and a machine
+     * busy enough to miss that guess turns a stall the test staged into one warning fewer, not into
+     * a slower test. The appender is a {@code CopyOnWriteArrayList}, so reading it from here while
+     * the task thread writes to it is safe.
+     */
+    private void awaitStallWarnings(LogCapture capture, int count) {
+        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (stallWarnings(capture).size() < count) {
+            if (System.nanoTime() - deadlineNanos > 0) {
+                throw new AssertionError(
+                        "the wait logged "
+                                + stallWarnings(capture).size()
+                                + " stall warnings, expected "
+                                + count);
+            }
+            // Sleeping rather than spinning: the thread this waits for is the one under test, and
+            // on a machine with no spare core a spin here starves the very wait it is waiting for.
+            pause(Duration.ofMillis(1));
+        }
+    }
+
     /** Completes the outstanding mutation at the given index, as the client answering it. */
     private void succeed(int index) {
         batcher.succeed(index);
@@ -339,14 +380,26 @@ class BigtableWriterStallTest {
     private void onceTheWaitHasBegun(Runnable steps) {
         scheduler.execute(
                 () -> {
-                    long deadlineNanos = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-                    while (batcher.sendOutstandingCalls == 0) {
-                        if (System.nanoTime() - deadlineNanos > 0) {
-                            throw new AssertionError("the writer never reached a wait");
+                    try {
+                        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+                        while (batcher.sendOutstandingCalls == 0) {
+                            if (System.nanoTime() - deadlineNanos > 0) {
+                                throw new AssertionError("the writer never reached a wait");
+                            }
+                            pause(Duration.ofMillis(1));
                         }
-                        Thread.onSpinWait();
+                        steps.run();
+                    } catch (Throwable failure) {
+                        // Not when the teardown interrupted this thread: that is the test ending,
+                        // not the staged step seeing anything.
+                        if (!Thread.currentThread().isInterrupted()) {
+                            stagingFailure = failure;
+                        }
+                        // Nothing else will answer the client, and a wait nobody answers parks
+                        // until the test's own timeout — which reports a stack inside the wait
+                        // rather than what the step that staged it actually saw.
+                        batcher.answerEverythingOutstanding();
                     }
-                    steps.run();
                 });
     }
 
@@ -356,8 +409,12 @@ class BigtableWriterStallTest {
      * observable at all.
      */
     private static void pause() {
+        pause(Duration.ofMillis(100));
+    }
+
+    private static void pause(Duration duration) {
         try {
-            Thread.sleep(100);
+            Thread.sleep(duration.toMillis());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new AssertionError("interrupted while pacing a stalled wait", e);
