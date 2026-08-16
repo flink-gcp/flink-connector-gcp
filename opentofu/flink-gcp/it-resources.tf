@@ -39,7 +39,7 @@ resource "google_storage_bucket" "it" {
 
 # Tables created by integration tests expire after a day.
 resource "google_bigquery_dataset" "it" {
-  dataset_id   = "flink_gcp_it"
+  dataset_id                  = "flink_gcp_it"
   location                    = "us-central1"
   default_table_expiration_ms = 86400000
 }
