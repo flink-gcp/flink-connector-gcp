@@ -31,6 +31,18 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   change. Nothing in CI is affected either way, since CI builds the reactor. That is a different
   problem from the one `binary-compat` and `e2e` solve by installing first: theirs is that a
   goal-only or repeated-`-pl` invocation cannot span one reactor at all
+- **Scope local runs to the change, and let the CI lanes carry the rest.** A full
+  `verify-module` with its emulator ITs runs ~8-10 minutes locally, while a per-connector CI lane
+  verifies the same module in ~4 minutes from a clean state — so for a single-module change the
+  fast path is: targeted `-Dtest=...` while iterating, the module's unit tests
+  (`./mvnw -pl <module> test`) before committing, then push and read the lane. Run the full
+  `just verify` locally only when the change touches what every lane shares —
+  `flink-connector-gcp-base`, `flink-connector-gcp-test-utils`, the root POM, `scripts/`, the
+  `justfile` or a workflow — because those fan out to every module and a lane-per-connector run
+  will not localise the breakage. Never run two Maven builds concurrently in different worktrees:
+  observed once on a development laptop, 2026-08-16, during the #755 series: the emulator ITs
+  contended and one build stalled without failing or progressing. The ~8-10 minute local figure is
+  from the same machine and session; ADR-0058 carries the CI lane's measured 4:09.
 - **A local build is only as honest as the local state**: a primed `~/.m2` (this project's own
   SNAPSHOTs from any `install`) and a stale `target/` make reactor, packaging and
   plugin-execution changes look green locally while CI — which starts clean — fails. Verify
