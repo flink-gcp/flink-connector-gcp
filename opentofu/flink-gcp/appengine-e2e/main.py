@@ -14,12 +14,27 @@
 
 """Minimal App Engine handler for Cloud Tasks acceptance."""
 
+import hashlib
 import os
+import pathlib
 from http import HTTPStatus
 from wsgiref.simple_server import make_server
 
+# The SHA-1 of this file, which is also what appengine-e2e.tf passes as the
+# deployment's sha1_sum. Serving it makes "which revision is actually running?"
+# answerable from outside the deployment.
+#
+# The question is not idle. The provider never reads sha1_sum back from the
+# Admin API, so an apply that fails *after* recording success leaves OpenTofu
+# believing a revision is live that is not — and neither `plan` nor
+# `plan -refresh-only` reports it. Both were observed answering "No changes"
+# against a version still serving the previous file. Comparing this value with
+# `sha1sum` of this file in the repository is the check that does notice.
+_REVISION = hashlib.sha1(pathlib.Path(__file__).read_bytes()).hexdigest()
+
 _DEFAULT_RESPONSE = (HTTPStatus.NO_CONTENT, [], b"")
 _RESPONSES = {
+    "/revision": (HTTPStatus.OK, [("Content-Type", "text/plain")], _REVISION.encode()),
     "/redirect": (HTTPStatus.FOUND, [("Location", "/accepted")], b""),
     "/too-many-requests": (
         HTTPStatus.TOO_MANY_REQUESTS,

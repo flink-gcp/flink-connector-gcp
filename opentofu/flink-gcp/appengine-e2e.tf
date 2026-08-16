@@ -71,6 +71,40 @@ resource "google_service_account_iam_member" "appengine_e2e_deployer" {
 # Apply persistent version changes through the merge workflow from the reviewed
 # plan. A local state-changing apply after CI plans the change would invalidate
 # that saved plan and require a follow-up root-module pull request.
+#
+# Four things about this resource, all of them learned by getting them wrong.
+#
+# **Any edit to appengine-e2e/main.py redeploys the version**, because sha1_sum
+# below is that file's hash. Edits with no behavioural content count: rewriting
+# the licence header across the repository (#754) produced a plan updating this
+# version and nothing else.
+#
+# **sha1_sum is write-only.** The provider never reads it back from the Admin
+# API, so state is whatever the last apply *recorded*, not what is running.
+# Measured: with the version serving one file and state naming another, both
+# `plan` and `plan -refresh-only` answer "No changes". Nothing in OpenTofu will
+# ever report this divergence.
+#
+# **So a failed apply is not self-healing, and does not look like a failure
+# afterwards.** The apply for #754 died ten seconds into "Still modifying..."
+# with `Error code 13, message: an internal error has occurred` — a server-side
+# failure, the bucket object in the same apply having already succeeded — and
+# still wrote the new hash into state. The version went on serving the previous
+# file with every subsequent plan clean. When an apply over this resource fails,
+# read the deployment back from the Admin API rather than trusting the next plan.
+#
+# **Repair is an in-place update, not a replacement.** `-replace` cannot work:
+# App Engine refuses to delete the final version of a service ("Cannot delete
+# the final version of a service (module)"), and this service has exactly one.
+# Changing the file's content is the only lever, which is why /revision exists
+# in main.py — it serves that same hash, so `curl` against a started version
+# compared with `sha1sum` of the file is the check that does notice.
+#
+# Allow **at least fifteen minutes** for an apply here. A successful update takes
+# around ten; the ten-second failure above is what a *failure* looks like. A
+# client-side timeout shorter than that kills the wait while the deployment
+# succeeds server-side, which produces the divergence in the opposite direction —
+# observed, and repaired by re-applying.
 resource "google_app_engine_standard_app_version" "e2e" {
   project         = local.project_id
   service         = local.cloudtasks_appengine_e2e_service
