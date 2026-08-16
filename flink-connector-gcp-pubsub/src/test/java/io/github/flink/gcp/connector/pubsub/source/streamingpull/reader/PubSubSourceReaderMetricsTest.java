@@ -28,10 +28,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Everything else these metrics do is asserted where it is driven — the counters and gauges
  * through {@code PubSubSplitReader} and {@code PubSubSourceReader}, the teardown increments through
- * {@code PubSubNotifyingPullSubscriberTest} — and what is left over is the wiring between them:
- * that each name reads the adder the teardowns write, and reads it live rather than as a value
- * snapshotted when the reader was built. Read through the registered metric a reporter would call,
- * never through the adder, since the adder is the half already covered.
+ * {@code SubscriberTeardownTest} — and what is left over is the wiring between them: that each name
+ * reads the adder the teardowns write, and reads it live rather than as a value snapshotted when
+ * the reader was built. Read through the registered metric a reporter would call, never through the
+ * adder, since the adder is the half already covered.
  */
 class PubSubSourceReaderMetricsTest {
 

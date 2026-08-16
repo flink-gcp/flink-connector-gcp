@@ -26,7 +26,8 @@ limitations under the License.
 
 ## Context
 
-The FLIP-27 source's `PubSubSplitReader` owns one `PubSubNotifyingPullSubscriber` per split,
+The FLIP-27 source's `PubSubSplitReader` owns one `StreamingPullSubscriber` (named
+`PubSubNotifyingPullSubscriber` until [#755]) per split,
 each wrapping an SDK `Subscriber` whose lifecycle operations are injected as functional values
 (`SubscriberStart`, a `Runnable` stop, a `TerminationWait`) because `Subscriber` cannot be
 subclassed — non-final, private constructor — and every path only a misbehaving client reaches
@@ -86,7 +87,7 @@ fields and share only `startOrRelease`.
   is that it should hold it whoever calls it. That method reports a failure before it closes for
   the same reason: a split removed while paused carries one nothing has read, and removal,
   unlike teardown, happens while the job carries on.
-- **A paused split is still watched** ([#348]). `NotifyingPullSubscriber.checkFailure()`,
+- **A paused split is still watched** ([#348]). `PullSubscriber.checkFailure()`,
   evaluated from `PubSubSplitReader.fetch()` beside `MissingCheckpointDetector.check()` — not
   inside `drainInto`, the tempting one-line site: the two guards belong together because both
   exist for a state whose whole symptom is the *absence* of records, which no record-driven
@@ -238,3 +239,4 @@ fields and share only `startOrRelease`.
 [#350]: https://github.com/laughingman7743/flink-connector-gcp/issues/350
 [#351]: https://github.com/laughingman7743/flink-connector-gcp/issues/351
 [#358]: https://github.com/laughingman7743/flink-connector-gcp/issues/358
+[#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755

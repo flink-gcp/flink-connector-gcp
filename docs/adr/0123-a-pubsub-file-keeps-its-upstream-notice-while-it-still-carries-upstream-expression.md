@@ -42,7 +42,8 @@ repository passes it today.)
 ## Decision
 
 **A file keeps the upstream notice unless nothing upstream-specific survives in it at all.** Four
-files lose it; nine keep it, one of those pending a rewrite.
+files lose it; nine keep it. (One of the nine was deferred until [#755]'s rewrite re-measured
+it — see Evidence — and is settled as kept.)
 
 The test is **residue, not percentage.** §4(c) requires retaining notices "excluding those notices
 that do not pertain to any part of the Derivative Works", so what retires a notice is the absence
@@ -111,12 +112,15 @@ declines to argue that a declaration carries no authorship:
 | `PubSubSerializationSchema` | the interface declaration and the `dataOnly(...)` factory signature |
 | `PubSubDeserializationSchema` | the `dataOnly(...)` factory signature |
 
-**Deferred — one file.** `PubSubNotifyingPullSubscriber` reads as clear by line count (27 of 193,
-mostly SDK idiom) but declares its message buffer exactly as upstream does, annotation included:
+**Deferred — one file, since resolved as kept.** `PubSubNotifyingPullSubscriber` read as clear by
+line count (27 of 193, mostly SDK idiom) but declares its message buffer exactly as upstream does,
+annotation included:
 `@GuardedBy("this") private final Deque<PubsubMessage> messages = new ArrayDeque<>();`, and
-`receiveMessage`
-keeps upstream's statement sequence though every statement differs. [#755] rewrites that class, so
-it is re-measured there rather than judged here on a borderline reading.
+`receiveMessage` keeps upstream's statement sequence though every statement differs. [#755]'s
+rewrite renamed it `StreamingPullSubscriber` and split its teardown out, and the re-measurement
+that rewrite owed found **both residues untouched** — the teardown had no upstream counterpart, so
+extracting it moved nothing upstream-derived. The notice stays, which makes the count nine kept,
+four retired, none deferred.
 
 **Nothing outside those files derives from upstream.** All 94 Java files under this module's
 `src/test` were diffed against the 14 in upstream's corresponding module (18 across upstream's
@@ -146,7 +150,7 @@ itself, and it stays because four files still contain adapted code.
 
 - `PRESERVED_HOLDERS` in `scripts/check-license-headers.py` keeps `("Google LLC",)`, and the
   checker keeps doing what its comment says: stopping an unattributed third-party header from
-  passing as an ordinary one. The list shrinks only if the deferred file clears.
+  passing as an ordinary one. The deferred file was re-measured and kept, so the list is settled at nine.
 - The README's provenance section now names the nine files that still carry the notice rather
   than all thirteen, and restates one entry that
   described the wrong thing. It said `PubSubWriter` retains upstream's "publish/flush core (async

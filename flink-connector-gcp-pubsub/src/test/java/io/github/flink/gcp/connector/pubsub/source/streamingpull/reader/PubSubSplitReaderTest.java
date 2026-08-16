@@ -64,7 +64,7 @@ class PubSubSplitReaderTest {
                             .pausedSplitBufferMaxBytes(Long.MAX_VALUE)
                             .build());
 
-    private final Map<String, FakeNotifyingPullSubscriber> subscribers = new HashMap<>();
+    private final Map<String, FakePullSubscriber> subscribers = new HashMap<>();
     private final TestReaderMetrics readerMetrics = new TestReaderMetrics();
 
     /** Set by the ordering test so the fakes record their release/close calls in one list. */
@@ -130,7 +130,7 @@ class PubSubSplitReaderTest {
     void assigningTheSameSplitTwiceOpensOneSubscriber() throws Exception {
         PubSubSplitReader reader = reader(10);
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber first = subscriberOf(SPLIT_A);
+        FakePullSubscriber first = subscriberOf(SPLIT_A);
 
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
 
@@ -142,7 +142,7 @@ class PubSubSplitReaderTest {
     void removingASplitClosesItsSubscriberAndStopsDrainingIt() throws Exception {
         PubSubSplitReader reader = reader(10);
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
-        FakeNotifyingPullSubscriber removed = subscriberOf(SPLIT_A);
+        FakePullSubscriber removed = subscriberOf(SPLIT_A);
         removed.deliver(message("dropped"));
 
         reader.handleSplitsChanges(new SplitsRemoval<>(List.of(SPLIT_A)));
@@ -210,7 +210,7 @@ class PubSubSplitReaderTest {
         // stops the client itself.
         PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
-        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        FakePullSubscriber parked = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
         parked.deliver(message("1"), message("2"), message("3"));
         subscriberOf(SPLIT_B).deliver(message("b"));
@@ -246,7 +246,7 @@ class PubSubSplitReaderTest {
         // problem soonest.
         PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(100, 200));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        FakePullSubscriber parked = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
         long buffered = parked.deliverSized(3, 100);
 
@@ -265,7 +265,7 @@ class PubSubSplitReaderTest {
         // the lapsed one.
         PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber paused = subscriberOf(SPLIT_A);
+        FakePullSubscriber paused = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
         paused.deliver(message("1"), message("2"));
 
@@ -283,7 +283,7 @@ class PubSubSplitReaderTest {
         // bound applies to a paused split alone.
         PubSubSplitReader reader = reader(1, noCheckpointDetector(), boundOf(2, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber busy = subscriberOf(SPLIT_A);
+        FakePullSubscriber busy = subscriberOf(SPLIT_A);
         busy.deliver(message("1"), message("2"), message("3"), message("4"));
 
         try (LogCapture capture = LogCapture.of(PubSubSplitReader.class)) {
@@ -390,7 +390,7 @@ class PubSubSplitReaderTest {
     void resumingAParkedSplitOpensAFreshSubscriberThatDrainsAgain() throws Exception {
         PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        FakePullSubscriber parked = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
         parked.deliver(message("1"), message("2"));
         reader.fetch();
@@ -400,7 +400,7 @@ class PubSubSplitReaderTest {
 
         // A different instance, because the stopped client cannot be restarted — and one that
         // consumes, because Pub/Sub redelivers what the park nacked.
-        FakeNotifyingPullSubscriber reopened = subscriberOf(SPLIT_A);
+        FakePullSubscriber reopened = subscriberOf(SPLIT_A);
         assertThat(reopened).isNotSameAs(parked);
         assertThat(readerMetrics.gauge("parkedSplits")).isZero();
         assertThat(readerMetrics.counter("splitsParked")).isEqualTo(1);
@@ -420,7 +420,7 @@ class PubSubSplitReaderTest {
         // class timeout rather than failing an assertion.
         PubSubSplitReader reader = reader(1, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber subscriber = subscriberOf(SPLIT_A);
+        FakePullSubscriber subscriber = subscriberOf(SPLIT_A);
         subscriber.deliver(message("1"), message("2"), message("3"));
         // Drains one of the three and consumes the signal, leaving two buffered and none pending.
         reader.fetch();
@@ -437,7 +437,7 @@ class PubSubSplitReaderTest {
     void resumingASplitThatWasNeverParkedKeepsItsSubscriber() throws Exception {
         PubSubSplitReader reader = reader(10);
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber original = subscriberOf(SPLIT_A);
+        FakePullSubscriber original = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
 
         reader.pauseOrResumeSplits(Collections.emptyList(), List.of(SPLIT_A));
@@ -455,7 +455,7 @@ class PubSubSplitReaderTest {
         // park that ran first would swallow the failure the reader exists to raise.
         PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A)));
-        FakeNotifyingPullSubscriber failing = subscriberOf(SPLIT_A);
+        FakePullSubscriber failing = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
         failing.deliver(message("1"), message("2"));
         failing.failWith(new IOException("stream broke"));
@@ -508,7 +508,7 @@ class PubSubSplitReaderTest {
     void closingTheReaderWithAParkedSplitIsClean() throws Exception {
         PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
         reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
-        FakeNotifyingPullSubscriber parked = subscriberOf(SPLIT_A);
+        FakePullSubscriber parked = subscriberOf(SPLIT_A);
         reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
         parked.deliver(message("1"), message("2"));
         reader.fetch();
@@ -802,8 +802,8 @@ class PubSubSplitReaderTest {
                         failNextOpen = null;
                         throw failure;
                     }
-                    FakeNotifyingPullSubscriber subscriber =
-                            new FakeNotifyingPullSubscriber(signal).named(split.splitId());
+                    FakePullSubscriber subscriber =
+                            new FakePullSubscriber(signal).named(split.splitId());
                     if (calls != null) {
                         subscriber.recordCallsInto(calls);
                     }
@@ -816,7 +816,7 @@ class PubSubSplitReaderTest {
                 readerMetrics.metrics());
     }
 
-    private FakeNotifyingPullSubscriber subscriberOf(SubscriptionSplit split) {
+    private FakePullSubscriber subscriberOf(SubscriptionSplit split) {
         return subscribers.get(split.splitId());
     }
 

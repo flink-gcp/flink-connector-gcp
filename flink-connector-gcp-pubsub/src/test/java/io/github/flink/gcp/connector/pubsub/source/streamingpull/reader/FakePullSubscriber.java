@@ -31,14 +31,14 @@ import java.util.Deque;
 import java.util.List;
 
 /**
- * Scriptable {@link NotifyingPullSubscriber} standing in for a real streaming-pull client.
+ * Scriptable {@link PullSubscriber} standing in for a real streaming-pull client.
  *
  * <p>Everything touching the buffer is {@code synchronized}, as the production subscriber's is: the
  * SPI requires {@link #bufferUsage()} to be safe from any thread, and a fake that read the deque
  * unguarded would let a test sampling the buffer gauges while a fetcher drains fail inside {@code
  * ArrayDeque} rather than on an assertion.
  */
-final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
+final class FakePullSubscriber implements PullSubscriber {
 
     private final Runnable dataAvailableSignal;
     private final Deque<PubsubMessage> messages = new ArrayDeque<>();
@@ -54,12 +54,12 @@ final class FakeNotifyingPullSubscriber implements NotifyingPullSubscriber {
 
     private String name = "";
 
-    FakeNotifyingPullSubscriber(Runnable dataAvailableSignal) {
+    FakePullSubscriber(Runnable dataAvailableSignal) {
         this.dataAvailableSignal = dataAvailableSignal;
     }
 
     /** Names this subscriber in the recorded call order. */
-    FakeNotifyingPullSubscriber named(String name) {
+    FakePullSubscriber named(String name) {
         this.name = name;
         return this;
     }

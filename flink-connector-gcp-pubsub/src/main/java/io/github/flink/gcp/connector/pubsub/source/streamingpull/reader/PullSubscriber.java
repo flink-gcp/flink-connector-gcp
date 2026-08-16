@@ -34,7 +34,7 @@ import java.util.List;
  * which exposes a single-message pull and its own notification future per subscriber.
  */
 @Internal
-public interface NotifyingPullSubscriber extends AutoCloseable {
+public interface PullSubscriber extends AutoCloseable {
 
     /**
      * Removes and returns up to {@code maxMessages} buffered messages, in the order the client
@@ -73,7 +73,7 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * <p>Reported rather than bounded here because the bound is the reader's policy and the
      * response is the reader's to make: this buffer is deliberately unbounded, and a subscriber
      * that refused a message would have to block a client-library thread or nack it, which are the
-     * two things the implementation's design rules out (see {@link PubSubNotifyingPullSubscriber}).
+     * two things the implementation's design rules out (see {@link StreamingPullSubscriber}).
      *
      * <p><b>Unlike the rest of this interface, this must be safe to call from any thread.</b> The
      * reader calls it on the fetcher thread, and the {@code bufferedMessages} and {@code
@@ -104,16 +104,16 @@ public interface NotifyingPullSubscriber extends AutoCloseable {
      * <p>An implementation must not report a failure it has already delivered through {@link
      * #pullMessages} or {@link #checkFailure}. The reader consumes that one and fails the job on
      * it, so a second report here only adds a competing exception to a teardown the first one is
-     * already causing — which is why {@link PubSubNotifyingPullSubscriber} absorbs the one its
-     * client raises (#325). The repository-wide rule this is an instance of, and what was measured
-     * about the other connectors' clients, are in the detailed repository guidance.
+     * already causing — which is why {@link StreamingPullSubscriber} absorbs the one its client
+     * raises (#325). The repository-wide rule this is an instance of, and what was measured about
+     * the other connectors' clients, are in the detailed repository guidance.
      *
      * <p>A failure the client raises <em>during</em> this teardown is a different case, and this
      * contract does not require it to be raised either (#351). Nothing has consumed it — the reader
      * has stopped pulling — but the job is already ending, so an implementation may absorb it, and
-     * {@link PubSubNotifyingPullSubscriber} does. What it must not do is report it as the repeat
-     * above: they are opposite things to tell an operator, one saying a job failure is coming and
-     * the other that none is.
+     * {@link StreamingPullSubscriber} does. What it must not do is report it as the repeat above:
+     * they are opposite things to tell an operator, one saying a job failure is coming and the
+     * other that none is.
      *
      * @throws Exception if the shutdown itself goes wrong, for some reason other than either of
      *     those failures
