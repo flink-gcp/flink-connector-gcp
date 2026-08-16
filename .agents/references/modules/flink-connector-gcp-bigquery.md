@@ -126,9 +126,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `schemaReconcile*` — never at the creation sites (`docs/adr/0071`). A use-site rewrite was tried
   first and **missed `LoadJobOrchestrator`**, which is the whole argument: construction sites are
   enumerable, use sites are not. Callers keep the SPI, and no site names a schedule, so none can
-  name the wrong one. Only `create` retries — `updateSchema`'s `false` means re-read, and repeating
-  it would re-submit a stale proposal. **Each wrap has a test asserting the schedule's attempt
-  count**, since every other test injects its own admin and an unwrapped one ships green.
+  name the wrong one. `create` and `ensureCdcTable` retry; `getSchema` and `updateSchema` pass
+  through, because `updateSchema`'s `false` means re-read and repeating it would re-submit a stale
+  proposal. **Take the wrapped set from `RetryingTableAdmin`'s javadoc, never from a count written
+  here or in an ADR**: `ensureCdcTable` joined with CDC provisioning (`docs/adr/0112`), which
+  ADR-0071 now records but originally predated. **Each wrap has a test asserting the schedule's
+  attempt count**, since every other test injects its own admin and an unwrapped one ships green.
 
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`)
 
