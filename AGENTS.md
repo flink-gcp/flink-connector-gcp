@@ -81,10 +81,14 @@ green; use the clean-state procedures in that guide for such changes.
   the appropriate Flink API annotation.
 - Do not introduce Guava, Mockito, PowerMock, Lombok, or AutoValue. Use Flink preconditions,
   `javax.annotation`, and hand-written `Fake*` test doubles.
-- A serializer returning `null` means skip, not failure. A wrapped Flink serializer returning
-  `null` is a serialization failure. Read ADR-0001 before touching this contract.
+- A **sink** serialization schema returning `null` means skip, not failure; a wrapped Flink
+  serializer returning `null` is a serialization failure. Read ADR-0001 before touching this
+  contract. **Source** deserialization is `Collector`-based and returns nothing — a skip decision
+  there belongs to the connector's deserialization failure policy, never to a `null` return.
 - Forge options objects from `builder().build()`, never the process-wide `defaults()` singleton.
-- Bound `Duration` values that will become nanoseconds at `Duration.ofNanos(Long.MAX_VALUE)`.
+- Bound `Duration` values that will become nanoseconds at `Duration.ofNanos(Long.MAX_VALUE)`,
+  through `OptionChecks.checkExpressibleInNanos` (ADR-0068) — at the builder and again wherever a
+  deserialized instance is relied on.
 - Tests that call a production `createWriter` path must configure an emulator endpoint.
 - `*Test` is a unit test; `*ITCase` runs in the integration-test execution. Credential-gated
   real-GCP tests also carry `@Tag("gated")` and are run only by `just e2e`.
