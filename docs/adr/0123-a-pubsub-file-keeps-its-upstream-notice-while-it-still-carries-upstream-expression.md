@@ -51,8 +51,9 @@ of the original — never the observation that a lot has changed. [#755] pre-reg
 from the other side, and ADR-0122 restates it: a restructuring does not move an attribution.
 
 **Where the audit left room for judgement, the notice stays.** That is the deliberate bias of this
-record, and it decided four files. `AckTracker`, `NotifyingPullSubscriber`,
-`PubSubSerializationSchema` and `PubSubDeserializationSchema` retain exact upstream declarations —
+record, and it decided four files. `AckTracker`, `NotifyingPullSubscriber` (named
+`PullSubscriber` since [#765]), `PubSubSerializationSchema` and `PubSubDeserializationSchema`
+retain exact upstream declarations —
 `void shutdown();`, both `dataOnly(...)` signatures, `void addCheckpoint(long checkpointId);` — and
 an argument that a method name and an empty parameter list carry no authorship would very probably
 be right. **The project does not need to be right about that**, so it does not assert it: they keep
@@ -108,7 +109,7 @@ declines to argue that a declaration carries no authorship:
 | File | What remains |
 |---|---|
 | `AckTracker` | the interface declaration and `void addCheckpoint(long checkpointId);` verbatim, plus four of upstream's five method names in its order |
-| `NotifyingPullSubscriber` | `void shutdown();` verbatim; upstream's other three methods are gone |
+| `NotifyingPullSubscriber` (now `PullSubscriber`) | `void shutdown();` verbatim; upstream's other three methods are gone |
 | `PubSubSerializationSchema` | the interface declaration and the `dataOnly(...)` factory signature |
 | `PubSubDeserializationSchema` | the `dataOnly(...)` factory signature |
 
@@ -172,4 +173,5 @@ itself, and it stays because four files still contain adapted code.
 [#17]: https://github.com/flink-gcp/flink-connector-gcp/issues/17
 [#31]: https://github.com/flink-gcp/flink-connector-gcp/issues/31
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
+[#765]: https://github.com/flink-gcp/flink-connector-gcp/pull/765
 [upstream]: https://github.com/GoogleCloudPlatform/pubsub
