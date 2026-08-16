@@ -40,7 +40,7 @@ final class DynamicDestinationsPubSubTopics {
                                         (event, context) ->
                                                 TopicDestination.of("my-project", event.region()))
                                 .serializer(
-                                        PubSubSerializationSchema.dataOnly(new OrderEventSchema())
+                                        PubSubSerializationSchema.payload(new OrderEventSchema())
                                                 .withOrderingKey(OrderEvent::customerId))
                                 .publisherOptions(
                                         PubSubPublisherOptions.builder()

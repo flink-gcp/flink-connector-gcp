@@ -49,7 +49,7 @@ class PubSubCheckpointFlushITCase extends AbstractPubSubEmulatorITCase {
         return newWriter(
                 TestSinkConfigs.forTopic(
                         destination,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         CreateDisposition.CREATE_NEVER,
                         options),
                 new FakeMailboxExecutor());

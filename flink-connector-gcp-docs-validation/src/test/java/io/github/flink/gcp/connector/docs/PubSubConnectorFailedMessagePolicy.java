@@ -33,7 +33,7 @@ final class PubSubConnectorFailedMessagePolicy {
         Sink<String> sink =
                 PubSubSink.<String>builder()
                         .topic(TopicDestination.of("my-project", "events"))
-                        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                        .serializer(PubSubSerializationSchema.payload(new SimpleStringSchema()))
                         .failedMessageHandler(FailureHandler.logAndDrop())
                         .build();
         // end::pubsub-connector-failed-message-policy[]

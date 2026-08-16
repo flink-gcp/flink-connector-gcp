@@ -32,7 +32,7 @@ import java.util.Map;
  *
  * <p>Implementations return a full {@link PubsubMessage}, so message attributes and ordering keys
  * are expressible in addition to the payload. Records that only carry a payload can wrap a plain
- * Flink {@link SerializationSchema} with {@link #dataOnly(SerializationSchema)}; attributes and an
+ * Flink {@link SerializationSchema} with {@link #payload(SerializationSchema)}; attributes and an
  * ordering key extracted from the record can be layered onto any schema with {@link
  * #withAttributes(AttributesExtractor)} and {@link #withOrderingKey(OrderingKeyExtractor)}.
  *
@@ -121,8 +121,8 @@ public interface PubSubSerializationSchema<T> extends Serializable {
      * @param <T> type of the records written by the sink
      * @return the wrapping schema
      */
-    static <T> PubSubSerializationSchema<T> dataOnly(SerializationSchema<T> schema) {
-        return new DataOnlySerializationSchema<>(schema);
+    static <T> PubSubSerializationSchema<T> payload(SerializationSchema<T> schema) {
+        return new PayloadSerializationSchema<>(schema);
     }
 
     /**

@@ -83,8 +83,8 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
         }
     }
 
-    private static PubSubSerializationSchema<String> dataOnly() {
-        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema());
+    private static PubSubSerializationSchema<String> payload() {
+        return PubSubSerializationSchema.payload(new SimpleStringSchema());
     }
 
     @Test
@@ -93,7 +93,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
         PubSubWriter<String> writer =
                 writer(
                         destination,
-                        dataOnly()
+                        payload()
                                 .withAttributes(
                                         element ->
                                                 Collections.singletonMap(
@@ -123,7 +123,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
         PubSubWriter<String> writer =
                 writer(
                         destination,
-                        dataOnly().withOrderingKey(element -> element.split(":")[0]),
+                        payload().withOrderingKey(element -> element.split(":")[0]),
                         options);
         try {
             warmUpAndSubscribe(writer, destination, "ordering-sub", true, "warm-up:0");
@@ -151,7 +151,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
         PubSubWriter<String> writer =
                 writer(
                         destination,
-                        dataOnly().withOrderingKey(element -> element.split(":")[0]),
+                        payload().withOrderingKey(element -> element.split(":")[0]),
                         options);
         try {
             // Several same-key messages to a nonexistent topic: the first publish fails with
@@ -191,7 +191,7 @@ class PubSubPublisherOptionsITCase extends AbstractPubSubEmulatorITCase {
                         .batchDelayThreshold(java.time.Duration.ofHours(1))
                         .build();
         FakeMailboxExecutor mailbox = new FakeMailboxExecutor();
-        PubSubWriter<String> writer = writer(destination, dataOnly(), options, mailbox);
+        PubSubWriter<String> writer = writer(destination, payload(), options, mailbox);
         try {
             warmUpAndSubscribe(writer, destination, "batching-sub", false, "warm-up");
 

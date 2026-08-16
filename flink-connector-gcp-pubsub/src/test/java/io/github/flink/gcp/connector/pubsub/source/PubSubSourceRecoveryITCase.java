@@ -147,7 +147,7 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
         env.setParallelism(2);
         // Checkpointing is what acknowledges messages; the interval is short so the run is quick.
         env.enableCheckpointing(500);
-        env.fromSource(dataOnlySource(first, second), WatermarkStrategy.noWatermarks(), "pubsub")
+        env.fromSource(payloadSource(first, second), WatermarkStrategy.noWatermarks(), "pubsub")
                 .map(new RecordingMap(runId))
                 .map(new ThrowOnceAfterCompletedCheckpoint(runId))
                 .sinkTo(new DiscardingSink<>());
@@ -322,12 +322,12 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
         }
     }
 
-    private static Source<String, SubscriptionSplit, PubSubEnumeratorState> dataOnlySource(
+    private static Source<String, SubscriptionSplit, PubSubEnumeratorState> payloadSource(
             SubscriptionDestination... subscriptions) {
         return PubSubSource.<String>builder()
                 .subscriptions(subscriptions)
                 .deserializationSchema(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emulatorEndpoint(emulatorEndpoint())
                 .build();
     }

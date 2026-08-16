@@ -39,7 +39,7 @@ final class PubSubExamplesTopicsOnSink {
                                 // reachable by one created later, or by a backwards seek.
                                 .messageRetention(Duration.ofDays(7))
                                 .build())
-                .serializer(PubSubSerializationSchema.dataOnly(new OrderEventSchema()))
+                .serializer(PubSubSerializationSchema.payload(new OrderEventSchema()))
                 .build();
         // end::pubsub-examples-topics-on-sink[]
     }

@@ -71,7 +71,7 @@ class PubSubWriterTest {
     }
 
     private PubSubWriter<String> newWriter(PubSubPublisherOptions options) {
-        return newWriter(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()), options);
+        return newWriter(PubSubSerializationSchema.payload(new SimpleStringSchema()), options);
     }
 
     private PubSubWriter<String> newWriter(
@@ -108,7 +108,7 @@ class PubSubWriterTest {
      * message, so it cannot drift from what the writer actually measures.
      */
     private static int sizeOf(String payload) throws IOException {
-        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+        return PubSubSerializationSchema.payload(new SimpleStringSchema())
                 .serialize(payload)
                 .getSerializedSize();
     }
@@ -237,7 +237,7 @@ class PubSubWriterTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forResolver(
                                 (element, context) -> TopicDestination.of(PROJECT, element),
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                                 byteCap(2L * sizeOf("topic-a"))),
                         factory,
                         admin,
@@ -264,7 +264,7 @@ class PubSubWriterTest {
     void rejectsOrderingKeyWhenMessageOrderingIsDisabled() {
         PubSubWriter<String> writer =
                 newWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> "some-key"),
                         PubSubPublisherOptions.defaults());
 

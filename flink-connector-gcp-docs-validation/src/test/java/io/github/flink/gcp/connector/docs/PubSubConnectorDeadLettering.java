@@ -32,7 +32,7 @@ final class PubSubConnectorDeadLettering {
         // tag::pubsub-connector-dead-lettering[]
         PubSubSink.<String>builder()
                 .topic(TopicDestination.of("my-project", "events"))
-                .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                .serializer(PubSubSerializationSchema.payload(new SimpleStringSchema()))
                 .failedMessageHandler(
                         FailureHandler.sendToDeadLetterQueue(
                                 PubSubDeadLetterQueue.builder()

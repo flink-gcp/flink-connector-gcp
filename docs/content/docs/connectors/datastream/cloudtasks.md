@@ -61,7 +61,7 @@ worth internalising before reading the rest of this page.
   (see task naming below), so the
   returned `Task` must carry none — the writer rejects a named one rather than letting it through.
   The `httpTarget(...)` and `appEngineTarget(...)` entry points are conveniences over that
-  contract, the same relationship `PubSubSerializationSchema.dataOnly(...)` has to a full
+  contract, the same relationship `PubSubSerializationSchema.payload(...)` has to a full
   `PubsubMessage`. Returning the proto rather than a narrow record type is also what lets the Table
   API layer use the same sink without reworking the writer.
 - Returning `null` **skips** the record — it is written nowhere, is not a failure, and never

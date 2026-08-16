@@ -39,8 +39,7 @@ import org.apache.flink.annotation.Public;
  *                 .destinationResolver(
  *                         (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
  *                 .serializer(
- *                         PubSubSerializationSchema.dataOnly(
- *                                 new MyEventSerializationSchema()))
+ *                         PubSubSerializationSchema.payload(new MyEventSerializationSchema()))
  *                 .build();
  * }</pre>
  */

@@ -92,7 +92,7 @@ class PubSubRecordEmitterTest {
                                         .setNanos(123_000_000))
                         .build();
 
-        emitter(PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+        emitter(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emitRecord(message, output, SPLIT);
 
         assertThat(output.records()).containsExactly("payload");
@@ -109,7 +109,7 @@ class PubSubRecordEmitterTest {
     void emitsWithoutATimestampWhenTheMessageCarriesNoPublishTime() throws Exception {
         receive("m1");
 
-        emitter(PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+        emitter(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emitRecord(message("m1", "payload"), output, SPLIT);
 
         assertThat(output.records()).containsExactly("payload");
@@ -236,7 +236,7 @@ class PubSubRecordEmitterTest {
         assertThatThrownBy(
                         () ->
                                 emitter(
-                                                PubSubDeserializationSchema.dataOnly(
+                                                PubSubDeserializationSchema.payload(
                                                         new SimpleStringSchema()))
                                         .emitRecord(message("m1", "payload"), output, SPLIT))
                 // The downstream failure itself, not the marker the collector wraps it in.

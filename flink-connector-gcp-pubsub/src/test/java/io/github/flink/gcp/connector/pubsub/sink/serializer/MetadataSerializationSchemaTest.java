@@ -37,14 +37,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class MetadataSerializationSchemaTest {
 
-    private static PubSubSerializationSchema<String> dataOnly() {
-        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema());
+    private static PubSubSerializationSchema<String> payload() {
+        return PubSubSerializationSchema.payload(new SimpleStringSchema());
     }
 
     @Test
     void addsExtractedAttributes() throws Exception {
         PubSubSerializationSchema<String> schema =
-                dataOnly().withAttributes(element -> Collections.singletonMap("source", element));
+                payload().withAttributes(element -> Collections.singletonMap("source", element));
 
         PubsubMessage message = schema.serialize("hello");
 
@@ -56,7 +56,7 @@ class MetadataSerializationSchemaTest {
     @Test
     void setsExtractedOrderingKey() throws Exception {
         PubSubSerializationSchema<String> schema =
-                dataOnly().withOrderingKey(element -> "key-" + element);
+                payload().withOrderingKey(element -> "key-" + element);
 
         PubsubMessage message = schema.serialize("hello");
 
@@ -67,7 +67,7 @@ class MetadataSerializationSchemaTest {
     @Test
     void nullOrEmptyExtractionsAddNothing() throws Exception {
         PubSubSerializationSchema<String> schema =
-                dataOnly()
+                payload()
                         .withAttributes(element -> null)
                         .withOrderingKey(element -> "")
                         .withAttributes(element -> Collections.emptyMap())
@@ -83,7 +83,7 @@ class MetadataSerializationSchemaTest {
     @Test
     void outerLayerWinsOnChaining() throws Exception {
         PubSubSerializationSchema<String> schema =
-                dataOnly()
+                payload()
                         .withAttributes(element -> Map.of("shared", "inner", "inner-only", "kept"))
                         .withOrderingKey(element -> "inner-key")
                         .withAttributes(element -> Collections.singletonMap("shared", "outer"))
@@ -101,7 +101,7 @@ class MetadataSerializationSchemaTest {
     void openDelegatesToTheInnerSchema() throws Exception {
         OpenRecordingSchema wrapped = new OpenRecordingSchema();
         PubSubSerializationSchema<String> schema =
-                PubSubSerializationSchema.dataOnly(wrapped)
+                PubSubSerializationSchema.payload(wrapped)
                         .withAttributes(element -> null)
                         .withOrderingKey(element -> null);
 
@@ -157,7 +157,7 @@ class MetadataSerializationSchemaTest {
     void rejectsNullAttributeEntriesWithAClearMessage() {
         Map<String, String> attributes = new HashMap<>();
         attributes.put("valid", null);
-        PubSubSerializationSchema<String> schema = dataOnly().withAttributes(element -> attributes);
+        PubSubSerializationSchema<String> schema = payload().withAttributes(element -> attributes);
 
         assertThatThrownBy(() -> schema.serialize("hello"))
                 .isInstanceOf(NullPointerException.class)
@@ -168,7 +168,7 @@ class MetadataSerializationSchemaTest {
     @Test
     void roundTripsJavaSerialization() throws Exception {
         PubSubSerializationSchema<String> schema =
-                dataOnly()
+                payload()
                         .withAttributes(element -> Collections.singletonMap("source", "test"))
                         .withOrderingKey(element -> element);
 

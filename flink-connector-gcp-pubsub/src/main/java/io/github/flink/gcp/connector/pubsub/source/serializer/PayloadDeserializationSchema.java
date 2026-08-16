@@ -28,7 +28,7 @@ import java.io.IOException;
 
 /**
  * {@link PubSubDeserializationSchema} deserializing only the message payload through a plain Flink
- * {@link DeserializationSchema}, obtained from {@link PubSubDeserializationSchema#dataOnly}.
+ * {@link DeserializationSchema}, obtained from {@link PubSubDeserializationSchema#payload}.
  *
  * <p>Adapted from the Flink connector in <a
  * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0).
@@ -36,13 +36,13 @@ import java.io.IOException;
  * @param <T> type of the records produced by the source
  */
 @Internal
-final class DataOnlyDeserializationSchema<T> implements PubSubDeserializationSchema<T> {
+final class PayloadDeserializationSchema<T> implements PubSubDeserializationSchema<T> {
 
     private static final long serialVersionUID = 1L;
 
     private final DeserializationSchema<T> schema;
 
-    DataOnlyDeserializationSchema(DeserializationSchema<T> schema) {
+    PayloadDeserializationSchema(DeserializationSchema<T> schema) {
         this.schema = schema;
     }
 

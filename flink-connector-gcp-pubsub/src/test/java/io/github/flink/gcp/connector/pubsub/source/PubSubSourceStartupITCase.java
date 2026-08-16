@@ -149,7 +149,7 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
     private static PubSubSourceBuilder<String> sourceBuilder() {
         return PubSubSource.<String>builder()
                 .deserializationSchema(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emulatorEndpoint(emulatorEndpoint());
     }
 

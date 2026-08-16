@@ -44,7 +44,7 @@ class PubSubDynamicDestinationsITCase extends AbstractPubSubEmulatorITCase {
         return newWriter(
                 TestSinkConfigs.forResolver(
                         BY_PREFIX,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         PubSubPublisherOptions.defaults()),
                 new FakeMailboxExecutor());
     }

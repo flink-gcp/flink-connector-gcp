@@ -35,13 +35,13 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Tests for {@link PubSubDeserializationSchema#dataOnly}. */
-class DataOnlyDeserializationSchemaTest {
+/** Tests for {@link PubSubDeserializationSchema#payload}. */
+class PayloadDeserializationSchemaTest {
 
     @Test
     void deserializesThePayloadAndIgnoresEveryOtherMessageField() throws IOException {
         PubSubDeserializationSchema<String> schema =
-                PubSubDeserializationSchema.dataOnly(new SimpleStringSchema());
+                PubSubDeserializationSchema.payload(new SimpleStringSchema());
         PubsubMessage message =
                 PubsubMessage.newBuilder()
                         .setData(ByteString.copyFrom("payload", StandardCharsets.UTF_8))
@@ -58,7 +58,7 @@ class DataOnlyDeserializationSchemaTest {
     @Test
     void dropsARecordThePayloadSchemaDeserializesToNull() throws IOException {
         PubSubDeserializationSchema<String> schema =
-                PubSubDeserializationSchema.dataOnly(new NullDeserializationSchema());
+                PubSubDeserializationSchema.payload(new NullDeserializationSchema());
 
         assertThat(collect(schema, PubsubMessage.getDefaultInstance())).isEmpty();
     }
@@ -67,7 +67,7 @@ class DataOnlyDeserializationSchemaTest {
     void opensTheWrappedPayloadSchema() throws Exception {
         RecordingDeserializationSchema wrapped = new RecordingDeserializationSchema();
 
-        PubSubDeserializationSchema.dataOnly(wrapped).open(null);
+        PubSubDeserializationSchema.payload(wrapped).open(null);
 
         assertThat(wrapped.opened).isTrue();
     }

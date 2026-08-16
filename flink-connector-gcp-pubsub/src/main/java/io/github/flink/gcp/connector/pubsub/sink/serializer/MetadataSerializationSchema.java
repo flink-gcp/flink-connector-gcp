@@ -111,7 +111,7 @@ final class MetadataSerializationSchema<T> implements PubSubSerializationSchema<
 
     /**
      * Chaining onto an unoccupied slot merges into this wrapper instead of nesting another one, so
-     * the common {@code dataOnly(...).withAttributes(...).withOrderingKey(...)} chain pays one
+     * the common {@code payload(...).withAttributes(...).withOrderingKey(...)} chain pays one
      * message rebuild per record, not two. An occupied slot falls back to nesting, which keeps the
      * outermost-wins semantics.
      */

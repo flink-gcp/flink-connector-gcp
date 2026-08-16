@@ -788,7 +788,7 @@ class PubSubSplitEnumeratorTest {
     private static PubSubSourceBuilder<String> sourceBuilder() {
         return PubSubSource.<String>builder()
                 .deserializationSchema(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()));
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()));
     }
 
     private static PubSubSourceConfig<?> config(PubSubSourceBuilder<String> builder) {

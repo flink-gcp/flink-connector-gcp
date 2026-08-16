@@ -99,8 +99,7 @@ class PubSubSinkStreamingITCase extends AbstractPubSubEmulatorITCase {
                                                         PROJECT,
                                                         element.substring(0, element.indexOf('|'))))
                                 .serializer(
-                                        PubSubSerializationSchema.dataOnly(
-                                                new SimpleStringSchema()))
+                                        PubSubSerializationSchema.payload(new SimpleStringSchema()))
                                 .createDisposition(CreateDisposition.CREATE_IF_NEEDED)
                                 .emulatorEndpoint(endpoint)
                                 .build());
