@@ -75,7 +75,7 @@ The example uses the default stream because BigQuery CDC is supported only by
 
 Flink's Debezium Avro format does not currently retain the source metadata required by this
 profile, while the raw Avro format cannot produce the required delete row kinds through SQL alone.
-[Issue #706](https://github.com/laughingman7743/flink-connector-gcp/issues/706) tracks that format
+[Issue #706]({{< param BookRepo >}}/issues/706) tracks that format
 boundary.
 Until it changes, register a changelog view from the complete envelope stream:
 
@@ -180,7 +180,7 @@ BigQuery CDC profile.
 Declaring that raw envelope as a source table does not close the gap.
 A `CASE` expression can select `before` or `after` from its `op` value, but SQL expressions cannot
 change an INSERT RowKind into the DELETE RowKind required for a Debezium delete.
-[Issue #706](https://github.com/laughingman7743/flink-connector-gcp/issues/706) tracks the upstream
+[Issue #706]({{< param BookRepo >}}/issues/706) tracks the upstream
 format improvement.
 
 #### Source changelog view

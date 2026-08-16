@@ -194,7 +194,7 @@ With the default `scan.mode = bounded`, a `SELECT` is a **bounded scan** over th
 — the same split planning, resumption and metrics that
 [page]({{< relref "docs/connectors/datastream/bigtable" >}}) describes — and it works in both batch
 and streaming jobs. The design record is
-[ADR-0092](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md).
+[ADR-0092]({{< param BookRepo >}}/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md).
 
 **Projection is pushed to the server as a family filter.** The query's retained column families
 become a filter the scan carries, so an unread family never leaves the server. A query that reads
@@ -423,7 +423,7 @@ Restored checkpoint state wins over that fresh-start setting.
 If a restored continuation has expired, the job fails unless
 `scan.resume-fallback.mode` explicitly opts into `earliest`, `latest`, or a timestamp
 with `scan.resume-fallback.timestamp-millis`.
-This restore contract is [ADR-0094](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
+This restore contract is [ADR-0094]({{< param BookRepo >}}/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
 
 Set `scan.end-timestamp-millis` to make the source bounded; without it the source is continuous.
 `scan.max-concurrent-streams-per-subtask` bounds open partition reads in each source subtask and
@@ -919,7 +919,7 @@ service validate it remains the default.
 `STATEMENT SET` of `INSERT`s, one per table, which is what SQL already offers.
 
 **Projection pushdown is family pruning, served by one filter**
-([ADR-0092](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md)).
+([ADR-0092]({{< param BookRepo >}}/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md)).
 Bigtable's read API takes a filter per scan, so a projection is a filter to build rather than an
 index list to apply client-side; the edge the ADR pins is the projection retaining no family,
 which must become a keys-only chain and not an empty filter. Qualifier-level pruning and a

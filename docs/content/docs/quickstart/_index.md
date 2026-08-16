@@ -55,7 +55,7 @@ runs. Everything here writes to real Google Cloud — to run without touching a 
 [#39]({{< param BookRepo >}}/issues/39), so until then the artifacts come from a local build.
 
 ```sh
-git clone https://github.com/laughingman7743/flink-connector-gcp.git
+git clone {{< param BookRepo >}}.git
 cd flink-connector-gcp
 ./mvnw install -DskipTests
 ```

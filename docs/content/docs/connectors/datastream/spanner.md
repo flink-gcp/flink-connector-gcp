@@ -28,7 +28,7 @@ Both dialects, GoogleSQL and PostgreSQL, are supported from the same code; the d
 
 Every option is listed on the [Spanner options]({{< relref "docs/reference/spanner" >}}) page. What
 is implemented and what is planned is in the
-[module README](https://github.com/laughingman7743/flink-connector-gcp/blob/main/flink-connector-gcp-spanner/README.md).
+[module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-spanner/README.md).
 
 ## Credentials
 
@@ -71,7 +71,7 @@ all. A plain commit would fail the whole batch over one bad row.
 The writer is synchronous: there is no mailbox, no callback thread and no in-flight bookkeeping,
 because this RPC has no asynchronous or self-batching form to wrap. It is one streaming call the
 writer makes and consumes to completion on the task thread. The decision, and the facts behind it,
-are in [ADR-0075](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0075-the-spanner-sink-batch-writes-and-owns-the-whole-retry-loop.md).
+are in [ADR-0075]({{< param BookRepo >}}/blob/main/docs/adr/0075-the-spanner-sink-batch-writes-and-owns-the-whole-retry-loop.md).
 
 ### Delivery guarantee, and why the mutation operation is your decision
 
@@ -185,7 +185,7 @@ There is no primary-key sorted batching. Apache Beam defaults its grouping facto
 skips its sort — for unbounded input, and a streaming sink's per-checkpoint batches do not amortize
 one.
 
-[ADR-0077](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0077-batch-limits-are-counted-in-index-aware-cells-read-once-at-open.md)
+[ADR-0077]({{< param BookRepo >}}/blob/main/docs/adr/0077-batch-limits-are-counted-in-index-aware-cells-read-once-at-open.md)
 carries the measurements and the declined alternatives.
 
 ## Error handling
@@ -258,7 +258,7 @@ merely has a table name wrong. If your stream can legitimately update rows that 
 `insertOrUpdate` is the operation that says so.
 
 The reasoning, the full measurement and the reopen condition are in
-[ADR-0076](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0076-two-spanner-statuses-are-routed-and-a-request-failure-never-is.md).
+[ADR-0076]({{< param BookRepo >}}/blob/main/docs/adr/0076-two-spanner-statuses-are-routed-and-a-request-failure-never-is.md).
 
 ### Retries belong to the sink
 
@@ -426,7 +426,7 @@ one direction that is easy to get backwards. Measured against `emulator:1.5.56` 
 ## Change Streams source
 
 The Change Streams source continuously reads data-change records from the generated Spanner read function.
-It uses the checkpointed partition lineage described in [ADR-0099](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) and the bounded asynchronous reader in [ADR-0101](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0101-the-spanner-change-stream-reader-bounds-asynchronous-partition-queries.md).
+It uses the checkpointed partition lineage described in [ADR-0099]({{< param BookRepo >}}/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) and the bounded asynchronous reader in [ADR-0101]({{< param BookRepo >}}/blob/main/docs/adr/0101-the-spanner-change-stream-reader-bounds-asynchronous-partition-queries.md).
 
 {{< java-snippet file="SpannerConnectorChangeStreamSource.java" tag="spanner-connector-change-stream-source" >}}
 

@@ -27,7 +27,7 @@ fixed table or one each record names. Every
 option is in the [Bigtable reference]({{< relref "docs/reference/bigtable" >}}); the runnable job is
 the [quickstart]({{< relref "docs/quickstart/bigtable" >}}); implementation status is the table in
 the module
-[README](https://github.com/laughingman7743/flink-connector-gcp/tree/main/flink-connector-gcp-bigtable).
+[README]({{< param BookRepo >}}/tree/main/flink-connector-gcp-bigtable).
 
 {{< java-snippet file="BigtableConnectorOverview.java" tag="bigtable-connector-overview" >}}
 
@@ -747,7 +747,7 @@ queued or unassigned before Flink has a split output for it.
 Configure downstream allowed lateness or late-data routing for records that violate the chosen
 assumption.
 The decision and the difference from Spanner's heartbeat contract are recorded in
-[ADR-0109](https://github.com/laughingman7743/flink-connector-gcp/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md).
+[ADR-0109]({{< param BookRepo >}}/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md).
 
 ## Metrics
 

@@ -32,7 +32,7 @@ limitations under the License.
     <packaging>pom</packaging>
     <inceptionYear>2026</inceptionYear>
 
-    <url>https://github.com/laughingman7743/flink-connector-gcp</url>
+    <url>https://github.com/flink-gcp/flink-connector-gcp</url>
 
     <licenses>
         <license>
@@ -42,10 +42,18 @@ limitations under the License.
         </license>
     </licenses>
 
+    <!-- `scm:[provider]:[provider_specific]` is the documented structure for both
+         connections, and `connection` is the read-only one. `flink-connector-parent`
+         2.0.0 declares neither correctly and this project had inherited half of that:
+         `connection` carried a bare `git@…` with no `scm:` prefix, and the two
+         transports were swapped. Nothing consumes them in the reactor, so nothing
+         reported it — `maven-release-plugin` would be the first to care, and nothing
+         invokes it. They are corrected here because they end up in the published POM
+         (#724), which is the same reason the URLs above moved. -->
     <scm>
-        <url>https://github.com/laughingman7743/flink-connector-gcp</url>
-        <connection>git@github.com:laughingman7743/flink-connector-gcp.git</connection>
-        <developerConnection>scm:git:https://github.com/laughingman7743/flink-connector-gcp.git</developerConnection>
+        <url>https://github.com/flink-gcp/flink-connector-gcp</url>
+        <connection>scm:git:https://github.com/flink-gcp/flink-connector-gcp.git</connection>
+        <developerConnection>scm:git:git@github.com:flink-gcp/flink-connector-gcp.git</developerConnection>
     </scm>
 
     <!-- Not decoration. The ASF parent (org.apache:apache, reached through the Flink
