@@ -10,9 +10,9 @@ connector itself:
 
 - [`flink-connector-gcp-spanner`](../flink-connector-gcp-spanner/README.md) — the module, and the
   implementation-status tables
-- [SQL connector documentation](../docs/content/docs/connectors/table/spanner.md) — the DDL model,
-  the option surface, and how to put this jar on the classpath
-- [DataStream connector documentation](../docs/content/docs/connectors/datastream/spanner.md) —
+- [SQL connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/spanner/) —
+  the DDL model, the option surface, and how to put this jar on the classpath
+- [DataStream connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/spanner/) —
   delivery guarantees, tuning and error handling
 
 ```sql

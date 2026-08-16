@@ -80,17 +80,17 @@ CREATE TABLE incoming_orders (
 ## Documentation
 
 Design, delivery guarantees, publisher options, topic auto-creation, the source's split model and
-ordering semantics, error handling and the testing strategy are documented in
-[docs/content/docs/connectors/datastream/pubsub.md](../docs/content/docs/connectors/datastream/pubsub.md).
-The Table API / SQL option surface is documented in
-[docs/content/docs/connectors/table/pubsub.md](../docs/content/docs/connectors/table/pubsub.md).
-Both are rendered on the documentation site once it is published.
+ordering semantics, error handling and the testing strategy are documented in the
+[Pub/Sub connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/pubsub/).
+The Table API / SQL option surface is documented in the
+[Pub/Sub SQL connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/pubsub/).
 
 Complete runnable jobs — sink, source and SQL — are in
-[Quickstart](../docs/content/docs/quickstart/pubsub.md); dynamic destinations, auto-creation and
-emulator-backed local runs are worked through in
-[Examples](../docs/content/docs/examples/pubsub.md). Every option the sink and source take, with
-its default, is in the [configuration reference](../docs/content/docs/reference/pubsub.md).
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/pubsub/); dynamic
+destinations, auto-creation and emulator-backed local runs are worked through in
+[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/pubsub/). Every option the
+sink and source take, with its default, is in the
+[configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/pubsub/).
 
 ## Provenance and attribution
 

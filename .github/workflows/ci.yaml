@@ -53,10 +53,22 @@ jobs:
     permissions:
       contents: read
 
+  # The write permissions belong to docs.yaml's `deploy` job (#93), which never
+  # runs from here: it is gated on a push to main and this workflow is
+  # pull_request-only. They still have to be granted, because a called
+  # workflow's nested jobs are validated against the caller's grant *before*
+  # their `if:` is evaluated — omitting them fails the whole run at validation
+  # with "The nested job 'deploy' is requesting 'pages: write', but is only
+  # allowed 'pages: none'", on every pull request, including ones that change
+  # no documentation. Nothing on a pull request receives them: docs.yaml's
+  # `build` job declares no permissions of its own, so it takes that file's
+  # workflow-level `contents: read`.
   docs:
     uses: ./.github/workflows/docs.yaml
     permissions:
       contents: read
+      pages: write
+      id-token: write
 
   # tfcmt posts the plan comment (pull-requests: write) and WIF mints the
   # GCP token (id-token: write). On a fork pull request the token is

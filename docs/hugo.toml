@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# ApiDocsURL under [params] repeats this path; the two move together.
-baseURL = "https://laughingman7743.github.io/flink-connector-gcp/"
+# ApiDocsURL under [params] repeats this path; the two move together. Only the
+# host moved when the repository was transferred to the flink-gcp org (#727),
+# so the path below is unchanged — GitHub Pages derives it from the repository
+# name, which the transfer kept.
+baseURL = "https://flink-gcp.github.io/flink-connector-gcp/"
 locale = "en-us"
 title = "GCP Connectors for Apache Flink"
 
@@ -59,7 +62,7 @@ title = "GCP Connectors for Apache Flink"
   # `just docs-serve` too: hugo serve keeps baseURL's path (measured — it binds
   # at /flink-connector-gcp/, and /api/java/ alone is a 404), so this one value
   # is right in both. An absolute URL would send a local reader to the published
-  # site, which does not exist until #93.
+  # site instead of the one they are previewing.
   #
   # Deliberately not named Book*, unlike the entries above: that prefix belongs
   # to hugo-book's own parameters, and a name added there later would collide

@@ -10,9 +10,9 @@ connector itself:
 
 - [`flink-connector-gcp-bigquery`](../flink-connector-gcp-bigquery/README.md) — the module, and the
   implementation-status tables
-- [SQL connector documentation](../docs/content/docs/connectors/table/bigquery.md) — the DDL option
-  surface, the type mapping, and how to put this jar on the classpath
-- [DataStream connector documentation](../docs/content/docs/connectors/datastream/bigquery.md) —
+- [SQL connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/bigquery/) —
+  the DDL option surface, the type mapping, and how to put this jar on the classpath
+- [DataStream connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/bigquery/) —
   write methods, delivery guarantees, tuning and error handling
 
 ```sql

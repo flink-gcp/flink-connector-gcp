@@ -32,18 +32,18 @@ Sink<OrderEvent> sink =
 
 The connector documentation — what the connector is for, targets and authorization, task naming and
 deduplication, delivery guarantees, why retries are the sink's responsibility here and how they are
-tuned, and how queue rate limits relate to sink concurrency — is in
-[docs/content/docs/connectors/datastream/cloudtasks.md](../docs/content/docs/connectors/datastream/cloudtasks.md)
-(rendered on the documentation site once it is published).
+tuned, and how queue rate limits relate to sink concurrency — is in the
+[Cloud Tasks connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/cloudtasks/).
 
 The SQL request model, writable metadata and `WITH` options are in the
-[Table API connector page](../docs/content/docs/connectors/table/cloudtasks.md).
+[Table API connector page](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/cloudtasks/).
 
 A complete runnable job is in
-[Quickstart](../docs/content/docs/quickstart/cloudtasks.md); sharding across queues and
-emulator-backed local runs are worked through in
-[Examples](../docs/content/docs/examples/cloudtasks.md). Every option the sink takes, with its
-default, is in the [configuration reference](../docs/content/docs/reference/cloudtasks.md).
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/cloudtasks/); sharding
+across queues and emulator-backed local runs are worked through in
+[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/cloudtasks/). Every option
+the sink takes, with its default, is in the
+[configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/cloudtasks/).
 
 ## Provenance and attribution
 

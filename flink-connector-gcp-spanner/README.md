@@ -42,18 +42,18 @@ The connector documentation — why the destination is a database rather than a 
 serialization SPI, what a replay does and which mutation operations make it harmless, why the
 retry loop belongs to the sink, how a batch is weighed and which limit each batch knob defends,
 which refusals reach the failure handler and which do not, how the source splits a read and what a
-recovery re-reads, and where the emulator differs from the service — is in
-[docs/content/docs/connectors/datastream/spanner.md](../docs/content/docs/connectors/datastream/spanner.md)
-(rendered on the documentation site once it is published).
+recovery re-reads, and where the emulator differs from the service — is in the
+[Spanner connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/spanner/).
 
 A complete runnable job is in
-[Quickstart](../docs/content/docs/quickstart/spanner.md); writing to several tables from one
-stream, deletes, dropping refused mutations, reading a key range and emulator-backed local runs are
-worked through in
-[Examples](../docs/content/docs/examples/spanner.md). Every option the sink and the source take,
-with its default, is in the [configuration reference](../docs/content/docs/reference/spanner.md).
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/spanner/); writing to
+several tables from one stream, deletes, dropping refused mutations, reading a key range and
+emulator-backed local runs are worked through in
+[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/spanner/). Every option the
+sink and the source take, with its default, is in the
+[configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/spanner/).
 The SQL DDL, type mapping, primary-key behavior, and Table API options are in the
-[Spanner SQL connector guide](../docs/content/docs/connectors/table/spanner.md).
+[Spanner SQL connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/spanner/).
 
 ## Provenance and attribution
 

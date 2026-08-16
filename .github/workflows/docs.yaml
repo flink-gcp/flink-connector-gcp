@@ -2,9 +2,11 @@ name: Docs
 
 # On pull requests this runs as a reusable workflow called by ci.yaml, with
 # no filter at all — a broken site build reddens the required `CI passed`
-# gate there. The push-side paths filter below is cost-saving only; before
-# the gate it was also what decided whether pull requests built the site,
-# which already matched nearly every one, so requiring it costs little.
+# gate there. The push-side paths filter below decides two things: whether a
+# push to main spends a run, and — since #93 — whether it republishes the
+# site. A site input missing from the filter therefore leaves the published
+# site stale rather than merely unverified, which is why every input the
+# build reads is listed, including the generated API reference's.
 on:
   workflow_call:
   push:
@@ -151,7 +153,94 @@ jobs:
         run: just test-java-snippet-shortcode
 
       # --panicOnWarning turns deprecations, unresolved relrefs and missing
-      # shortcodes into build failures. The site is not published yet (GitHub
-      # Pages needs the repository to be public), so this is a check only.
+      # shortcodes into build failures. On a pull request that is the whole
+      # point of this job; on a push to main the same output is what gets
+      # published.
       - name: Build
         run: just docs
+
+      # Uploaded from this job rather than rebuilt in `deploy` because
+      # docs/public is only complete when `just docs-javadoc` ran first, in
+      # this job: the API reference is generated, not committed (#88). A deploy
+      # job that rebuilt the site on its own would publish one whose API
+      # reference is silently missing, with dead links into it and nothing
+      # failing.
+      #
+      # Unconditional, including on the pull requests where nothing will deploy
+      # it: packaging then runs on the path every pull request takes, so a
+      # docs/public that has moved or outgrown the Pages limit fails on the
+      # change that did it rather than after merge. Measured at 31 MB, 4.3 MB
+      # packed — most of it the generated API reference, against the 1 GB a
+      # published Pages site may not exceed.
+      - name: Upload site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/public
+
+  # Only the default branch publishes (#93). The ref alone decides it: inside a
+  # workflow_call `github.ref` is the caller's, which for the pull requests
+  # ci.yaml runs is `refs/pull/N/merge` (measured, and recorded in verify.yaml
+  # beside the cache key that depends on it), so pull requests are excluded
+  # without naming the event — as is the v1.20 branch, which has no published
+  # line of its own until #731 says otherwise. `docs_passed` below holds the
+  # other direction: that this job does not skip on a run that should have
+  # published.
+  deploy:
+    name: Deploy documentation site
+    needs: build
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Declared on the job rather than at the top of this file so that the build
+    # job above — the one pull requests run — keeps only `contents: read`.
+    permissions:
+      pages: write
+      id-token: write
+    # Job-level for the reason the note at the top of this file gives.
+    # `cancel-in-progress: false` lets a deployment already publishing finish
+    # rather than be interrupted part-way, which is what GitHub's own Pages
+    # guidance sets it for. It does not make a queue of three safe: a *pending*
+    # member of a concurrency group is cancelled when a newer one arrives
+    # whatever this is set to, so the middle push's `deploy` reports
+    # `cancelled` and reddens its own `docs_passed`, even though the newest
+    # push goes on to publish that content anyway.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Fails loudly when Pages is not enabled for the repository — the one
+      # part of this setup that lives in repository settings rather than here.
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+
+  # This workflow's own verdict, for the reason verify.yaml's carries one: a
+  # failed job already fails the workflow, but a `deploy` that skipped on a run
+  # which should have published would not, and a documentation site that
+  # silently stops updating has no other signal at all — the same shape as the
+  # owner-pinned `if:` guards that went quietly false when this repository
+  # moved organisation. SKIPPED_OK carries the one thing derivation cannot
+  # know, which run legitimately publishes nothing; it is the negation of
+  # `deploy`'s condition above and has to be read against it. The non-empty
+  # string goes in the *middle* of the `&& ||` pair, as verify.yaml's and
+  # tofu-plan.yaml's do: written the other way round the middle operand is
+  # `''`, which is falsy, so the expression yields the right-hand side on both
+  # branches and the verdict silently permits every skip.
+  docs_passed:
+    name: Docs passed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [build, deploy]
+    if: ${{ !cancelled() }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Evaluate every job result
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          SKIPPED_OK: ${{ github.ref != 'refs/heads/main' && 'deploy' || '' }}
+        run: scripts/ci-gate.py

@@ -10,9 +10,9 @@ connector itself:
 
 - [`flink-connector-gcp-bigtable`](../flink-connector-gcp-bigtable/README.md) — the module, and the
   implementation-status tables
-- [SQL connector documentation](../docs/content/docs/connectors/table/bigtable.md) — the DDL model,
-  the option surface, and how to put this jar on the classpath
-- [DataStream connector documentation](../docs/content/docs/connectors/datastream/bigtable.md) —
+- [SQL connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/bigtable/) —
+  the DDL model, the option surface, and how to put this jar on the classpath
+- [DataStream connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/bigtable/) —
   delivery guarantees, tuning and error handling
 
 ```sql
