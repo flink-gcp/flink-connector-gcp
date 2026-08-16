@@ -45,7 +45,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   later run.
 - `LogCapture` assertions clear a narrow bar: the log is the report, nothing else identifies the
   event — `docs/adr/0051` enumerates the sites that clear it, and a new one joins that list rather
-  than being counted silently. The other 17 warn/error sites are unasserted **on purpose**; do not
+  than being counted silently. Every other warn/error site is unasserted **on purpose**; do not
   re-add the nine reverted assertions. A not-emitted assertion sits beside an emitted one on the same logger.
   Every module ships `log4j2-test.properties`; the four log4j2 traps are in `LogCapture`'s
   javadoc, and `log4j-core` stays undeclared in the pom.
