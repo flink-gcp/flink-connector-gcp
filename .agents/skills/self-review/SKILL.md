@@ -74,8 +74,10 @@ Two rules from the repository that bite here:
 - **Re-run the mutation batch after acting on the review**, not only before. Rework has left
   alive a mutant that had been alive all along (PR #317).
 
-Re-run whatever the change touches: `just verify-module <module>` while iterating, then
-`just verify`, plus `just lint`, `just check-option-docs`, `just check-metric-docs`, `just docs`
+Re-run whatever the change touches, at the scope the root guidance sets: targeted tests while
+iterating, the module's suite before the push, and the full `just verify` only when the change
+touches a shared build input — the per-connector CI lane carries the full verification for a
+single-module change. Plus `just lint`, `just check-option-docs`, `just check-metric-docs`, `just docs`
 when a page changed, and `just docs-javadoc` when a `{@link}` or a signature moved — that last one
 is the only thing that catches a broken javadoc link.
 

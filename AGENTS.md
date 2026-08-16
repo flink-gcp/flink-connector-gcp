@@ -29,10 +29,15 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
   tests, packaging, and apache-rat. It requires JDK 17 and Docker but no GCP credentials.
 - `just verify-module <module>`: verify a module and its reactor dependencies; keep its `-am`.
 - Scope local test runs to what changed: targeted `-Dtest=...` while iterating, one module's
-  tests before committing, and the full `just verify` locally only when the change touches shared
-  code — `flink-connector-gcp-base`, `flink-connector-gcp-test-utils`, the root POM, `scripts/`,
-  or a `justfile`/CI recipe. For a single-module change, push and let the per-connector CI lanes
-  carry the full verification; they are faster than a local full build and start clean.
+  tests before committing. Run the full `just verify` locally only when the change touches what
+  every module builds against — `flink-connector-gcp-base`, `flink-connector-gcp-test-utils`, the
+  root POM, `mise.toml`, or a `justfile`/CI recipe; a `scripts/*.py` change wants `just
+  test-scripts` and the affected checker, not a Maven build. For a single-module change, push and
+  let the per-connector CI lane carry the full verification — it is faster than a local full build
+  and starts clean. Two exceptions stay local: per-PR CI builds one Flink version, so a
+  compatibility-sensitive change (cross-version shims, renames the 1.x source root sees) still
+  runs `just verify-flink 1.20.4` before push; and self-review's "re-run whatever the change
+  touches" means the scoped suite above, not an unconditional full verify.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
 - `just check-readme-examples`: check module README Java examples against compiled source.
@@ -83,12 +88,14 @@ green; use the clean-state procedures in that guide for such changes.
   `javax.annotation`, and hand-written `Fake*` test doubles.
 - A **sink** serialization schema returning `null` means skip, not failure; a wrapped Flink
   serializer returning `null` is a serialization failure. Read ADR-0001 before touching this
-  contract. **Source** deserialization is `Collector`-based and returns nothing — a skip decision
-  there belongs to the connector's deserialization failure policy, never to a `null` return.
+  contract. **Source** deserialization is `Collector`-based and returns nothing: a skip is
+  collecting nothing for the message, and the deserialization failure policy governs *thrown*
+  failures — neither is expressed by a `null` return.
 - Forge options objects from `builder().build()`, never the process-wide `defaults()` singleton.
 - Bound `Duration` values that will become nanoseconds at `Duration.ofNanos(Long.MAX_VALUE)`,
-  through `OptionChecks.checkExpressibleInNanos` (ADR-0068) — at the builder and again wherever a
-  deserialized instance is relied on.
+  through `OptionChecks.checkExpressibleInNanos` (ADR-0068). Whether the bound is re-checked where
+  a deserialized options instance is relied on is a per-connector decision that ADR-0068 records —
+  Pub/Sub re-checks, Bigtable documents why it does not — so read it before assuming either.
 - Tests that call a production `createWriter` path must configure an emulator endpoint.
 - `*Test` is a unit test; `*ITCase` runs in the integration-test execution. Credential-gated
   real-GCP tests also carry `@Tag("gated")` and are run only by `just e2e`.
