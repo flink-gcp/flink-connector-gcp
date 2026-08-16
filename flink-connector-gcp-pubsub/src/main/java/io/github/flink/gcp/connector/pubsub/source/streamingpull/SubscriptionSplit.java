@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Google LLC
+ * Copyright 2026 The flink-gcp authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,10 +37,6 @@ import java.util.Objects;
  * io.github.flink.gcp.connector.pubsub.source.OrderingMode#NONE}. Under {@code PER_KEY} a
  * subscription appears in exactly one split, so that its ordering keys are never spread across
  * reader subtasks.
- *
- * <p>Adapted from the Flink connector in <a
- * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),
- * which derives the uid from the subtask index and serializes the split with protobuf.
  */
 @Internal
 public final class SubscriptionSplit implements SourceSplit {

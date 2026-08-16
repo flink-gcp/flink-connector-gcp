@@ -191,8 +191,8 @@ anything.
 
   Whether a given file has stopped carrying anything of the original is a **separate question,
   settled separately on an audit against upstream** rather than as a by-product of this
-  decomposition. A later reader should not mistake this record for that determination, in either
-  direction.
+  decomposition — ADR-0123 is that audit. A later reader should not mistake this record for that
+  determination, in either direction.
 
 [#17]: https://github.com/flink-gcp/flink-connector-gcp/issues/17
 [#31]: https://github.com/flink-gcp/flink-connector-gcp/issues/31

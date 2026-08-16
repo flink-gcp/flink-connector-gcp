@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Google LLC
+ * Copyright 2026 The flink-gcp authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,11 +59,10 @@ import java.util.concurrent.locks.LockSupport;
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
  *
- * <p>Adapted from the {@code PubSubSinkWriter} and {@code PubSubFlushablePublisher} of the Flink
- * connector in <a href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/
- * pubsub</a> (Apache-2.0), extended with per-record topic resolution, a writer-owned per-topic
- * publisher map, mailbox-based backpressure, asynchronous error capture and reactive topic
- * auto-creation.
+ * <p>A destination is resolved per record, so the writer holds one publisher per topic it has seen.
+ * Backpressure is mailbox-based; publish failures arrive on the client library's threads and are
+ * surfaced on the task thread; and a topic that turns out not to exist is repaired when a publish
+ * reports it, rather than checked for beforehand.
  *
  * <h2>Threading model</h2>
  *

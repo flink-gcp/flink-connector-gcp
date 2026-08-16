@@ -94,24 +94,37 @@ sink and source take, with its default, is in the
 
 ## Provenance and attribution
 
-This module contains code adapted from the Flink connector in
+This module began as an adaptation of the Flink connector in
 [GoogleCloudPlatform/pubsub](https://github.com/GoogleCloudPlatform/pubsub) (`flink-connector/`,
-Apache-2.0, Copyright 2023 Google LLC), as decided on issue [#17](https://github.com/laughingman7743/flink-connector-gcp/issues/17); the adaptation is also
-recorded in the repository-level `NOTICE`. Files retaining substantial upstream code carry the
-upstream license header:
+Apache-2.0, Copyright 2023 Google LLC) — the sink under issue
+[#17](https://github.com/flink-gcp/flink-connector-gcp/issues/17), the source reader core under
+[#31](https://github.com/flink-gcp/flink-connector-gcp/issues/31) — and the adaptation is also
+recorded in the repository-level `NOTICE`.
 
-- `PubSubSerializationSchema` / `DataOnlySerializationSchema` — the serialization-schema
-  contract producing a full `PubsubMessage` (attributes/ordering keys expressible) and the
-  data-only adapter, from upstream `PubSubSerializationSchema`
-- `PubSubWriter` — the publish/flush core (async publish, `publishAllOutstanding`-then-await
-  checkpoint flush), from upstream `PubSubSinkWriter` and `PubSubFlushablePublisher`
-- `PubSubDeserializationSchema` / `DataOnlyDeserializationSchema` — the deserialization contract
-  and its payload-only adapter
-- `AckTracker` / `PubSubAckTracker` — the pending → staged → checkpoint-bound → acknowledged
-  lifecycle
-- `NotifyingPullSubscriber` / `PubSubNotifyingPullSubscriber` — the streaming-pull-to-buffer bridge
-- `PubSubSplitReader`, `PubSubRecordEmitter`, `PubSubSourceReader`, `SubscriptionSplit` — the reader
-  stack and the split type
+Parts of it have since been rewritten. **Nine files still carry the upstream licence header.** Four
+because they still hold upstream's code:
+
+- `PubSubAckTracker` — the checkpoint sweep that acknowledges everything bound at or below a
+  completed checkpoint, and the state it sweeps
+- `PubSubSourceReader` — its two acknowledgement-tracker calls, which are upstream's whole method
+  bodies
+- `DataOnlySerializationSchema` / `DataOnlyDeserializationSchema` — the payload-only adapters,
+  whose `open` (and, on the read side, `getProducedType`) forward to the wrapped Flink schema and
+  have no other possible form
+
+Four because an exact upstream declaration survives in them — `AckTracker`,
+`NotifyingPullSubscriber`, `PubSubSerializationSchema` and `PubSubDeserializationSchema`. A method
+name and an empty parameter list very likely carry no authorship, but the project does not need to
+be right about that, so the notice stays and the question is not reached.
+
+And `PubSubNotifyingPullSubscriber`, which is under review rather than settled: its message buffer
+is declared as upstream declares it, and the class is being rewritten
+([#755](https://github.com/flink-gcp/flink-connector-gcp/issues/755)).
+
+The four files whose header was retired — `PubSubWriter`, `PubSubSplitReader`,
+`PubSubRecordEmitter` and `SubscriptionSplit` — share nothing with upstream but generic Java and
+declarations Flink's own SPI dictates. Which files those are was decided by comparing each against
+upstream rather than by how much had changed; the audit and its method are in `docs/adr/0123`.
 
 Deviations from upstream, sink side: dynamic per-record topic destinations with a writer-owned
 per-topic publisher map (upstream: single fixed topic with a JVM-wide static publisher cache),
@@ -127,12 +140,13 @@ tracker is reader-wide, so closing one subscriber nacks every split's messages);
 deserialization contract (upstream returns one nullable record and then collects it without a null
 check); hand-written serializers (upstream: protobuf code generation); an explicit emulator endpoint
 (upstream: `PUBSUB_EMULATOR_HOST` sniffing plus an `emulator:///` URI prefix, where the environment
-variable silently overrides an explicitly configured endpoint); and a hand-written builder. The
-vendored reader stack also fixes several upstream defects: a `null` user-code class loader passed to
-the deserialization schema, a fresh `Configuration` in place of the job's (which made the source
-reader options unreachable), draining at most one message per split per fetch, rejecting split
-removal, not overriding `pauseOrResumeSplits` (breaking watermark alignment), a missing `return` in
-the wake-up branch, and `shutdown()` mutating lock-guarded state without holding the lock.
+variable silently overrides an explicitly configured endpoint); and a hand-written builder.
+Rewriting the reader stack also fixed several upstream defects: a `null` user-code class loader
+passed to the deserialization schema, a fresh `Configuration` in place of the job's (which made the
+source reader options unreachable), draining at most one message per split per fetch, rejecting
+split removal, not overriding `pauseOrResumeSplits` (breaking watermark alignment), a missing
+`return` in the wake-up branch, and `shutdown()` mutating lock-guarded state without holding the
+lock.
 
 [apache/flink-connector-gcp-pubsub](https://github.com/apache/flink-connector-gcp-pubsub) is a
 **design reference only** — the mailbox-based backpressure model, the idea of a fatal-exception

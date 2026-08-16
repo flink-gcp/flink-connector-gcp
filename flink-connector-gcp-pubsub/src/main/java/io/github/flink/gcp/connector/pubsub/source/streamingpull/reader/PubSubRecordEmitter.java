@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Google LLC
+ * Copyright 2026 The flink-gcp authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,10 +56,6 @@ import java.util.function.Consumer;
  * chained operators synchronously, so an exception from one of them propagates back into this
  * method — but a failure past a shuffle boundary happens on another task entirely and cannot be
  * observed. Those messages are covered by the nack the reader performs when it closes.
- *
- * <p>Adapted from the Flink connector in <a
- * href="https://github.com/GoogleCloudPlatform/pubsub">GoogleCloudPlatform/pubsub</a> (Apache-2.0),
- * which emits exactly one possibly-null record per message and has no failure policy.
  *
  * @param <T> type of the records produced by the source
  */
