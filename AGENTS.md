@@ -28,6 +28,11 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just verify`: full Maven verification with formatting, checkstyle, unit tests, integration
   tests, packaging, and apache-rat. It requires JDK 17 and Docker but no GCP credentials.
 - `just verify-module <module>`: verify a module and its reactor dependencies; keep its `-am`.
+- Scope local test runs to what changed: targeted `-Dtest=...` while iterating, one module's
+  tests before committing, and the full `just verify` locally only when the change touches shared
+  code — `flink-connector-gcp-base`, `flink-connector-gcp-test-utils`, the root POM, `scripts/`,
+  or a `justfile`/CI recipe. For a single-module change, push and let the per-connector CI lanes
+  carry the full verification; they are faster than a local full build and start clean.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
 - `just check-readme-examples`: check module README Java examples against compiled source.
