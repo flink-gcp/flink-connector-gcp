@@ -72,15 +72,19 @@ jobs:
 
   # tfcmt posts the plan comment (pull-requests: write) and WIF mints the
   # GCP token (id-token: write). On a fork pull request the token is
-  # read-only regardless, so the comment steps would fail — irrelevant while
-  # the repository is private, and a named checklist item for going public
-  # (issue #6).
+  # read-only regardless, so the comment steps fail — live debt now that the
+  # repository is public, tracked as issue #6.
   tofu_plan:
     uses: ./.github/workflows/tofu-plan.yaml
     permissions:
       contents: read
       pull-requests: write
       id-token: write
+    # A called workflow inherits the `vars` context but not secrets. Declared
+    # rather than `secrets: inherit` so the one secret the child may read is
+    # named here; the child treats it as optional (ADR-0121).
+    secrets:
+      BOT_APP_PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
   # The gate. It reports on every uncancelled run — an explicit green or an
   # explicit red, never a skip GitHub would count as satisfied — and its

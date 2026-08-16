@@ -19,8 +19,14 @@ name: OpenTofu plan
 #   to runs triggered from forks, and the WIF provider condition pins this
 #   repository's immutable ID. Their token is read-only, so on a fork pull
 #   request that touches tofu paths the comment and auth steps fail loudly
-#   rather than plan — irrelevant while the repository is private, and a
-#   named checklist item for going public (issue #6).
+#   rather than plan. The repository is now public, so that is live debt rather
+#   than a hypothetical (issue #6) — and it is also the second, independent
+#   reason the App token below is out of a fork's reach: the job never gets
+#   past the auth step to mint one.
+# - The GitHub App private key (ADR-0121) is the one credential here that is
+#   not minted per run. It is a GitHub-side repository secret, which GitHub
+#   withholds from fork pull requests, and it buys nothing in GCP. Still no
+#   service account keys.
 on:
   # No pull_request trigger and no paths filter: pull requests reach this
   # workflow through ci.yaml, whose required `CI passed` gate needs it, and
@@ -39,6 +45,12 @@ on:
   # belongs to the caller's run, and naming this one made every apply fail with
   # "No workflow run is found" (issue #444).
   workflow_call:
+    secrets:
+      # Optional: fork pull requests do not receive it, and the test step
+      # below skips rather than fails when it is absent. ci.yaml passes it
+      # explicitly, because a called workflow inherits `vars` but not secrets.
+      BOT_APP_PRIVATE_KEY:
+        required: false
 
 # No concurrency group here: inside a workflow_call, github.workflow is the
 # caller's name, so a group defined here would collide with every sibling
@@ -89,16 +101,23 @@ jobs:
       TFACTION_TARGET: ${{ matrix.target.target }}
       TFACTION_WORKING_DIR: ${{ matrix.target.working_directory }}
       TFACTION_JOB_TYPE: ${{ matrix.target.job_type }}
+      # The `secrets` context is unavailable in a step's `if:`, so the
+      # precondition becomes a job-level flag. A flag rather than the key
+      # itself: this puts "are both credentials present" into every step's
+      # environment without putting the key there.
+      APP_CREDENTIALS: ${{ (vars.BOT_APP_ID != '' && secrets.BOT_APP_PRIVATE_KEY != '') && 'yes' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # tofu itself comes from the mise.toml pin, matching what runs locally;
-      # tfaction bootstraps its internal tools (tfcmt, ...) itself.
+      # tofu and tflint come from the mise.toml pins, matching what runs
+      # locally; tfaction bootstraps its internal tools (tfcmt, reviewdog, ...)
+      # itself, but not tflint — it runs that as a plain PATH command, so no
+      # aqua configuration is needed here.
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
         with:
-          install_args: opentofu
+          install_args: opentofu tflint
 
       - name: Set up tfaction
         id: setup
@@ -122,6 +141,43 @@ jobs:
         with:
           action: terraform-init
           github_token: ${{ github.token }}
+
+      # ADR-0121: the App, not github.token, because a github.token push starts
+      # no new run and would leave the fixed branch behind stale checks. Gated
+      # on both credentials being present rather than on the event, so a fork
+      # pull request or a half-finished rotation skips the step below instead
+      # of failing the job.
+      - name: Mint an App token for the fix commits
+        id: app-token
+        if: env.APP_CREDENTIALS != ''
+        # A key that is present but no longer valid — rotated on the App, or the
+        # App uninstalled — fails this step, and a failed step would skip `tofu
+        # plan` below and leave the pull request with no plan comment at all.
+        # Degrade to the no-App behaviour instead: the test step reads `outcome`,
+        # so it skips, and the plan still runs.
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # check-providers, `tofu validate`, tflint and `tofu fmt`. It has to come
+      # after init, and not only because validate needs an initialized
+      # directory: check-providers reads the provider set out of
+      # `tofu version -json`, which is empty before init, so there it would pass
+      # without checking anything. A fixable finding is pushed to the branch and
+      # this step then fails the run; the App's push starts the next one. Two
+      # rounds when tflint and fmt both have work, since tflint throws before
+      # fmt runs. trivy is off — tfaction-root.yaml carries the measurement.
+      # Skipped without the App token; `just lint` covers fmt and tflint there.
+      - name: tofu test
+        if: steps.app-token.outcome == 'success'
+        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        with:
+          action: test
+          github_token: ${{ steps.app-token.outputs.token }}
 
       - name: tofu plan
         uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0

@@ -134,8 +134,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   cover (`relref` validates cross-page links only), and a *cross-page* link carrying a
   `#fragment` is checked by **neither** — it can point at nothing while both stay green, which
   is why #90 resolved them by hand against the built `docs/public` and deferred a checker until
-  the pages actually rot. Also `tofu fmt -check` over `opentofu/` (`tofu validate` is
+  the pages actually rot. Also `tofu fmt -check` and `tflint` over `opentofu/` (`tofu validate` is
   deliberately absent: every PR touching `opentofu/` gets a full plan, which subsumes it).
+  **tflint does not break the offline rule**, and that was measured rather than assumed: the
+  `terraform` ruleset is compiled into the binary, this repository configures no `.tflint.hcl`, so
+  `tflint --init` — which the recipe does not even call — would install nothing. It is here
+  because CI's copy runs inside tfaction's `test` action, where a finding `--fix` cannot fix
+  leaves no commit and no plan comment to read
   Deliberately does **not** run `just --fmt --check` — an unstable feature, excluded from
   just's compatibility guarantee (ADR-0057). actionlint is handed
   `-shellcheck "$(mise which shellcheck)"` rather than letting it find the runner image's own.
@@ -421,7 +426,17 @@ facts); the rules a session needs:
   `TFACTION_IS_APPLY: "true"`** — without it, setup silently falls back to the read-only plan
   account, so on any tofu-CI 403 **read the auth step's log first**. **A failed apply is
   recovered by a follow-up pull request**, never by re-running the apply job (the failure makes
-  the saved plan stale) — and assume nothing from the failed apply exists until measured
+  the saved plan stale) — and assume nothing from the failed apply exists until measured.
+  tfaction now opens that pull request itself as a draft (ADR-0121); review its plan against the
+  apply error and merge it, or close it if the plan reports no change
+- **A pull request touching `opentofu/**` may come back with a `tofu fmt` or tflint fix commit**
+  from the App and a red plan job — the fix is pushed, the step then fails, and the push starts
+  the next run. Pull before committing again, and expect **two** rounds when tflint and `fmt`
+  both have work, because tflint throws before `fmt` runs. A tflint finding `--fix` cannot fix is
+  the case with no commit to read: red plan job, and because the plan step never runs, **no plan
+  comment either** — reproduce it with `just lint`, which runs the same pinned tflint. trivy is
+  off by measurement, not oversight; `opentofu/README.md`'s decisions table carries the five
+  findings and their cost
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens, with
   per-account bindings restricting what each workflow identity can do; plan runs read-only.
   Local runs authenticate via `GOOGLE_APPLICATION_CREDENTIALS` from the uncommitted `.env` —

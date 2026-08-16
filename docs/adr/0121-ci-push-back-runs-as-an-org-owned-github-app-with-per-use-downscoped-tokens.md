@@ -67,8 +67,17 @@ The `test` action, which has no such fallback, is skipped outright on forks; `ju
 Enrolment is opt-in under [ADR-0059](0059-ci-yaml-orchestrates-pull-request-ci-behind-one-required-check.md), and the reason not to take it is the one [ADR-0058](0058-verify-yaml-selects-what-a-pull-request-builds-instead-of-filtering-whether-it-runs.md) already settled: a required check that never reports blocks a pull request forever, and a paths-filtered workflow reports on nothing outside its paths.
 Enrolling it would mean dropping the filter and running it on every pull request to buy a guarantee the credential-less fallback already gives.
 
+**The App pays for three features and no more.**
+pinact pins action references.
+tfaction opens the follow-up pull request after a failed apply, from the apply workflow's `failure()` branch.
+tfaction's `test` action runs in the plan job, after init, pushing `tofu fmt` and `tflint --fix` corrections.
+
 **Drift detection remains off**, now by decision rather than for want of a token.
 It wants three more workflows and apply-job changes; the infrastructure in `opentofu/flink-gcp` changes rarely enough that the detection interval it would buy is not worth that surface.
+
+**trivy inside the `test` action is off, and that is a measurement rather than a preference.**
+tflint is on: it is clean against this configuration, so enforcing it costs nothing.
+The reasoning behind both is in `opentofu/README.md`'s decisions table, which is where an operator looks.
 
 ## Evidence
 
@@ -110,7 +119,24 @@ The follow-up pull request cannot be verified without a real failed apply, and m
 The first genuine failure is the live test.
 Its expected shape, from tfaction's source at the pinned version: a pull request on a `follow-up-<pr>-opentofu__flink-gcp-<timestamp>` branch, assigned to the original author, carrying a commit that touches `opentofu/flink-gcp/.tfaction/failed-prs`.
 That path matters beyond bookkeeping — it sits under the root module, so `list-targets` selects the target on the follow-up pull request by construction, and the fresh plan appears without further wiring.
-Whether it arrives as a draft depends on `draft_pr`, which the companion change sets.
+It arrives as a draft because `tfaction-root.yaml` sets `draft_pr`, and assigned to the merged pull request's author and to whoever merged it when those differ.
+
+The `test` action's placement is not free choice, and the reason usually given for it is the weaker half.
+`tofu validate` needs an initialized directory and fails loudly without one; check-providers reads the provider set out of `tofu version -json`, which before init is empty, so there it would pass **without checking anything**.
+The step goes after `terraform-init` and before `plan`.
+Its linters come from `mise.toml` rather than from aqua: the runtime configuration the action loads bundles conftest, gh, go, reviewdog, terraform-config-inspect, terraform-docs, tfaction-go, tfcmt and tfmigrate, and tflint and trivy are invoked as plain PATH commands with aqua's bin directory appended after the inherited one.
+
+The same reasoning that made `.pinact.y*ml` trusted input applies here, one step further.
+A `.tflint.hcl` in the checkout does not merely decide what gets scanned: it names a plugin, which tflint downloads and executes, in a step whose environment carries the App token.
+No such file exists in this repository, and none is covered by any paths filter.
+The reason that is acceptable is not that the surface is closed — it is that opening a same-repository pull request already requires push access, and anyone holding it can read the private key out of a workflow they edit, which is strictly worse than borrowing a one-hour token.
+The consequence to keep in view is the supply chain rather than the collaborator: a compromise of tflint, reviewdog, aqua or a provider binary now reaches a write token, where before this the plan job held only read-only credentials.
+The job's `permissions: contents: read` is therefore no longer an upper bound on what that one step can write.
+
+Two shapes were forced rather than chosen.
+The `secrets` context is unavailable in a step's `if:`, so the "both credentials present" precondition becomes a job-level `env` flag holding `yes` or the empty string — a flag and not the key, which keeps the private key out of every step's environment.
+And the mint step in the plan job carries `continue-on-error`, because a key that is present but no longer valid fails it, and a failed step would skip `tofu plan` and leave the pull request with no plan comment at all.
+Degrading to the no-App behaviour is worse than fixing formatting and better than losing the plan.
 
 ## Alternatives declined
 

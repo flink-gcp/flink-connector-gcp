@@ -43,12 +43,31 @@ plan_workflow_name: ci.yaml
 
 terraform_command: tofu
 
-# Consumed only by tfaction's `test` action, which this repository does not
-# run yet (see the decisions table in opentofu/README.md) — kept because it
-# is one correct line: tofu resolves the short `hashicorp/google` source
-# against its own registry, as the committed .terraform.lock.hcl records.
+# Enforced by the `test` action's check-providers step, which runs in
+# tofu-plan.yaml: a provider the configuration resolves but this list omits
+# fails the check. tofu resolves the short `hashicorp/google` source against
+# its own registry, as the committed .terraform.lock.hcl records.
 available_providers:
   - name: registry.opentofu.org/hashicorp/google
+
+# Every pull request tfaction opens arrives as a draft, matching this
+# repository's draft-first flow. In practice that means the follow-up pull
+# request after a failed apply — the only one it creates here.
+draft_pr: true
+
+# The `test` action's two linters, both on their defaults except that trivy is
+# off. tflint is clean against this configuration and stays enforced; `fix`
+# lets it push the correction rather than only report it, which is what the
+# App token is for (ADR-0121).
+tflint:
+  enabled: true
+  fix: true
+
+# Off against a measurement: tfaction throws on any trivy finding at all, and
+# this configuration already has five. opentofu/README.md's decisions table
+# names them and prices the alternative.
+trivy:
+  enabled: false
 
 target_groups:
   # A glob, not a prefix: "opentofu/" matches nothing (the first plan run

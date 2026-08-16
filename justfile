@@ -342,6 +342,7 @@ lint:
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
     mise x npm:markdownlint-cli2 -- markdownlint-cli2
     mise x opentofu -- tofu fmt -check -recursive opentofu/
+    mise x tflint -- tflint --chdir opentofu/flink-gcp --call-module-type=all
 
 # Does every skill's frontmatter parse, so Claude Code can load it at all? A
 # broken one is invisible: the file stays valid markdown, no build step reads

@@ -50,9 +50,11 @@ limitations under the License.
   [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176), where a
   dispatch-triggered fresh-apply workflow was built as an alternative and withdrawn in the
   App's favour), and the org now exists, so push-back runs as `flink-gcp-bot`
-  ([ADR-0121](0121-ci-push-back-runs-as-an-org-owned-github-app-with-per-use-downscoped-tokens.md)).
-  Which tfaction push-back features that turns on is recorded there; until they are wired,
-  auto-fix commits and follow-up PRs stay unused.
+  ([ADR-0121](0121-ci-push-back-runs-as-an-org-owned-github-app-with-per-use-downscoped-tokens.md)),
+  which now covers the follow-up pull request after a failed apply and the `test` action's fix
+  commits. Which features that turns on, and which stay off, is recorded there: drift detection is
+  declined, and trivy inside the `test` action is off against a measurement rather than for want
+  of a token.
 - **The apply workflow must set `TFACTION_IS_APPLY: "true"`** — tfaction's job_type is
   "terraform" for plan and apply alike, and setup falls back to `terraform_plan_config` (the
   read-only account) without it. That misconfiguration shipped with PR
