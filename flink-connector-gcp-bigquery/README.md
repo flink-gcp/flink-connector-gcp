@@ -64,20 +64,19 @@ Using the shipped `GenericRecord` deserializer needs `flink-avro` on the job's c
 ## Documentation
 
 Design, delivery guarantees, schema evolution, error handling, tuning and the testing strategy
-are documented in
-[docs/content/docs/connectors/datastream/bigquery.md](../docs/content/docs/connectors/datastream/bigquery.md)
-(rendered on the documentation site once it is published).
+are documented in the
+[BigQuery connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/bigquery/).
 
 A complete runnable job is in
-[Quickstart](../docs/content/docs/quickstart/bigquery.md); dynamic destinations, the exactly-once
-write methods and table auto-creation are worked through in
-[Examples](../docs/content/docs/examples/bigquery.md), which also work through reading: projection
-and restriction, a public dataset, a point-in-time read and the stream-count knobs. Every option the
-sink and the source take, with its default, is in the
-[configuration reference](../docs/content/docs/reference/bigquery.md).
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/bigquery/); dynamic
+destinations, the exactly-once write methods and table auto-creation are worked through in
+[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/bigquery/), which also work
+through reading: projection and restriction, a public dataset, a point-in-time read and the
+stream-count knobs. Every option the sink and the source take, with its default, is in the
+[configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/bigquery/).
 
-The Table API / SQL option surface is documented in
-[docs/content/docs/connectors/table/bigquery.md](../docs/content/docs/connectors/table/bigquery.md).
+The Table API / SQL option surface is documented in the
+[BigQuery SQL connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/bigquery/).
 
 ## Provenance and attribution
 

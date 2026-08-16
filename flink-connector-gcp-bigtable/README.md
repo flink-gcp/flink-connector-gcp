@@ -62,19 +62,19 @@ The connector documentation — what the connector is for, the serialization SPI
 resolved per record, delivery guarantees and what a cell timestamp decides about replays, why retries
 belong to the client, tuning and the client's own flow controller, how failures are classified, how
 the source splits a table by sampled row-key range and resumes by truncating it, and where the
-emulator differs from the service — is in
-[docs/content/docs/connectors/datastream/bigtable.md](../docs/content/docs/connectors/datastream/bigtable.md)
-(rendered on the documentation site once it is published).
+emulator differs from the service — is in the
+[Bigtable connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/bigtable/).
 
 Complete runnable jobs, one per direction, are in
-[Quickstart](../docs/content/docs/quickstart/bigtable.md); several mutations per record, dropping
-bad rows, reading a key range, filtering on the server and emulator-backed local runs are worked
-through in [Examples](../docs/content/docs/examples/bigtable.md). Every option the sink and source
-take, with its default, is in the
-[configuration reference](../docs/content/docs/reference/bigtable.md).
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/bigtable/); several
+mutations per record, dropping bad rows, reading a key range, filtering on the server and
+emulator-backed local runs are worked through in
+[Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/bigtable/). Every option the
+sink and source take, with its default, is in the
+[configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/bigtable/).
 
-The Table API / SQL option surface, the DDL schema model and the cell encodings are documented in
-[docs/content/docs/connectors/table/bigtable.md](../docs/content/docs/connectors/table/bigtable.md).
+The Table API / SQL option surface, the DDL schema model and the cell encodings are documented in the
+[Bigtable SQL connector guide](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/bigtable/).
 
 ## Provenance and attribution
 

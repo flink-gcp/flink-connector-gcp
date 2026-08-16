@@ -11,9 +11,9 @@ documented with the connector itself:
 
 - [`flink-connector-gcp-cloudtasks`](../flink-connector-gcp-cloudtasks/README.md) — the module, and the
   implementation-status tables
-- [SQL connector documentation](../docs/content/docs/connectors/table/cloudtasks.md) — the DDL option
-  surface, metadata columns, and how to put this jar on the classpath
-- [DataStream connector documentation](../docs/content/docs/connectors/datastream/cloudtasks.md) —
+- [SQL connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/cloudtasks/) —
+  the DDL option surface, metadata columns, and how to put this jar on the classpath
+- [DataStream connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/cloudtasks/) —
   delivery guarantees, tuning and error handling
 
 ```sql

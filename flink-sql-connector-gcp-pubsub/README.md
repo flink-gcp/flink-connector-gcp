@@ -10,9 +10,9 @@ connector itself:
 
 - [`flink-connector-gcp-pubsub`](../flink-connector-gcp-pubsub/README.md) — the module, and the
   implementation-status tables
-- [SQL connector documentation](../docs/content/docs/connectors/table/pubsub.md) — the DDL option
-  surface, metadata columns, and how to put this jar on the classpath
-- [DataStream connector documentation](../docs/content/docs/connectors/datastream/pubsub.md) —
+- [SQL connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/table/pubsub/) —
+  the DDL option surface, metadata columns, and how to put this jar on the classpath
+- [DataStream connector documentation](https://flink-gcp.github.io/flink-connector-gcp/docs/connectors/datastream/pubsub/) —
   delivery guarantees, tuning and error handling
 
 ```sql
