@@ -81,6 +81,11 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    # A called workflow inherits the `vars` context but not secrets. Declared
+    # rather than `secrets: inherit` so the one secret the child may read is
+    # named here; the child treats it as optional (ADR-0121).
+    secrets:
+      BOT_APP_PRIVATE_KEY: ${{ secrets.BOT_APP_PRIVATE_KEY }}
 
   # The gate. It reports on every uncancelled run — an explicit green or an
   # explicit red, never a skip GitHub would count as satisfied — and its

@@ -73,6 +73,11 @@ jobs:
       TFACTION_TARGET: ${{ matrix.target.target }}
       TFACTION_WORKING_DIR: ${{ matrix.target.working_directory }}
       TFACTION_JOB_TYPE: ${{ matrix.target.job_type }}
+      # The `secrets` context is unavailable in a step's `if:`, so the
+      # precondition becomes a job-level flag. A flag rather than the key
+      # itself: this puts "are both credentials present" into every step's
+      # environment without putting the key there.
+      APP_CREDENTIALS: ${{ (vars.BOT_APP_ID != '' && secrets.BOT_APP_PRIVATE_KEY != '') && 'yes' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,6 +112,33 @@ jobs:
         with:
           action: apply
           github_token: ${{ github.token }}
+
+      # A failed apply has bumped the state serial, so the plan file this job
+      # downloaded is stale and re-running the job can only fail again. The
+      # recovery is a follow-up pull request whose fresh plan picks up the
+      # remainder, which tfaction now opens instead of it being written by hand
+      # (ADR-0121; before the App there was no token that could create it). Its
+      # commit touches opentofu/flink-gcp/.tfaction/failed-prs — under the root
+      # module, so list-targets selects the target on the follow-up pull request
+      # and its plan comment appears with no further wiring. A push to main is
+      # never a fork context, so the guard here is only about the credentials
+      # existing.
+      - name: Mint an App token for the follow-up pull request
+        id: app-token
+        if: failure() && steps.setup.outcome == 'success' && env.APP_CREDENTIALS != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create the follow-up pull request
+        if: failure() && steps.app-token.outcome == 'success'
+        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        with:
+          action: create-follow-up-pr
+          github_token: ${{ steps.app-token.outputs.token }}
 
       # A new manually scaled App Engine version starts with one billed
       # instance. Stop it immediately after the apply, including after a

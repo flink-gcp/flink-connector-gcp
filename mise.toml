@@ -50,6 +50,14 @@ node = "24"
 # versions.tf's required_version repeats it, so a skew between local and CI is
 # a loud error — a bump edits both lines together.
 opentofu = "1.12.5"
+# Lints the opentofu/ configuration. Run by tfaction's `test` action in
+# tofu-plan.yaml, which invokes it as a plain PATH command, so this pin is what
+# CI gets. Exactly pinned for the shellcheck reason: a release that gains a rule
+# would fail a pull request that changed nothing — and here it would do so by
+# pushing a fix commit. Not in `just lint`, which stays offline while
+# `tflint --init` fetches plugins; by hand it is
+# `mise x tflint -- tflint --chdir opentofu/flink-gcp`.
+tflint = "0.64.0"
 # Task runner (justfile). A major-version specifier rather than an exact pin,
 # unlike shellcheck above: just guarantees that no 1.x release breaks an
 # existing justfile or a working command line, and that there will never be a

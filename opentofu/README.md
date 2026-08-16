@@ -48,9 +48,11 @@ why:
 | `plan_workflow_name` | `ci.yaml` | It names the workflow whose *run* owns the plan artifact, not the file the plan steps live in: the plan runs as a `workflow_call` child, whose artifacts belong to the caller's run. `ci.yaml` must therefore stay `pull_request`-only — the lookup takes the newest run on the head branch with no event filter ([#444](https://github.com/laughingman7743/flink-connector-gcp/issues/444)) |
 | `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
-| GitHub App | exists, unused here | The org-owned `flink-gcp-bot` was adopted for CI push-back once the repository went public ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121), and pins actions today. No *tfaction* feature consumes it yet: plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them. The rows below are what it would unlock |
-| `test` action (auto-`fmt` commits, tflint, trivy) | off | Auto-fix commits pushed with `GITHUB_TOKEN` do not retrigger CI, leaving stale checks; `fmt` is checked (not fixed) in `just lint`, and `validate` is subsumed by the plan this workflow always runs. tflint/trivy can ride in later with an App |
-| `drift_detection` | off (default) | Wants three more workflows and apply-job changes; a candidate follow-up now that the weekly E2E workflow ([#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28)) has landed |
+| GitHub App | on | The org-owned `flink-gcp-bot` ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121). Each step that pushes mints its own token from `BOT_APP_ID` / `BOT_APP_PRIVATE_KEY`, downscoped below the App's contents/pull-requests/workflows ceiling. Plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them |
+| `test` action (`fmt`, `validate`, check-providers, tflint) | on | Runs in the plan job, after init, under the App token — which is what makes it usable: a fix commit pushed with `GITHUB_TOKEN` would not retrigger CI, so the branch would sit behind checks that ran before the fix. A `fmt` or tflint fix is pushed and the step fails the run; the push starts the run that goes green. Skipped when the App credentials are absent (a fork), where `just lint`'s `tofu fmt -check` still covers formatting |
+| `trivy` inside the `test` action | off | Measured, not assumed: `trivy config opentofu/flink-gcp` returns five findings against the configuration as it stands — customer-managed encryption keys on both buckets (LOW), access logging on both (MEDIUM), and versioning on the integration-test bucket (MEDIUM). tfaction throws on **any** trivy finding, so this would redden every pull request touching `opentofu/` until all five were fixed or suppressed, and none is worth its cost here: CMEK adds a KMS key to rotate, access logging adds a log bucket to pay for, and versioning would retain copies of the staging objects a one-day lifecycle rule exists to delete. Revisit if a resource arrives whose exposure is not a storage bucket's |
+| `tflint` inside the `test` action | on | Clean against this configuration today, so it costs nothing to enforce, and `fix: true` lets it push the correction rather than only report it. Pinned in `mise.toml`; tfaction runs it as a plain PATH command |
+| `drift_detection` | off (default) | Declined 2026-08-16, no longer for want of a token: it wants three more workflows and apply-job changes, and this configuration changes rarely enough that the detection interval would not repay that surface |
 
 ## Security model
 
@@ -159,11 +161,20 @@ that plan **stale**. A failed apply can bump the state serial, and an intentiona
 local apply can update the same state before the pull request merges. Do not
 pre-apply a reviewed pull request locally; let the merge workflow apply its
 saved plan. The recovery is a follow-up pull request whose fresh plan picks up
-the current state; rerunning the old job can never succeed. tfaction can create
-that follow-up pull request automatically, but only with a GitHub App token —
-adopting the App is planned together with the dedicated org at go-public time
-([#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177)),
-and until then the follow-up pull request is written by hand. A
-dispatch-triggered fresh-apply workflow was built as an alternative on
+the current state; rerunning the old job can never succeed. tfaction now opens that
+follow-up pull request itself, as a draft assigned to the original author, on a
+`follow-up-<pr>-opentofu__flink-gcp-<timestamp>` branch. Review its plan
+alongside the apply error, complete it if the recovery needs more than the
+remainder, and merge it; a follow-up whose plan reports no change can simply be
+closed. The commit it carries touches
+`opentofu/flink-gcp/.tfaction/failed-prs`, which is under the root module, so
+the follow-up pull request selects the target and gets its own plan comment.
+
+Creating it needs a GitHub App token, which is why it was written by hand until
+[#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177) (ADR-0121):
+a `GITHUB_TOKEN` push starts no workflow run, so the follow-up pull request
+would arrive with no plan on it. A dispatch-triggered fresh-apply workflow was
+built as an alternative on
 [PR #176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)
-and withdrawn in the App's favour.
+and withdrawn in the App's favour. If the credentials are ever absent the step
+skips, and the hand-written recovery above is the fallback.

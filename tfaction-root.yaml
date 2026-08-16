@@ -43,12 +43,38 @@ plan_workflow_name: ci.yaml
 
 terraform_command: tofu
 
-# Consumed only by tfaction's `test` action, which this repository does not
-# run yet (see the decisions table in opentofu/README.md) — kept because it
-# is one correct line: tofu resolves the short `hashicorp/google` source
-# against its own registry, as the committed .terraform.lock.hcl records.
+# Enforced by the `test` action's check-providers step, which runs in
+# tofu-plan.yaml: a provider the configuration resolves but this list omits
+# fails the check. tofu resolves the short `hashicorp/google` source against
+# its own registry, as the committed .terraform.lock.hcl records.
 available_providers:
   - name: registry.opentofu.org/hashicorp/google
+
+# Every pull request tfaction opens arrives as a draft, matching this
+# repository's draft-first flow. In practice that means the follow-up pull
+# request after a failed apply — the only one it creates here.
+draft_pr: true
+
+# The `test` action's two linters, both on their defaults except that trivy is
+# off. tflint is clean against this configuration and stays enforced; `fix`
+# lets it push the correction rather than only report it, which is what the
+# App token is for (ADR-0121).
+tflint:
+  enabled: true
+  fix: true
+
+# Off, and measured rather than assumed: `trivy config opentofu/flink-gcp`
+# returns five findings against the configuration as it stands — customer-managed
+# encryption keys on both buckets (LOW), access logging on both (MEDIUM), and
+# versioning on the integration-test bucket (MEDIUM). tfaction throws on any
+# trivy finding at all, so enabling it would redden every pull request touching
+# opentofu/ until all five were fixed or suppressed, and none of the five is
+# worth its cost here: CMEK adds a KMS key to rotate, access logging adds a log
+# bucket to pay for, and versioning would retain copies of staging objects a
+# one-day lifecycle rule exists to delete. opentofu/README.md's decisions table
+# carries this with the numbers.
+trivy:
+  enabled: false
 
 target_groups:
   # A glob, not a prefix: "opentofu/" matches nothing (the first plan run

@@ -421,7 +421,13 @@ facts); the rules a session needs:
   `TFACTION_IS_APPLY: "true"`** — without it, setup silently falls back to the read-only plan
   account, so on any tofu-CI 403 **read the auth step's log first**. **A failed apply is
   recovered by a follow-up pull request**, never by re-running the apply job (the failure makes
-  the saved plan stale) — and assume nothing from the failed apply exists until measured
+  the saved plan stale) — and assume nothing from the failed apply exists until measured.
+  tfaction now opens that pull request itself as a draft (ADR-0121); review its plan against the
+  apply error and merge it, or close it if the plan reports no change
+- **A pull request touching `opentofu/**` may come back with a `tofu fmt` or tflint fix commit**
+  from the App and a red plan job — the fix is pushed, the step then fails, and the push starts
+  the run that goes green. Pull before committing again. trivy is off by measurement, not
+  oversight; `opentofu/README.md`'s decisions table carries the five findings and their cost
 - **No service account keys, ever.** All CI credentials are short-lived WIF tokens, with
   per-account bindings restricting what each workflow identity can do; plan runs read-only.
   Local runs authenticate via `GOOGLE_APPLICATION_CREDENTIALS` from the uncommitted `.env` —
