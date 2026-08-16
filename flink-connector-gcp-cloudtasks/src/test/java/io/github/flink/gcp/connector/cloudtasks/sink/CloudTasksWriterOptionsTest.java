@@ -20,6 +20,7 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -107,5 +108,62 @@ class CloudTasksWriterOptionsTest {
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("notFoundMaxBackoff");
+    }
+
+    @Test
+    void optionsWithTheSameKnobsAreEqualAndDifferingOnesAreNot() {
+        // Only equal instances were ever compared, so nothing held the field chain: a mutant
+        // dropping any knob from equals - or from hashCode, which a sink's compiled-plan spec
+        // hashes along with it - left every assertion in this class passing.
+        assertThat(fullyPopulated())
+                .isEqualTo(fullyPopulated())
+                .hasSameHashCodeAs(fullyPopulated())
+                .isNotEqualTo(CloudTasksWriterOptions.defaults());
+        assertThat(fullyPopulated().toString())
+                .startsWith("CloudTasksWriterOptions{maxInFlightTasks=17")
+                .contains("perDestinationMetrics=true");
+    }
+
+    @Test
+    void everyKnobIsPartOfTheIdentity() {
+        // One variation per knob, so a knob missing from equals fails here by name rather than as
+        // one opaque assertion over a fully-populated pair.
+        assertThat(variedBy(builder -> builder.maxInFlightTasks(18)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryInitialBackoff(Duration.ofMillis(300))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryMaxBackoff(Duration.ofSeconds(30))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryMaxAttempts(9))).isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.notFoundInitialBackoff(Duration.ofMillis(700))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.notFoundMaxBackoff(Duration.ofSeconds(4))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.notFoundMaxAttempts(5)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.perDestinationMetrics(false)))
+                .isNotEqualTo(fullyPopulated());
+    }
+
+    /** The fully populated knob set with one knob overridden, which is what varies the identity. */
+    private static CloudTasksWriterOptions variedBy(
+            UnaryOperator<CloudTasksWriterOptions.Builder> variation) {
+        return variation.apply(fullyPopulatedBuilder()).build();
+    }
+
+    private static CloudTasksWriterOptions fullyPopulated() {
+        return fullyPopulatedBuilder().build();
+    }
+
+    private static CloudTasksWriterOptions.Builder fullyPopulatedBuilder() {
+        return CloudTasksWriterOptions.builder()
+                .maxInFlightTasks(17)
+                .retryInitialBackoff(Duration.ofMillis(200))
+                .retryMaxBackoff(Duration.ofSeconds(20))
+                .retryMaxAttempts(4)
+                .notFoundInitialBackoff(Duration.ofMillis(600))
+                .notFoundMaxBackoff(Duration.ofSeconds(3))
+                .notFoundMaxAttempts(2)
+                .perDestinationMetrics(true);
     }
 }

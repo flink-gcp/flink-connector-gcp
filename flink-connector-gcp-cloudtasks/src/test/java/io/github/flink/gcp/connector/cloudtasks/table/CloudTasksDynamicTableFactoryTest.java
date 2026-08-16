@@ -32,6 +32,7 @@ import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.table.form.FormUrlEncodedFormatFactory;
+import io.github.flink.gcp.connector.cloudtasks.table.sink.AppEngineTargetSpec;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksDynamicSink;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.HttpTargetSpec;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
@@ -84,6 +85,12 @@ class CloudTasksDynamicTableFactoryTest {
 
     private static Map<String, String> formOptions() {
         Map<String, String> options = minimalOptions();
+        options.put("format", FormUrlEncodedFormatFactory.IDENTIFIER);
+        return options;
+    }
+
+    private static Map<String, String> appEngineFormOptions() {
+        Map<String, String> options = appEngineOptions();
         options.put("format", FormUrlEncodedFormatFactory.IDENTIFIER);
         return options;
     }
@@ -337,8 +344,10 @@ class CloudTasksDynamicTableFactoryTest {
                 .hasStackTraceContaining("Option '" + child + "' requires option '" + parent + "'");
     }
 
+    // The two malformed shapes both start http(s):// and fail the URI parse; a scheme Cloud Tasks
+    // cannot call at all is rejected one step earlier, which nothing reached before.
     @ParameterizedTest(name = "http.url={0}")
-    @ValueSource(strings = {"https://", "https://example.com/bad path"})
+    @ValueSource(strings = {"https://", "https://example.com/bad path", "ftp://example.com/tasks"})
     void rejectsAMalformedAbsoluteHttpUrl(String url) {
         Map<String, String> options = minimalOptions();
         options.put("http.url", url);
@@ -347,6 +356,46 @@ class CloudTasksDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("http.url")
                 .hasStackTraceContaining("absolute http:// or https:// URL");
+    }
+
+    // Both spellings of "no method" parse: Flink matches an enum constant by name, and UNRECOGNIZED
+    // is protobuf's synthetic constant, so each reaches the connector as a target with no verb.
+    @ParameterizedTest(name = "{0}={1}")
+    @CsvSource({
+        "http.method, HTTP_METHOD_UNSPECIFIED",
+        "http.method, UNRECOGNIZED",
+        "app-engine.method, HTTP_METHOD_UNSPECIFIED",
+        "app-engine.method, UNRECOGNIZED"
+    })
+    void rejectsAMethodThatNamesNoVerb(String option, String value) {
+        Map<String, String> options =
+                option.startsWith("app-engine.") ? appEngineOptions() : minimalOptions();
+        options.put(option, value);
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                // The key too, so a failure says which target's copy of the guard fired; the two
+                // specs carry one each.
+                .hasStackTraceContaining("Option '" + option + "' must be a concrete HTTP method.");
+    }
+
+    // The blank check is per option rather than shared, so each of the four token options needs its
+    // own case: a blank one would otherwise reach the service as an empty audience or scope.
+    @ParameterizedTest(name = "{0}=''")
+    @ValueSource(
+            strings = {
+                "http.oidc.service-account-email",
+                "http.oidc.audience",
+                "http.oauth.service-account-email",
+                "http.oauth.scope"
+            })
+    void rejectsABlankTokenOption(String option) {
+        Map<String, String> options = minimalOptions();
+        options.put(option, "");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option '" + option + "' must not be blank.");
     }
 
     @Test
@@ -433,6 +482,80 @@ class CloudTasksDynamicTableFactoryTest {
         assertThatThrownBy(() -> HttpTargetSpec.from(config))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("blank header name");
+    }
+
+    // Prefixed DDL cannot spell a blank name, so this goes through the spec directly, as the HTTP
+    // case above does. The App Engine target has its own copy of the header loop, and each of the
+    // three rejections below was unexercised on that copy while the HTTP twin was covered.
+    @Test
+    void rejectsABlankFixedAppEngineHeaderName() {
+        Configuration config = new Configuration();
+        config.set(CloudTasksConnectorOptions.APP_ENGINE_RELATIVE_URI, "/tasks/default");
+        config.set(
+                CloudTasksConnectorOptions.APP_ENGINE_HEADERS,
+                java.util.Collections.singletonMap(" ", "value"));
+
+        assertThatThrownBy(() -> AppEngineTargetSpec.from(config, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("blank header name");
+    }
+
+    @Test
+    void rejectsCaseInsensitiveDuplicateFixedAppEngineHeaders() {
+        Map<String, String> options = appEngineOptions();
+        options.put("app-engine.headers.X-Request-Id", "first");
+        options.put("app-engine.headers.x-request-id", "second");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("duplicate header names")
+                .hasStackTraceContaining("case-insensitive");
+    }
+
+    @Test
+    void rejectsAFixedAppEngineContentTypeThatConflictsWithTheFormFormat() {
+        Map<String, String> options = appEngineFormOptions();
+        options.put(
+                "app-engine.headers.content-type",
+                "application/x-www-form-urlencoded; charset=UTF-8");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(FORM_SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("conflicts with the body format's Content-Type")
+                .hasStackTraceContaining("application/x-www-form-urlencoded; charset=UTF-8");
+    }
+
+    // The accepting side of the same branch, asserted on the request rather than on "did not
+    // throw": an unrelated fixed header has to survive the conflict check *and* still be emitted,
+    // which a mutant dropping the loop's put would otherwise pass.
+    @Test
+    void keepsAnUnrelatedFixedAppEngineHeaderBesideTheFormFormat() throws Exception {
+        Map<String, String> options = appEngineFormOptions();
+        options.put("app-engine.headers.X-Origin", "table");
+
+        Task task =
+                serialize(FORM_SCHEMA, options, GenericRowData.of(StringData.fromString("Alice")));
+
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .containsEntry("X-Origin", "table")
+                .containsEntry("Content-Type", FormUrlEncodedFormatFactory.CONTENT_TYPE);
+    }
+
+    // The App Engine twin of acceptsAndCanonicalizesAMatchingFixedContentType: a matching header is
+    // dropped in favour of the format's own canonical spelling, so the request carries one
+    // Content-Type rather than the operator's casing and padding.
+    @Test
+    void acceptsAndCanonicalizesAMatchingFixedAppEngineContentType() throws Exception {
+        Map<String, String> options = appEngineFormOptions();
+        options.put("app-engine.headers.content-type", " APPLICATION/X-WWW-FORM-URLENCODED ");
+
+        Task task =
+                serialize(FORM_SCHEMA, options, GenericRowData.of(StringData.fromString("Alice")));
+
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .containsOnly(
+                        org.assertj.core.api.Assertions.entry(
+                                "Content-Type", FormUrlEncodedFormatFactory.CONTENT_TYPE));
     }
 
     @Test
