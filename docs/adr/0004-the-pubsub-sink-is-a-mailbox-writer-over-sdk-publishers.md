@@ -63,7 +63,8 @@ memory bounds, and a recovery story for missing topics and paused ordering keys.
 
 ## Consequences — constraints not to re-litigate
 
-- The three drains (`drainInFlight()`, named apart from `awaitCapacity()` for exactly this
+- The three drains (`InFlightTracker.drainToEmpty()` since [#755], named apart from
+  `awaitCapacity()` for exactly this
   reason) must keep meaning "empty, and `checkAsyncError`" — [#78]/[#110] made that
   load-bearing.
 - Admission is "below the cap", never "does this message fit": `yield()` blocks until a mail
@@ -73,7 +74,7 @@ memory bounds, and a recovery story for missing topics and paused ordering keys.
   key's republishes reorders it. Parked messages are counted by neither cap (their failure mail
   released them).
 - A cancellation is never a root cause, so one is parked unconditionally and a fatal root is
-  caught by the pre-repair drain (`drainInFlight()` → `checkAsyncError`) rather than by
+  caught by the pre-repair drain (the drain → the writer's `checkAsyncError`) rather than by
   classifying the cascade. The disposition no longer gates parking — [#215] (ADR-0006) moved
   that guarantee onto `topicMissing`.
 - The two writer test classes carry `@Timeout(30)`: the fake mailbox blocks like the real one,
@@ -87,3 +88,4 @@ memory bounds, and a recovery story for missing topics and paused ordering keys.
 [#85]: https://github.com/laughingman7743/flink-connector-gcp/issues/85
 [#110]: https://github.com/laughingman7743/flink-connector-gcp/issues/110
 [#215]: https://github.com/laughingman7743/flink-connector-gcp/issues/215
+[#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0052: The Pub/Sub sink's mailbox waits are bounded on progress, not on the call
 
 - Status: Accepted
-- Date: 2026-08-07
-- Issues: [#333]
+- Date: 2026-08-07; revised by [#755] (2026-08-16)
+- Issues: [#333], [#755]
 - Modules: pubsub
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (the progress-timeout
   section); `docs/content/docs/reference/pubsub.md` for the knob
@@ -30,14 +30,16 @@ checkpoint spends — unbounded outright under `enableMessageOrdering` — filed
 
 ## Decision
 
-`PubSubPublisherOptions.publishProgressTimeout`, 600 s, spent by `awaitCapacity` and
-`drainInFlight` alike, restarted by every completion the publisher reports.
+`PubSubPublisherOptions.publishProgressTimeout`, 600 s, spent by the admission gate and the drain
+alike — `InFlightTracker.awaitCapacity` and `drainToEmpty` since [#755] moved them there — restarted
+by every completion the publisher reports.
 
 - **The bound had to cover `write` too, and that reverses the obvious scope.** Which leg a
   stalled sink parks in depends only on whether the in-flight caps fill before the barrier
   arrives: from the task thread's own stack at 5000 rec/s with a 1 s interval, at the
-  **shipped** cap of 1000 it was in `awaitCapacity` ← `write`, and only at a cap large enough
-  for the barrier to win was it in `drainInFlight` ← `flush` ← `prepareSnapshotPreBarrier`.
+  **shipped** cap of 1000 it was in the admission gate ← `PubSubWriter.write`, and only at a cap
+  large enough for the barrier to win was it in the drain ← `flush` ←
+  `prepareSnapshotPreBarrier`.
 - **Progress-based**: a slow-but-answering topic restarts the budget and never spends it, so only
   a publisher that has stopped answering fails — which is what answers the issue's own
   counter-argument, that blocking on the sink's own writes is legitimate backpressure. It costs
@@ -65,7 +67,7 @@ checkpoint spends — unbounded outright under `enableMessageOrdering` — filed
   `unrelatedMailTrafficDelaysTheBudgetButDoesNotDefeatIt` is what says the cost is a delay and
   not a defeat (real traffic has gaps, and any gap is a reading).
 - **Progress is stamped in the completion callback, on the SDK's thread, not when the mail
-  runs** — the one field of the writer that is not task-thread-confined, hence `volatile`. What
+  runs** — the one field of the tracker *written* off the task thread, hence `volatile` (the two counters are read off it as well, by the metric reporter). What
   the budget asks is whether the publisher is still answering, and a mail enqueued but not yet
   dequeued already answers it. It is stamped in the constructor too, so it is always a real
   `nanoTime` reading: the zero default is not one, and the comparison against `waitStartNanos`
@@ -145,7 +147,7 @@ Measured 2026-08-07 against an unreachable endpoint, and every number decided so
 ## Consequences
 
 **What the budget does not cover, stated because the wording invites the opposite reading.** It
-bounds the two waits this writer makes and nothing else on the task thread: a user
+bounds the two waits the writer makes through the tracker and nothing else on the task thread: a user
 `DestinationResolver`, serializer, `FailureHandler` or `DeadLetterQueue` runs there too — a handler
 inside the wait itself, via a mailbox mail — and the task thread cannot bound code it is executing.
 The built-in `PubSubDeadLetterQueue` bounds itself (`flushTimeout`), so the exposure is a
@@ -170,7 +172,7 @@ whatever the repairs before the stall left them; "stay at zero" would be too str
 usually grows out of counted failures — so without a line the first thing anyone sees is the job dying, at the
 shipped default ten minutes later and possibly of `Checkpoint expired` instead. A `WARN` naming Pub/Sub, the wait and the in-flight
 count, at `publishProgressTimeout / 10` = 60 s by default and **at most once per that interval
-across the writer** — a field, not a per-wait flag, because a wait is not an incident: the isolation
+across the tracker, of which the writer has one** — a field, not a per-wait flag, because a wait is not an incident: the isolation
 pass drains once per parked message and a parked batch runs to ~2x `maxInFlightMessages`, so
 per-wait would put a thousand lines in the log for one `flush`. The operator gets the early, Pub/Sub-named signal from the log rather than from a
 failure, and keeps the tolerance a longer budget buys. `inFlightMessages` pegged at the cap with `numRecordsSend`
@@ -186,4 +188,5 @@ while `RESOURCE_EXHAUSTED` means deliberately exhausting billed quota. A refused
 identical algorithm with the identical settings. What *would* earn a gated class is a fix that
 abandons in-flight publishes; this one does not.
 
-[#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
+[#333]: https://github.com/flink-gcp/flink-connector-gcp/issues/333
+[#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
