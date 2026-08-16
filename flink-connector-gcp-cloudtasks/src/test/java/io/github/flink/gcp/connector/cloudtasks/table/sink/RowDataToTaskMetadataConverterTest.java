@@ -23,6 +23,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 
 import com.google.cloud.tasks.v2.HttpMethod;
+import com.google.cloud.tasks.v2.HttpRequest;
 import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.table.CloudTasksConnectorOptions;
 import org.junit.jupiter.api.Test;
@@ -142,6 +143,22 @@ class RowDataToTaskMetadataConverterTest {
     }
 
     @Test
+    void rejectsAUrlThatResolvedToNull() {
+        // With no fixed option the metadata is the only source, and the row may still be null
+        // there. The shared shape check cannot take null, so this arm is what turns the case
+        // into the connector's own message instead of a NullPointerException.
+        assertThatThrownBy(
+                        () ->
+                                convert(
+                                        new Configuration(),
+                                        new WritableMetadata[] {WritableMetadata.URL},
+                                        GenericRowData.of(str("body"), str(null))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("absolute http:// or https:// URL")
+                .hasMessageContaining("resolved to 'null'");
+    }
+
+    @Test
     void rejectsANullHeaderEntry() {
         Map<StringData, StringData> data = new LinkedHashMap<>();
         data.put(str("X-Key"), null);
@@ -235,5 +252,46 @@ class RowDataToTaskMetadataConverterTest {
                         "application/x-www-form-urlencoded");
 
         assertThat(task.getHttpRequest().getHeadersMap()).isEmpty();
+    }
+
+    @Test
+    void aSecondRowStillCarriesTheFixedRequest() throws Exception {
+        // The converter builds the fixed request once and merges it into every task, so a record
+        // after the first has to find the fixed headers and the dispatch token still there and
+        // the previous row's headers gone. Those two are the assertable part: the URL and the
+        // method are re-set from the row-or-option fallback on every call, so they would survive
+        // a fixed request that had lost everything. Its App Engine twin is the same shape.
+        Configuration config = target("https://fixed.example/tasks");
+        config.set(
+                CloudTasksConnectorOptions.HTTP_HEADERS,
+                java.util.Collections.singletonMap("X-Fixed", "yes"));
+        config.set(
+                CloudTasksConnectorOptions.HTTP_OAUTH_SERVICE_ACCOUNT_EMAIL,
+                "dispatcher@example.iam.gserviceaccount.com");
+        RowDataToTaskMetadataConverter converter =
+                new RowDataToTaskMetadataConverter(
+                        1, new WritableMetadata[] {WritableMetadata.HEADERS}, target(config));
+
+        HttpRequest first =
+                converter
+                        .convert(
+                                GenericRowData.of(
+                                        str("body"),
+                                        new GenericMapData(
+                                                java.util.Collections.singletonMap(
+                                                        str("X-Row"), str("row")))))
+                        .build()
+                        .getHttpRequest();
+        HttpRequest second =
+                converter.convert(GenericRowData.of(str("body"), null)).build().getHttpRequest();
+
+        assertThat(first.getHeadersMap())
+                .containsOnly(
+                        org.assertj.core.api.Assertions.entry("X-Fixed", "yes"),
+                        org.assertj.core.api.Assertions.entry("X-Row", "row"));
+        assertThat(second.getHeadersMap())
+                .containsOnly(org.assertj.core.api.Assertions.entry("X-Fixed", "yes"));
+        assertThat(second.getOauthToken().getServiceAccountEmail())
+                .isEqualTo("dispatcher@example.iam.gserviceaccount.com");
     }
 }

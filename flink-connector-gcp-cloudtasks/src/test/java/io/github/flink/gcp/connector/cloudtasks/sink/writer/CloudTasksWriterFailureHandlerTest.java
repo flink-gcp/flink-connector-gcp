@@ -177,6 +177,22 @@ class CloudTasksWriterFailureHandlerTest {
     }
 
     @Test
+    void failsTheJobOnANullExtractedTaskId() {
+        CloudTasksWriter<String> writer =
+                writer(TestSinkConfigs.builder().taskIdExtractor(element -> null));
+
+        // Row-shaped rather than configuration-shaped: the Table API installs an extractor that
+        // returns null for a NULL key column, so one bad row reaches this while the rest of the
+        // job is well formed. It still fails the job rather than reaching the handler, because a
+        // routed row would be a row that quietly lost its deduplication.
+        assertThatThrownBy(() -> writer.write("order-1", TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("returned null")
+                .hasMessageContaining("deduplication");
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
     void failsTheJobOnAnEmptyExtractedTaskId() {
         CloudTasksWriter<String> writer =
                 writer(TestSinkConfigs.builder().taskIdExtractor(element -> ""));
