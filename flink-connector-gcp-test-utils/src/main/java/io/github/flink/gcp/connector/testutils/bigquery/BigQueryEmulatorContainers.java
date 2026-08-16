@@ -27,9 +27,8 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 
 /**
- * The BigQuery emulator image and its two endpoints, shared by every harness that starts it — the
- * connector module's writer and table harnesses and the SQL module's smoke test — so they cannot
- * drift apart.
+ * The BigQuery emulator image and its two endpoints, shared by every harness that starts the
+ * emulator so they cannot drift apart.
  *
  * <p>Two ports, unlike every sibling emulator here: BigQuery serves table metadata over REST and
  * the Storage Write API over gRPC, and a harness pointing only one of them at the emulator would

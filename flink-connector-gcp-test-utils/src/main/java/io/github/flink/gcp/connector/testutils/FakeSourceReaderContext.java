@@ -42,8 +42,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * InternalSourceReaderMetricGroup} — an unannotated flink-runtime type — out of this module's main
  * sources and therefore out of the Flink API tier audit.
  *
- * <p>Everything else answers what a reader reads, and {@code sendSourceEventToCoordinator} throws:
- * the first source that sends one has to come here and decide what the fake should do.
+ * <p>Everything else answers what a reader reads, and {@code sendSourceEventToCoordinator} records:
+ * {@link #sourceEvents()} returns what the reader sent, in order, which is how a test of a reader
+ * that reports to its coordinator asserts the report was made.
  */
 @Internal
 public final class FakeSourceReaderContext implements SourceReaderContext {
