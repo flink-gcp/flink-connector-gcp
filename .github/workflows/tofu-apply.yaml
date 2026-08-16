@@ -73,6 +73,11 @@ jobs:
       TFACTION_TARGET: ${{ matrix.target.target }}
       TFACTION_WORKING_DIR: ${{ matrix.target.working_directory }}
       TFACTION_JOB_TYPE: ${{ matrix.target.job_type }}
+      # The `secrets` context is unavailable in a step's `if:`, so the
+      # precondition becomes a job-level flag. A flag rather than the key
+      # itself: this puts "are both credentials present" into every step's
+      # environment without putting the key there.
+      APP_CREDENTIALS: ${{ (vars.BOT_APP_ID != '' && secrets.BOT_APP_PRIVATE_KEY != '') && 'yes' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,10 +108,41 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: tofu apply
+        id: apply
         uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: apply
           github_token: ${{ github.token }}
+
+      # A failed apply has bumped the state serial, so the plan file this job
+      # downloaded is stale and re-running the job can only fail again. The
+      # recovery is a follow-up pull request whose fresh plan picks up the
+      # remainder, which tfaction now opens instead of it being written by hand
+      # (ADR-0121). opentofu/README.md carries what the pull request looks like
+      # and what to do with it.
+      #
+      # Keyed on the apply step failing, not on `failure()` alone: auth and init
+      # run before it and touch no state, so a WIF or state-lock flake there
+      # would otherwise open a follow-up whose plan reports no change and tell
+      # the merger to handle an apply that never ran. A push to main is never a
+      # fork context, so the credential guard is only about the credentials
+      # existing.
+      - name: Mint an App token for the follow-up pull request
+        id: app-token
+        if: failure() && steps.apply.outcome == 'failure' && env.APP_CREDENTIALS != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Create the follow-up pull request
+        if: failure() && steps.app-token.outcome == 'success'
+        uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
+        with:
+          action: create-follow-up-pr
+          github_token: ${{ steps.app-token.outputs.token }}
 
       # A new manually scaled App Engine version starts with one billed
       # instance. Stop it immediately after the apply, including after a

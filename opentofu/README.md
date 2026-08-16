@@ -48,9 +48,11 @@ why:
 | `plan_workflow_name` | `ci.yaml` | It names the workflow whose *run* owns the plan artifact, not the file the plan steps live in: the plan runs as a `workflow_call` child, whose artifacts belong to the caller's run. `ci.yaml` must therefore stay `pull_request`-only — the lookup takes the newest run on the head branch with no event filter ([#444](https://github.com/laughingman7743/flink-connector-gcp/issues/444)) |
 | `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
-| GitHub App | exists, unused here | The org-owned `flink-gcp-bot` was adopted for CI push-back once the repository went public ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121), and pins actions today. No *tfaction* feature consumes it yet: plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them. The rows below are what it would unlock |
-| `test` action (auto-`fmt` commits, tflint, trivy) | off | Auto-fix commits pushed with `GITHUB_TOKEN` do not retrigger CI, leaving stale checks; `fmt` is checked (not fixed) in `just lint`, and `validate` is subsumed by the plan this workflow always runs. tflint/trivy can ride in later with an App |
-| `drift_detection` | off (default) | Wants three more workflows and apply-job changes; a candidate follow-up now that the weekly E2E workflow ([#28](https://github.com/laughingman7743/flink-connector-gcp/issues/28)) has landed |
+| GitHub App | on | The org-owned `flink-gcp-bot` ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121). Each step that pushes mints its own token from `BOT_APP_ID` / `BOT_APP_PRIVATE_KEY`, downscoped below the App's contents/pull-requests/workflows ceiling. Plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them |
+| `test` action (`fmt`, `validate`, check-providers, tflint) | on | Runs in the plan job, after init, under the App token — which is what makes it usable: a fix commit pushed with `GITHUB_TOKEN` would not retrigger CI, so the branch would sit behind checks that ran before the fix. A fixable finding is pushed and the step then fails the run; the push starts the next one. Two rounds when tflint and `fmt` both have work, because tflint throws before `fmt` runs. Skipped when the App credentials are absent (a fork), where `just lint` covers both locally |
+| `trivy` inside the `test` action | off | Measured, not assumed: `trivy config opentofu/flink-gcp` returns five findings against the configuration as it stands — customer-managed encryption keys on both buckets (LOW), access logging on both (MEDIUM), and versioning on the integration-test bucket (MEDIUM). tfaction throws on **any** trivy finding, so this would redden every pull request touching `opentofu/` until all five were fixed or suppressed, and none is worth its cost here: CMEK adds a KMS key to rotate, access logging adds a log bucket to pay for, and versioning would retain copies of the staging objects a one-day lifecycle rule exists to delete. Revisit if a resource arrives whose exposure is not a storage bucket's |
+| `tflint` inside the `test` action | on | Clean against this configuration today, and `fix: true` lets it push the correction rather than only report it. What is bought is the bundled `terraform` ruleset over thirteen `.tf` files — no plugins are configured — so the case for it is modest rather than free: it also puts a PR-controlled plugin loader in a step holding a write token (ADR-0121 records why that is acceptable). Pinned in `mise.toml`, run by `just lint` and by tfaction as a plain PATH command |
+| `drift_detection` | off (default) | Declined 2026-08-16, no longer for want of a token: it wants three more workflows and apply-job changes, and this configuration changes rarely enough that the detection interval would not repay that surface |
 
 ## Security model
 
@@ -159,11 +161,26 @@ that plan **stale**. A failed apply can bump the state serial, and an intentiona
 local apply can update the same state before the pull request merges. Do not
 pre-apply a reviewed pull request locally; let the merge workflow apply its
 saved plan. The recovery is a follow-up pull request whose fresh plan picks up
-the current state; rerunning the old job can never succeed. tfaction can create
-that follow-up pull request automatically, but only with a GitHub App token —
-adopting the App is planned together with the dedicated org at go-public time
-([#177](https://github.com/laughingman7743/flink-connector-gcp/issues/177)),
-and until then the follow-up pull request is written by hand. A
-dispatch-triggered fresh-apply workflow was built as an alternative on
+the current state; rerunning the old job can never succeed. tfaction now opens that
+follow-up pull request itself, as a draft on a
+`follow-up-<pr>-opentofu__flink-gcp-<timestamp>` branch, assigned to the merged
+pull request's author and to whoever merged it when those differ. Review its plan
+alongside the apply error, complete it if the recovery needs more than the
+remainder, and merge it; a follow-up whose plan reports no change can simply be
+closed. The commit it carries touches
+`opentofu/flink-gcp/.tfaction/failed-prs`, which is under the root module, so
+the follow-up pull request selects the target and gets its own plan comment.
+
+It was written by hand until
+[#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177) (ADR-0121),
+and the reason is narrower than "tfaction could not do it": a `GITHUB_TOKEN`
+granted `contents: write` could create the branch and the pull request, but a
+push authenticated with it starts no workflow run, so the follow-up would arrive
+with no plan on it — which is the whole point of opening one. A dispatch-triggered fresh-apply workflow was
+built as an alternative on
 [PR #176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)
-and withdrawn in the App's favour.
+and withdrawn in the App's favour. If the credentials are ever absent the step
+skips, and the hand-written recovery above is the fallback. The step is keyed on
+the apply step itself failing rather than on the job failing, so a WIF or
+state-lock flake before the apply does not open a follow-up for an apply that
+never ran.
