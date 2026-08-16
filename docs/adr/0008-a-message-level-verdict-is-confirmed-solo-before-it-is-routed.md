@@ -34,7 +34,7 @@ on the report would hand a whole batch to a dropping handler for one bad message
 The writer parks a non-solo `INVALID_ARGUMENT` (`DestinationState.isolationNeeded`, consumed per
 attempt like `topicMissing`) and the repair runs an **isolation pass**: each parked message goes
 out as its own single-message request (`publishTo(..., soloVerdict=true)` + `flushOutstanding` +
-`drainInFlight` per message), and only a message rejected solo reaches `routeFailedMessage`.
+a drain per message), and only a message rejected solo reaches `routeFailedMessage`.
 
 Decisions not to re-litigate:
 

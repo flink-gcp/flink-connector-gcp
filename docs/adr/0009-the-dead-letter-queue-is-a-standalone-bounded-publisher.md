@@ -139,7 +139,7 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   flush, or inside `BoundedShutdown.start()`. [#334] then made that the rule for every budget of
   this shape, `BoundedShutdown` included, and measured the flush deadline's own overflow at that
   ceiling as benign (ADR-0068); the sink's
-  own `drainInFlight()` — the leg that dominates what a checkpoint spends, and unbounded
+  own drain — the leg that dominates what a checkpoint spends, and unbounded
   outright under `enableMessageOrdering` until [#333] bounded it on progress (ADR-0052).
 
 ## The five metrics ([#329], [#405])

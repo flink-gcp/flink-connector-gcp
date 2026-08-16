@@ -25,12 +25,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   re-propose it (`docs/adr/0004`).
 - The writer owns **both** in-flight caps (`maxInFlightMessages`, `maxInFlightBytes`); the SDK
   `flowControl*` knobs are removed, not deprecated, and must not come back (`docs/adr/0004`).
-- The three drains (`drainInFlight()`, named apart from `awaitCapacity()`) must keep meaning
+- The three drains (`InFlightTracker.drainToEmpty()`, named apart from `awaitCapacity()`) must
+  keep meaning
   "empty, and `checkAsyncError`". Admission is "below the cap", never "does this message fit" —
   a fits-predicate hangs the task. A repair republishes its parked batch exempt from both caps.
-- **The sink's two mailbox waits (`awaitCapacity`, `drainInFlight`) are bounded on *progress*,
+- **The sink's two mailbox waits (`InFlightTracker.awaitCapacity`, `drainToEmpty`) are bounded on
+  *progress*,
   never on the call** (#333; `docs/adr/0052`): `publishProgressTimeout` restarts on every
-  completion, progress is stamped on the SDK thread (the writer's one `volatile` field), the
+  completion, progress is stamped on the SDK thread (the tracker's one `volatile` field), the
   budget is read only after `tryYield()` comes back empty, and the loop reads
   `Thread.interrupted()` itself. Blocking at the in-flight cap flushes the SDK's batcher once,
   or its `batchDelayThreshold` would sit inside the budget. A stalled wait WARNs at a tenth of the

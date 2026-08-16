@@ -32,7 +32,6 @@ import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
-import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
@@ -44,7 +43,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -53,8 +51,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -182,37 +178,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubWriter.class);
 
-    /**
-     * How long {@link #awaitPublishProgress} parks when the mailbox is empty. Short enough that a
-     * completion arriving mid-park is picked up promptly, and reached only while nothing is
-     * arriving — under load {@code tryYield} keeps returning {@code true} and nothing parks.
-     */
-    private static final long PROGRESS_POLL_INTERVAL_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
-
-    /**
-     * The fraction of {@code publishProgressTimeout} a wait may spend without progress before it
-     * says so. Spending the whole budget in silence is what makes a stall hard to operate: the
-     * error counters cannot move — no publish is resolving, which is the definition of the state —
-     * so nothing else reports it until the job dies, and at the shipped default that is ten minutes
-     * later, by which time Flink's own checkpoint timeout may have failed the job first with a
-     * message that names nothing about Pub/Sub.
-     */
-    private static final int PROGRESS_WARN_FRACTION = 10;
-
-    /**
-     * What {@link #awaitPublishProgress} returns when it ran a mail rather than measuring a gap.
-     */
-    private static final long RAN_A_MAIL = -1L;
-
     private final PubSubSinkConfig<T> config;
     private final PublisherFactory publisherFactory;
     private final TopicAdmin topicAdmin;
     private final MailboxExecutor mailboxExecutor;
-    private final int maxInFlightMessages;
-    private final long maxInFlightBytes;
+    private final InFlightTracker inFlight;
     private final int maxConsecutiveRejections;
-    private final long publishProgressTimeoutNanos;
-    private final long publishProgressWarnAfterNanos;
     private final RetrySchedule recoverySchedule;
     private final boolean orderingEnabled;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
@@ -221,22 +192,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     /** Lazily populated per-topic publisher state; touched only on the task thread. */
     private final Map<TopicDestination, DestinationState> states = new HashMap<>();
 
-    /** Number of publishes not yet acknowledged; touched only on the task thread. */
-    private int inFlightMessages;
-
-    /**
-     * Serialized size of the publishes not yet acknowledged; touched only on the task thread.
-     * Excludes parked messages — their failure mail released them before parking, and the repair
-     * republishes those same objects.
-     */
-    private long inFlightBytes;
-
-    /**
-     * Issue order of publishes, which is what a parked batch is sorted by. Assigned in {@link
-     * #publishTo} on the task thread, so it needs no synchronization.
-     */
-    private long nextPublishSequence;
-
     /**
      * Messages held for a destination's next repair, across every destination. A plain counter
      * rather than a sum over {@code states} because the gauge reading it runs on the reporter
@@ -244,33 +199,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * them.
      */
     private int parkedMessages;
-
-    /**
-     * When the publisher last answered a publish, successfully or not — the clock {@link
-     * #awaitPublishProgress} measures its budget against.
-     *
-     * <p>Stamped in the completion callback, on whichever SDK thread runs it, and <b>not</b> when
-     * the resulting mailbox mail runs: what the budget is asking is whether the publisher is still
-     * answering, and a mail that has been enqueued but not yet dequeued already answers that. Were
-     * it stamped on the task thread instead, a mailbox busy with unrelated work for longer than the
-     * budget would fail a sink whose every publish was completing on time.
-     *
-     * <p>The one field of this writer not confined to the task thread, hence {@code volatile}: it
-     * is a monotonic timestamp rather than logical state, so a reader wants the freshest value and
-     * nothing is derived from reading it together with anything else. Initialised at construction
-     * so it is always a real {@code nanoTime} reading — the zero default is not one, and comparing
-     * it against a reading is only meaningful as a difference.
-     */
-    private volatile long lastCompletionNanos;
-
-    /**
-     * When {@link #warnIfStalled} last spoke; touched only on the task thread. A field rather than
-     * a per-wait flag because a wait is not an incident: {@link #repairDestination}'s isolation
-     * pass drains once per parked message, and a parked batch runs to about twice {@code
-     * maxInFlightMessages}, so one {@code flush} can make a thousand waits and a per-wait flag
-     * would put a line in the log for each of them.
-     */
-    private long lastStallWarnNanos;
 
     /**
      * Confirmed rejections routed since the last successfully published message; touched only on
@@ -334,49 +262,31 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.topicAdmin = topicAdmin;
         this.mailboxExecutor = mailboxExecutor;
         PubSubPublisherOptions options = config.getPublisherOptions();
-        // Checked here, not only on the options builder: a non-positive cap holds the
-        // awaitCapacity predicate with nothing in flight, and yield() blocks until a mail arrives
-        // — so it is a silent permanent park, not a rejected configuration. Fail where the
-        // invariant is relied on rather than trusting that every options instance came from the
-        // builder, which Java deserialization does not run.
-        Preconditions.checkArgument(
-                options.getMaxInFlightMessages() > 0, "maxInFlightMessages must be positive");
-        Preconditions.checkArgument(
-                options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
-        this.maxInFlightMessages = options.getMaxInFlightMessages();
-        this.maxInFlightBytes = options.getMaxInFlightBytes();
-        // Re-checked for the same deserialization reason, though the failure mode is milder: a
-        // zero — which an options instance serialized before the field existed carries — would
-        // fail the job on the first confirmed rejection, silently overriding the handler the
-        // user configured, rather than hanging anything.
+        // Re-checked for the deserialization reason InFlightTracker's own preconditions give,
+        // though the failure mode is milder: a zero — which an options instance serialized before
+        // the field existed carries — would fail the job on the first confirmed rejection,
+        // silently overriding the handler the user configured, rather than hanging anything.
+        //
+        // Kept ahead of the tracker's construction, which is where it stood relative to the budget
+        // check the tracker now owns. The two caps, which used to precede it, are the tracker's
+        // too — so an options instance invalid in both a cap and this field now reports this one
+        // where it reported the cap. Both are true of such an instance and both fail construction.
         Preconditions.checkArgument(
                 options.getMaxConsecutiveRejections() > 0
                         || options.getMaxConsecutiveRejections()
                                 == PubSubPublisherOptions.UNBOUNDED,
                 "maxConsecutiveRejections must be positive or -1 (unbounded)");
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
-        // Checked here for the reason the two caps above are: Java deserialization does not run
-        // the builder, and a non-positive budget would make every wait expire on its first pass.
-        // Null-tolerant on purpose: this field was added under an unchanged serialVersionUID, so
-        // the stream the guard exists for — an older one, which the builder never ran against —
-        // carries no value for it at all. Without the null check that case is a bare NPE from
-        // isZero() rather than the named failure the two caps above give.
-        Preconditions.checkArgument(
-                options.getPublishProgressTimeout() != null
-                        && !options.getPublishProgressTimeout().isZero()
-                        && !options.getPublishProgressTimeout().isNegative(),
-                "publishProgressTimeout must be positive");
-        // The ceiling as well as the floor: toNanos() below is the call the builder's own ceiling
-        // exists to protect, and this re-check is here precisely for the instance the builder never
-        // saw.
-        OptionChecks.checkExpressibleInNanos(
-                options.getPublishProgressTimeout(), "publishProgressTimeout");
-        this.publishProgressTimeoutNanos = options.getPublishProgressTimeout().toNanos();
-        // A tenth of the budget: long enough that ordinary backpressure never reaches it, early
-        // enough that the line beats both clocks that can end the job.
-        this.publishProgressWarnAfterNanos = publishProgressTimeoutNanos / PROGRESS_WARN_FRACTION;
-        this.lastCompletionNanos = System.nanoTime();
-        this.lastStallWarnNanos = this.lastCompletionNanos - publishProgressWarnAfterNanos;
+        // Eagerly, not lazily: the tracker carries the preconditions on both caps and on the
+        // progress budget, and those have to fail where the writer is built rather than at the
+        // first record.
+        this.inFlight =
+                new InFlightTracker(
+                        mailboxExecutor,
+                        options,
+                        LOG,
+                        this::checkAsyncError,
+                        this::sendWhatIsStillBatched);
         this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = options.isEnableMessageOrdering();
         this.failedMessageHandler = config.getFailedMessageHandler();
@@ -427,7 +337,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                             + " the sink.");
         }
         DestinationState state = stateFor(destination);
-        awaitCapacity();
+        inFlight.awaitCapacity();
         publishTo(state, message, true, false);
     }
 
@@ -446,7 +356,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             for (DestinationState state : states.values()) {
                 state.publisher.flushOutstanding();
             }
-            drainInFlight();
+            inFlight.drainToEmpty();
         } while (repairNeeded);
         // After the drain, never before it: the failures that reach the handler are discovered by
         // the drain, so flushing first would checkpoint past dead letters the drain is about to
@@ -539,22 +449,15 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
         // Counted only once the publish is accepted: a synchronous throw registers no callback, so
         // nothing would ever release it.
-        inFlightMessages++;
-        inFlightBytes += serializedSize;
+        inFlight.admit(serializedSize);
         if (firstAttempt) {
             metrics.messagePublished(state.metrics, serializedSize);
         }
         ApiFutures.addCallback(
                 future,
                 new PublishCallback(
-                        state, message, nextPublishSequence++, serializedSize, soloVerdict),
+                        state, message, inFlight.nextSequence(), serializedSize, soloVerdict),
                 Runnable::run);
-    }
-
-    /** Releases one completed publish from both in-flight counters. */
-    private void releaseInFlight(int serializedSize) {
-        inFlightMessages--;
-        inFlightBytes -= serializedSize;
     }
 
     /**
@@ -574,93 +477,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /**
-     * Admission gate for {@link #write}: runs mailbox mails (publish completions) until both
-     * in-flight caps have room, surfacing any captured publish failure before the caller publishes.
-     *
-     * <p>Both predicates are "at or above the cap", never "would this message fit", so an empty
-     * writer always admits. That matters beyond overshoot accounting: a wait here ends only when a
-     * publish completes, and with nothing in flight none can, so any predicate that can hold at
-     * zero waits for something that cannot happen — before {@code publishProgressTimeout} a task
-     * hang, and since it a job failure blaming the topic. The positive-value preconditions on both
-     * options are what rule that out.
-     *
-     * <p>A wait that finds the mailbox empty asks the publishers to send what they are still
-     * batching — see {@link #sendWhatIsStillBatched}, which every wait here does, not just this
-     * one.
-     */
-    private void awaitCapacity() throws IOException, InterruptedException {
-        boolean flushed = false;
-        long start = System.nanoTime();
-        while (inFlightMessages >= maxInFlightMessages || inFlightBytes >= maxInFlightBytes) {
-            checkAsyncError();
-            long idleNanos = awaitPublishProgress(start, "admitting a record");
-            if (idleNanos != RAN_A_MAIL && !flushed) {
-                flushed = true;
-                sendWhatIsStillBatched();
-            }
-            warnIfStalled(idleNanos, "admitting a record");
-        }
-        checkAsyncError();
-    }
-
-    /**
-     * Runs mailbox mails until <b>no</b> publish is in flight, surfacing any captured publish
-     * failure — including one processed by the final mail — before the caller proceeds.
-     *
-     * <p>This is a correctness primitive, not backpressure, and reaching exactly zero is what two
-     * guarantees rest on (#78, #110): a fatal root failure reaches {@code asyncError} and is
-     * rethrown here before any cascade of it can be republished, and a parked batch is never
-     * snapshotted while a cascade of it is still in flight. It must stay independent of the
-     * in-flight caps — no byte or count limit may weaken it into a low-water mark.
-     *
-     * <p>Keyed on the message count alone: a {@code PubsubMessage} can serialize to zero bytes, so
-     * {@code inFlightBytes == 0} does not imply an empty writer.
-     */
-    private void drainInFlight() throws IOException, InterruptedException {
-        long start = System.nanoTime();
-        while (inFlightMessages > 0) {
-            checkAsyncError();
-            warnIfStalled(
-                    awaitPublishProgress(start, "draining the in-flight publishes"),
-                    "draining the in-flight publishes");
-        }
-        checkAsyncError();
-    }
-
-    /**
-     * Says once, per wait, that this wait has stopped making progress — long before the budget that
-     * ends it.
-     *
-     * <p>The counters an operator watches cannot report this state: no publish is resolving, which
-     * is what the state <em>is</em>, so {@code errorClass.*.errors} and {@code
-     * numRecordsSendErrors} stay where they were for its whole duration. Without this line the
-     * first thing anyone sees is the job dying — at the shipped default ten minutes later, and
-     * possibly of Flink's checkpoint timeout instead, which names nothing about Pub/Sub.
-     *
-     * @return whether the line has now been said, to be passed back on the next pass
-     */
-    private void warnIfStalled(long idleNanos, String what) {
-        if (idleNanos == RAN_A_MAIL || idleNanos < publishProgressWarnAfterNanos) {
-            return;
-        }
-        long now = System.nanoTime();
-        if (now - lastStallWarnNanos < publishProgressWarnAfterNanos) {
-            return;
-        }
-        lastStallWarnNanos = now;
-        LOG.warn(
-                "No publish to Pub/Sub has completed for {} while {} ({} publish(es) in flight)."
-                        + " The sink is waiting, not failing: it fails if nothing completes within"
-                        + " its publishProgressTimeout of {}. Watch numRecordsSend, which stays"
-                        + " flat for as long as this lasts; the error counters need not move at"
-                        + " all, since a publish that never answers is never counted as a failure.",
-                Duration.ofNanos(idleNanos),
-                what,
-                inFlightMessages,
-                Duration.ofNanos(publishProgressTimeoutNanos));
-    }
-
-    /**
      * Asks every publisher to send what it is still batching — the writer's answer to a wait that
      * has nothing left to run.
      *
@@ -671,109 +487,24 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * on a perfectly reachable topic, for messages this writer never sent. The task thread is
      * blocked in the wait, so it cannot add the message that would trip the size threshold instead.
      *
-     * <p>Called only once the mailbox has been found empty, and at most once per wait. Both halves
-     * matter. A wait whose completions are arriving is a batcher that is working, and flushing it
-     * per record — which is what a cap-bound writer does — would collapse every batch to one
-     * message exactly while the job is under load. And once is enough, because nothing can join a
-     * batch while the task thread is parked here.
+     * <p>{@link InFlightTracker#awaitCapacity()} calls this only once the mailbox has been found
+     * empty, and at most once per wait. Both halves matter. A wait whose completions are arriving
+     * is a batcher that is working, and flushing it per record — which is what a cap-bound writer
+     * does — would collapse every batch to one message exactly while the job is under load. And
+     * once is enough, because nothing can join a batch while the task thread is parked there.
      *
-     * <p>Every wait needs it, not just the admission gate: {@link #repairPendingTopics} opens with
-     * a drain of its own, reached from a {@link #write} whose predecessor was parked by a failure
-     * mail during a capacity wait — so its in-flight message can be sitting unflushed in exactly
-     * the same way.
+     * <p>Every wait needs it, not only the admission gate — but the drain does not call it, its
+     * callers do, which is why the tracker is handed this as a hook rather than doing it for both
+     * waits. {@link #repairPendingTopics} calls this and then drains, because it is reached from a
+     * {@link #write} whose predecessor was parked by a failure mail during a capacity wait, so its
+     * in-flight message can be sitting unflushed in exactly the same way; {@link #flush} and the
+     * isolation pass flush their destinations before draining too. Doing it inside the drain
+     * instead would repeat a flush those callers have just made.
      */
     private void sendWhatIsStillBatched() {
         for (DestinationState state : states.values()) {
             state.publisher.flushOutstanding();
         }
-    }
-
-    /**
-     * Runs one mailbox mail, failing if nothing has completed a publish for {@code
-     * publishProgressTimeout}.
-     *
-     * <p>What is bounded is a <b>stall, not a slow topic</b>: {@link #lastCompletionNanos} is
-     * restamped by every completion the publisher reports, so one that keeps answering never spends
-     * the budget however long the wait lasts in total, while one that has stopped answering
-     * entirely fails the job once. That distinction is the whole design — a plain deadline on the
-     * call would fail a job the SDK's retries were about to rescue, which is the objection the
-     * issue raised against bounding the sink's own writes at all (#333).
-     *
-     * <p>Both callers pass the moment their wait began, which is what stops an idle writer from
-     * expiring immediately: with no publish in the last hour, {@code lastCompletionNanos} is an
-     * hour old and only the later of the two is the honest start of <em>this</em> wait.
-     *
-     * <p>{@link MailboxExecutor#yield()} cannot be used here — it blocks until a mail arrives, and
-     * a stalled publisher sends none, so the deadline would never be read. {@link
-     * MailboxExecutor#tryYield()} plus a short park is the only shape the interface offers, and it
-     * costs nothing in the case that matters: while completions are arriving {@code tryYield}
-     * returns {@code true} and nothing parks at all.
-     *
-     * <p>The budget is read only once {@code tryYield} has come back empty; the body says what that
-     * costs and why the alternative costs more. Returns the time this wait has gone without
-     * progress, or {@link #RAN_A_MAIL} if it ran one instead — which is what tells the caller the
-     * mailbox is empty, so that {@link #sendWhatIsStillBatched} and the warning are worth doing.
-     * The caller owns the once-per-wait flags for those, because {@link #awaitCapacity} is on the
-     * record path and a state object here would be an allocation per record.
-     */
-    private long awaitPublishProgress(long waitStartNanos, String what)
-            throws IOException, InterruptedException {
-        // Read first, and on every pass. The blocking yield() this replaced took the mailbox lock
-        // interruptibly and so threw of its own accord; tryYield() does not look at the flag at
-        // all, so without this a cancellation arriving while mails keep coming would not be
-        // observed until the budget ran out — and would then surface as the wrong exception.
-        if (Thread.interrupted()) {
-            throw new InterruptedException("Interrupted while " + what + " for Pub/Sub.");
-        }
-        // The budget is read only once the mailbox has nothing left to run, and that ordering is
-        // the conservative half of a genuine trade rather than an accident. Reading it first lets
-        // the wait expire while work it has not yet done would have ended it — a completion mail
-        // queued behind other work is a publish that already succeeded, and failing the job for it
-        // would blame an unreachable topic for a busy task thread. Reading it here instead means a
-        // mailbox saturated for the whole budget defers the check, so a stall behind continuous
-        // unrelated mail traffic is noticed late rather than never. Failing a healthy job is the
-        // worse of the two, so this ordering takes the late notice.
-        if (mailboxExecutor.tryYield()) {
-            return RAN_A_MAIL;
-        }
-        // Subtraction rather than Math.max: both are System.nanoTime() readings — the constructor
-        // stamps lastCompletionNanos so it is never the zero default — and their ordering is only
-        // meaningful as a difference.
-        long idleSinceNanos =
-                lastCompletionNanos - waitStartNanos > 0 ? lastCompletionNanos : waitStartNanos;
-        long idleNanos = System.nanoTime() - idleSinceNanos;
-        if (idleNanos >= publishProgressTimeoutNanos) {
-            throw new IOException(
-                    "No publish to Pub/Sub completed for "
-                            + Duration.ofNanos(idleNanos)
-                            + " while "
-                            + what
-                            + " ("
-                            + inFlightMessages
-                            + " publish(es) still in flight), so the sink gave up its"
-                            + " publishProgressTimeout of "
-                            + Duration.ofNanos(publishProgressTimeoutNanos)
-                            + ". Nothing is dropped: the job fails and the records behind those"
-                            + " publishes are replayed from the last completed checkpoint, as"
-                            + " duplicates if the client delivers them after all. This bounds a"
-                            + " publisher that has stopped answering, not a slow one — any"
-                            + " completion restarts the budget. Every retryable status the client"
-                            + " keeps retrying looks the same from here, so read the cause and the"
-                            + " errorClass counters before assuming the topic is unreachable:"
-                            + " RESOURCE_EXHAUSTED is a quota to raise, not a budget."
-                            + " PubSubPublisherOptions.builder().publishProgressTimeout(...) is the"
-                            + " budget to raise when the publisher is merely slower than it.");
-        }
-        // Parked rather than spun, and in slices so the deadline is still read promptly. The
-        // remainder is what keeps a budget shorter than the slice honest.
-        long parkNanos =
-                Math.min(PROGRESS_POLL_INTERVAL_NANOS, publishProgressTimeoutNanos - idleNanos);
-        if (parkNanos > 0) {
-            // Returns on interrupt without throwing and without clearing the flag, so the next
-            // pass's read above is what turns it into an InterruptedException.
-            LockSupport.parkNanos(parkNanos);
-        }
-        return idleNanos;
     }
 
     private void checkAsyncError() throws IOException {
@@ -790,7 +521,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             int serializedSize,
             boolean soloVerdict,
             Throwable throwable) {
-        releaseInFlight(serializedSize);
+        inFlight.release(serializedSize);
         PubSubErrorClassifier.Kind kind = PubSubErrorClassifier.classify(throwable);
         boolean batchedRejection = kind == PubSubErrorClassifier.Kind.MESSAGE_LEVEL && !soloVerdict;
         if (kind != PubSubErrorClassifier.Kind.CANCELLATION && !batchedRejection) {
@@ -968,9 +699,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // mails may still be queued, or still being enqueued by the SDK thread, and a repair
             // started from a partial batch would republish only part of a key's messages. The
             // drain is also what makes parking a cascade safe in the first place — a fatal root
-            // reaches asyncError here, and drainInFlight rethrows it, so no cascade of a
+            // reaches asyncError here, and the drain rethrows it, so no cascade of a
             // fatal root is ever republished.
-            drainInFlight();
+            inFlight.drainToEmpty();
             // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
             // a mail ever reaching stateFor() keeps this loop safe from map mutation.
             for (DestinationState state : new ArrayList<>(states.values())) {
@@ -987,9 +718,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Republishes the destination's parked messages — creating its topic first when that is what
      * they are parked for — retrying within the recovery schedule while topic metadata propagates.
      * Each attempt drains the writer completely (repair is rare, so waiting on unrelated
-     * destinations' publishes is acceptable for the simplicity of reusing {@link #drainInFlight});
-     * an isolating attempt drains once per message, so its pass publishes strictly one message at a
-     * time. Failures during a retry re-enter the pending buffer through the normal callback path;
+     * destinations' publishes is acceptable for the simplicity of reusing one drain); an isolating
+     * attempt drains once per message, so its pass publishes strictly one message at a time.
+     * Failures during a retry re-enter the pending buffer through the normal callback path;
      * non-{@code NOT_FOUND} failures abort the repair from within the drain.
      *
      * <p>Only a parked {@code NOT_FOUND} creates a topic. Every other reason a batch is here — a
@@ -1059,7 +790,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                     parkedMessages--;
                     publishTo(state, message, false, true);
                     state.publisher.flushOutstanding();
-                    drainInFlight();
+                    inFlight.drainToEmpty();
                     // A rejection routed by that drain paused its ordering key and registered it;
                     // hand the key back before its next message, or the rest of the pass comes
                     // back cancelled and every drop costs one budget attempt.
@@ -1071,7 +802,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                     publishTo(state, message, false, false);
                 }
                 state.publisher.flushOutstanding();
-                drainInFlight();
+                inFlight.drainToEmpty();
             }
             if (state.pendingRetries.isEmpty()) {
                 // The incident is over, so its cause must not outlive it: a cascade only fills
@@ -1132,14 +863,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * <p>Keys are resumed only from within a repair — here at an attempt's start, and through
      * {@link #resumeRegisteredKeys} between an isolation pass's publishes — and deliberately never
      * from {@link #routeFailedMessage}. {@link #write} tests {@code repairNeeded} <em>before</em>
-     * {@link #awaitCapacity()}, and mailbox mails — the drop among them — run inside it, so a key
-     * resumed from the failure mail could be published to by the rest of that same {@code write}
-     * while the key's cascades were still parked: a newer message ahead of older ones, the one
-     * thing the repair exists to prevent. Left paused, that racing publish comes back cancelled, is
-     * parked, and is republished in publish-sequence order with the rest. The isolation pass can
-     * resume mid-batch without opening that race, because the key's remaining messages are held by
-     * the pass itself in sequence order and the mails its drains run only complete publishes, never
-     * issue one.
+     * {@link InFlightTracker#awaitCapacity()}, and mailbox mails — the drop among them — run inside
+     * it, so a key resumed from the failure mail could be published to by the rest of that same
+     * {@code write} while the key's cascades were still parked: a newer message ahead of older
+     * ones, the one thing the repair exists to prevent. Left paused, that racing publish comes back
+     * cancelled, is parked, and is republished in publish-sequence order with the rest. The
+     * isolation pass can resume mid-batch without opening that race, because the key's remaining
+     * messages are held by the pass itself in sequence order and the mails its drains run only
+     * complete publishes, never issue one.
      *
      * <p>Dropped keys are drained here rather than re-resumed on every attempt: a later attempt
      * only re-pauses keys the batch republished, which the batch itself covers, and a dropped key
@@ -1203,12 +934,12 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     @VisibleForTesting
     int getInFlightMessages() {
-        return inFlightMessages;
+        return inFlight.getInFlightMessages();
     }
 
     @VisibleForTesting
     long getInFlightBytes() {
-        return inFlightBytes;
+        return inFlight.getInFlightBytes();
     }
 
     @VisibleForTesting
@@ -1326,7 +1057,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         /** The success mail: runs on the task thread. */
         @Override
         public void run() {
-            releaseInFlight(serializedSize);
+            inFlight.release(serializedSize);
             // A published message is evidence the stream is not wholly broken, whichever request
             // shape or destination carried it — a solo republish included — so the
             // consecutive-rejection bound resets on every success.
@@ -1335,13 +1066,13 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
         @Override
         public void onSuccess(String messageId) {
-            lastCompletionNanos = System.nanoTime();
+            inFlight.recordCompletion();
             mailboxExecutor.execute(this, state.completionDescription);
         }
 
         @Override
         public void onFailure(Throwable throwable) {
-            lastCompletionNanos = System.nanoTime();
+            inFlight.recordCompletion();
             mailboxExecutor.execute(
                     () ->
                             onPublishFailed(
