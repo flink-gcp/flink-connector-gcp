@@ -50,6 +50,16 @@ equivalent safe form is `git reset --soft $(git merge-base HEAD origin/main)`, w
 main moving — but prefer the rebase, because a stale branch has to be brought forward before merge
 anyway.
 
+Two habits defeat step 2 without saying so, both measured on 2026-08-17 while writing this section.
+`git rebase` refuses on any dirty worktree, staged or not — "cannot rebase: You have unstaged
+changes" — so the branch's own edits must be committed, or stashed, before step 2 rather than
+staged into it. And a failed rebase must stop the chain: `git rebase … ; git reset --soft …`
+runs the reset anyway, and `git rebase … | tail -1 && …` is worse, because the pipeline's status
+is `tail`'s success. Chain
+the steps with `&&`, never with `;` or through a pipe. Getting this wrong produced exactly the
+corruption at the top of this page: the squash landed on a moved `origin/main` and the commit
+deleted 660 lines of another PR's merged tests, which only the gate's diffstat caught.
+
 Step 4 takes a message file because the WHAT/WHY belongs in the commit, not only in the PR body;
 write it first. Step 5 needs `--force-with-lease` because steps 3-4 rewrite history the remote
 already has — and note that step 1's `git fetch` updates the remote-tracking ref, which is what
@@ -81,6 +91,36 @@ did not intend to remove, stop — do not push, do not "just re-run the squash".
 
 A push may proceed when the deletion list is empty, or when every path in it is a file this change
 genuinely removes and the commit message says so.
+
+## The fourth check, once the pull request exists
+
+The gate above protects the tree. One thing it cannot see is whether the pull request will close
+the issue it was written for, and that is the other thing this repository asks of every PR:
+`.agents/references/repository-guide.md` § Workflow rules requires an **unformatted** `Closes #N`.
+Two spellings satisfy that rule and the repository's other one, that a bare `#N` does not autolink
+in a PR body: `Closes https://github.com/flink-gcp/flink-connector-gcp/issues/N` (PRs #792 and
+#794) and `Closes [#N](https://github.com/flink-gcp/flink-connector-gcp/issues/N).` (PR #770). A
+closing keyword inside a code span does not parse at all.
+
+The check runs immediately after `gh pr create` — there is no PR to ask about before that, so it
+is not part of the gate above — and again after any push that rewrites the body. Ask GitHub rather
+than reading the body:
+
+```bash
+gh api graphql -f query='{repository(owner:"flink-gcp",name:"flink-connector-gcp"){
+  pullRequest(number:N){closingIssuesReferences(first:5){nodes{number title}}}}}'
+```
+
+An empty array means the issue survives the merge and nothing reports it; a list naming an issue
+this PR must *not* close means a closing verb was parsed out of ordinary prose. #361's timeline
+records exactly that, closed by PR #389, whose body no longer carries the sentence the guide quotes.
+
+This check is here rather than in either self-review round because by review time the body is
+already written, and because the failure is silent from every direction: the merge succeeds, CI is
+green, and the issue is simply still open. Three merged passes of this repository's coverage-audit
+series carried no closing reference — #772, #774 and #791 — so issues #784, #785 and #788 each
+had to be closed by hand. They are not consecutive: #790, between the second and the third, carried
+one and closed #785 on merge, which is what makes the omission easy to miss by eye.
 
 ## Recovery, when the gate fails
 
