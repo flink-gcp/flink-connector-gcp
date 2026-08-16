@@ -83,7 +83,7 @@ be had without touching them.
 | `PubSubWriter` | kept, reduced | the writer lifecycle and every verdict: what a record, a mail and a failure mean |
 | `InFlightTracker` | new | the in-flight ledger, the capacity gate and ADR-0052's progress-bounded waits |
 | `DestinationState` | inner class promoted | one topic's publisher and repair debt, including the publish-sequence ordering of parked messages |
-| `TopicRepairer` | new | the repair loop, the isolation pass and the recovery budget, behind a four-method context |
+| `TopicRepairer` | new | the repair loop, the isolation pass and the recovery budget, behind a three-method context (`republish`, `drainInFlight`, `releaseParked`) — the fourth method this record first planned, a batched-send flush, stayed with the writer because its only caller, `repairPendingTopics`, never moved |
 
 ### Invariants that change house without changing behavior
 
