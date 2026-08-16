@@ -22,6 +22,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -31,12 +32,15 @@ class TopicCreateOptionsTest {
 
     /** Options with every knob set, for round-trip and equality tests. */
     static TopicCreateOptions fullyPopulated() {
+        return fullyPopulatedBuilder().build();
+    }
+
+    private static TopicCreateOptions.Builder fullyPopulatedBuilder() {
         return TopicCreateOptions.builder()
                 .messageRetention(Duration.ofDays(7))
                 .kmsKeyName("projects/p/locations/l/keyRings/r/cryptoKeys/k")
                 .allowedPersistenceRegions(Arrays.asList("europe-west1", "europe-west4"))
-                .enforceInTransit(true)
-                .build();
+                .enforceInTransit(true);
     }
 
     @Test
@@ -137,5 +141,37 @@ class TopicCreateOptionsTest {
         assertThat(fullyPopulated().toString())
                 .startsWith("TopicCreateOptions{messageRetention=")
                 .contains("enforceInTransit=true");
+    }
+
+    /**
+     * One variation per knob, so a knob dropped from {@code equals} fails here by name. The pair
+     * above cannot do it: the fully-populated and empty instances already differ on the first
+     * comparison in the chain, so it short-circuits there and the other three knobs are never
+     * compared unequal — a mutant dropping {@code kmsKeyName} left the whole module suite passing.
+     * These options reach the table planner inside {@code PubSubDynamicSink}'s identity.
+     */
+    @Test
+    void everyKnobIsPartOfTheIdentity() {
+        assertThat(variedBy(builder -> builder.enforceInTransit(false)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.messageRetention(Duration.ofDays(8))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(
+                        variedBy(
+                                builder ->
+                                        builder.kmsKeyName(
+                                                "projects/p/locations/l/keyRings/r/cryptoKeys/other")))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(
+                        variedBy(
+                                builder ->
+                                        builder.allowedPersistenceRegions(
+                                                Arrays.asList("europe-west1", "asia-northeast1"))))
+                .isNotEqualTo(fullyPopulated());
+    }
+
+    private static TopicCreateOptions variedBy(
+            UnaryOperator<TopicCreateOptions.Builder> variation) {
+        return variation.apply(fullyPopulatedBuilder()).build();
     }
 }

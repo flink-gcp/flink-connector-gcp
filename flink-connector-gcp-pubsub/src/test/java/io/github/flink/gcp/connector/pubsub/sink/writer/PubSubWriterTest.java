@@ -23,6 +23,7 @@ import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.pubsub.sink.DestinationResolver;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
@@ -76,11 +77,24 @@ class PubSubWriterTest {
 
     private PubSubWriter<String> newWriter(
             PubSubSerializationSchema<String> serializer, PubSubPublisherOptions options) {
+        return newWriter(
+                (element, context) -> TopicDestination.of(PROJECT, element), serializer, options);
+    }
+
+    /** Routes each record through the given resolver, for the tests that vary the routing. */
+    private PubSubWriter<String> newWriter(DestinationResolver<? super String> resolver) {
+        return newWriter(
+                resolver,
+                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                PubSubPublisherOptions.defaults());
+    }
+
+    private PubSubWriter<String> newWriter(
+            DestinationResolver<? super String> resolver,
+            PubSubSerializationSchema<String> serializer,
+            PubSubPublisherOptions options) {
         return new PubSubWriter<>(
-                TestSinkConfigs.forResolver(
-                        (element, context) -> TopicDestination.of(PROJECT, element),
-                        serializer,
-                        options),
+                TestSinkConfigs.forResolver(resolver, serializer, options),
                 factory,
                 admin,
                 mailbox,
@@ -111,6 +125,28 @@ class PubSubWriterTest {
         return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
                 .serialize(payload)
                 .getSerializedSize();
+    }
+
+    /**
+     * A {@link io.github.flink.gcp.connector.pubsub.sink.DestinationResolver} is user code, and a
+     * resolver returning {@code null} — the shape a per-record routing table with a missing entry
+     * takes — is refused with a message naming the resolver. Nothing drove it before #786: every
+     * test resolver here returns a destination, so deleting the guard left the whole module suite
+     * passing. What a job would meet instead was measured rather than supposed: {@code Cannot
+     * invoke TopicDestination.toTopicPath() because "destination" is null}, thrown three frames
+     * deeper in {@code PubSubSinkWriterMetrics.forTopic}, which names neither the resolver nor the
+     * record.
+     *
+     * <p>Not routed to the failure handler: a resolver returning null is a configuration defect,
+     * not a record the service rejected, and ADR-0005 routes exactly two failures.
+     */
+    @Test
+    void aResolverReturningNullIsRefusedByName() {
+        PubSubWriter<String> writer = newWriter((element, context) -> null);
+
+        assertThatThrownBy(() -> writer.write("anything", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessage("The destination resolver returned null for a record.");
     }
 
     @Test

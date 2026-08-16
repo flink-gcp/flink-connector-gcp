@@ -20,6 +20,7 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -33,6 +34,10 @@ class SubscriptionCreateOptionsTest {
 
     /** Options with every knob set, for round-trip and equality tests. */
     static SubscriptionCreateOptions fullyPopulated() {
+        return fullyPopulatedBuilder().build();
+    }
+
+    private static SubscriptionCreateOptions.Builder fullyPopulatedBuilder() {
         return SubscriptionCreateOptions.builder()
                 .topic(TOPIC)
                 .ackDeadline(Duration.ofSeconds(30))
@@ -41,8 +46,7 @@ class SubscriptionCreateOptionsTest {
                 .retainAckedMessages(true)
                 .expirationTtl(Duration.ofDays(2))
                 .deadLetterPolicy(DEAD_LETTER, 10)
-                .filter("attributes.kind = \"order\"")
-                .build();
+                .filter("attributes.kind = \"order\"");
     }
 
     @Test
@@ -173,5 +177,48 @@ class SubscriptionCreateOptionsTest {
         assertThat(fullyPopulated().toString())
                 .startsWith("SubscriptionCreateOptions{topic=")
                 .contains("deadLetterMaxDeliveryAttempts=10");
+    }
+
+    /**
+     * One variation per knob, so a knob dropped from {@code equals} fails here by name. The pair
+     * above cannot do it: the fully-populated instance and the topic-only one already differ on the
+     * first comparison in the chain, so it short-circuits there and no later knob is ever compared
+     * unequal — a mutant dropping {@code filter} left the whole module suite passing. These options
+     * reach the table planner inside {@code PubSubDynamicSource}'s identity.
+     */
+    @Test
+    void everyKnobIsPartOfTheIdentity() {
+        assertThat(variedBy(builder -> builder.enableMessageOrdering(false)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retainAckedMessages(false)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.topic(TopicDestination.of("project", "other"))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.ackDeadline(Duration.ofSeconds(31))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.messageRetention(Duration.ofHours(13))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.expirationTtl(Duration.ofDays(3))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.filter("attributes.kind = \"refund\"")))
+                .isNotEqualTo(fullyPopulated());
+        // The dead-letter policy is one setter over two fields, so each is varied on its own.
+        assertThat(
+                        variedBy(
+                                builder ->
+                                        builder.deadLetterPolicy(
+                                                TopicDestination.of("project", "other-dlq"), 10)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.deadLetterPolicy(DEAD_LETTER, 11)))
+                .isNotEqualTo(fullyPopulated());
+        // neverExpire clears expirationTtl, so varying it from the fully-populated instance would
+        // move two fields at once. This pair leaves the ttl null on both sides instead.
+        assertThat(SubscriptionCreateOptions.builder().topic(TOPIC).neverExpire().build())
+                .isNotEqualTo(SubscriptionCreateOptions.builder().topic(TOPIC).build());
+    }
+
+    private static SubscriptionCreateOptions variedBy(
+            UnaryOperator<SubscriptionCreateOptions.Builder> variation) {
+        return variation.apply(fullyPopulatedBuilder()).build();
     }
 }

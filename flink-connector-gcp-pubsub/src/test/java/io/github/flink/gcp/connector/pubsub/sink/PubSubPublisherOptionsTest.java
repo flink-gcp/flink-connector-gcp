@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,6 +40,10 @@ class PubSubPublisherOptionsTest {
      * together cover every field.
      */
     static PubSubPublisherOptions fullyPopulated() {
+        return fullyPopulatedBuilder().build();
+    }
+
+    private static PubSubPublisherOptions.Builder fullyPopulatedBuilder() {
         return PubSubPublisherOptions.builder()
                 .batchElementCountThreshold(5)
                 .batchRequestByteThreshold(1_000)
@@ -58,7 +63,7 @@ class PubSubPublisherOptionsTest {
                 .publishProgressTimeout(Duration.ofSeconds(90))
                 .shutdownTimeout(Duration.ofSeconds(45))
                 .maxConsecutiveRejections(9)
-                .build();
+                .perDestinationMetrics(true);
     }
 
     /**
@@ -66,10 +71,13 @@ class PubSubPublisherOptionsTest {
      * publisher would ignore, on a sink that does not enable ordering.
      */
     static PubSubPublisherOptions fullyPopulatedWithBoundedRetries() {
+        return boundedRetriesBuilder().build();
+    }
+
+    private static PubSubPublisherOptions.Builder boundedRetriesBuilder() {
         return PubSubPublisherOptions.builder()
                 .retryTotalTimeout(Duration.ofSeconds(120))
-                .retryMaxAttempts(7)
-                .build();
+                .retryMaxAttempts(7);
     }
 
     @Test
@@ -150,6 +158,8 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
         assertThat(options.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(90));
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
+        assertThat(options.getMaxConsecutiveRejections()).isEqualTo(9);
+        assertThat(options.isPerDestinationMetrics()).isTrue();
         assertThat(options.hasBatchingOverrides()).isTrue();
         assertThat(options.hasRetryOverrides()).isTrue();
     }
@@ -412,6 +422,64 @@ class PubSubPublisherOptionsTest {
         assertThat(fullyPopulated()).isNotEqualTo(PubSubPublisherOptions.defaults());
     }
 
+    /**
+     * One variation per knob, so a knob dropped from {@code equals} fails here by name. The pair
+     * above cannot do it: {@code fullyPopulated()} and {@code defaults()} already differ on the
+     * first comparison in the chain, so it short-circuits there and no later knob is ever compared
+     * unequal — a mutant dropping any of the other twenty left the whole module suite passing.
+     *
+     * <p>These options reach the table planner through {@code PubSubDynamicSink}, which compares
+     * them in its own {@code equals}, so a knob outside the identity makes two sinks configured
+     * differently compare equal.
+     */
+    @Test
+    void everyKnobIsPartOfTheIdentity() {
+        assertThat(variedBy(builder -> builder.enableMessageOrdering(false)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.perDestinationMetrics(false)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.maxConsecutiveRejections(8)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.maxInFlightMessages(43)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.maxInFlightBytes(2_097_152)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.publishProgressTimeout(Duration.ofSeconds(91))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.recoveryMaxAttempts(4)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.batchElementCountThreshold(6)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.batchRequestByteThreshold(1_001)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.batchDelayThreshold(Duration.ofMillis(21))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryInitialDelay(Duration.ofMillis(51))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryDelayMultiplier(2.5)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryMaxDelay(Duration.ofSeconds(6))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryInitialRpcTimeout(Duration.ofSeconds(4))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryRpcTimeoutMultiplier(1.75)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryMaxRpcTimeout(Duration.ofSeconds(31))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.recoveryInitialBackoff(Duration.ofMillis(101))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.recoveryMaxBackoff(Duration.ofSeconds(2))))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.shutdownTimeout(Duration.ofSeconds(46))))
+                .isNotEqualTo(fullyPopulated());
+
+        // The two knobs ordering forbids, varied from the sibling instance that carries them.
+        assertThat(boundedRetriesBuilder().retryTotalTimeout(Duration.ofSeconds(121)).build())
+                .isNotEqualTo(fullyPopulatedWithBoundedRetries());
+        assertThat(boundedRetriesBuilder().retryMaxAttempts(8).build())
+                .isNotEqualTo(fullyPopulatedWithBoundedRetries());
+    }
+
     @Test
     void roundTripsJavaSerialization() throws Exception {
         for (PubSubPublisherOptions options :
@@ -497,5 +565,10 @@ class PubSubPublisherOptionsTest {
         assertThat(options.isEnableMessageOrdering()).isFalse();
         assertThat(options.getRetryTotalTimeout()).isEqualTo(Duration.ofSeconds(120));
         assertThat(options.getRetryMaxAttempts()).isEqualTo(7);
+    }
+
+    private static PubSubPublisherOptions variedBy(
+            UnaryOperator<PubSubPublisherOptions.Builder> variation) {
+        return variation.apply(fullyPopulatedBuilder()).build();
     }
 }

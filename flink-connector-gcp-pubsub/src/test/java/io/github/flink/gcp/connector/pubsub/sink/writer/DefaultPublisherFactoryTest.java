@@ -139,6 +139,56 @@ class DefaultPublisherFactoryTest {
     }
 
     /**
+     * Every retry knob is forwarded, not just the two the overlay test happens to set. Until #786
+     * only {@code retryInitialDelay} and {@code retryMaxAttempts} were ever set on the way in, so
+     * deleting any of the other six forwarding lines left the whole module suite passing — a knob
+     * on the public builder that silently did nothing.
+     */
+    @Test
+    void everyRetryKnobReachesTheGaxSettings() {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .retryTotalTimeout(Duration.ofSeconds(120))
+                        .retryInitialDelay(Duration.ofMillis(50))
+                        .retryDelayMultiplier(2.0)
+                        .retryMaxDelay(Duration.ofSeconds(5))
+                        .retryInitialRpcTimeout(Duration.ofSeconds(3))
+                        .retryRpcTimeoutMultiplier(1.5)
+                        .retryMaxRpcTimeout(Duration.ofSeconds(30))
+                        .retryMaxAttempts(7)
+                        .build();
+
+        RetrySettings retry = DefaultPublisherFactory.retrySettings(options);
+
+        assertThat(retry.getTotalTimeoutDuration()).isEqualTo(Duration.ofSeconds(120));
+        assertThat(retry.getInitialRetryDelayDuration()).isEqualTo(Duration.ofMillis(50));
+        assertThat(retry.getRetryDelayMultiplier()).isEqualTo(2.0);
+        assertThat(retry.getMaxRetryDelayDuration()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(retry.getInitialRpcTimeoutDuration()).isEqualTo(Duration.ofSeconds(3));
+        assertThat(retry.getRpcTimeoutMultiplier()).isEqualTo(1.5);
+        assertThat(retry.getMaxRpcTimeoutDuration()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(retry.getMaxAttempts()).isEqualTo(7);
+    }
+
+    /**
+     * The other half of the same gap: {@code configure} only ever ran with batching overrides, so
+     * its retry arm — the line that puts {@link DefaultPublisherFactory#retrySettings} on the
+     * builder at all — was never taken. {@code Publisher} exposes no retry getter, so this reads
+     * the builder field the SDK will pass on, the way the credentials assertion above does.
+     */
+    @Test
+    void configurePutsTheRetrySettingsOnThePublisherBuilder() throws Exception {
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder().retryMaxDelay(Duration.ofSeconds(11)).build();
+        Publisher.Builder builder = Publisher.newBuilder(TOPIC.toTopicPath());
+
+        DefaultPublisherFactory.configure(builder, options);
+
+        assertThat(((RetrySettings) field(builder, "retrySettings")).getMaxRetryDelayDuration())
+                .isEqualTo(Duration.ofSeconds(11));
+    }
+
+    /**
      * Pins the mirrored retry defaults to the SDK's own (package-private) {@code
      * Publisher.Builder.DEFAULT_RETRY_SETTINGS}, so an SDK upgrade changing publisher retry
      * defaults fails loudly here instead of silently diverging.

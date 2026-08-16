@@ -345,6 +345,23 @@ class PubSubDynamicSourceTest {
                                 PubSubSubscriberOptions.builder().parallelPullCount(3).build(),
                                 null,
                                 null))
+                // The field this test left null on both sides until #786: the ten-argument
+                // constructor omits serviceAccountKeyFile, so nothing varied it, and a mutant
+                // dropping it from equals passed the whole module suite. A field outside a table
+                // source's identity is one the planner may reuse a plan across.
+                .isNotEqualTo(
+                        new PubSubDynamicSource(
+                                PHYSICAL_DATA_TYPE,
+                                TestDecodingFormat.plain(),
+                                SUBSCRIPTIONS,
+                                Collections.emptyMap(),
+                                null,
+                                null,
+                                null,
+                                defaults,
+                                "/keys/sa.json",
+                                null,
+                                null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
                                 PHYSICAL_DATA_TYPE,
