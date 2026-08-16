@@ -46,6 +46,7 @@ import com.google.cloud.bigquery.RoutineInfo;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.TableDataWriteChannel;
+import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
@@ -114,6 +115,12 @@ public final class StubBigQuery implements BigQuery {
 
     /** Thrown by {@code delete} when set. */
     @Nullable public RuntimeException deleteFailure;
+
+    /** Every {@link TableInfo} {@code update(TableInfo)} was called with, in order. */
+    public final List<TableInfo> updatedTables = new ArrayList<>();
+
+    /** Thrown by the next {@code update(TableInfo)} call, and consumed by it. */
+    @Nullable public BigQueryException updateTableFailure;
 
     /** Every {@link TableId} {@code getTable} was called with, in order. */
     public final List<TableId> getTableCalls = new ArrayList<>();
@@ -240,16 +247,30 @@ public final class StubBigQuery implements BigQuery {
         @Nullable private final BigQueryException failure;
         @Nullable private final String etag;
         @Nullable private final Map<String, String> labels;
+        @Nullable private final TableDefinition definition;
+        @Nullable private final List<String> primaryKeyColumns;
 
         private TableAnswer(
                 boolean present,
                 @Nullable BigQueryException failure,
                 @Nullable String etag,
                 @Nullable Map<String, String> labels) {
+            this(present, failure, etag, labels, null, null);
+        }
+
+        private TableAnswer(
+                boolean present,
+                @Nullable BigQueryException failure,
+                @Nullable String etag,
+                @Nullable Map<String, String> labels,
+                @Nullable TableDefinition definition,
+                @Nullable List<String> primaryKeyColumns) {
             this.present = present;
             this.failure = failure;
             this.etag = etag;
             this.labels = labels;
+            this.definition = definition;
+            this.primaryKeyColumns = primaryKeyColumns;
         }
 
         /** Answers that no table exists under the id asked for. */
@@ -265,6 +286,24 @@ public final class StubBigQuery implements BigQuery {
         /** Answers with a live table carrying conditional-update metadata. */
         public static TableAnswer existing(String etag, Map<String, String> labels) {
             return new TableAnswer(true, null, etag, new HashMap<>(labels));
+        }
+
+        /**
+         * Answers with a live table carrying a definition and, optionally, a primary key — the
+         * shape the schema and CDC provisioning paths read back.
+         */
+        public static TableAnswer existing(
+                TableDefinition definition,
+                @Nullable String etag,
+                @Nullable Map<String, String> labels,
+                @Nullable List<String> primaryKeyColumns) {
+            return new TableAnswer(
+                    true,
+                    null,
+                    etag,
+                    labels == null ? null : new HashMap<>(labels),
+                    definition,
+                    primaryKeyColumns == null ? null : new ArrayList<>(primaryKeyColumns));
         }
 
         /** Fails the lookup, as the client does once its own retries are exhausted. */
@@ -489,7 +528,15 @@ public final class StubBigQuery implements BigQuery {
 
     @Override
     public Table update(TableInfo tableInfo, TableOption... options) {
-        throw unsupported("update(TableInfo)");
+        updatedTables.add(tableInfo);
+        if (updateTableFailure == null) {
+            // As with create(TableInfo): a successful update answers a Table the caller ignores,
+            // and every test here scripts a failure, so reaching this is a test that forgot to.
+            throw unsupported("a successful update(TableInfo)");
+        }
+        BigQueryException failure = updateTableFailure;
+        updateTableFailure = null;
+        throw failure;
     }
 
     @Override
@@ -525,6 +572,15 @@ public final class StubBigQuery implements BigQuery {
         // that round trip is the gated real-GCP case's.
         if (!answer.present) {
             return null;
+        }
+        if (answer.definition != null) {
+            return TestJobs.table(
+                    this,
+                    tableId,
+                    answer.definition,
+                    answer.etag,
+                    answer.labels,
+                    answer.primaryKeyColumns);
         }
         return answer.etag == null
                 ? TestJobs.table(this, tableId)

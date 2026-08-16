@@ -21,6 +21,7 @@ import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Any;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -28,6 +29,7 @@ import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
@@ -37,10 +39,14 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.CONTEXT;
+import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.RecordingHandler;
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.onlyCommittable;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -90,16 +96,25 @@ class BigQueryBufferedStreamWriterSchemaEvolutionTest {
             EvolvingSerializer serializer,
             SchemaUpdateOptions schemaUpdateOptions,
             DestinationResolver<String> destinationResolver) {
-        BigQueryBufferedStreamSink<String> sink =
-                (BigQueryBufferedStreamSink<String>)
-                        BigQuerySink.<String>builder()
-                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destinationResolver(destinationResolver)
-                                .serializer(serializer)
-                                .schemaUpdateOptions(schemaUpdateOptions)
-                                .bufferedStreamOptions(options())
-                                .build();
-        return sink.getConfig();
+        return config(serializer, schemaUpdateOptions, destinationResolver, null);
+    }
+
+    private static BigQuerySinkConfig<String> config(
+            EvolvingSerializer serializer,
+            SchemaUpdateOptions schemaUpdateOptions,
+            DestinationResolver<String> destinationResolver,
+            @Nullable FailureHandler<BigQueryFailure> failureHandler) {
+        var builder =
+                BigQuerySink.<String>builder()
+                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                        .destinationResolver(destinationResolver)
+                        .serializer(serializer)
+                        .schemaUpdateOptions(schemaUpdateOptions)
+                        .bufferedStreamOptions(options());
+        if (failureHandler != null) {
+            builder.failureHandler(failureHandler);
+        }
+        return ((BigQueryBufferedStreamSink<String>) builder.build()).getConfig();
     }
 
     private static BufferedStreamOptions options() {
@@ -358,6 +373,54 @@ class BigQueryBufferedStreamWriterSchemaEvolutionTest {
 
         assertThat(service.openedAppenders).containsExactly(firstStream, otherStream, firstStream);
         assertThat(service.closedAppenders).containsExactly(firstStream);
+    }
+
+    @Test
+    void aMismatchDuringARowLevelReplayReconcilesTheTableToo() throws Exception {
+        // The replay path carries its own copy of the reconciliation, reached through a row-level
+        // rejection here and through an abandoned restored stream elsewhere. An append rejected
+        // atomically leaves the batches behind it to be re-appended at recomputed offsets, and the
+        // schema may be what they then trip on.
+        EvolvingSerializer serializer = new EvolvingSerializer(V2);
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(
+                        new Exceptions.AppendSerializtionError(
+                                Status.Code.INVALID_ARGUMENT.value(),
+                                "bad rows",
+                                "stream",
+                                Map.of(1, "bad row"))));
+        service.appendResults.add(FakeBufferedStreamService.failure(schemaMismatch()));
+        FakeTableAdmin admin = new FakeTableAdmin();
+        admin.tables.put(DESTINATION, V1);
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(
+                                serializer,
+                                SchemaUpdateOptions.builder().allowNewFields().build(),
+                                (element, context) -> DESTINATION,
+                                handler),
+                        service,
+                        admin,
+                        TestSinkWriterMetricGroup.create());
+
+        writer.write("alice:hello", CONTEXT);
+        writer.write("bob:hello", CONTEXT);
+        writer.flush(false);
+
+        assertThat(handler.rows).hasSize(1);
+        assertThat(admin.schemaUpdates).containsExactly(DESTINATION);
+        assertThat(admin.tables.get(DESTINATION)).isEqualTo(V2);
+        // Reconciling the table is only half of it: the appender has to be reopened, or the
+        // replayed rows keep serializing against the descriptor that just failed and the retry
+        // budget drains against a mismatch nothing else will clear.
+        String stream = service.createdStreams.get(0);
+        assertThat(service.openedAppenders).containsExactly(stream, stream);
+        // Original append at 0, the survivor's replay at 0 (rejected for the schema), and the
+        // reconciled retry at 0 again.
+        assertThat(service.appends).extracting(call -> call.offset).containsExactly(0L, 0L, 0L);
+        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isZero();
     }
 
     @Test

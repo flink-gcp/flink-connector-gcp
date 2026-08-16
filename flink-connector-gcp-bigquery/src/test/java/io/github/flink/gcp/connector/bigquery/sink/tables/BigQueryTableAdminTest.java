@@ -345,6 +345,139 @@ class BigQueryTableAdminTest {
                 .hasCauseInstanceOf(BigQueryException.class);
     }
 
+    /** A live table's definition, for the paths that only read metadata beside it. */
+    private static final StandardTableDefinition NO_COLUMNS =
+            StandardTableDefinition.of(com.google.cloud.bigquery.Schema.of());
+
+    @Test
+    void theCdcStateCarriesThePrimaryKeyProvisioningLabelAndEtag() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        NO_COLUMNS,
+                        "etag-7",
+                        Map.of("flink_gcp_cdc", "complete_spec", "owner", "ops"),
+                        Arrays.asList("id", "tenant")));
+
+        CdcTableProvisioner.TableState state = new BigQueryTableAdmin(client).read(DESTINATION);
+
+        assertThat(state).isNotNull();
+        assertThat(state.primaryKeyColumns()).containsExactly("id", "tenant");
+        assertThat(state.provisioningLabel()).isEqualTo("complete_spec");
+        assertThat(state.etag()).isEqualTo("etag-7");
+    }
+
+    @Test
+    void aTableWithNeitherConstraintsNorLabelsReadsAsUnprovisioned() throws Exception {
+        // The shape of a table someone else created: the provisioner must see "no primary key,
+        // no label" rather than a partially-read state it would mistake for one of its own.
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(StubBigQuery.TableAnswer.existing(NO_COLUMNS, "etag-1", null, null));
+
+        CdcTableProvisioner.TableState state = new BigQueryTableAdmin(client).read(DESTINATION);
+
+        assertThat(state).isNotNull();
+        assertThat(state.primaryKeyColumns()).isEmpty();
+        assertThat(state.provisioningLabel()).isNull();
+    }
+
+    @Test
+    void anAbsentCdcTableReadsAsNoState() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(StubBigQuery.TableAnswer.absent());
+
+        assertThat(new BigQueryTableAdmin(client).read(DESTINATION)).isNull();
+    }
+
+    @Test
+    void anAbsentTableHasNoSchemaSnapshotRatherThanAFailure() throws Exception {
+        // The writers' auto-creation path asks for the schema first and treats null as "create
+        // it"; a failure here instead would fail the job on the table's very first checkpoint.
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(StubBigQuery.TableAnswer.absent());
+
+        assertThat(new BigQueryTableAdmin(client).getSchema(DESTINATION)).isNull();
+    }
+
+    @Test
+    void aSchemaTheConverterRejectsSurfacesAsTheSpiFailure() {
+        // The SPI promises IOException; a converter meeting a column it cannot describe throws an
+        // unchecked one, which would otherwise travel straight past every caller's catch — the
+        // same shape as the load runner's `Job#reload()` defect (#337). The driver is a `RANGE`
+        // column over an element type the Storage enum has no name for, which is what a REST
+        // response naming a type this build predates would look like. It is also the only such
+        // response the vendor's model can carry: the `default:` arm of the type switch guards a
+        // `Field` that cannot be built at all, since `Field.newBuilder(..., ARRAY).build()` fails
+        // inside the vendor's own constructor.
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        StandardTableDefinition.of(
+                                com.google.cloud.bigquery.Schema.of(
+                                        com.google.cloud.bigquery.Field.newBuilder(
+                                                        "unreadable-column",
+                                                        com.google.cloud.bigquery
+                                                                .StandardSQLTypeName.RANGE)
+                                                .setRangeElementType(
+                                                        com.google.cloud.bigquery.FieldElementType
+                                                                .newBuilder()
+                                                                .setType("TYPE_FROM_THE_FUTURE")
+                                                                .build())
+                                                .build())),
+                        "etag-1",
+                        null,
+                        null));
+
+        assertThatThrownBy(() -> new BigQueryTableAdmin(client).getSchema(DESTINATION))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("to its Storage API form")
+                .hasCauseInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void aLostSchemaUpdateRaceAsksForAFreshReadRatherThanFailingTheJob() throws Exception {
+        // `RetryingTableAdmin` passes `updateSchema` through unretried (ADR-0071), because `false`
+        // means "re-read and derive again" — repeating a proposal built against a snapshot now
+        // known to be stale is what must not happen.
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(NO_COLUMNS, "stale-etag", null, null));
+        client.updateTableFailure = new BigQueryException(412, "precondition failed");
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+        TableSchemaSnapshot snapshot = admin.getSchema(DESTINATION);
+
+        assertThat(admin.updateSchema(DESTINATION, snapshot, SCHEMA)).isFalse();
+        // The submitted table carries the snapshot's etag, which is what makes the update
+        // conditional at all: without it the service would accept it over a concurrent change.
+        assertThat(client.updatedTables)
+                .singleElement()
+                .satisfies(
+                        submitted -> {
+                            assertThat(submitted.getEtag()).isEqualTo("stale-etag");
+                            assertThat(
+                                            submitted
+                                                    .<StandardTableDefinition>getDefinition()
+                                                    .getSchema()
+                                                    .getFields())
+                                    .extracting(com.google.cloud.bigquery.Field::getName)
+                                    .containsExactly("event_ts");
+                        });
+    }
+
+    @Test
+    void aRejectedSchemaUpdateStaysTerminal() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(StubBigQuery.TableAnswer.existing(NO_COLUMNS, "etag-1", null, null));
+        client.updateTableFailure = new BigQueryException(400, "invalid schema change");
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+        TableSchemaSnapshot snapshot = admin.getSchema(DESTINATION);
+
+        assertThatThrownBy(() -> admin.updateSchema(DESTINATION, snapshot, SCHEMA))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("Failed to update the schema");
+    }
+
     @Test
     void updateProvisioningLabelCarriesTheVerifiedEtagAndOnlyLabelsThroughTheProductionPath()
             throws Exception {
@@ -383,6 +516,25 @@ class BigQueryTableAdminTest {
                                         "complete_spec",
                                         "verified-etag"))
                 .isFalse();
+    }
+
+    @Test
+    void aLabelThatMovedOnSinceItWasReadIsNeverPatched() throws Exception {
+        // The claim is checked before the request is built, so a label another writer already
+        // changed loses locally: the patch that would overwrite it is never sent at all. The
+        // request is left with the mock's default 200, so dropping the check would answer `true`
+        // here rather than failing for a reason of its own.
+        MockLowLevelHttpRequest request = new MockLowLevelHttpRequest();
+
+        assertThat(
+                        completionAdmin(request)
+                                .updateProvisioningLabel(
+                                        DESTINATION,
+                                        "pending_someone_elses_spec",
+                                        "complete_spec",
+                                        "verified-etag"))
+                .isFalse();
+        assertThat(request.getUrl()).isNull();
     }
 
     @Test
