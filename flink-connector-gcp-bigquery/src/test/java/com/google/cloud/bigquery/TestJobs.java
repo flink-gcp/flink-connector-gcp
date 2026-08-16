@@ -194,6 +194,45 @@ public final class TestJobs {
     }
 
     /**
+     * Returns a table carrying a definition, an etag, labels and a primary key, as the CDC
+     * provisioning state is read off one.
+     *
+     * <p>{@code setDefinition}, {@code setLabels} and {@code setTableConstraints} are public on
+     * {@link Table.Builder}; only {@code setEtag} needs this package, as above.
+     *
+     * @param bigquery the client the table is bound to
+     * @param tableId the table id the table reports
+     * @param definition the definition the table reports
+     * @param etag the etag the table reports, or {@code null} for none
+     * @param labels the labels the table reports, or {@code null} for none
+     * @param primaryKeyColumns the primary-key columns, or {@code null} for no table constraints
+     * @return the table
+     */
+    public static Table table(
+            BigQuery bigquery,
+            TableId tableId,
+            TableDefinition definition,
+            @Nullable String etag,
+            @Nullable Map<String, String> labels,
+            @Nullable List<String> primaryKeyColumns) {
+        Table.Builder table = new Table.Builder(bigquery, tableId, definition);
+        if (etag != null) {
+            table.setEtag(etag);
+        }
+        if (labels != null) {
+            table.setLabels(labels);
+        }
+        if (primaryKeyColumns != null) {
+            table.setTableConstraints(
+                    TableConstraints.newBuilder()
+                            .setPrimaryKey(
+                                    PrimaryKey.newBuilder().setColumns(primaryKeyColumns).build())
+                            .build());
+        }
+        return table.build();
+    }
+
+    /**
      * Returns a dataset bound to the given client, reporting the given location, as {@link
      * BigQuery#getDataset(DatasetId, BigQuery.DatasetOption...)} returns one.
      *

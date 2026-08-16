@@ -30,11 +30,13 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link CdcTableProvisioner}. */
@@ -458,6 +460,202 @@ class CdcTableProvisionerTest {
                                 Arrays.asList("id", "tenant"), unmanaged));
     }
 
+    @Test
+    void aCreatedTableTheTablesApiCannotSeeYetIsRetriedRatherThanFailed() {
+        // tables.insert answered, tables.get has not caught up. Repeating the whole ensure is what
+        // resolves that, so the failure has to say so — and it must still report that this attempt
+        // requested the creation, or the caller stops treating the destination as new.
+        FakeService service = new FakeService();
+        service.disappearsAfterCreate = true;
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOfSatisfying(
+                        RetriableTableAdminException.class,
+                        failure -> assertThat(failure.wasCreationRequested()).isTrue())
+                .hasMessageContaining("not visible through the Tables API yet");
+    }
+
+    @Test
+    void aTableCreatedUnderSomeoneElsesLabelIsNeverAdopted() {
+        // Two subtasks racing to create the same table: this one's insert won, but the label read
+        // back is not the one it wrote, so another writer is provisioning a different contract.
+        FakeService service = new FakeService();
+        service.labelAfterCreate = "complete_someone_elses_spec";
+        CdcTableOptions unmanaged =
+                CdcTableOptions.builder().primaryKeyColumns(Arrays.asList("id", "tenant")).build();
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        unmanaged,
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("unexpected provisioning label");
+        assertThat(service.labelUpdates).isEmpty();
+    }
+
+    @Test
+    void verifyOnlyRejectsATableLabelledForADifferentSpecification() {
+        FakeService service =
+                existing(serviceState(Arrays.asList("id", "tenant"), "complete_older_spec", "e1"));
+        service.liveMaxStaleness = TEN_MINUTES;
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("does not match the configured CDC table specification");
+        assertThat(service.labelUpdates).isEmpty();
+        assertThat(service.setMaxStaleness).isEmpty();
+    }
+
+    @Test
+    void aClaimAnotherWriterOverwroteBeforeTheDdlIsRetriable() {
+        // The claim succeeded but the label read back afterwards is not the pending one this
+        // provisioner wrote, so the table is no longer ours to run DDL against.
+        FakeService service = existing(serviceState(Arrays.asList("id", "tenant"), null, "e1"));
+        service.labelAfterLabelUpdate = "pending_someone_elses_spec";
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.RECONCILE))
+                .isInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining(
+                        "changed provisioning state after CDC reconciliation was" + " claimed");
+        assertThat(service.setMaxStaleness).isEmpty();
+    }
+
+    @Test
+    void aLabelChangedWhileTheDdlRanStopsTheCompletion() {
+        FakeService service =
+                existing(
+                        serviceState(
+                                Arrays.asList("id", "tenant"),
+                                pending(options(TEN_MINUTES)),
+                                "e1"));
+        service.labelAfterDdl = "complete_someone_elses_spec";
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.RECONCILE))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining(
+                        "changed provisioning label while max_staleness was being" + " reconciled");
+        assertThat(service.setMaxStaleness).containsExactly(TEN_MINUTES);
+    }
+
+    @Test
+    void anAcceptedDdlInformationSchemaCannotSeeYetIsRetriable() {
+        // ADR-0112: REST is never the oracle for max_staleness, INFORMATION_SCHEMA is — and it
+        // lags. Completing the label on an unverified option is exactly what must not happen.
+        FakeService service =
+                existing(
+                        serviceState(
+                                Arrays.asList("id", "tenant"),
+                                pending(options(TEN_MINUTES)),
+                                "e1"));
+        service.maxStalenessNeverConverges = true;
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.RECONCILE))
+                .isInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("INFORMATION_SCHEMA does not expose the desired state yet");
+        assertThat(service.labelUpdates).isEmpty();
+    }
+
+    @Test
+    void aCompletionAnotherAttemptAlreadyWonIsNotRepeated() {
+        // Two attempts resume the same pending label: this one runs the DDL and finds the label
+        // already moved to complete by the other. Claiming it again would fail the expected-label
+        // precondition it no longer satisfies, turning a converged table into a retry loop.
+        FakeService service =
+                existing(
+                        serviceState(
+                                Arrays.asList("id", "tenant"),
+                                pending(options(TEN_MINUTES)),
+                                "e1"));
+        service.labelAfterDdl = complete(options(TEN_MINUTES));
+
+        assertThatCode(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.RECONCILE))
+                .doesNotThrowAnyException();
+        assertThat(service.setMaxStaleness).containsExactly(TEN_MINUTES);
+        assertThat(service.labelUpdates).isEmpty();
+    }
+
+    @Test
+    void aTableThatDisappearedDuringReconciliationIsRetriable() {
+        FakeService service =
+                existing(
+                        serviceState(
+                                Arrays.asList("id", "tenant"),
+                                pending(options(TEN_MINUTES)),
+                                "e1"));
+        service.disappearsAfterDdl = true;
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.RECONCILE))
+                .isInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("disappeared after max_staleness was reconciled");
+    }
+
+    @Test
+    void anExistingTableWithoutAPrimaryKeyIsNotAdoptedAsACdcTable() {
+        // A plain table under a CDC destination: BigQuery's upsert semantics need a primary key,
+        // and nothing here adds one to an existing table.
+        FakeService service = existing(serviceState(Collections.emptyList(), null, "e1"));
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("has no primary key");
+        assertThat(service.labelUpdates).isEmpty();
+    }
+
     private static boolean ensure(
             FakeService service,
             CdcTableOptions options,
@@ -506,12 +704,18 @@ class CdcTableProvisionerTest {
         @Nullable private CdcTableProvisioner.TableState state;
         @Nullable private Duration liveMaxStaleness;
         @Nullable private List<String> primaryKeyAfterDdl;
+        @Nullable private String labelAfterDdl;
         @Nullable private CdcTableProvisioner.TableState stateAfterCreateConflict;
         @Nullable private IOException setMaxStalenessFailure;
+        @Nullable private String labelAfterCreate;
+        @Nullable private String labelAfterLabelUpdate;
         private final List<Duration> setMaxStaleness = new ArrayList<>();
         private final List<String> labelUpdates = new ArrayList<>();
         private boolean createWins = true;
         private boolean rejectLabelUpdates;
+        private boolean disappearsAfterCreate;
+        private boolean disappearsAfterDdl;
+        private boolean maxStalenessNeverConverges;
         private int creates;
         private int maxStalenessChecks;
         private int etag = 1;
@@ -533,7 +737,15 @@ class CdcTableProvisionerTest {
                 state = stateAfterCreateConflict;
                 return false;
             }
-            state = serviceState(cdcOptions.getPrimaryKeyColumns(), provisioningLabel, nextEtag());
+            if (disappearsAfterCreate) {
+                state = null;
+                return true;
+            }
+            state =
+                    serviceState(
+                            cdcOptions.getPrimaryKeyColumns(),
+                            labelAfterCreate == null ? provisioningLabel : labelAfterCreate,
+                            nextEtag());
             return true;
         }
 
@@ -544,9 +756,21 @@ class CdcTableProvisionerTest {
                 throw setMaxStalenessFailure;
             }
             setMaxStaleness.add(maxStaleness);
-            liveMaxStaleness = maxStaleness;
-            if (primaryKeyAfterDdl != null && state != null) {
-                state = serviceState(primaryKeyAfterDdl, state.provisioningLabel(), nextEtag());
+            if (!maxStalenessNeverConverges) {
+                liveMaxStaleness = maxStaleness;
+            }
+            if (disappearsAfterDdl) {
+                state = null;
+                return;
+            }
+            if (state != null && (primaryKeyAfterDdl != null || labelAfterDdl != null)) {
+                state =
+                        serviceState(
+                                primaryKeyAfterDdl == null
+                                        ? state.primaryKeyColumns()
+                                        : primaryKeyAfterDdl,
+                                labelAfterDdl == null ? state.provisioningLabel() : labelAfterDdl,
+                                nextEtag());
             }
         }
 
@@ -570,7 +794,11 @@ class CdcTableProvisionerTest {
                 return false;
             }
             labelUpdates.add(expectedLabel + "->" + nextLabel);
-            state = serviceState(state.primaryKeyColumns(), nextLabel, nextEtag());
+            state =
+                    serviceState(
+                            state.primaryKeyColumns(),
+                            labelAfterLabelUpdate == null ? nextLabel : labelAfterLabelUpdate,
+                            nextEtag());
             return true;
         }
 
