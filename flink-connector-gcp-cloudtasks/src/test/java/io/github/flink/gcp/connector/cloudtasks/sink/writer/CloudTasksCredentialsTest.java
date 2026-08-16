@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -41,7 +42,7 @@ class CloudTasksCredentialsTest {
 
     @Test
     void loadsAndScopesAServiceAccountKey() throws Exception {
-        Path keyFile = ServiceAccountKeyFileTestUtil.write(tempDir);
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
         CredentialsProvider provider = CloudTasksCredentials.load(keyFile.toString());
 

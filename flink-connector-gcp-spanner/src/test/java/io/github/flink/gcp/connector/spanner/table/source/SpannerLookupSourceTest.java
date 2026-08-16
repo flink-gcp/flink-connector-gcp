@@ -53,9 +53,9 @@ import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
-import io.github.flink.gcp.connector.spanner.TestServiceAccountKeyFile;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -232,7 +232,7 @@ class SpannerLookupSourceTest {
                         "people",
                         Collections.singletonList("id"),
                         null,
-                        TestServiceAccountKeyFile.create(tempDir).toString());
+                        ServiceAccountKeyFiles.create(tempDir).toString());
 
         assertThat(lookup.settings().getCredentials() instanceof ServiceAccountCredentials)
                 .isTrue();

@@ -25,7 +25,7 @@ import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
 import com.google.cloud.bigquery.storage.v1.stub.readrows.ReadRowsResumptionStrategy;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigquery.ServiceAccountKeyFiles;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import io.grpc.Metadata;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;

@@ -19,15 +19,13 @@ package io.github.flink.gcp.connector.pubsub;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.pubsub.v1.stub.PublisherStubSettings;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -44,7 +42,7 @@ class PubSubCredentialsTest {
 
     @Test
     void loadsAndScopesAServiceAccountKey() throws Exception {
-        Path keyFile = serviceAccountKeyFile();
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
         CredentialsProvider provider = PubSubCredentials.load(keyFile.toString());
 
@@ -110,32 +108,5 @@ class PubSubCredentialsTest {
         assertThat(failure.toString())
                 .doesNotContain(keyFile.toString())
                 .doesNotContain(refreshToken);
-    }
-
-    private Path serviceAccountKeyFile() throws Exception {
-        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
-        KeyPair keyPair = generator.generateKeyPair();
-        String encoded =
-                Base64.getMimeEncoder(64, new byte[] {'\n'})
-                        .encodeToString(keyPair.getPrivate().getEncoded());
-        String privateKey =
-                "-----BEGIN PRIVATE KEY-----\n" + encoded + "\n-----END PRIVATE KEY-----\n";
-        String json =
-                "{"
-                        + "\"type\":\"service_account\","
-                        + "\"project_id\":\"test-project\","
-                        + "\"private_key_id\":\"test-key-id\","
-                        + "\"private_key\":\""
-                        + privateKey.replace("\n", "\\n")
-                        + "\","
-                        + "\"client_email\":\"service-account@example.invalid\","
-                        + "\"client_id\":\"1234567890\","
-                        + "\"auth_uri\":\"https://accounts.google.com/o/oauth2/auth\","
-                        + "\"token_uri\":\"https://oauth2.googleapis.com/token\""
-                        + "}";
-        Path keyFile = tempDir.resolve("service-account.json");
-        Files.writeString(keyFile, json, StandardCharsets.UTF_8);
-        return keyFile;
     }
 }
