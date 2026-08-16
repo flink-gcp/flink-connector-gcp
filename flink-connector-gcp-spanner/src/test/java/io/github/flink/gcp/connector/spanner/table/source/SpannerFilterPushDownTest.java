@@ -28,6 +28,9 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.ByteArray;
+import com.google.cloud.Date;
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeyRange;
@@ -36,6 +39,8 @@ import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -52,6 +57,16 @@ class SpannerFilterPushDownTest {
                     DataTypes.FIELD("score", DataTypes.BIGINT()),
                     DataTypes.FIELD("ratio", DataTypes.DOUBLE()));
     private static final SpannerTableSchemaConverter SCHEMA = schema(PHYSICAL, 0, 1);
+
+    private static final DataType TYPED =
+            DataTypes.ROW(
+                    DataTypes.FIELD("ratio", DataTypes.DOUBLE().notNull()),
+                    DataTypes.FIELD("payload", DataTypes.BYTES().notNull()),
+                    DataTypes.FIELD("day", DataTypes.DATE().notNull()),
+                    DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(9).notNull()),
+                    DataTypes.FIELD("enabled", DataTypes.BOOLEAN().notNull()),
+                    DataTypes.FIELD("amount", DataTypes.DECIMAL(38, 9).notNull()));
+    private static final Date PRE_EPOCH_DAY = Date.fromYearMonthDay(1969, 12, 31);
 
     @Test
     void exactCompositePrimaryKeyPredicatesBecomeAPointRead() {
@@ -168,6 +183,125 @@ class SpannerFilterPushDownTest {
     }
 
     @Test
+    void negativeAndPositiveZeroAreTheSameFloatKey() {
+        SpannerTableSchemaConverter floatKey = typedSchema(0);
+        ResolvedExpression zero = equals(typedField(0), new ValueLiteralExpression(0.0d));
+
+        SpannerFilterPushDown.RuntimeState runtime =
+                SpannerFilterPushDown.translate(floatKey, Collections.singletonList(zero), false)
+                        .runtime();
+
+        assertThat(runtime.matchesPrimaryKey(Key.of(-0.0d))).isTrue();
+        assertThat(runtime.matchesPrimaryKey(Key.of(0.0d))).isTrue();
+        assertThat(runtime.matchesPrimaryKey(Key.of(1.0d))).isFalse();
+    }
+
+    @Test
+    void bytesBoundsFollowSpannerUnsignedByteOrder() {
+        SpannerTableSchemaConverter bytesKey = typedSchema(1);
+        ResolvedExpression lower =
+                call(
+                        BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                        typedField(1),
+                        bytes((byte) 0x7F));
+        ResolvedExpression upper =
+                call(
+                        BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                        typedField(1),
+                        bytes((byte) 0xFF));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(bytesKey, Arrays.asList(lower, upper), false);
+
+        assertThat(state.keySet(typedPrimaryKey(1, "payload")).getRanges())
+                .containsExactly(
+                        KeyRange.closedClosed(
+                                Key.of(ByteArray.copyFrom(new byte[] {(byte) 0x7F})),
+                                Key.of(ByteArray.copyFrom(new byte[] {(byte) 0xFF}))));
+        assertThat(
+                        state.runtime()
+                                .matchesPrimaryKey(
+                                        Key.of(ByteArray.copyFrom(new byte[] {(byte) 0x80}))))
+                .isTrue();
+        assertThat(state.runtime().matchesPrimaryKey(Key.of(ByteArray.copyFrom(new byte[] {0x01}))))
+                .isFalse();
+    }
+
+    @Test
+    void aShorterBytesKeySortsBeforeItsOwnPrefixExtension() {
+        SpannerTableSchemaConverter bytesKey = typedSchema(1);
+        ResolvedExpression after =
+                call(BuiltInFunctionDefinitions.GREATER_THAN, typedField(1), bytes((byte) 0x01));
+
+        SpannerFilterPushDown.RuntimeState runtime =
+                SpannerFilterPushDown.translate(bytesKey, Collections.singletonList(after), false)
+                        .runtime();
+
+        assertThat(runtime.matchesPrimaryKey(Key.of(ByteArray.copyFrom(new byte[] {0x01}))))
+                .isFalse();
+        assertThat(runtime.matchesPrimaryKey(Key.of(ByteArray.copyFrom(new byte[] {0x01, 0x00}))))
+                .isTrue();
+    }
+
+    @Test
+    void dateBoolAndNumericEqualitiesBecomeNativeKeyParts() {
+        assertPointRead(2, "day", literalOf(LocalDate.parse("1969-12-31")), Key.of(PRE_EPOCH_DAY));
+        assertPointRead(4, "enabled", literalOf(Boolean.TRUE), Key.of(true));
+        assertPointRead(
+                5,
+                "amount",
+                literalOf(new BigDecimal("12.340000000")),
+                Key.of(new BigDecimal("12.340000000")));
+    }
+
+    @Test
+    void aTimestampEqualityKeepsItsNanosecondPart() {
+        Instant instant = Instant.parse("2026-08-11T01:02:03.123456789Z");
+
+        assertPointRead(
+                3,
+                "at",
+                literalOf(instant),
+                Key.of(Timestamp.ofTimeSecondsAndNanos(instant.getEpochSecond(), 123456789)));
+    }
+
+    @Test
+    void aNonIntegralLiteralOnAnIntegerKeyRemainsForFlink() {
+        SpannerTableSchemaConverter idKey = schema(PHYSICAL, 1);
+        ResolvedExpression fractional = equals(field(1), literalOf(new BigDecimal("1.5")));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        idKey, Collections.singletonList(fractional), false);
+
+        assertResult(
+                state.result(), Collections.emptyList(), Collections.singletonList(fractional));
+        assertThat(
+                        state.keySet(
+                                Collections.singletonList(
+                                        new SpannerFilterPushDown.KeyPart("id", 1, false, false))))
+                .isNull();
+    }
+
+    @Test
+    void aMalformedUuidLiteralRemainsForFlink() {
+        SpannerTableSchemaConverter uuidKey = uuidSchema();
+        ResolvedExpression malformed = equals(field(0), literal("f81d4fae-7dec-11d0-a765"));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        uuidKey, Collections.singletonList(malformed), false);
+
+        assertResult(state.result(), Collections.emptyList(), Collections.singletonList(malformed));
+        assertThat(
+                        state.keySet(
+                                Collections.singletonList(
+                                        new SpannerFilterPushDown.KeyPart(
+                                                "tenant", 0, false, false))))
+                .isNull();
+    }
+
+    @Test
     void aPartiallyPushableAndRemainsAsOneFlinkResidual() {
         ResolvedExpression tenant = equals(field(0), literal("eu"));
         ResolvedExpression unsupported =
@@ -233,15 +367,7 @@ class SpannerFilterPushDownTest {
 
     @Test
     void uuidEqualityPushesButUuidOrderingRemainsForFlink() {
-        SpannerTableSchemaConverter uuidKey =
-                SpannerTableSchemaConverter.of(
-                        (RowType) PHYSICAL.getLogicalType(),
-                        new int[] {0},
-                        Dialect.GOOGLE_STANDARD_SQL,
-                        Collections.emptyList(),
-                        Collections.singletonList("tenant"),
-                        Collections.emptyMap(),
-                        Collections.emptyMap());
+        SpannerTableSchemaConverter uuidKey = uuidSchema();
         String value = "f81d4fae-7dec-11d0-a765-00a0c91e6bf6";
         ResolvedExpression equality = equals(field(0), literal(value));
         ResolvedExpression ordered =
@@ -303,6 +429,55 @@ class SpannerFilterPushDownTest {
         assertThat(copy).isEqualTo(runtime);
         assertThat(copy.matchesPrimaryKey(Key.of("eu", 7L))).isTrue();
         assertThat(copy.matchesPrimaryKey(Key.of("us", 7L))).isFalse();
+    }
+
+    private static void assertPointRead(
+            int index, String name, ValueLiteralExpression literal, Key expected) {
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        typedSchema(index),
+                        Collections.singletonList(equals(typedField(index), literal)),
+                        false);
+
+        assertThat(state.keySet(typedPrimaryKey(index, name)))
+                .isEqualTo(KeySet.singleKey(expected));
+    }
+
+    private static SpannerTableSchemaConverter typedSchema(int primaryKeyIndex) {
+        return schema(TYPED, primaryKeyIndex);
+    }
+
+    private static SpannerTableSchemaConverter uuidSchema() {
+        return SpannerTableSchemaConverter.of(
+                (RowType) PHYSICAL.getLogicalType(),
+                new int[] {0},
+                Dialect.GOOGLE_STANDARD_SQL,
+                Collections.emptyList(),
+                Collections.singletonList("tenant"),
+                Collections.emptyMap(),
+                Collections.emptyMap());
+    }
+
+    private static List<SpannerFilterPushDown.KeyPart> typedPrimaryKey(int index, String name) {
+        return Collections.singletonList(
+                new SpannerFilterPushDown.KeyPart(name, index, false, false));
+    }
+
+    private static FieldReferenceExpression typedField(int index) {
+        List<DataType> types = TYPED.getChildren();
+        return new FieldReferenceExpression(
+                ((RowType) TYPED.getLogicalType()).getFieldNames().get(index),
+                types.get(index),
+                index,
+                index);
+    }
+
+    private static ValueLiteralExpression bytes(byte... value) {
+        return new ValueLiteralExpression(value, DataTypes.BYTES().notNull());
+    }
+
+    private static ValueLiteralExpression literalOf(Object value) {
+        return new ValueLiteralExpression(value);
     }
 
     private static List<SpannerFilterPushDown.KeyPart> primaryKey() {

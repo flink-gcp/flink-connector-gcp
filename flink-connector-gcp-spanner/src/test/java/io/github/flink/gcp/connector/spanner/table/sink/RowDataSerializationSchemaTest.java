@@ -26,6 +26,8 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 
 import com.google.cloud.ByteArray;
+import com.google.cloud.Date;
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
@@ -418,5 +420,142 @@ class RowDataSerializationSchemaTest {
 
         assertThat(mutation.getOperation()).isEqualTo(Mutation.Op.DELETE);
         assertThat(mutation.getKeySet().getKeys()).containsExactly(Key.of(7L));
+    }
+
+    @Test
+    void deleteKeysConvertBoolFloatNumericBytesDateAndTimestampKeyParts() throws Exception {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("enabled", DataTypes.BOOLEAN().notNull()),
+                                        DataTypes.FIELD("ratio", DataTypes.DOUBLE().notNull()),
+                                        DataTypes.FIELD(
+                                                "amount", DataTypes.DECIMAL(38, 9).notNull()),
+                                        DataTypes.FIELD("payload", DataTypes.BYTES().notNull()),
+                                        DataTypes.FIELD("day", DataTypes.DATE().notNull()),
+                                        DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(9).notNull()))
+                                .getLogicalType();
+        SpannerTableSchemaConverter tableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[] {0, 1, 2, 3, 4, 5},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        Instant instant = Instant.parse("2026-08-11T01:02:03.123456789Z");
+        GenericRowData row =
+                GenericRowData.of(
+                        true,
+                        2.5D,
+                        DecimalData.fromBigDecimal(new BigDecimal("12.340000000"), 38, 9),
+                        new byte[] {1, 2, 3},
+                        (int) LocalDate.parse("1969-12-31").toEpochDay(),
+                        TimestampData.fromInstant(instant));
+        row.setRowKind(RowKind.DELETE);
+
+        Mutation mutation =
+                new RowDataSerializationSchema(tableSchema, "people").serialize(row, null);
+
+        assertThat(mutation.getKeySet().getKeys())
+                .containsExactly(
+                        Key.of(
+                                true,
+                                2.5D,
+                                new BigDecimal("12.340000000"),
+                                ByteArray.copyFrom(new byte[] {1, 2, 3}),
+                                Date.fromYearMonthDay(1969, 12, 31),
+                                Timestamp.ofTimeSecondsAndNanos(
+                                        instant.getEpochSecond(), 123456789)));
+    }
+
+    @Test
+    void convertsTheRemainingArrayElementTypesAndTheirNulls() throws Exception {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("days", DataTypes.ARRAY(DataTypes.DATE())),
+                                        DataTypes.FIELD(
+                                                "times",
+                                                DataTypes.ARRAY(DataTypes.TIMESTAMP_LTZ(9))),
+                                        DataTypes.FIELD(
+                                                "payloads", DataTypes.ARRAY(DataTypes.BYTES())),
+                                        DataTypes.FIELD(
+                                                "flags", DataTypes.ARRAY(DataTypes.BOOLEAN())),
+                                        DataTypes.FIELD(
+                                                "ratios", DataTypes.ARRAY(DataTypes.DOUBLE())),
+                                        DataTypes.FIELD(
+                                                "documents", DataTypes.ARRAY(DataTypes.STRING())))
+                                .getLogicalType();
+        SpannerTableSchemaConverter tableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[0],
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.singletonList("documents"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        Instant instant = Instant.parse("2026-08-11T01:02:03.123456789Z");
+        GenericRowData row =
+                GenericRowData.of(
+                        new GenericArrayData(
+                                new Object[] {
+                                    (int) LocalDate.parse("1969-12-31").toEpochDay(), null
+                                }),
+                        new GenericArrayData(
+                                new Object[] {TimestampData.fromInstant(instant), null}),
+                        new GenericArrayData(new Object[] {new byte[] {1, 2}, null}),
+                        new GenericArrayData(new Object[] {true, null}),
+                        new GenericArrayData(new Object[] {2.5D, null}),
+                        new GenericArrayData(
+                                new Object[] {StringData.fromString("{\"ok\":true}"), null}));
+
+        Mutation mutation =
+                new RowDataSerializationSchema(tableSchema, "values").serialize(row, null);
+
+        assertThat(mutation.asMap().get("days").getDateArray())
+                .containsExactly(Date.fromYearMonthDay(1969, 12, 31), null);
+        assertThat(mutation.asMap().get("times").getTimestampArray())
+                .containsExactly(
+                        Timestamp.ofTimeSecondsAndNanos(instant.getEpochSecond(), 123456789), null);
+        assertThat(mutation.asMap().get("payloads").getBytesArray())
+                .containsExactly(ByteArray.copyFrom(new byte[] {1, 2}), null);
+        assertThat(mutation.asMap().get("flags").getBoolArray()).containsExactly(true, null);
+        assertThat(mutation.asMap().get("ratios").getFloat64Array()).containsExactly(2.5D, null);
+        assertThat(mutation.asMap().get("documents").getJsonArray())
+                .containsExactly("{\"ok\":true}", null);
+    }
+
+    @Test
+    void nullScalarsKeepTheirDeclaredSpannerType() throws Exception {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("payload", DataTypes.BYTES()),
+                                        DataTypes.FIELD("day", DataTypes.DATE()),
+                                        DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(9)),
+                                        DataTypes.FIELD("document", DataTypes.STRING()))
+                                .getLogicalType();
+        SpannerTableSchemaConverter tableSchema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[0],
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.singletonList("document"),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+
+        Mutation mutation =
+                new RowDataSerializationSchema(tableSchema, "values")
+                        .serialize(GenericRowData.of(null, null, null, null), null);
+
+        assertThat(mutation.asMap().get("payload").getType()).isEqualTo(Type.bytes());
+        assertThat(mutation.asMap().get("payload").isNull()).isTrue();
+        assertThat(mutation.asMap().get("day").getType()).isEqualTo(Type.date());
+        assertThat(mutation.asMap().get("day").isNull()).isTrue();
+        assertThat(mutation.asMap().get("at").getType()).isEqualTo(Type.timestamp());
+        assertThat(mutation.asMap().get("at").isNull()).isTrue();
+        assertThat(mutation.asMap().get("document").getType()).isEqualTo(Type.json());
+        assertThat(mutation.asMap().get("document").isNull()).isTrue();
     }
 }
