@@ -1,0 +1,78 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Pinact
+
+# Pins every GitHub Actions reference in a pull request to a commit SHA, the
+# rule `just pin-actions` has enforced by hand until now. ADR-0121 carries the
+# GitHub App the fix commit needs and why GITHUB_TOKEN cannot replace it.
+#
+# Not enrolled in ci.yaml's required `CI passed` gate: the App credentials do
+# not reach fork pull requests, and a required check that cannot pass for a fork
+# blocks every outside contribution.
+on:
+  pull_request:
+    # pinact scans .github/workflows/*.y*ml plus action.y*ml at depths 0-3, so
+    # the trigger has to cover composite actions as well or a pull request
+    # adding one with an unpinned `uses:` would never start this workflow. Its
+    # own configuration file is listed for the same reason: a change to it
+    # changes what gets scanned, and it would otherwise land unchecked.
+    paths:
+      - '.github/workflows/**'
+      - '.github/actions/**'
+      - '**/action.yml'
+      - '**/action.yaml'
+      - '.pinact.yaml'
+      - '.github/pinact.yaml'
+
+permissions: {}
+
+jobs:
+  pinact:
+    name: Pin GitHub Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # The fix commit goes over the Git Data API with the App token, not this
+      # one. GITHUB_TOKEN is what the fork path reads with, and what pinact
+      # resolves tags to SHAs with in either path.
+      contents: read
+    steps:
+      # The head repository and commit, not the default merge ref, and not
+      # `github.head_ref`: checkout resolves a bare ref name against the *base*
+      # repository, where a fork's branch does not exist. That fails outright
+      # for most fork branches and, for one named after a branch this repository
+      # also has, silently scans this repository's copy and reports green on a
+      # pull request nobody looked at.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # Both inputs are gated on both credentials being present, because
+      # pinact-action treats either one alone as a hard error rather than a
+      # fallback. Three run contexts arrive without them: fork pull requests,
+      # Dependabot pull requests (whose branches are in this repository, so a
+      # head-repository guard would not catch them — GitHub swaps in the
+      # Dependabot secret store, where these do not exist), and a half-finished
+      # credential rotation. All three then run under GITHUB_TOKEN with fixing
+      # disabled: an unpinned reference turns the check red with "GitHub Actions
+      # aren't pinned", which `just pin-actions` resolves. Losing the
+      # credentials therefore costs the automatic fix, not the check.
+      - uses: suzuki-shunsuke/pinact-action@896d595f299e71d65b9d28349d6956abe144390a # v3.0.0
+        with:
+          app_id: ${{ secrets.BOT_APP_PRIVATE_KEY != '' && vars.BOT_APP_ID || '' }}
+          app_private_key: ${{ vars.BOT_APP_ID != '' && secrets.BOT_APP_PRIVATE_KEY || '' }}
+          fix: ${{ (vars.BOT_APP_ID != '' && secrets.BOT_APP_PRIVATE_KEY != '') && 'true' || 'false' }}

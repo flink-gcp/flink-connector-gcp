@@ -22,7 +22,8 @@ limitations under the License.
   misconfiguration found and the recovery runbook recorded 2026-08-01 (PRs
   [#170](https://github.com/laughingman7743/flink-connector-gcp/pull/170) and
   [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)); the GitHub App
-  deferred to go-public ([#177]); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444])
+  deferred to go-public ([#177]) and adopted 2026-08-16 once the org existed ([#177],
+  ADR-0121); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444])
 - Issues: [#5], [#177], [#444]
 - Modules: opentofu
 - Current behavior: `opentofu/README.md` (bootstrap, service-agent one-offs, credentials)
@@ -44,12 +45,14 @@ limitations under the License.
   backend's native locking. These two workflows are the standing exception to the
   just-recipe rule (ADR-0057): tfaction is itself the named, rerunnable sequence, and
   `just tofu <args>` is the local equivalent.
-- **Plain `GITHUB_TOKEN`, no GitHub App** — tfaction's push-back features (auto-fix commits,
-  follow-up PRs) are unused. The App is deliberately deferred to the dedicated org at
-  go-public time ([#177]; decided with the user on PR
+- **Plan, apply, comments and labels run on plain `GITHUB_TOKEN`** and continue to. The App
+  was deferred to the dedicated org at go-public time ([#177]; decided with the user on PR
   [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176), where a
   dispatch-triggered fresh-apply workflow was built as an alternative and withdrawn in the
-  App's favour).
+  App's favour), and the org now exists, so push-back runs as `flink-gcp-bot`
+  ([ADR-0121](0121-ci-push-back-runs-as-an-org-owned-github-app-with-per-use-downscoped-tokens.md)).
+  Which tfaction push-back features that turns on is recorded there; until they are wired,
+  auto-fix commits and follow-up PRs stay unused.
 - **The apply workflow must set `TFACTION_IS_APPLY: "true"`** — tfaction's job_type is
   "terraform" for plan and apply alike, and setup falls back to `terraform_plan_config` (the
   read-only account) without it. That misconfiguration shipped with PR
