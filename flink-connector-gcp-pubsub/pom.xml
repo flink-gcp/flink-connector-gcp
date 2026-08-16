@@ -87,7 +87,7 @@ limitations under the License.
             <artifactId>proto-google-cloud-pubsub-v1</artifactId>
         </dependency>
         <dependency>
-            <!-- ByteString on the dataOnly serialization adapter's API path.
+            <!-- ByteString on the payload serialization adapter's API path.
                  Version managed by the libraries BOM. -->
             <groupId>com.google.protobuf</groupId>
             <artifactId>protobuf-java</artifactId>

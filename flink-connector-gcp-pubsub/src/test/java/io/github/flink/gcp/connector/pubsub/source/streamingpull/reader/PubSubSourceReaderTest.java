@@ -168,7 +168,7 @@ class PubSubSourceReaderTest {
         return new PubSubSourceReader<>(
                 splitReaders,
                 new PubSubRecordEmitter<>(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()),
                         ackTracker,
                         DeserializationFailurePolicy.FAIL,
                         testMetrics.metrics()),

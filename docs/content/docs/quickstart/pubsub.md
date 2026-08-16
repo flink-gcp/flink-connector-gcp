@@ -33,7 +33,7 @@ Assumes the artifacts and credentials from the
 Checkpointing is not decoration: the sink is at-least-once *only* with it, since the checkpoint is
 what makes Flink flush the messages the SDK publishers are still batching.
 
-`dataOnly(...)` wraps any Flink `SerializationSchema` for payload-only messages. Attributes and an
+`payload(...)` wraps any Flink `SerializationSchema` for payload-only messages. Attributes and an
 ordering key layer onto it with `withAttributes(...)` and `withOrderingKey(...)`; a schema that
 needs full control returns a `PubsubMessage` directly.
 

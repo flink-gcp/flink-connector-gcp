@@ -41,7 +41,7 @@ final class PubSubConnectorTopicCreationSettings {
                                 .allowedPersistenceRegions(List.of("europe-west1", "europe-west4"))
                                 .enforceInTransit(true)
                                 .build())
-                .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                .serializer(PubSubSerializationSchema.payload(new SimpleStringSchema()))
                 .build();
         // end::pubsub-connector-topic-creation-settings[]
     }

@@ -45,8 +45,7 @@ final class JavadocPubSubExamples {
                         .destinationResolver(
                                 (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
                         .serializer(
-                                PubSubSerializationSchema.dataOnly(
-                                        new MyEventSerializationSchema()))
+                                PubSubSerializationSchema.payload(new MyEventSerializationSchema()))
                         .build();
         // end::sink[]
         return sink;
@@ -58,7 +57,7 @@ final class JavadocPubSubExamples {
                 PubSubSource.<String>builder()
                         .subscription(SubscriptionDestination.of("my-project", "my-subscription"))
                         .deserializationSchema(
-                                PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                                PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                         .build();
         // end::source[]
         return source;

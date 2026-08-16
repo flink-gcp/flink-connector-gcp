@@ -41,7 +41,7 @@ Sink<MyEvent> sink =
                 .destinationResolver(
                         (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
                 .serializer(
-                        PubSubSerializationSchema.dataOnly(new MyEventSerializationSchema())
+                        PubSubSerializationSchema.payload(new MyEventSerializationSchema())
                                 .withAttributes(e -> Map.of("source", e.source()))
                                 .withOrderingKey(MyEvent::deviceId))
                 .publisherOptions(
@@ -108,7 +108,7 @@ because they still hold upstream's code:
   completed checkpoint, and the state it sweeps
 - `PubSubSourceReader` — its two acknowledgement-tracker calls, which are upstream's whole method
   bodies
-- `DataOnlySerializationSchema` / `DataOnlyDeserializationSchema` — the payload-only adapters,
+- `PayloadSerializationSchema` / `PayloadDeserializationSchema` — the payload-only adapters,
   whose `open` (and, on the read side, `getProducedType`) forward to the wrapped Flink schema and
   have no other possible form
 

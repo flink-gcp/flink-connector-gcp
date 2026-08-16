@@ -121,7 +121,7 @@ class PubSubWriterFailureHandlerTest {
     private final RecordingHandler handler = new RecordingHandler();
 
     private PubSubWriter<String> newWriter() {
-        return newWriter(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()));
+        return newWriter(PubSubSerializationSchema.payload(new SimpleStringSchema()));
     }
 
     private PubSubWriter<String> newWriter(PubSubSerializationSchema<String> serializer) {
@@ -157,7 +157,7 @@ class PubSubWriterFailureHandlerTest {
         return new PubSubWriter<>(
                 TestSinkConfigs.forResolver(
                         (element, context) -> topic("fixed"),
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         options,
                         handler,
                         CreateDisposition.CREATE_IF_NEEDED),
@@ -178,7 +178,7 @@ class PubSubWriterFailureHandlerTest {
      */
     private PubSubWriter<String> newOrderingWriter(CreateDisposition disposition) {
         return newOrderingWriter(
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                PubSubSerializationSchema.payload(new SimpleStringSchema())
                         .withOrderingKey(element -> element.split(":")[0]),
                 disposition);
     }
@@ -532,7 +532,7 @@ class PubSubWriterFailureHandlerTest {
         // spoke: the attempt-start resume and the one after the first drop, none after the trip.
         PubSubWriter<String> writer =
                 newOrderingWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         PubSubPublisherOptions.builder()
                                 .enableMessageOrdering(true)
@@ -742,7 +742,7 @@ class PubSubWriterFailureHandlerTest {
     void aMissingTopicUnderCreateNeverFailsTheJobRatherThanBeingRouted() throws Exception {
         PubSubWriter<String> writer =
                 newWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         CreateDisposition.CREATE_NEVER);
         factory.enqueueFuture(
                 ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.NOT_FOUND)));
@@ -859,7 +859,7 @@ class PubSubWriterFailureHandlerTest {
         // nothing could see it.
         PubSubWriter<String> writer =
                 newOrderingWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         PubSubPublisherOptions.builder()
                                 .enableMessageOrdering(true)
@@ -973,7 +973,7 @@ class PubSubWriterFailureHandlerTest {
         // cancelled from the paused key, and the budget would be spent re-parking them.
         PubSubWriter<String> writer =
                 newOrderingWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         CreateDisposition.CREATE_IF_NEEDED,
                         new RetrySchedule(1, 1, 2, 0));
@@ -1009,7 +1009,7 @@ class PubSubWriterFailureHandlerTest {
         // budget-exhaustion tests, where no message is ever routed.
         PubSubWriter<String> writer =
                 newOrderingWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         CreateDisposition.CREATE_IF_NEEDED,
                         new RetrySchedule(1, 1, 2, 0));
@@ -1041,7 +1041,7 @@ class PubSubWriterFailureHandlerTest {
         // clause, or the reader loses the topic half of the story.
         PubSubWriter<String> writer =
                 newOrderingWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         CreateDisposition.CREATE_IF_NEEDED,
                         new RetrySchedule(1, 1, 2, 0));
@@ -1094,7 +1094,7 @@ class PubSubWriterFailureHandlerTest {
         // Publisher is guarded on a non-empty key — so it pauses nothing, even with ordering on.
         PubSubWriter<String> writer =
                 newOrderingWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         CreateDisposition.CREATE_IF_NEEDED);
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));
         factory.enqueueFuture(ApiFutures.immediateFailedFuture(invalidArgument()));

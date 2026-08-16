@@ -39,13 +39,13 @@ import java.io.IOException;
  * @param <T> type of the records written by the sink
  */
 @Internal
-final class DataOnlySerializationSchema<T> implements PubSubSerializationSchema<T> {
+final class PayloadSerializationSchema<T> implements PubSubSerializationSchema<T> {
 
     private static final long serialVersionUID = 1L;
 
     private final SerializationSchema<T> schema;
 
-    DataOnlySerializationSchema(SerializationSchema<T> schema) {
+    PayloadSerializationSchema(SerializationSchema<T> schema) {
         this.schema = Preconditions.checkNotNull(schema, "schema must not be null");
     }
 

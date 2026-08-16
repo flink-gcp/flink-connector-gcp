@@ -168,7 +168,7 @@ class PubSubStreamingPullSourceTest {
         return PubSubSource.<String>builder()
                 .subscription(SubscriptionDestination.of("test-project", "test-subscription"))
                 .deserializationSchema(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .serviceAccountKeyFile(tempDir.resolve("missing-key.json").toString())
                 .build();
     }

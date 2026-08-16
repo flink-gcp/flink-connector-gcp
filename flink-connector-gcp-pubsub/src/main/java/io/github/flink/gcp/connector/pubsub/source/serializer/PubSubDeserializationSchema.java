@@ -34,7 +34,7 @@ import java.io.Serializable;
  * the ordering key, the message id and the publish time are all available, along with the {@link
  * SubscriptionDestination} it arrived on — which the message itself does not carry and a source
  * consuming several subscriptions needs. Messages that only carry a payload can wrap a plain Flink
- * {@link DeserializationSchema} with {@link #dataOnly(DeserializationSchema)}.
+ * {@link DeserializationSchema} with {@link #payload(DeserializationSchema)}.
  *
  * <p>Records are handed to a {@link Collector} rather than returned, so one message may produce any
  * number of records — including none, which drops the message (it is still acknowledged with the
@@ -81,7 +81,7 @@ public interface PubSubDeserializationSchema<T> extends Serializable, ResultType
      * @param <T> type of the records produced by the source
      * @return the wrapping schema
      */
-    static <T> PubSubDeserializationSchema<T> dataOnly(DeserializationSchema<T> schema) {
-        return new DataOnlyDeserializationSchema<>(schema);
+    static <T> PubSubDeserializationSchema<T> payload(DeserializationSchema<T> schema) {
+        return new PayloadDeserializationSchema<>(schema);
     }
 }

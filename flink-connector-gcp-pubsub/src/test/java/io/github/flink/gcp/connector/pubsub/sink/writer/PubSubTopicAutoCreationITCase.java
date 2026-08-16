@@ -47,7 +47,7 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
         return newWriter(
                 TestSinkConfigs.forTopic(
                         destination,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         disposition,
                         PubSubPublisherOptions.defaults()),
                 new FakeMailboxExecutor());
@@ -58,7 +58,7 @@ class PubSubTopicAutoCreationITCase extends AbstractPubSubEmulatorITCase {
         return newWriter(
                 TestSinkConfigs.forTopic(
                         destination,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         CreateDisposition.CREATE_IF_NEEDED,
                         createOptions,
                         PubSubPublisherOptions.defaults()),

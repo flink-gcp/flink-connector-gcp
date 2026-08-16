@@ -53,8 +53,10 @@ from the other side, and ADR-0122 restates it: a restructuring does not move an 
 **Where the audit left room for judgement, the notice stays.** That is the deliberate bias of this
 record, and it decided four files. `AckTracker`, `NotifyingPullSubscriber` (named
 `PullSubscriber` since [#765]), `PubSubSerializationSchema` and `PubSubDeserializationSchema`
-retain exact upstream declarations —
-`void shutdown();`, both `dataOnly(...)` signatures, `void addCheckpoint(long checkpointId);` — and
+retained exact upstream declarations as measured —
+`void shutdown();`, both `dataOnly(...)` signatures (since renamed `payload(...)`; after the
+rename the serialization interface still carries its declaration verbatim and the deserialization
+interface the coined name alone — see Evidence), `void addCheckpoint(long checkpointId);` — and
 an argument that a method name and an empty parameter list carry no authorship would very probably
 be right. **The project does not need to be right about that**, so it does not assert it: they keep
 their notice, and no protectability question is reached.
@@ -100,18 +102,20 @@ or a declaration Flink's SPI dictates:
 |---|---|
 | `PubSubAckTracker` | `addCheckpoint`'s complete two-statement body; the `while (!checkpoints.isEmpty() && checkpoints.firstKey() <= checkpointId)` sweep; the staged and checkpoint field declarations, `SortedMap`/`TreeMap` included |
 | `PubSubSourceReader` | `ackTracker.addCheckpoint(checkpointId);` and `ackTracker.notifyCheckpointComplete(checkpointId);` — upstream's entire method bodies |
-| `DataOnlySerializationSchema` | the `open` delegation, and `PubsubMessage.newBuilder().setData(ByteString.copyFrom(…)).build()` |
-| `DataOnlyDeserializationSchema` | the `open` and `getProducedType` delegations — two of its three bodies byte-identical |
+| `DataOnlySerializationSchema` (now `PayloadSerializationSchema`) | the `open` delegation, and `PubsubMessage.newBuilder().setData(ByteString.copyFrom(…)).build()` |
+| `DataOnlyDeserializationSchema` (now `PayloadDeserializationSchema`) | the `open` and `getProducedType` delegations — two of its three bodies byte-identical |
 
-Four more keep it because an exact upstream-specific *declaration* survives, and the record
-declines to argue that a declaration carries no authorship:
+Four more keep it because something upstream-specific survives at the *declaration* level —
+three retain exact declarations, and `PubSubDeserializationSchema`, since the factory rename,
+the coined name alone — and the record declines to argue that a declaration or a coined name
+carries no authorship:
 
 | File | What remains |
 |---|---|
 | `AckTracker` | the interface declaration and `void addCheckpoint(long checkpointId);` verbatim, plus four of upstream's five method names in its order |
 | `NotifyingPullSubscriber` (now `PullSubscriber`) | `void shutdown();` verbatim; upstream's other three methods are gone |
-| `PubSubSerializationSchema` | the interface declaration and the `dataOnly(...)` factory signature |
-| `PubSubDeserializationSchema` | the `dataOnly(...)` factory signature |
+| `PubSubSerializationSchema` | the interface declaration. The `dataOnly(...)` factory signature also coincided as measured; the factory has since been renamed `payload(...)`, so its signature no longer coincides with upstream's by name, but the interface declaration — itself an upstream coinage — still does, and the record's bias keeps the notice |
+| `PubSubDeserializationSchema` | the `dataOnly(...)` factory signature as measured; after the factory's rename to `payload(...)` the signature no longer coincides with upstream's by name. Unlike the sink interface's, the declaration line differs from upstream's (`extends Serializable, ResultTypeQueryable<T>` against upstream's bare `extends Serializable`), so what still coincides is the coined name alone — and the record's bias keeps the notice |
 
 **Deferred — one file, since resolved as kept.** `PubSubNotifyingPullSubscriber` read as clear by
 line count (27 of 193, mostly SDK idiom) but declares its message buffer exactly as upstream does,
@@ -166,9 +170,13 @@ itself, and it stays because four files still contain adapted code.
   permanently exempt; they are files that, as measured on this date, carry nothing to attribute.
 - Two identifiers-level points, recorded as considered rather than left to be raised: upstream
   coined `AckTracker`, `addPendingAck`, `stagePendingAck`, `dataOnly` and the `PubSub*Schema`
-  names, which survive; and what [#755] describes as inherited is the *class decomposition*, a
-  selection-and-arrangement claim rather than a line-level one, which the redesign in that issue
-  replaces. Both point the same way — a file cleared here only gets further from upstream.
+  names; all but `dataOnly` survive. `dataOnly` was renamed `payload` for naming reasons — its
+  register clashed with `Metadata*`, and its "only" claim is false in the common
+  `payload(...).withAttributes(...).withOrderingKey(...)` chain — explicitly not to engineer away
+  attribution, which would be the inverted reasoning this record warns against. And what [#755]
+  describes as inherited is the *class decomposition*, a selection-and-arrangement claim rather
+  than a line-level one, which the redesign in that issue replaces. Both point the same way — a
+  file cleared here only gets further from upstream.
 
 [#17]: https://github.com/flink-gcp/flink-connector-gcp/issues/17
 [#31]: https://github.com/flink-gcp/flink-connector-gcp/issues/31

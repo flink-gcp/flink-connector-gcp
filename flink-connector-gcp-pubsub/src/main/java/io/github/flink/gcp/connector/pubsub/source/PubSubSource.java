@@ -27,7 +27,7 @@ import org.apache.flink.annotation.Public;
  *         PubSubSource.<String>builder()
  *                 .subscription(SubscriptionDestination.of("my-project", "my-subscription"))
  *                 .deserializationSchema(
- *                         PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()))
+ *                         PubSubDeserializationSchema.payload(new SimpleStringSchema()))
  *                 .build();
  * }</pre>
  */

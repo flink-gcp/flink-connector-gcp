@@ -39,8 +39,7 @@ final class PubSubQuickstartPublish {
                         PubSubSink.<String>builder()
                                 .topic(TopicDestination.of("my-project", "orders"))
                                 .serializer(
-                                        PubSubSerializationSchema.dataOnly(
-                                                new SimpleStringSchema()))
+                                        PubSubSerializationSchema.payload(new SimpleStringSchema()))
                                 .build());
 
         env.execute("pubsub-sink-quickstart");

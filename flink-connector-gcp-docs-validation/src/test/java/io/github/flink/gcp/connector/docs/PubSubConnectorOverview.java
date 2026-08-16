@@ -39,7 +39,7 @@ final class PubSubConnectorOverview {
                         .destinationResolver(
                                 (e, ctx) -> TopicDestination.of("my-project", e.topicName()))
                         .serializer(
-                                PubSubSerializationSchema.dataOnly(new MyEventSerializationSchema())
+                                PubSubSerializationSchema.payload(new MyEventSerializationSchema())
                                         .withAttributes(e -> Map.of("source", e.source()))
                                         .withOrderingKey(MyEvent::deviceId))
                         .publisherOptions(

@@ -413,7 +413,7 @@ class PubSubSourceBuilderTest {
     }
 
     private static PubSubDeserializationSchema<String> schema() {
-        return PubSubDeserializationSchema.dataOnly(new SimpleStringSchema());
+        return PubSubDeserializationSchema.payload(new SimpleStringSchema());
     }
 
     private static PubSubSourceConfig<String> config(

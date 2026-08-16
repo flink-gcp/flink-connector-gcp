@@ -53,7 +53,8 @@ Three implementation rules, none re-derivable from the contract alone:
   extractors are not called for a skipped record either — they are user code, and running them
   for a record the sink will not send would surface their failures as failures of that record.
 - **A `null` from a wrapped Flink `SerializationSchema` is a serialization failure, not a skip**
-  — `DataOnlySerializationSchema`, `HttpTargetSerializationSchema.withBody(...)`,
+  — `PayloadSerializationSchema` (named `DataOnlySerializationSchema` when this was decided),
+  `HttpTargetSerializationSchema.withBody(...)`,
   `table.sink.RowDataSerializationSchema`. That SPI's contract has no `null` in it (checked
   against `apache/flink` master: `@return The serialized element`), so reading one as a skip
   would silently drop every record a format failed on. Each throws an `IOException` naming the

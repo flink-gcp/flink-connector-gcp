@@ -30,7 +30,7 @@ final class PubSubExamplesEmulator {
         // tag::pubsub-examples-emulator[]
         PubSubSink.<String>builder()
                 .topic(TopicDestination.of("my-project", "orders"))
-                .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                .serializer(PubSubSerializationSchema.payload(new SimpleStringSchema()))
                 .emulatorEndpoint("localhost:8085")
                 .build();
         // end::pubsub-examples-emulator[]

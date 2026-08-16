@@ -37,7 +37,7 @@ class PubSubSinkBuilderTest {
             "/var/run/secrets/gcp/service-account.json";
 
     private static PubSubSerializationSchema<String> serializer() {
-        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema());
+        return PubSubSerializationSchema.payload(new SimpleStringSchema());
     }
 
     @Test

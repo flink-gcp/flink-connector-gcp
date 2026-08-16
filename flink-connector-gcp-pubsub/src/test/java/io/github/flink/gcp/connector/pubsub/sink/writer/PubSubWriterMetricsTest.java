@@ -80,7 +80,7 @@ class PubSubWriterMetricsTest {
 
     private PubSubWriter<String> newWriter(PubSubPublisherOptions options) {
         return newWriter(
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                 options,
                 FailureHandler.failJob(),
                 CreateDisposition.CREATE_IF_NEEDED);
@@ -110,7 +110,7 @@ class PubSubWriterMetricsTest {
     }
 
     private static int sizeOf(String payload) throws IOException {
-        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+        return PubSubSerializationSchema.payload(new SimpleStringSchema())
                 .serialize(payload)
                 .getSerializedSize();
     }
@@ -237,7 +237,7 @@ class PubSubWriterMetricsTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forResolver(
                                 (element, context) -> topic("ordered"),
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                PubSubSerializationSchema.payload(new SimpleStringSchema())
                                         .withOrderingKey(element -> element.split(":")[0]),
                                 PubSubPublisherOptions.builder()
                                         .enableMessageOrdering(true)
@@ -313,7 +313,7 @@ class PubSubWriterMetricsTest {
         // they would pile up under UNCLASSIFIED where genuinely unclassifiable failures live.
         PubSubWriter<String> writer =
                 newWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         PubSubPublisherOptions.builder().enableMessageOrdering(true).build(),
                         FailureHandler.failJob(),
@@ -348,7 +348,7 @@ class PubSubWriterMetricsTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forResolver(
                                 (element, context) -> topic("ordered"),
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                                PubSubSerializationSchema.payload(new SimpleStringSchema())
                                         .withOrderingKey(element -> element.split(":")[0]),
                                 PubSubPublisherOptions.builder()
                                         .enableMessageOrdering(true)
@@ -403,7 +403,7 @@ class PubSubWriterMetricsTest {
     void countsAMessageTheServiceRejectedAsASendError() throws Exception {
         PubSubWriter<String> writer =
                 newWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         PubSubPublisherOptions.defaults(),
                         FailureHandler.logAndDrop(),
                         CreateDisposition.CREATE_IF_NEEDED);
@@ -428,7 +428,7 @@ class PubSubWriterMetricsTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forResolver(
                                 (element, context) -> topic("fixed"),
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                                 PubSubPublisherOptions.defaults(),
                                 FailureHandler.logAndDrop(),
                                 CreateDisposition.CREATE_IF_NEEDED),
@@ -472,7 +472,7 @@ class PubSubWriterMetricsTest {
     void countsPerTopicWhenPerDestinationMetricsAreOn() throws Exception {
         PubSubWriter<String> writer =
                 newWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         PubSubPublisherOptions.builder().perDestinationMetrics(true).build(),
                         FailureHandler.logAndDrop(),
                         CreateDisposition.CREATE_IF_NEEDED);
@@ -504,7 +504,7 @@ class PubSubWriterMetricsTest {
         SinkWriter<String> writer =
                 PubSubSink.<String>builder()
                         .topic(topic("topic-a"))
-                        .serializer(PubSubSerializationSchema.dataOnly(new SimpleStringSchema()))
+                        .serializer(PubSubSerializationSchema.payload(new SimpleStringSchema()))
                         .build()
                         .createWriter(context);
 
@@ -530,7 +530,7 @@ class PubSubWriterMetricsTest {
         // not depend on what the handler then does with the message.
         PubSubWriter<String> writer =
                 newWriter(
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         PubSubPublisherOptions.defaults(),
                         FailureHandler.failJob(),
                         CreateDisposition.CREATE_IF_NEEDED);

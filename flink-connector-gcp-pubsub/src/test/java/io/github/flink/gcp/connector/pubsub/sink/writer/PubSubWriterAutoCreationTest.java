@@ -79,7 +79,7 @@ class PubSubWriterAutoCreationTest {
         return new PubSubWriter<>(
                 TestSinkConfigs.forTopic(
                         TOPIC,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         disposition,
                         PubSubPublisherOptions.defaults()),
                 factory,
@@ -110,7 +110,7 @@ class PubSubWriterAutoCreationTest {
         return new PubSubWriter<>(
                 TestSinkConfigs.forTopic(
                         TOPIC,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
                                 .withOrderingKey(element -> element.split(":")[0]),
                         disposition,
                         PubSubPublisherOptions.builder()
@@ -151,7 +151,7 @@ class PubSubWriterAutoCreationTest {
      * writer actually measures.
      */
     private static int sizeOf(String payload) throws IOException {
-        return PubSubSerializationSchema.dataOnly(new SimpleStringSchema())
+        return PubSubSerializationSchema.payload(new SimpleStringSchema())
                 .withOrderingKey(element -> element.split(":")[0])
                 .serialize(payload)
                 .getSerializedSize();
@@ -183,7 +183,7 @@ class PubSubWriterAutoCreationTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forTopic(
                                 TOPIC,
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                                 CreateDisposition.CREATE_IF_NEEDED,
                                 createOptions,
                                 PubSubPublisherOptions.defaults()),

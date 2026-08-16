@@ -92,7 +92,7 @@ class PubSubWriterProgressTimeoutTest {
         return new PubSubWriter<>(
                 TestSinkConfigs.forTopic(
                         TOPIC,
-                        PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
                         CreateDisposition.CREATE_NEVER,
                         options),
                 factory,
@@ -203,7 +203,7 @@ class PubSubWriterProgressTimeoutTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forTopic(
                                 TOPIC,
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                                 CreateDisposition.CREATE_NEVER,
                                 PubSubPublisherOptions.builder()
                                         .maxInFlightMessages(1)
@@ -236,7 +236,7 @@ class PubSubWriterProgressTimeoutTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forTopic(
                                 TOPIC,
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                                 CreateDisposition.CREATE_IF_NEEDED,
                                 PubSubPublisherOptions.builder()
                                         .maxInFlightMessages(1)
@@ -408,7 +408,7 @@ class PubSubWriterProgressTimeoutTest {
                 new PubSubWriter<>(
                         TestSinkConfigs.forTopic(
                                 TOPIC,
-                                PubSubSerializationSchema.dataOnly(new SimpleStringSchema()),
+                                PubSubSerializationSchema.payload(new SimpleStringSchema()),
                                 // CREATE_IF_NEEDED, so a NOT_FOUND parks for a repair instead of
                                 // failing the writer — the drain has to keep waiting to be a test
                                 // of waiting at all.

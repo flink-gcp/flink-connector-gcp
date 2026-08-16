@@ -28,13 +28,13 @@ import java.nio.charset.StandardCharsets;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for the {@link PubSubSerializationSchema#dataOnly(SerializationSchema)} adapter. */
-class DataOnlySerializationSchemaTest {
+/** Tests for the {@link PubSubSerializationSchema#payload(SerializationSchema)} adapter. */
+class PayloadSerializationSchemaTest {
 
     @Test
-    void producesDataOnlyMessages() throws IOException {
+    void producesPayloadOnlyMessages() throws IOException {
         PubSubSerializationSchema<String> schema =
-                PubSubSerializationSchema.dataOnly(new SimpleStringSchema());
+                PubSubSerializationSchema.payload(new SimpleStringSchema());
 
         PubsubMessage message = schema.serialize("hello");
 
@@ -49,7 +49,7 @@ class DataOnlySerializationSchemaTest {
         // format, not the sink's skip convention — reading it as a skip would silently drop every
         // record such a format failed on.
         PubSubSerializationSchema<String> schema =
-                PubSubSerializationSchema.dataOnly(new NullReturningSchema());
+                PubSubSerializationSchema.payload(new NullReturningSchema());
 
         assertThatThrownBy(() -> schema.serialize("hello"))
                 .isInstanceOf(IOException.class)
@@ -60,7 +60,7 @@ class DataOnlySerializationSchemaTest {
     @Test
     void openForwardsToTheWrappedSchema() throws Exception {
         OpenRecordingSchema wrapped = new OpenRecordingSchema();
-        PubSubSerializationSchema<String> schema = PubSubSerializationSchema.dataOnly(wrapped);
+        PubSubSerializationSchema<String> schema = PubSubSerializationSchema.payload(wrapped);
 
         schema.open(null);
 

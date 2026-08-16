@@ -72,7 +72,7 @@ final class RowDataDeserializationSchema implements PubSubDeserializationSchema<
             PubsubMessage message, SubscriptionDestination subscription, Collector<RowData> out)
             throws IOException {
         if (metadata.length == 0) {
-            // Exactly what the dataOnly adapter does, and the common case: no wrapper, no copy.
+            // Exactly what the payload adapter does, and the common case: no wrapper, no copy.
             physical.deserialize(message.getData().toByteArray(), out);
             return;
         }

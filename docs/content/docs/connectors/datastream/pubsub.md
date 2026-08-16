@@ -34,7 +34,7 @@ Per-feature implementation status is tracked in the
 API notes:
 
 - `PubSubSerializationSchema.serialize` returns a full `PubsubMessage`, so message attributes
-  and ordering keys are expressible. `dataOnly(...)` wraps a plain Flink `SerializationSchema`
+  and ordering keys are expressible. `payload(...)` wraps a plain Flink `SerializationSchema`
   for payload-only messages; `withAttributes(...)` and `withOrderingKey(...)` layer extracted
   attributes and an ordering key onto any schema (null/empty extractions add nothing).
 - Returning `null` **skips** the record — it is written nowhere, is not a failure, and never
@@ -44,7 +44,7 @@ API notes:
   `withAttributes(...)` and `withOrderingKey(...)`, whose extractors are not called for it.
   A skip is counted by [`recordsSkipped`](#sink-metrics), the only thing that reports it: a
   serializer skipping every record would otherwise leave an empty topic under a green job.
-  `dataOnly(...)` cannot skip — Flink's `SerializationSchema` contract has no `null` in it, so a
+  `payload(...)` cannot skip — Flink's `SerializationSchema` contract has no `null` in it, so a
   `null` payload is reported as a serialization failure instead. The destination is resolved
   *before* the serializer runs, so a record the serializer would skip still needs a resolvable
   topic: a resolver returning `null` for it fails the job.
@@ -888,7 +888,7 @@ API notes:
 - `PubSubDeserializationSchema.deserialize` receives the full `PubsubMessage` — payload,
   attributes, ordering key, message id and publish time are all available — and writes to a
   `Collector`, so one message may produce any number of records. Emitting none drops the message
-  (it is still acknowledged). `dataOnly(...)` wraps a plain Flink `DeserializationSchema` for
+  (it is still acknowledged). `payload(...)` wraps a plain Flink `DeserializationSchema` for
   payload-only messages.
   Every collected record must be non-null and emitted synchronously during that call; do not retain
   the collector or use it from another thread.
@@ -1498,7 +1498,7 @@ the client.
 ## Testing
 
 Unit tests cover the builder/facade, destination identity, the serialization adapters
-(data-only, attributes/ordering-key composition), the publisher options (defaults, validation,
+(payload-only, attributes/ordering-key composition), the publisher options (defaults, validation,
 SDK settings mapping with a drift guard pinned to the SDK's own retry defaults) and the writer
 (fan-out to per-topic publishers, publisher reuse, checkpoint flush draining, async error
 capture, backpressure at both in-flight caps — including that the byte cap trips with the message

@@ -310,7 +310,7 @@ class PubSubBackpressuredReaderGuardTest {
         return new PubSubSourceReader<>(
                 () -> countingSplitReader(maxRecordsPerFetch, buffered),
                 new PubSubRecordEmitter<>(
-                        PubSubDeserializationSchema.dataOnly(new SimpleStringSchema()),
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()),
                         ackTracker,
                         DeserializationFailurePolicy.FAIL,
                         testMetrics.metrics()),
