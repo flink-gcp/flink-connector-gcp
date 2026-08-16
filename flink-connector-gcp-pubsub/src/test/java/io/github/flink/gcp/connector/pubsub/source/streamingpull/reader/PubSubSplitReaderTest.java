@@ -70,7 +70,7 @@ class PubSubSplitReaderTest {
     /** Set by the ordering test so the fakes record their release/close calls in one list. */
     private List<String> calls;
 
-    /** Set by the reopen test to make the next {@code SubscriberOpener} call fail. */
+    /** Set by the reopen test to make the next {@code PullSubscriberOpener} call fail. */
     private IOException failNextOpen;
 
     private static MissingCheckpointDetector noCheckpointDetector() {

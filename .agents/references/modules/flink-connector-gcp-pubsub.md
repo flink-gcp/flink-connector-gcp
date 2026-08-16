@@ -138,8 +138,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Closers.closeAll` list, every shutdown before any close** (#297's shape — parking one at a time
   costs `splits × shutdownTimeout` serially, and alignment pauses splits as a group), with each
   `checkFailure` heading its own entries; and
-  `pauseOrResumeSplits` **ends with `signalDataAvailable()`**, or a split paused while already
-  over its bound leaves the next fetch waiting forever, with every guard sitting after that wait. The SDK
+  `pauseOrResumeSplits` **ends by raising the data-available signal
+  (`DataAvailabilitySignal.raise()`)**, or a split paused while already over its bound leaves the
+  next fetch waiting forever, with every guard sitting after that wait. The SDK
   defaults are read live from `Subscriber.Builder.getDefaultFlowControlSettings()` — never
   mirrored, unlike `maxAckExtensionPeriod`'s, whose SDK constant is package-private. What this
   costs is that #348 does not hold while a split is parked.
