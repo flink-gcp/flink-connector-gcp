@@ -31,7 +31,7 @@ limitations under the License.
   `BufferedStreamCommitter.flush`, repair side effects in `createStream`, a mid-loop schedule
   swap in `retryBatches`, condition-driven retry in `LoadJobOrchestrator`'s schema loop,
   unbounded completion polling in `BigQueryLoadJobRunner.awaitJob`, drain-based success in
-  `PubSubWriter.repairDestination`, and no loop at all in Cloud Tasks' park-and-redispatch
+  `TopicRepairer.repair`, and no loop at all in Cloud Tasks' park-and-redispatch
   writer — and each carries site-specific messages and logging that tests pin. Do not add an
   unused executor; a future consumer with a genuinely plain loop is what would justify one.
 - **Every schedule jitters, at one shared ratio, and the ratio is never a knob** ([#197]).

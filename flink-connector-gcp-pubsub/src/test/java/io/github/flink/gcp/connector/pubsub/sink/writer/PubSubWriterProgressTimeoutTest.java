@@ -226,7 +226,8 @@ class PubSubWriterProgressTimeoutTest {
 
     @Test
     void theRepairsOwnDrainAlsoSendsWhatIsStillBatched() throws Exception {
-        // The third wait, and the one with no flush in front of it: flush() and repairDestination
+        // The third wait, and the one with no flush in front of it: flush() and
+        // TopicRepairer.repair
         // both flush immediately before draining, repairPendingTopics does not. Reaching it needs
         // the parking to happen *during* a capacity wait, because write() tests repairNeeded before
         // that wait and so publishes its own record before the repair it now owes ever runs.

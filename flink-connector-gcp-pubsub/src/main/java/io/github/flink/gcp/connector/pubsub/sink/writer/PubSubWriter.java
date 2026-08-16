@@ -31,7 +31,6 @@ import com.google.api.core.ApiFutures;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
@@ -45,12 +44,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.SortedMap;
-import java.util.TreeMap;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
@@ -184,10 +179,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final MailboxExecutor mailboxExecutor;
     private final InFlightTracker inFlight;
     private final int maxConsecutiveRejections;
-    private final RetrySchedule recoverySchedule;
     private final boolean orderingEnabled;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
     private final PubSubSinkWriterMetrics metrics;
+    private final TopicRepairer repairer;
 
     /** Lazily populated per-topic publisher state; touched only on the task thread. */
     private final Map<TopicDestination, DestinationState> states = new HashMap<>();
@@ -287,7 +282,6 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                         LOG,
                         this::checkAsyncError,
                         this::sendWhatIsStillBatched);
-        this.recoverySchedule = recoverySchedule;
         this.orderingEnabled = options.isEnableMessageOrdering();
         this.failedMessageHandler = config.getFailedMessageHandler();
         this.metrics = new PubSubSinkWriterMetrics(metricGroup, options.isPerDestinationMetrics());
@@ -295,6 +289,15 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 (Gauge<Integer>) this::getInFlightMessages,
                 (Gauge<Long>) this::getInFlightBytes,
                 (Gauge<Integer>) this::getParkedMessages);
+        this.repairer =
+                new TopicRepairer(
+                        topicAdmin,
+                        config.getTopicCreateOptions(),
+                        recoverySchedule,
+                        metrics,
+                        orderingEnabled,
+                        LOG,
+                        new RepairContextImpl());
     }
 
     @Override
@@ -409,7 +412,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 throw new IOException(
                         "Failed to create a Pub/Sub publisher for topic " + destination + ".", e);
             }
-            state = new DestinationState(destination, publisher);
+            state = new DestinationState(destination, publisher, metrics.forTopic(destination));
             states.put(destination, state);
         }
         return state;
@@ -425,10 +428,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * publishes, so they are adjusted on every call.
      *
      * <p>{@code soloVerdict} says the message travels as its own single-message {@code Publish}
-     * request — true only inside {@link #repairDestination}'s isolation pass, which flushes and
-     * drains around each publish — so an {@code INVALID_ARGUMENT} answering it concerns this
-     * message alone and may be routed to the failure handler. From any other publish that status is
-     * a request-level report the SDK fans out across the whole batch, so it must be isolated first,
+     * request — true only inside {@link TopicRepairer}'s isolation pass, which flushes and drains
+     * around each publish — so an {@code INVALID_ARGUMENT} answering it concerns this message alone
+     * and may be routed to the failure handler. From any other publish that status is a
+     * request-level report the SDK fans out across the whole batch, so it must be isolated first,
      * not routed.
      */
     private void publishTo(
@@ -606,8 +609,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      *
      * <p>Dropping a message the SDK rejected leaves work behind when it carried an ordering key:
      * the publisher paused that key and cancelled its queued publishes, and it never resumes a key
-     * on its own. So a drop registers the key for the repair to resume — see {@link
-     * #resumeOrderingKeys}, which is also where the reason it cannot be resumed here is recorded.
+     * on its own. So a drop registers the key for the repair to resume — see {@code
+     * TopicRepairer#resumeOrderingKeys}, which is also where the reason it cannot be resumed here
+     * is recorded.
      */
     private void routeFailedMessage(
             DestinationState state, PubsubMessage message, Throwable throwable) {
@@ -702,208 +706,16 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             // reaches asyncError here, and the drain rethrows it, so no cascade of a
             // fatal root is ever republished.
             inFlight.drainToEmpty();
-            // Iterate a snapshot: repairDestination yields to the mailbox, so hardening against
+            // Iterate a snapshot: the repairer yields to the mailbox, so hardening against
             // a mail ever reaching stateFor() keeps this loop safe from map mutation.
             for (DestinationState state : new ArrayList<>(states.values())) {
                 // A destination with nothing parked can still owe a repair: a dropped message's
                 // ordering key is paused in the publisher with no message left to republish.
                 if (!state.pendingRetries.isEmpty() || !state.keysToResume.isEmpty()) {
-                    repairDestination(state);
+                    repairer.repair(state);
                 }
             }
         }
-    }
-
-    /**
-     * Republishes the destination's parked messages — creating its topic first when that is what
-     * they are parked for — retrying within the recovery schedule while topic metadata propagates.
-     * Each attempt drains the writer completely (repair is rare, so waiting on unrelated
-     * destinations' publishes is acceptable for the simplicity of reusing one drain); an isolating
-     * attempt drains once per message, so its pass publishes strictly one message at a time.
-     * Failures during a retry re-enter the pending buffer through the normal callback path;
-     * non-{@code NOT_FOUND} failures abort the repair from within the drain.
-     *
-     * <p>Only a parked {@code NOT_FOUND} creates a topic. Every other reason a batch is here — a
-     * cascade of a message the failure handler dropped, a request-level {@code INVALID_ARGUMENT}
-     * awaiting isolation, or a publish that reached an ordering key still paused from one — needs
-     * the resume and the republish and nothing else, and issuing a {@code createTopic} for them
-     * would both misreport {@code topicsCreated} and create a topic under {@code CREATE_NEVER}.
-     *
-     * <p>An attempt whose batch was parked for a request-level {@code INVALID_ARGUMENT} runs as an
-     * <b>isolation pass</b>: each message goes out as its own single-message request, flushed and
-     * drained individually, so the service answers per message. A message rejected solo is routed
-     * to the failure handler by its own drain, and the ordering key that rejection paused is
-     * resumed before the key's next message is republished — so one pass drains a long run of
-     * invalid messages in a single attempt, and the budget keeps bounding <em>unproductive</em>
-     * retrying rather than the length of a poisoned key (#269). How long a run a pass will drain is
-     * bounded by {@code maxConsecutiveRejections} (#361), not by this budget: past it the drain's
-     * own {@code checkAsyncError} aborts the repair. Per-key order holds because the batch is in
-     * publish-sequence order and nothing else publishes during a repair.
-     *
-     * <p>A fatal solo failure surfaces from the pass's drain and aborts the repair with the
-     * not-yet-republished remainder abandoned — in neither the pending buffer nor in flight. That
-     * is safe for the same reason {@link #close}'s parked-message drop is: the checkpoint does not
-     * complete, so the restart replays those records.
-     */
-    private void repairDestination(DestinationState state)
-            throws IOException, InterruptedException {
-        // Creation is checked per attempt, not once up front: a batch parked for another reason
-        // can turn out to need it, when its republish is the publish that first meets the missing
-        // topic. At most once per repair all the same — the retry loop exists for topic metadata
-        // propagating to the publisher, where the topic already exists and creating it again would
-        // answer nothing.
-        boolean topicCreated = false;
-        state.routedDuringRepair = 0;
-        for (int attempt = 1; ; attempt++) {
-            if (state.topicMissing) {
-                state.topicMissing = false;
-                if (!topicCreated) {
-                    topicCreated = true;
-                    LOG.info(
-                            "A publish to Pub/Sub topic {} failed because the topic does not exist;"
-                                    + " creating it (CREATE_IF_NEEDED).",
-                            state.destination);
-                    topicAdmin.createTopic(state.destination, config.getTopicCreateOptions());
-                    metrics.topicCreated();
-                }
-            }
-            // Isolation is decided per attempt for the same reason creation is: a batch parked
-            // for a NOT_FOUND can meet a request-level INVALID_ARGUMENT on its republish, and
-            // only the attempt after that report can know to isolate.
-            boolean isolating = state.isolationNeeded;
-            state.isolationNeeded = false;
-            // Keyed by publish sequence, so the batch is in the order the messages were originally
-            // published however their failure mails interleaved.
-            List<PubsubMessage> batch = new ArrayList<>(state.pendingRetries.values());
-            state.pendingRetries.clear();
-            // Every attempt resumes the batch's ordering keys first: the failure that parked the
-            // batch — and every failed republish attempt since — paused them in the publisher.
-            resumeOrderingKeys(state, batch);
-            // Republishes are not a first attempt in either shape: these records were counted by
-            // the write that admitted them.
-            if (isolating) {
-                for (PubsubMessage message : batch) {
-                    // Released one at a time, not up front: the pass holds the rest of the batch
-                    // through a drain per message, and the gauge must keep reporting what the
-                    // writer still holds — a pass over a long batch is exactly when a reader
-                    // watches it.
-                    parkedMessages--;
-                    publishTo(state, message, false, true);
-                    state.publisher.flushOutstanding();
-                    inFlight.drainToEmpty();
-                    // A rejection routed by that drain paused its ordering key and registered it;
-                    // hand the key back before its next message, or the rest of the pass comes
-                    // back cancelled and every drop costs one budget attempt.
-                    resumeRegisteredKeys(state);
-                }
-            } else {
-                parkedMessages -= batch.size();
-                for (PubsubMessage message : batch) {
-                    publishTo(state, message, false, false);
-                }
-                state.publisher.flushOutstanding();
-                inFlight.drainToEmpty();
-            }
-            if (state.pendingRetries.isEmpty()) {
-                // The incident is over, so its cause must not outlive it: a cascade only fills
-                // repairCause in when it is still null, so a value left behind here would be
-                // reported as the cause of some later destination-level failure it had nothing to
-                // do with. A dropped message provokes a repair of its own, so incidents on one
-                // destination are not rare enough to leave that to chance.
-                state.repairCause = null;
-                return;
-            }
-            if (attempt >= recoverySchedule.maxAttempts()) {
-                if (state.routedDuringRepair > 0) {
-                    // Distinguished from the topic-shaped exhaustion below: this repair was
-                    // draining a key whose messages the handler is dropping, and the budget ran
-                    // out with messages still parked — the reader needs to know drops happened
-                    // and roughly how many, not only to go looking for a topic problem. The two
-                    // facts are not exclusive, so a creation is still reported here.
-                    throw new IOException(
-                            "Republishing to Pub/Sub topic "
-                                    + state.destination
-                                    + " could not drain its parked messages within the recovery"
-                                    + " budget ("
-                                    + attempt
-                                    + " attempt(s)"
-                                    + (topicCreated ? ", after creating the topic" : "")
-                                    + "); "
-                                    + state.routedDuringRepair
-                                    + " message(s) were handed to the failure handler during the"
-                                    + " repair.",
-                            state.repairCause);
-                }
-                throw new IOException(
-                        "Republishing to Pub/Sub topic "
-                                + state.destination
-                                + (topicCreated
-                                        ? " kept failing after creating the topic ("
-                                        : " kept failing (")
-                                + attempt
-                                + " attempt(s)).",
-                        state.repairCause);
-            }
-            long backoffMs = recoverySchedule.backoffMs(attempt);
-            LOG.info(
-                    "Republishing to Pub/Sub topic {} still fails; backing off {} ms"
-                            + " (attempt {}/{}).",
-                    state.destination,
-                    backoffMs,
-                    attempt,
-                    recoverySchedule.maxAttempts());
-            Thread.sleep(backoffMs);
-        }
-    }
-
-    /**
-     * Resumes the distinct ordering keys of the batch, plus those of the messages the failure
-     * handler dropped, on the destination's publisher.
-     *
-     * <p>Keys are resumed only from within a repair — here at an attempt's start, and through
-     * {@link #resumeRegisteredKeys} between an isolation pass's publishes — and deliberately never
-     * from {@link #routeFailedMessage}. {@link #write} tests {@code repairNeeded} <em>before</em>
-     * {@link InFlightTracker#awaitCapacity()}, and mailbox mails — the drop among them — run inside
-     * it, so a key resumed from the failure mail could be published to by the rest of that same
-     * {@code write} while the key's cascades were still parked: a newer message ahead of older
-     * ones, the one thing the repair exists to prevent. Left paused, that racing publish comes back
-     * cancelled, is parked, and is republished in publish-sequence order with the rest. The
-     * isolation pass can resume mid-batch without opening that race, because the key's remaining
-     * messages are held by the pass itself in sequence order and the mails its drains run only
-     * complete publishes, never issue one.
-     *
-     * <p>Dropped keys are drained here rather than re-resumed on every attempt: a later attempt
-     * only re-pauses keys the batch republished, which the batch itself covers, and a dropped key
-     * with nothing left to republish cannot be paused again by this repair.
-     *
-     * <p>{@code resumePublish} is a no-op for a key that is not paused, and rejects a shut-down
-     * publisher — unreachable here, since a repair runs only from {@link #write} or {@link #flush}.
-     */
-    private void resumeOrderingKeys(DestinationState state, List<PubsubMessage> batch) {
-        if (!orderingEnabled) {
-            return;
-        }
-        for (PubsubMessage message : batch) {
-            if (!message.getOrderingKey().isEmpty()) {
-                state.keysToResume.add(message.getOrderingKey());
-            }
-        }
-        resumeRegisteredKeys(state);
-    }
-
-    /**
-     * Resumes and drains the registered keys, without adding a batch's — the mid-pass complement of
-     * {@link #resumeOrderingKeys} (which delegates here), run by the isolation pass after each solo
-     * verdict so a key a drop just paused is handed back before the key's next republish.
-     */
-    private void resumeRegisteredKeys(DestinationState state) {
-        if (!orderingEnabled) {
-            return;
-        }
-        for (String orderingKey : state.keysToResume) {
-            state.publisher.resumePublish(orderingKey);
-        }
-        state.keysToResume.clear();
     }
 
     /**
@@ -947,75 +759,27 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         return parkedMessages;
     }
 
-    /** Per-topic publisher plus the destination's repair and completion state. */
-    private final class DestinationState {
+    /**
+     * The writer-owned operations {@link TopicRepairer} needs — publishing, draining and the
+     * parked-message gauge — implemented against the writer's own state. An inner class rather than
+     * a lambda because the seam has three methods.
+     */
+    private final class RepairContextImpl implements TopicRepairer.RepairContext {
 
-        private final TopicDestination destination;
-        private final TopicPublisher publisher;
+        @Override
+        public void republish(DestinationState state, PubsubMessage message, boolean soloVerdict)
+                throws IOException {
+            publishTo(state, message, false, soloVerdict);
+        }
 
-        /**
-         * Messages awaiting republish — parked for a missing topic, a cascade cancellation, or a
-         * request-level rejection awaiting isolation — keyed by publish sequence so the batch is
-         * republished in publish order. Sorting matters because the failure mails that park them do
-         * not arrive in publish order, and republishing a key's messages out of order would break
-         * the very guarantee the repair exists to preserve.
-         */
-        private final SortedMap<Long, PubsubMessage> pendingRetries = new TreeMap<>();
+        @Override
+        public void drainInFlight() throws IOException, InterruptedException {
+            inFlight.drainToEmpty();
+        }
 
-        /**
-         * Ordering keys of messages the failure handler dropped, which the publisher paused and
-         * will never resume on its own. Drained by the next repair attempt, and mid-pass by the
-         * isolation pass after each drop. Separate from {@link #pendingRetries} because the dropped
-         * message itself is gone: the key needs handing back even when there is nothing left to
-         * republish for it.
-         */
-        private final Set<String> keysToResume = new LinkedHashSet<>();
-
-        /**
-         * Whether a {@code NOT_FOUND} is among the reasons this destination owes a repair — the
-         * only one that calls for creating the topic. Cleared by the repair that answers it.
-         */
-        private boolean topicMissing;
-
-        /**
-         * Whether a request-level {@code INVALID_ARGUMENT} is among the reasons this destination
-         * owes a repair — the only one that calls for republishing the batch one message per
-         * request. Cleared by the attempt that answers it, like {@link #topicMissing}, and re-set
-         * by any later batched rejection.
-         */
-        private boolean isolationNeeded;
-
-        /**
-         * Messages the current repair handed to the failure handler; zeroed when a repair starts,
-         * read at budget exhaustion to choose between its two messages. Per destination rather than
-         * per writer because that is the delta the exhaustion reports — and routing can only happen
-         * from the isolation pass of the destination being repaired, since a solo verdict exists
-         * nowhere else.
-         */
-        private long routedDuringRepair;
-
-        /**
-         * Retained as the cause of a budget-exhaustion failure: the destination's {@code
-         * NOT_FOUND}, or — when none was ever observed — the batched {@code INVALID_ARGUMENT} or
-         * cascade cancellation that parked the batch, whichever came first.
-         */
-        private Throwable repairCause;
-
-        private final String completionDescription;
-        private final String failureDescription;
-
-        /**
-         * The destination's optional per-destination counters, resolved once here rather than per
-         * record — the topic's resource name is composed by the lookup.
-         */
-        private final DestinationMetrics.Counters metrics;
-
-        private DestinationState(TopicDestination destination, TopicPublisher publisher) {
-            this.destination = destination;
-            this.publisher = publisher;
-            this.completionDescription = "Complete a Pub/Sub publish to " + destination;
-            this.failureDescription = "Fail a Pub/Sub publish to " + destination;
-            this.metrics = PubSubWriter.this.metrics.forTopic(destination);
+        @Override
+        public void releaseParked(int count) {
+            parkedMessages -= count;
         }
     }
 
