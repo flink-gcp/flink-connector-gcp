@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * An in-memory {@link MutationBatcher} recording the mutations it receives and the requests it
@@ -68,7 +69,7 @@ final class FakeMutationBatcher implements MutationBatcher {
     final List<SettableApiFuture<Void>> futures = new ArrayList<>();
 
     /** The entry indices of each request actually sent, in send order. */
-    final List<List<Integer>> sentBatches = new ArrayList<>();
+    final List<List<Integer>> sentBatches = new CopyOnWriteArrayList<>();
 
     /** Row keys the service refuses; a request carrying one is rejected whole. */
     final Set<String> rejectedRowKeys = new HashSet<>();
@@ -204,6 +205,20 @@ final class FakeMutationBatcher implements MutationBatcher {
             keys.add(batchKeys);
         }
         return keys;
+    }
+
+    /**
+     * Answers everything still outstanding, so a wait nobody else will answer can end.
+     *
+     * <p>Only what has already been sent: an entry still accumulating, or one sent after this
+     * returns, keeps its wait parked.
+     */
+    void answerEverythingOutstanding() {
+        for (List<Integer> batch : new ArrayList<>(sentBatches)) {
+            for (int index : batch) {
+                succeed(index);
+            }
+        }
     }
 
     /**
