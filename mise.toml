@@ -61,9 +61,11 @@ just = "1"
 # Pins GitHub Actions to commit SHAs (`just pin-actions`). Declared here because
 # the justfile names it, so `mise install` gives a checkout that can run every
 # recipe — `mise x pinact` worked without this, but silently against whatever
-# release was newest that day. A major-version specifier: nothing in CI runs
-# pinact, so a newer release cannot fail a pull request, and the worst a change
-# in its output does is show up as a diff the author is already reading.
+# release was newest that day. A major-version specifier, and it stays one now
+# that pinact.yaml runs the same tool in CI: the workflow does not read this
+# entry at all — pinact-action carries its own pinact, and the pinned v3.0.0
+# carries a 4.x — so what this line has to match is that major, not an exact
+# release. A newer 4.x on either side pins to the same commit SHAs.
 pinact = "4"
 
 [env]

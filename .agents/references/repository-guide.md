@@ -373,7 +373,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   issue states the **grounded** reason the work is not being done now — never "not planned" or
   "out of scope" — and carries the better approach or a measure-first step where one exists.
 - Pin GitHub Actions to commit SHAs with `just pin-actions` whenever a workflow is added or an
-  action version changes
+  action version changes. `pinact.yaml` is a safety net, not the mechanism: a pull request from
+  this repository that leaves a reference unpinned gets a `chore(pinact): pin GitHub Actions`
+  commit pushed to its branch by the App (ADR-0121), which then has to be **pulled before the
+  next local commit** — `$push-pr-branch`'s force-push discards a branch commit the worktree
+  never saw. A fork pull request gets a red check instead, and pins by hand
 - Commit messages, PR titles/descriptions, code comments, javadoc and issues are written in
   English
 - **An issue normally carries three things: a milestone, a `priority:` label, and a `module:` or
@@ -501,6 +505,9 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   `pull_request`-only, since tfaction takes the newest run on the head branch with no event
   filter. When a fresh PR shows "no checks reported", run `gh pr view <n> --json mergeable`
   **first**: a `CONFLICTING` pull request triggers zero `pull_request` runs at all
+- **`pinact.yaml` is deliberately not enrolled in that gate** (ADR-0121), for the reason
+  ADR-0058 already gives: it is paths-filtered, and a required check that never reports blocks a
+  pull request forever. It reports as its own non-required check
 
 ## Licensing and provenance
 
