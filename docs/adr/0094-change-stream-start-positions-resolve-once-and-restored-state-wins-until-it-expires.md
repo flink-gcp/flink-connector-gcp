@@ -21,7 +21,8 @@ limitations under the License.
 - Issues: [#492](https://github.com/laughingman7743/flink-connector-gcp/issues/492),
   [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
   [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
-  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535)
+  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
+  [#800](https://github.com/laughingman7743/flink-connector-gcp/issues/800)
 - Modules: base, bigtable, spanner
 - Current behavior: generated API reference for `base.source.StartPosition`; the connector pages
   join when the change-stream sources land
@@ -72,6 +73,10 @@ retained window and warns with the lost range. Bigtable can restart each expired
 Spanner instead discards the whole partition ledger and starts one null-token query at the fallback:
 advancing an old token can skip its terminal child-partitions record and lose every descendant.
 Data loss is therefore never an unreported consequence of restore.
+
+Bigtable's reconciliation ledger is restored state too: a checkpointed missing partition carries the low watermark a tokenless restart would read from.
+Restore therefore compares that watermark against the same computed earliest as splits and pending merges, failing by default and applying the fallback on opt-in, while the grace timer survives either branch.
+This refines which restored collections the contract covers without changing the contract; the reconciler's retention clamp remains for a position that ages out mid-run.
 
 Retention discovery and residual service-error translation stay in the connectors. Bigtable reads
 the table's change-stream retention; Spanner reads its information-schema option and owns the

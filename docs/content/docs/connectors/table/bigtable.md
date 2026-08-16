@@ -420,7 +420,7 @@ An absent `scan.startup.mode` retains the DataStream builder's latest-position d
 Choose `earliest` or `timestamp`; the timestamp mode also requires
 `scan.startup.timestamp-millis`.
 Restored checkpoint state wins over that fresh-start setting.
-If a restored continuation has expired, the job fails unless
+If a restored position has expired, the job fails unless
 `scan.resume-fallback.mode` explicitly opts into `earliest`, `latest`, or a timestamp
 with `scan.resume-fallback.timestamp-millis`.
 This restore contract is [ADR-0094]({{< param BookRepo >}}/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
