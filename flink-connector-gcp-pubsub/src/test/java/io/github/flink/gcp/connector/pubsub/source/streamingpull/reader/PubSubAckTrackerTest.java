@@ -246,6 +246,26 @@ class PubSubAckTrackerTest {
     }
 
     @Test
+    void anAcknowledgementIsCountedWhenItIsRequestedEvenIfItIsNeverConfirmed() {
+        // messagesAcked counts acknowledgements requested, not confirmed — the class javadoc says
+        // so, and the counter is what an operator reads next to
+        // subscription/oldest_unacked_message_age. Counting after the wait instead would report
+        // zero for exactly the checkpoints worth investigating.
+        TestReaderMetrics testMetrics = new TestReaderMetrics();
+        PubSubAckTracker awaiting =
+                new PubSubAckTracker(testMetrics.metrics(), Duration.ofMillis(50));
+        RecordingAckHandle handle = RecordingAckHandle.withConfirmation("m1");
+        awaiting.addPendingAck(SPLIT_A, "m1", handle);
+        awaiting.stagePendingAck(SPLIT_A, "m1");
+        awaiting.addCheckpoint(1L);
+
+        assertThatThrownBy(() -> awaiting.notifyCheckpointComplete(1L))
+                .isInstanceOf(IOException.class);
+
+        assertThat(testMetrics.counter("messagesAcked")).isEqualTo(1);
+    }
+
+    @Test
     void immediateSettlementRemovesTheMessageFromTheLifecycle() throws Exception {
         RecordingAckHandle dropped = new RecordingAckHandle("dropped");
         RecordingAckHandle failed = new RecordingAckHandle("failed");
