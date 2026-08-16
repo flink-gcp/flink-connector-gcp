@@ -162,6 +162,7 @@ The source translates `=`, `<`, `<=`, `>`, `>=`, and conjunctions over consecuti
 A complete primary-key equality is an exact point read.
 A leading equality prefix, optionally followed by a range on the next primary-key column, is exact and is removed from Flink's residual filter.
 Predicates on later key columns, `OR`, `IN`, `<>`, computed expressions, null literals, and ordered `FLOAT64` comparisons remain with Flink.
+A literal the connector cannot convert to its key column's Spanner type, such as a non-integral value compared with an `INT64` column or text that is not a canonical UUID, also remains with Flink instead of failing the job during planning.
 
 Set `scan.index` to read a bounded scan through a named [secondary index](https://cloud.google.com/spanner/docs/secondary-indexes).
 The connector resolves the live index key order, sort direction, state, null filtering, and readable columns from the [GoogleSQL](https://cloud.google.com/spanner/docs/information-schema) or [PostgreSQL](https://cloud.google.com/spanner/docs/information-schema-pg) `INFORMATION_SCHEMA` at the batch transaction's exact snapshot.

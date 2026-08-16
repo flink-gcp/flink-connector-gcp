@@ -128,6 +128,33 @@ class SpannerTableReadResolverTest {
     }
 
     @Test
+    void rejectsALiveKeyWithADifferentColumnCountThanTheDeclaredOne() {
+        SpannerTableReadResolver resolver =
+                resolver(null, Collections.singletonList("name"), false, emptyRuntime());
+        SpannerTableReadResolver.IndexMetadata shorter =
+                SpannerTableReadResolver.IndexMetadata.of(
+                        null,
+                        false,
+                        Collections.singletonList(column("tenant", 1, "ASC", false)),
+                        set("tenant", "id", "name"));
+
+        assertThatThrownBy(() -> resolver.resolve(shorter))
+                .hasMessageContaining("does not match the declared PRIMARY KEY")
+                .hasMessageContaining("the live key has 1 columns while the DDL declares 2");
+    }
+
+    @Test
+    void aZeroColumnProjectionOnTheBaseTableReadsTheFirstDeclaredColumn() throws Exception {
+        SpannerTableReadResolver resolver =
+                resolver(null, Collections.emptyList(), true, emptyRuntime());
+
+        SpannerReadOperation operation = resolver.resolve(primaryMetadata());
+
+        assertThat(operation.getColumns()).containsExactly("tenant");
+        assertThat(operation.getKeys()).isEqualTo(KeySet.all());
+    }
+
+    @Test
     void rejectsMissingUnreadyAndUncoveredSecondaryIndexes() {
         SpannerTableReadResolver resolver =
                 resolver("records_by_score", Arrays.asList("score", "name"), false, emptyRuntime());

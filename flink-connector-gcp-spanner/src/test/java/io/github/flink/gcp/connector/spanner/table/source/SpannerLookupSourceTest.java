@@ -26,9 +26,11 @@ import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
+import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
@@ -41,6 +43,9 @@ import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.ByteArray;
+import com.google.cloud.Date;
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Key;
@@ -57,8 +62,11 @@ import org.junit.jupiter.api.io.TempDir;
 import javax.annotation.Nullable;
 
 import java.lang.reflect.Proxy;
+import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -240,6 +248,100 @@ class SpannerLookupSourceTest {
         assertThatThrownBy(() -> provider(config(), new int[][] {{0}, {2}}))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("every declared PRIMARY KEY");
+    }
+
+    @Test
+    void everyLookupKnobIsPartOfTheLookupIdentity() {
+        SpannerLookupConfig base = configOf("lookup.partial-cache.max-rows", "10");
+
+        assertThat(configOf("lookup.partial-cache.max-rows", "10"))
+                .isEqualTo(base)
+                .hasSameHashCodeAs(base);
+        assertThat(base).isNotEqualTo("lookup");
+        assertThat(configOf("lookup.partial-cache.max-rows", "11")).isNotEqualTo(base);
+        assertThat(configOf("lookup.partial-cache.max-rows", "10", "lookup.cache", "partial"))
+                .isNotEqualTo(base);
+        assertThat(configOf("lookup.partial-cache.max-rows", "10", "lookup.async", "true"))
+                .isNotEqualTo(base);
+        assertThat(configOf("lookup.partial-cache.max-rows", "10", "lookup.max-retries", "5"))
+                .isNotEqualTo(base);
+        assertThat(
+                        configOf(
+                                "lookup.partial-cache.max-rows",
+                                "10",
+                                "lookup.partial-cache.cache-missing-key",
+                                "false"))
+                .isNotEqualTo(base);
+        assertThat(
+                        configOf(
+                                "lookup.partial-cache.max-rows",
+                                "10",
+                                "lookup.partial-cache.expire-after-access",
+                                "1 min"))
+                .isNotEqualTo(base);
+        assertThat(
+                        configOf(
+                                "lookup.partial-cache.max-rows",
+                                "10",
+                                "lookup.partial-cache.expire-after-write",
+                                "1 min"))
+                .isNotEqualTo(base);
+    }
+
+    @Test
+    void rejectsNestedAndRepeatedLookupKeys() {
+        assertThatThrownBy(() -> provider(config(), new int[][] {{0, 1}, {1}}))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("every declared PRIMARY KEY");
+        assertThatThrownBy(() -> provider(config(), new int[][] {{0}, {0}}))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("every declared PRIMARY KEY");
+    }
+
+    @Test
+    void lookupKeysConvertNumericBytesDateAndTimestampKeyParts() throws Exception {
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        (RowType)
+                                DataTypes.ROW(
+                                                DataTypes.FIELD(
+                                                        "amount",
+                                                        DataTypes.DECIMAL(38, 9).notNull()),
+                                                DataTypes.FIELD(
+                                                        "payload", DataTypes.BYTES().notNull()),
+                                                DataTypes.FIELD("day", DataTypes.DATE().notNull()),
+                                                DataTypes.FIELD(
+                                                        "at", DataTypes.TIMESTAMP_LTZ(9).notNull()),
+                                                DataTypes.FIELD("name", DataTypes.STRING()))
+                                        .getLogicalType(),
+                        new int[] {0, 1, 2, 3},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        FakeLookup lookup = new FakeLookup(Struct.newBuilder().set("name").to("Ada").build());
+        SpannerRowDataLookupFunction function =
+                new SpannerRowDataLookupFunction(
+                        schema, new int[] {4}, new int[] {0, 1, 2, 3}, 0, lookup);
+        Instant instant = Instant.parse("2026-08-11T01:02:03.123456789Z");
+        function.open(null);
+
+        function.lookup(
+                GenericRowData.of(
+                        DecimalData.fromBigDecimal(new BigDecimal("12.340000000"), 38, 9),
+                        new byte[] {1, 2, 3},
+                        (int) LocalDate.parse("1969-12-31").toEpochDay(),
+                        TimestampData.fromInstant(instant)));
+
+        assertThat(lookup.keys)
+                .containsExactly(
+                        Key.of(
+                                new BigDecimal("12.340000000"),
+                                ByteArray.copyFrom(new byte[] {1, 2, 3}),
+                                Date.fromYearMonthDay(1969, 12, 31),
+                                Timestamp.ofTimeSecondsAndNanos(
+                                        instant.getEpochSecond(), 123456789)));
+        function.close();
     }
 
     @Test
