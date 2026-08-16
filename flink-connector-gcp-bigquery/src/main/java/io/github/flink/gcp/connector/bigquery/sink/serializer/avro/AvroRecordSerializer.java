@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
@@ -54,7 +54,7 @@ import java.io.IOException;
  * ProtoMessageSerializer} on an already-protobuf stream. Where the input is under your control and
  * throughput matters, a native protobuf record avoids it.
  */
-@PublicEvolving
+@Public
 public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedRecord> {
 
     private static final long serialVersionUID = 1L;

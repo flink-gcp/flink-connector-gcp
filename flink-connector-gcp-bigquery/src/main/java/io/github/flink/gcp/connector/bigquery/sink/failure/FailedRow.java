@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.failure;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
@@ -35,7 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
  *
  * <p>Instances are created by the sink and are not serializable.
  */
-@PublicEvolving
+@Public
 public final class FailedRow implements BigQueryFailure {
 
     private final TableDestination destination;

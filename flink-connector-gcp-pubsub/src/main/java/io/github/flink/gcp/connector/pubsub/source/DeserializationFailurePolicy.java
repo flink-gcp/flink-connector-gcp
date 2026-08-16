@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * What the source does with a message its deserialization schema cannot convert.
@@ -31,7 +31,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option spelling
  * the same way.
  */
-@PublicEvolving
+@Public
 public enum DeserializationFailurePolicy {
 
     /**

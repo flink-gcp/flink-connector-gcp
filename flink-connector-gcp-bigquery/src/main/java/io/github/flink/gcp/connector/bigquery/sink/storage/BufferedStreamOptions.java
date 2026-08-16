@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -60,7 +60,7 @@ import java.util.Objects;
  *
  * <p>Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class BufferedStreamOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -268,7 +268,7 @@ public final class BufferedStreamOptions implements Serializable {
     }
 
     /** Builder for {@link BufferedStreamOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private long maxAppendRequestBytes = DEFAULT_MAX_APPEND_REQUEST_BYTES;

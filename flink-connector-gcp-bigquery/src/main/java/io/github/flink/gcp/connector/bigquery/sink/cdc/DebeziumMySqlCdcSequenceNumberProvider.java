@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.cdc;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.util.List;
 import java.util.Map;
@@ -47,7 +47,7 @@ import static java.util.Objects.requireNonNull;
  * @see <a href="https://cloud.google.com/bigquery/docs/change-data-capture">BigQuery change data
  *     capture ordering</a>
  */
-@PublicEvolving
+@Public
 public final class DebeziumMySqlCdcSequenceNumberProvider
         implements CdcSequenceNumberProvider<Map<String, String>> {
 

@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -48,7 +48,7 @@ import java.util.Objects;
  *
  * <p>Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class PubSubPublisherOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -394,7 +394,7 @@ public final class PubSubPublisherOptions implements Serializable {
     }
 
     /** Builder for {@link PubSubPublisherOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         @Nullable private Long batchElementCountThreshold;

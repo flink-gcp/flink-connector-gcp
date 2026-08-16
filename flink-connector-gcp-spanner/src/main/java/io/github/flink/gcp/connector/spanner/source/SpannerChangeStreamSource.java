@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -39,7 +39,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.Span
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerChangeStreamReader;
 
 /** FLIP-27 source for Cloud Spanner Change Streams. */
-@PublicEvolving
+@Public
 public final class SpannerChangeStreamSource<T>
         implements Source<T, SpannerChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>,
                 ResultTypeQueryable<T> {

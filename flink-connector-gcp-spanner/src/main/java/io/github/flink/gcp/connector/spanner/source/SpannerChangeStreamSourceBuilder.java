@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
@@ -46,7 +46,7 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /** Builds a {@link SpannerChangeStreamSource}. */
-@PublicEvolving
+@Public
 public final class SpannerChangeStreamSourceBuilder<T> {
 
     public static final Duration DEFAULT_HEARTBEAT_INTERVAL = Duration.ofSeconds(2);

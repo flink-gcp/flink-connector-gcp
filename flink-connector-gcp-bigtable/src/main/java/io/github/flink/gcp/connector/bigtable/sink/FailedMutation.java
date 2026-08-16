@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.bigtable.v2.MutateRowsRequest;
@@ -43,7 +43,7 @@ import javax.annotation.Nullable;
  *
  * <p>Instances are created by the sink and are not serializable.
  */
-@PublicEvolving
+@Public
 public final class FailedMutation implements FailedElement {
 
     private final TableDestination destination;

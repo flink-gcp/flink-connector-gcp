@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 
 import com.google.cloud.tasks.v2.Task;
@@ -67,7 +67,7 @@ import java.io.Serializable;
  *
  * @param <T> type of the records written by the sink
  */
-@PublicEvolving
+@Public
 public interface CloudTasksSerializationSchema<T> extends Serializable {
 
     /**

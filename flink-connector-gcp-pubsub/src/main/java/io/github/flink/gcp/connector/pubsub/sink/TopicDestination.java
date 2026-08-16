@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -37,7 +37,7 @@ import java.util.Objects;
  * as map keys on the per-record write path. Resolvers should still cache and reuse instances
  * instead of re-creating them per record.
  */
-@PublicEvolving
+@Public
 public final class TopicDestination implements Serializable {
 
     private static final long serialVersionUID = 1L;

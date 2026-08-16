@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.cloudtasks.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -47,7 +47,7 @@ import java.util.Objects;
  *
  * <p>Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class CloudTasksWriterOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -216,7 +216,7 @@ public final class CloudTasksWriterOptions implements Serializable {
     }
 
     /** Builder for {@link CloudTasksWriterOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private int maxInFlightTasks = 1000;

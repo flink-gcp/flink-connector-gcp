@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
@@ -26,7 +26,7 @@ import java.util.Objects;
 import java.util.Optional;
 
 /** JSON values describing the changes to one watched table row. */
-@PublicEvolving
+@Public
 public final class Mod implements Serializable {
 
     private static final long serialVersionUID = 1L;

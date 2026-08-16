@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Whether the sink may create destination topics that do not exist.
@@ -27,7 +27,7 @@ import org.apache.flink.annotation.PublicEvolving;
  * with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option spelling
  * the same way.
  */
-@PublicEvolving
+@Public
 public enum CreateDisposition {
 
     /** Create the destination topic with default topic settings when it does not exist. */

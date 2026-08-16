@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /** Whether the sink may create destination tables that do not exist. */
-@PublicEvolving
+@Public
 public enum CreateDisposition {
 
     /**

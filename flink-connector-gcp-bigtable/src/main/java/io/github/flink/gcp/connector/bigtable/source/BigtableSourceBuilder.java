@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.Preconditions;
@@ -54,7 +54,7 @@ import java.util.List;
  *
  * @param <T> the record type produced
  */
-@PublicEvolving
+@Public
 public class BigtableSourceBuilder<T> {
 
     private @Nullable TableDestination table;

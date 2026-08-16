@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -55,7 +55,7 @@ import java.util.Objects;
  * rejection already names the field and the limit. An all-unset object is allowed and equivalent to
  * supplying no options at all.
  */
-@PublicEvolving
+@Public
 public final class TopicCreateOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -144,7 +144,7 @@ public final class TopicCreateOptions implements Serializable {
     }
 
     /** Builder for {@link TopicCreateOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         @Nullable private Duration messageRetention;

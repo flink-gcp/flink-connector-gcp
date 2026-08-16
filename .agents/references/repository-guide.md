@@ -462,6 +462,22 @@ facts); the rules a session needs:
   artifact publishing. Publishing to Maven Central happens once all connectors are implemented,
   as `v1.0.0` (Central namespace registration, signing and the Flink 1.x/2.x publishing strategy
   are decided then; see issues #29 and #39)
+- **The project's own API stability is annotation-tiered and japicmp-checked** (ADR-0124, issue
+  #728): `@Public` — the promoted entry surface, its signature closure, and its subtypes — must
+  not break within a major version (a deliberate break is a major-release event); the japicmp
+  declaration in the root pom compares every connector
+  jar against `japicmp.referenceVersion` during `verify`, so `just verify` and every CI lane run
+  it. `@PublicEvolving` may break at a minor release with a release-notes entry, never at a
+  patch — cutting a patch runs `just verify -Pjapicmp-patch`, and because nothing in CI
+  exercises that profile, the patch run first re-proves it fires (the emitted
+  `tools/japicmp-output/<module>/japicmp/japicmp.xml` must name `@PublicEvolving` types). A
+  deliberate break adds an entry
+  under `<excludes combine.children="append">` in the root declaration. Each release bumps
+  `japicmp.referenceVersion` to itself and wipes those excludes, and the release build whose own
+  version equals the reference passes `-Djapicmp.skip=true` (Maven resolves the reference from
+  the reactor itself and japicmp reads the old compile classpath as old API). Until `1.0.0`
+  exists on Central the check passes with a logged resolution warning; the firing evidence is
+  the staged-1.0.0 rehearsal on ADR-0124
 - **`flink-connector-gcp-docs-validation` is never published.** It remains outside the ordinary
   module list behind the `docs-snippets` profile and configures its module-local deploy plugin to
   skip deployment; it is build-time documentation validation, not one of the connector artifacts
@@ -611,7 +627,7 @@ carries the full skeleton, the evidence and the declined alternatives). The rule
   layer test (BigQuery's `sink.failure` is the grandfathered exception, kept for churn cost)
 - The **module root** holds what belongs to the connector as a whole rather than to one
   direction: the `@Internal` `<Product>MetricNames` inventory every connector carries (#280),
-  Pub/Sub's `@Internal` `PubSubShutdownResidue`, and Bigtable's `@PublicEvolving`
+  Pub/Sub's `@Internal` `PubSubShutdownResidue`, and Bigtable's `@Public`
   `TableDestination`
 
 ## Emulators are conveniences, not authorities

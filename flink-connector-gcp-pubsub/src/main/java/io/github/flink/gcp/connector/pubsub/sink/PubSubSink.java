@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Entry point for building a Pub/Sub sink.
@@ -44,7 +44,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .build();
  * }</pre>
  */
-@PublicEvolving
+@Public
 public final class PubSubSink {
 
     private PubSubSink() {}

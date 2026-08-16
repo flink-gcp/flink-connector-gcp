@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /** Determines how an additional physical field handles a provider returning {@code null}. */
-@PublicEvolving
+@Public
 public enum AdditionalFieldNullPolicy {
     /** Omits the value from the protobuf row and declares a {@code NULLABLE} BigQuery column. */
     NULLABLE,

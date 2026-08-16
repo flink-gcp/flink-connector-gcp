@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -45,7 +45,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataCli
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DefaultChangeStreamRestoreResolver;
 
 /** FLIP-27 source for Bigtable Change Streams. */
-@PublicEvolving
+@Public
 public final class BigtableChangeStreamSource<T>
         implements Source<T, ChangeStreamPartitionSplit, BigtableChangeStreamEnumeratorState>,
                 ResultTypeQueryable<T> {

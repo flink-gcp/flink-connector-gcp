@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
@@ -62,7 +62,7 @@ import java.util.Set;
  * schema taken alone — but faithfulness to one front end does not outweigh agreeing with the wire
  * form every path shares.
  */
-@PublicEvolving
+@Public
 public final class AvroSchemaOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -159,7 +159,7 @@ public final class AvroSchemaOptions implements Serializable {
     }
 
     /** Builder for {@link AvroSchemaOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private final Set<String> jsonFieldPaths = new HashSet<>();

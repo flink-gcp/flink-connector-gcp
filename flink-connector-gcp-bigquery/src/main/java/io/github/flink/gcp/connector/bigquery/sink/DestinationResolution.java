@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import java.io.IOException;
@@ -28,7 +28,7 @@ import java.io.IOException;
  * UnroutableRecord} for a record-specific routing failure. The constructor and visitor method are
  * package-private so the connector can exhaustively handle the supported result types.
  */
-@PublicEvolving
+@Public
 public abstract class DestinationResolution {
 
     DestinationResolution() {}

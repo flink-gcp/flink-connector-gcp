@@ -16,13 +16,13 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.cdc;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.Serializable;
 
 /** Determines whether one record upserts or deletes its BigQuery primary key. */
 @FunctionalInterface
-@PublicEvolving
+@Public
 public interface CdcChangeTypeProvider<T> extends Serializable {
 
     /** Returns the change applied by {@code element}. */

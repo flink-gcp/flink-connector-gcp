@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
@@ -44,7 +44,7 @@ import java.util.Objects;
  * it mirrors Kafka's {@code scan.startup.mode} and {@code scan.startup.timestamp-millis} pair,
  * which {@link #of(Mode, Instant)} accepts directly. The static factories are the DataStream API.
  */
-@PublicEvolving
+@Public
 public final class StartPosition implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -58,7 +58,7 @@ public final class StartPosition implements Serializable {
      * and with no other normalization. Flink's own {@code DeliveryGuarantee} carries its option
      * spelling the same way.
      */
-    @PublicEvolving
+    @Public
     public enum Mode {
 
         /**

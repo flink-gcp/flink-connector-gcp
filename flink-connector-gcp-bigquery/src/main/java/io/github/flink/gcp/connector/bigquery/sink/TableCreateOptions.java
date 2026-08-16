@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -42,7 +42,7 @@ import java.util.Objects;
  * <p>Instances are immutable and serializable. Use {@link #defaults()} for plain, unpartitioned
  * tables.
  */
-@PublicEvolving
+@Public
 public final class TableCreateOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -177,7 +177,7 @@ public final class TableCreateOptions implements Serializable {
     }
 
     /** Builder for {@link TableCreateOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private TimePartitioningType timePartitioningType;

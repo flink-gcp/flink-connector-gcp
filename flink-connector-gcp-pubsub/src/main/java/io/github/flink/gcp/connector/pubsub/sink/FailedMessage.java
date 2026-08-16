@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
@@ -41,7 +41,7 @@ import javax.annotation.Nullable;
  *
  * <p>Instances are created by the sink and are not serializable.
  */
-@PublicEvolving
+@Public
 public final class FailedMessage implements FailedElement {
 
     private final TopicDestination destination;

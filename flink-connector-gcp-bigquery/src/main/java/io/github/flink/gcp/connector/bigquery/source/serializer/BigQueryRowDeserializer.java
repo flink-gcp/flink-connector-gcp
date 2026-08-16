@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.source.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.util.Collector;
@@ -52,7 +52,7 @@ import java.io.Serializable;
  *
  * @param <T> type of the records produced by the source
  */
-@PublicEvolving
+@Public
 public interface BigQueryRowDeserializer<T> extends Serializable, ResultTypeQueryable<T> {
 
     /**

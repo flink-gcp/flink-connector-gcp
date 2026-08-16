@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.Preconditions;
@@ -46,7 +46,7 @@ import javax.annotation.Nullable;
  *
  * @param <T> the record type produced
  */
-@PublicEvolving
+@Public
 public class SpannerSourceBuilder<T> {
 
     private @Nullable SpannerDatabase database;

@@ -90,10 +90,15 @@ The [Java API reference]({{< param ApiDocsURL >}}) is generated from the source 
 goes live with the rest of the site ([#93]({{< param BookRepo >}}/issues/93)).
 
 Flink's API stability annotations mark what is safe to depend on, and this project applies them to
-its own types: `@PublicEvolving` marks the supported surface, `@Experimental` a type still taking
-shape, and `@Internal` implementation detail that may change or disappear in any release. The
-reference documents the internals rather than hiding them — the annotation appears on the class
-page, so a type's tier is visible at the point where someone is deciding whether to depend on it.
+its own types. `@Public` marks the frozen surface — the entry classes, builders, and the
+interfaces user code implements — which does not change incompatibly within a major version; the
+build holds that promise by comparing each connector jar against the latest published release
+(japicmp).
+`@PublicEvolving` marks supported API that may still change at a minor release, announced in the
+release notes, and never at a patch release. `@Experimental` marks a type still taking shape, and
+`@Internal` implementation detail that may change or disappear in any release. The reference
+documents the internals rather than hiding them — the annotation appears on the class page, so a
+type's tier is visible at the point where someone is deciding whether to depend on it.
 
 It is generated from `main`, so it describes the current source rather than any release. References
 per released version arrive with artifact publishing

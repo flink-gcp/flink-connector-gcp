@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import java.io.Serializable;
 
@@ -29,7 +29,7 @@ import java.io.Serializable;
  * the sink finds a destination missing and {@link CreateDisposition#CREATE_IF_NEEDED} permits
  * creation, not for an existing table or per record.
  */
-@PublicEvolving
+@Public
 @FunctionalInterface
 public interface TableCreateOptionsProvider extends Serializable {
 

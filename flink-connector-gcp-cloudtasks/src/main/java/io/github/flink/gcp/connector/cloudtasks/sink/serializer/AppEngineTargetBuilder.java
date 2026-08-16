@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.serializer;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.util.Preconditions;
 
@@ -30,7 +30,7 @@ import java.io.Serializable;
 import java.util.Map;
 
 /** Builds an immutable {@link AppEngineTargetSerializationSchema}. */
-@PublicEvolving
+@Public
 public final class AppEngineTargetBuilder<T> {
 
     private final String relativeUri;
@@ -176,7 +176,7 @@ public final class AppEngineTargetBuilder<T> {
     }
 
     /** Extracts the App Engine relative URI from a record. */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     public interface RelativeUriExtractor<T> extends Serializable {
 
@@ -191,7 +191,7 @@ public final class AppEngineTargetBuilder<T> {
     }
 
     /** Extracts App Engine request headers from a record. */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     public interface HeadersExtractor<T> extends Serializable {
 
@@ -206,7 +206,7 @@ public final class AppEngineTargetBuilder<T> {
     }
 
     /** Extracts App Engine service, version, and instance routing from a sink record. */
-    @PublicEvolving
+    @Public
     @FunctionalInterface
     public interface RoutingExtractor<T> extends Serializable {
 

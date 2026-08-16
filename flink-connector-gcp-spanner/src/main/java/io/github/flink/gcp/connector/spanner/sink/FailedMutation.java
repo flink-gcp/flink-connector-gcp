@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.Mutation;
@@ -60,7 +60,7 @@ import java.io.UncheckedIOException;
  *
  * <p>Instances are created by the sink and are not serializable.
  */
-@PublicEvolving
+@Public
 public final class FailedMutation implements FailedElement {
 
     private final SpannerDatabase database;

@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -87,7 +87,7 @@ import java.util.Objects;
  *
  * <p>Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class BigtableWriterOptions implements Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigtableWriterOptions.class);
@@ -335,7 +335,7 @@ public final class BigtableWriterOptions implements Serializable {
     }
 
     /** Builder for {@link BigtableWriterOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         @Nullable private Long batchElementCount;

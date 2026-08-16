@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * Entry point for building a Spanner sink.
@@ -58,7 +58,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *                 .build();
  * }</pre>
  */
-@PublicEvolving
+@Public
 public final class SpannerSink {
 
     private SpannerSink() {}

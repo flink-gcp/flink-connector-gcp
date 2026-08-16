@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.util.Preconditions;
 
@@ -34,7 +34,7 @@ import java.io.IOException;
  *
  * <p>Instances reach the failure handler on the task thread and are not serializable.
  */
-@PublicEvolving
+@Public
 public final class UnroutableRecord extends DestinationResolution implements BigQueryFailure {
 
     private static final String UNRESOLVED_DESTINATION = "unresolved";

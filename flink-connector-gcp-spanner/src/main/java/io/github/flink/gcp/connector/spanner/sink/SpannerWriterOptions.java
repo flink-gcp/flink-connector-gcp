@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.spanner.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -69,7 +69,7 @@ import java.util.Objects;
  *
  * <p>Instances are immutable and serializable.
  */
-@PublicEvolving
+@Public
 public final class SpannerWriterOptions implements Serializable {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerWriterOptions.class);
@@ -294,7 +294,7 @@ public final class SpannerWriterOptions implements Serializable {
     }
 
     /** Builder for {@link SpannerWriterOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private int maxBatchCells = DEFAULT_MAX_BATCH_CELLS;

@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.sink;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 /**
  * What the sink does with a mutation Spanner refuses for violating a constraint.
@@ -43,7 +43,7 @@ import org.apache.flink.annotation.PublicEvolving;
  *
  * @see SpannerSinkBuilder#constraintViolationPolicy(ConstraintViolationPolicy)
  */
-@PublicEvolving
+@Public
 public enum ConstraintViolationPolicy {
 
     /**

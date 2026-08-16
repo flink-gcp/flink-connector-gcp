@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -39,7 +39,7 @@ import java.util.Objects;
  *
  * <p>Instances are immutable and cheap to reuse.
  */
-@PublicEvolving
+@Public
 public final class TableDestination implements Serializable {
 
     private static final long serialVersionUID = 1L;

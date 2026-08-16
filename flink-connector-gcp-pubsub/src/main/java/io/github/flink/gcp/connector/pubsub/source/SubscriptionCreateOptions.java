@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.source;
 
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
@@ -53,7 +53,7 @@ import java.util.Objects;
  * service ranges (an acknowledgement deadline of 10-600 seconds, for example) are left to Pub/Sub,
  * whose rejection already names the field and the limit.
  */
-@PublicEvolving
+@Public
 public final class SubscriptionCreateOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -214,7 +214,7 @@ public final class SubscriptionCreateOptions implements Serializable {
     }
 
     /** Builder for {@link SubscriptionCreateOptions}. */
-    @PublicEvolving
+    @Public
     public static final class Builder {
 
         private TopicDestination topic;

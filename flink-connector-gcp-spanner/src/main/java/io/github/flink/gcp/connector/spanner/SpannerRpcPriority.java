@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.Public;
 
 import com.google.cloud.spanner.Options.RpcPriority;
 
@@ -35,7 +35,7 @@ import com.google.cloud.spanner.Options.RpcPriority;
  * <p>This mirrors the client library's own priority enum rather than exposing it, so the public API
  * stays free of SDK types and a client upgrade cannot change what a job's configuration means.
  */
-@PublicEvolving
+@Public
 public enum SpannerRpcPriority {
 
     /** Yields to other traffic on the instance. */
