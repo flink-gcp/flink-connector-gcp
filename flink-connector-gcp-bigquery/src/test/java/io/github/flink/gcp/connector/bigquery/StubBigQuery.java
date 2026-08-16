@@ -530,9 +530,12 @@ public final class StubBigQuery implements BigQuery {
     public Table update(TableInfo tableInfo, TableOption... options) {
         updatedTables.add(tableInfo);
         if (updateTableFailure == null) {
-            // As with create(TableInfo): a successful update answers a Table the caller ignores,
-            // and every test here scripts a failure, so reaching this is a test that forgot to.
-            throw unsupported("a successful update(TableInfo)");
+            // Unlike create(TableInfo), a successful update completes normally: the query
+            // runner's expiration backstop takes this path on every healthy run, and throwing
+            // here would route the test through the backstop's own catch instead — hiding
+            // whatever code sits after the call. The caller ignores the value; the mint is
+            // TestJobs' (docs/adr/0067).
+            return TestJobs.table(this, tableInfo.getTableId());
         }
         BigQueryException failure = updateTableFailure;
         updateTableFailure = null;

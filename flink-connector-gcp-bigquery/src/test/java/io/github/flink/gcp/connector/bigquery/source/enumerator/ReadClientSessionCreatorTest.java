@@ -19,10 +19,15 @@ package io.github.flink.gcp.connector.bigquery.source.enumerator;
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
+import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The sentence a read of a view earns.
@@ -63,6 +68,39 @@ class ReadClientSessionCreatorTest {
                                         GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
                                         false)))
                 .isNull();
+    }
+
+    @Test
+    void staysOffAFailureCarryingNoMessageAtAll() {
+        // gax promises no message text; keying the hint on it must survive one that is absent.
+        assertThat(
+                        ReadClientSessionCreator.viewHint(
+                                ApiExceptionFactory.createException(
+                                        null,
+                                        GrpcStatusCode.of(Status.Code.INVALID_ARGUMENT),
+                                        false)))
+                .isNull();
+    }
+
+    @Test
+    void refusesToCreateAfterItWasClosed() {
+        // The race close() guards against: a cancellation lands while the coordinator worker is
+        // still planning. A creator that built a client here would leak it in the JobManager,
+        // because the close that should release it has already run.
+        //
+        // The passing test does no I/O: the guard throws before any client exists. With the
+        // guard gone, a real client is built against localhost:1 and the test fails only after
+        // gax's ~10-minute retry budget (599.7 s, measured under exactly that mutation) —
+        // deliberately not decorated with @Timeout, which was measured against the same
+        // mutation: the same-thread interrupt fires at the deadline, gax's retry loop does not
+        // abort on it, and the wall clock does not move.
+        ReadClientSessionCreator creator =
+                new ReadClientSessionCreator(EmulatorEndpoint.parse("localhost:1"));
+        creator.close();
+
+        assertThatThrownBy(() -> creator.create(CreateReadSessionRequest.getDefaultInstance()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("was closed");
     }
 
     private static ApiException invalidArgument(String message) {

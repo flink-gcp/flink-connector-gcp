@@ -16,6 +16,11 @@
 
 package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
+import org.apache.flink.api.connector.source.ReaderInfo;
+import org.apache.flink.api.connector.source.SourceEvent;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
+import org.apache.flink.api.connector.source.SplitsAssignment;
+import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
@@ -24,11 +29,18 @@ import io.github.flink.gcp.connector.bigquery.source.TestSources;
 import io.github.flink.gcp.connector.bigquery.source.query.ScriptedQueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.function.BiConsumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -542,8 +554,195 @@ class BigQueryReadSplitEnumeratorTest {
         }
     }
 
+    @Test
+    void warnsWhenTheRestoredSessionHasAlreadyExpired() throws Exception {
+        BigQueryReadEnumeratorState restored =
+                new BigQueryReadEnumeratorState(
+                        true,
+                        ScriptedReadSessionCreator.SESSION,
+                        Instant.now().minusSeconds(60),
+                        Collections.singletonList(split(0, 7)));
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
+                BigQueryReadSplitEnumerator enumerator =
+                        enumerator(context, ScriptedReadSessionCreator.withStreams(1), restored)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            // The warning is the whole report: nothing can recover the session — creating a second
+            // one is exactly what the restore guard forbids — so the reads fail later, and this
+            // line in the JobManager log is what says the job has to be started over.
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains(ScriptedReadSessionCreator.SESSION)
+                    .contains("expired");
+        }
+    }
+
+    @Test
+    void staysQuietWhenTheRestoredSessionIsStillAlive() throws Exception {
+        // The control arm: the warning is about the expiry having passed, not about restoring.
+        BigQueryReadEnumeratorState restored =
+                new BigQueryReadEnumeratorState(
+                        true,
+                        ScriptedReadSessionCreator.SESSION,
+                        Instant.now().plusSeconds(3_600),
+                        Collections.singletonList(split(0, 7)));
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+
+        try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
+                BigQueryReadSplitEnumerator enumerator =
+                        enumerator(context, ScriptedReadSessionCreator.withStreams(1), restored)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(capture.getMessages()).isEmpty();
+        }
+    }
+
+    @Test
+    void warnsWhenBigQueryAnswersFewerStreamsThanTheParallelism() throws Exception {
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(2);
+
+        try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
+                BigQueryReadSplitEnumerator enumerator =
+                        enumerator(context, ScriptedReadSessionCreator.withStreams(1), null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            // The warning is the whole report: the subtasks left without a stream finish
+            // immediately and nothing else says why, because the stream count is BigQuery's
+            // decision and maxStreamCount only caps it.
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains("1 stream(s)")
+                    .contains("parallelism 2");
+        }
+    }
+
+    @Test
+    void staysQuietWhenEverySubtaskHasAStream() throws Exception {
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+                new FakeSplitEnumeratorContext<>(2);
+
+        try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
+                BigQueryReadSplitEnumerator enumerator =
+                        enumerator(context, ScriptedReadSessionCreator.withStreams(2), null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+
+            assertThat(capture.getMessages()).isEmpty();
+        }
+    }
+
+    @Test
+    void plansAQuerySourceWithoutAMetricGroup() throws Exception {
+        // Flink's own contexts always offer a metric group, but the API does not promise one, and
+        // a context answering with nothing must not fail the planning call — there is simply
+        // nothing to count into.
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> submitDelegate =
+                new FakeSplitEnumeratorContext<>(1);
+        ScriptedQueryRunner submitted = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        try (BigQueryReadSplitEnumerator enumerator =
+                queryEnumerator(
+                        new WithoutMetrics(submitDelegate),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        submitted)) {
+            enumerator.start();
+            submitDelegate.runAsyncCalls();
+
+            assertThat(submitted.runs()).isEqualTo(1);
+        }
+
+        // Both counter arms: a reuse is counted apart from a submission, so each has its own guard.
+        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> reuseDelegate =
+                new FakeSplitEnumeratorContext<>(1);
+        ScriptedQueryRunner reused =
+                ScriptedQueryRunner.answering(TestSources.QUERY_RESULT).reattaching();
+        try (BigQueryReadSplitEnumerator enumerator =
+                queryEnumerator(
+                        new WithoutMetrics(reuseDelegate),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        reused)) {
+            enumerator.start();
+            reuseDelegate.runAsyncCalls();
+
+            assertThat(reused.runs()).isEqualTo(1);
+        }
+    }
+
+    /**
+     * A context that offers no metric group, which the shared fake cannot express and Flink's own
+     * contexts never do.
+     */
+    private static final class WithoutMetrics
+            implements SplitEnumeratorContext<BigQueryReadStreamSplit> {
+
+        private final FakeSplitEnumeratorContext<BigQueryReadStreamSplit> delegate;
+
+        private WithoutMetrics(FakeSplitEnumeratorContext<BigQueryReadStreamSplit> delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        @Nullable
+        public SplitEnumeratorMetricGroup metricGroup() {
+            return null;
+        }
+
+        @Override
+        public void sendEventToSourceReader(int subtaskId, SourceEvent event) {
+            delegate.sendEventToSourceReader(subtaskId, event);
+        }
+
+        @Override
+        public int currentParallelism() {
+            return delegate.currentParallelism();
+        }
+
+        @Override
+        public Map<Integer, ReaderInfo> registeredReaders() {
+            return delegate.registeredReaders();
+        }
+
+        @Override
+        public void assignSplits(SplitsAssignment<BigQueryReadStreamSplit> newSplitAssignments) {
+            delegate.assignSplits(newSplitAssignments);
+        }
+
+        @Override
+        public void signalNoMoreSplits(int subtask) {
+            delegate.signalNoMoreSplits(subtask);
+        }
+
+        @Override
+        public <T> void callAsync(Callable<T> callable, BiConsumer<T, Throwable> handler) {
+            delegate.callAsync(callable, handler);
+        }
+
+        @Override
+        public <T> void callAsync(
+                Callable<T> callable,
+                BiConsumer<T, Throwable> handler,
+                long initialDelayMillis,
+                long periodMillis) {
+            delegate.callAsync(callable, handler, initialDelayMillis, periodMillis);
+        }
+
+        @Override
+        public void runInCoordinatorThread(Runnable runnable) {
+            delegate.runInCoordinatorThread(runnable);
+        }
+    }
+
     private static BigQueryReadSplitEnumerator queryEnumerator(
-            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            SplitEnumeratorContext<BigQueryReadStreamSplit> context,
             ScriptedReadSessionCreator creator,
             ScriptedQueryRunner runner) {
         return new BigQueryReadSplitEnumerator(

@@ -23,17 +23,20 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.bigquery.storage.v1.CivilTimeEncoder;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -427,6 +430,201 @@ class GenericRecordToRowDataConverterTest {
         assertThatThrownBy(() -> new GenericRecordToRowDataConverter(nestedArray, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("nested array");
+    }
+
+    @Test
+    void copiesGenericFixedAndRawByteArrayShapesInsteadOfAliasingThem() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"binary_shapes\",\"fields\":["
+                                        + "{\"name\":\"padded\",\"type\":{\"type\":\"fixed\",\"name\":\"fx3\",\"size\":3}},"
+                                        + "{\"name\":\"raw\",\"type\":\"bytes\"}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("padded", DataTypes.BYTES()),
+                                        DataTypes.FIELD("raw", DataTypes.BYTES()))
+                                .getLogicalType();
+        byte[] fixedBacking = new byte[] {1, 2, 3};
+        byte[] rawBacking = new byte[] {4, 5, 6};
+        GenericRecord record = new GenericData.Record(schema);
+        record.put(
+                "padded", new GenericData.Fixed(schema.getField("padded").schema(), fixedBacking));
+        record.put("raw", rawBacking);
+
+        RowData row = new GenericRecordToRowDataConverter(type, null).convert(record);
+        fixedBacking[0] = 9;
+        rawBacking[0] = 9;
+
+        // Copied, not aliased: both shapes hand out their backing array itself
+        // (GenericFixed.bytes() is the internal array), so a row that shared it would change
+        // whenever the producer mutates or reuses the buffer — which Avro's decoders are allowed
+        // to do, even though this module's cursor currently decodes each record fresh.
+        assertThat(row.getBinary(0)).containsExactly(1, 2, 3);
+        assertThat(row.getBinary(1)).containsExactly(4, 5, 6);
+    }
+
+    @Test
+    void convertsBigDecimalAndStringDecimalShapesExactly() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"decimal_shapes\",\"fields\":["
+                                        + "{\"name\":\"object\",\"type\":\"bytes\"},"
+                                        + "{\"name\":\"text\",\"type\":\"string\"}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("object", DataTypes.DECIMAL(8, 2)),
+                                        DataTypes.FIELD("text", DataTypes.DECIMAL(8, 2)))
+                                .getLogicalType();
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("object", new BigDecimal("-12.34"));
+        record.put("text", "-98.7");
+
+        RowData row = new GenericRecordToRowDataConverter(type, null).convert(record);
+
+        // Negative values, so a decode that loses or flips the sign cannot pass.
+        assertThat(row.getDecimal(0, 8, 2).toBigDecimal()).isEqualByComparingTo("-12.34");
+        assertThat(row.getDecimal(1, 8, 2).toBigDecimal()).isEqualByComparingTo("-98.70");
+    }
+
+    @Test
+    void rejectsADecimalBytesValueWhoseSchemaCarriesNoScale() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"scaleless\",\"fields\":["
+                                        + "{\"name\":\"dec\",\"type\":\"bytes\"}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(DataTypes.FIELD("dec", DataTypes.DECIMAL(8, 2)))
+                                .getLogicalType();
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("dec", ByteBuffer.wrap(new BigInteger("1234").toByteArray()));
+
+        // Without the writer schema's scale the bytes are only an unscaled integer; guessing a
+        // scale would read every value of the column a power of ten off.
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(type, null).convert(record))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("A BigQuery decimal field's Avro schema provides no decimal scale");
+    }
+
+    @Test
+    void convertsAlternateTemporalObjectAndStringShapes() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"temporal_shapes\",\"fields\":["
+                                        + "{\"name\":\"day_object\",\"type\":\"string\"},"
+                                        + "{\"name\":\"day_text\",\"type\":\"string\"},"
+                                        + "{\"name\":\"time_millis\",\"type\":\"int\"},"
+                                        + "{\"name\":\"time_object\",\"type\":\"string\"},"
+                                        + "{\"name\":\"time_text\",\"type\":\"string\"},"
+                                        + "{\"name\":\"civil_object\",\"type\":\"string\"},"
+                                        + "{\"name\":\"civil_packed\",\"type\":\"long\"},"
+                                        + "{\"name\":\"instant_object\",\"type\":\"string\"},"
+                                        + "{\"name\":\"instant_text\",\"type\":\"string\"}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("day_object", DataTypes.DATE()),
+                                        DataTypes.FIELD("day_text", DataTypes.DATE()),
+                                        DataTypes.FIELD("time_millis", DataTypes.TIME(3)),
+                                        DataTypes.FIELD("time_object", DataTypes.TIME(3)),
+                                        DataTypes.FIELD("time_text", DataTypes.TIME(3)),
+                                        DataTypes.FIELD("civil_object", DataTypes.TIMESTAMP(6)),
+                                        DataTypes.FIELD("civil_packed", DataTypes.TIMESTAMP(6)),
+                                        DataTypes.FIELD(
+                                                "instant_object",
+                                                DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(6)),
+                                        DataTypes.FIELD(
+                                                "instant_text",
+                                                DataTypes.TIMESTAMP_WITH_LOCAL_TIME_ZONE(6)))
+                                .getLogicalType();
+        LocalDateTime civil = LocalDateTime.of(2026, 8, 12, 12, 34, 56, 123_456_000);
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("day_object", LocalDate.of(1969, 12, 31));
+        record.put("day_text", "1969-12-31");
+        record.put("time_millis", 3_600_123);
+        record.put("time_object", LocalTime.of(1, 0, 0, 123_000_000));
+        record.put("time_text", "01:00:00.123");
+        record.put("civil_object", civil);
+        // The encoder still takes threeten-bp; the decoder under test answers java.time.
+        record.put(
+                "civil_packed",
+                CivilTimeEncoder.encodePacked64DatetimeMicros(
+                        org.threeten.bp.LocalDateTime.of(2026, 8, 12, 12, 34, 56, 123_456_000)));
+        record.put("instant_object", Instant.parse("1969-12-31T23:59:59.999999Z"));
+        record.put("instant_text", "2026-08-12T03:34:56.123456Z");
+
+        RowData row = new GenericRecordToRowDataConverter(type, null).convert(record);
+
+        // Pre-epoch days and fractional clocks, so an off-by-one in any decode shows up.
+        assertThat(row.getInt(0)).isEqualTo(-1);
+        assertThat(row.getInt(1)).isEqualTo(-1);
+        assertThat(row.getInt(2)).isEqualTo(3_600_123);
+        assertThat(row.getInt(3)).isEqualTo(3_600_123);
+        assertThat(row.getInt(4)).isEqualTo(3_600_123);
+        assertThat(row.getTimestamp(5, 6).toLocalDateTime()).isEqualTo(civil);
+        assertThat(row.getTimestamp(6, 6).toLocalDateTime()).isEqualTo(civil);
+        assertThat(row.getTimestamp(7, 6).toInstant())
+                .isEqualTo(Instant.parse("1969-12-31T23:59:59.999999Z"));
+        assertThat(row.getTimestamp(8, 6).toInstant())
+                .isEqualTo(Instant.parse("2026-08-12T03:34:56.123456Z"));
+    }
+
+    @Test
+    void rejectsANonNumericBigintValueRatherThanReadingZero() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"bad_long\",\"fields\":["
+                                        + "{\"name\":\"i\",\"type\":\"string\"}]}");
+        RowType type =
+                (RowType) DataTypes.ROW(DataTypes.FIELD("i", DataTypes.BIGINT())).getLogicalType();
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("i", "not-a-number");
+
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(type, null).convert(record))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("A BigQuery integer value does not fit BIGINT");
+    }
+
+    @Test
+    void rejectsAUnionFieldWithNoNonNullMember() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"null_only\",\"fields\":["
+                                        + "{\"name\":\"u\",\"type\":[\"null\"]}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "u",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("v", DataTypes.STRING()))))
+                                .getLogicalType();
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("u", null);
+
+        // A union of only null can hold no record at all; taking its null member as the record
+        // schema would silently turn the whole column into nulls.
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(type, null).convert(record))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("An Avro union has no non-null member");
+    }
+
+    @Test
+    void rejectsAnUnmappedTypeRootAtPlanTime() {
+        RowType unmapped =
+                (RowType) DataTypes.ROW(DataTypes.FIELD("n", DataTypes.NULL())).getLogicalType();
+
+        assertThatThrownBy(() -> new GenericRecordToRowDataConverter(unmapped, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Column n has unsupported Table source type");
     }
 
     private static GenericRecord record(ByteBuffer bytes) {

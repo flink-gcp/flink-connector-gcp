@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.source.reader;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
+import org.apache.flink.connector.base.source.reader.splitreader.TestSplitsChanges;
 
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
@@ -308,6 +309,51 @@ class BigQuerySplitReaderTest {
         // mid-batch rather than before the reader had anything to lose.
         assertThatThrownBy(reader::fetch).isInstanceOf(IOException.class);
         assertThat(metrics.counter("rowsRead")).isEqualTo(3);
+    }
+
+    @Test
+    void dropsTheActiveStreamWhenItsSplitIsRemoved() throws Exception {
+        BigQuerySplitReader reader = reader(opener(10, 10), 3);
+        reader.handleSplitsChanges(addition(split(0)));
+        RecordsWithSplitIds<GenericRecord> first = reader.fetch();
+        assertThat(count(first)).isEqualTo(3);
+
+        reader.handleSplitsChanges(new SplitsRemoval<>(Collections.singletonList(split(0))));
+        RecordsWithSplitIds<GenericRecord> after = reader.fetch();
+
+        // Removed mid-read: nothing more is handed over, and the split is not reported finished —
+        // the enumerator took it away, so nothing downstream is waiting on it. The open stream is
+        // released too; dropped without a close, the ReadRows call would leak on every removal.
+        assertThat(count(after)).isZero();
+        assertThat(after.finishedSplits()).isEmpty();
+        assertThat(ScriptedRowStreamOpener.offsets(testId())).containsExactly(0L);
+        assertThat(ScriptedRowStreamOpener.streamCloses(testId())).isEqualTo(1);
+    }
+
+    @Test
+    void rejectsASplitsChangeShapeItDoesNotKnow() {
+        BigQuerySplitReader reader = reader(opener(2, 2), 10);
+
+        // A shape silently ignored would drop or retain splits at random when Flink adds one.
+        assertThatThrownBy(
+                        () ->
+                                reader.handleSplitsChanges(
+                                        TestSplitsChanges.unknown(
+                                                Collections.singletonList(split(0)))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported split change");
+    }
+
+    @Test
+    void aWakeUpBeforeAnyStreamIsOpenIsANoOp() throws Exception {
+        BigQuerySplitReader reader = reader(opener(2, 2), 10);
+
+        // The fetcher framework wakes readers on its own schedule, including one that has nothing
+        // open yet — before the first split arrives, or between two splits.
+        reader.wakeUp();
+
+        reader.handleSplitsChanges(addition(split(0)));
+        assertThat(names(drain(reader))).containsExactly("row-0", "row-1");
     }
 
     /** An opener whose stream throws what the supplier answers, instead of a block. */
