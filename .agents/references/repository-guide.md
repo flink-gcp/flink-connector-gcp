@@ -121,8 +121,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   exception whose inputs appear in `lint.yaml`. A new Python checker owes tests here and a
   curate-* skill only when its failures require judgment. ADR-0118 records the project shape,
   fixture boundary and mutation evidence
-- `just check-java-license-headers` — every Java source starts with a complete copyright-bearing
-  or ASF Apache-2.0 header. RAT identifies the licence family from a distinctive line and remains
+- `just check-license-headers` — every Java source starts with a complete copyright-bearing
+  or ASF Apache-2.0 header, **and** no file this project owns, of any type, names an unrecorded
+  copyright holder. RAT identifies the licence family from a distinctive line and remains
   the whole-tree coverage; this check closes the narrower completeness gap with no allowlist or
   judgment. It runs at the start of `just verify`, and its parser tests use synthetic trees
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
@@ -503,27 +504,32 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
 
 ## Licensing and provenance
 
-- **Two copyright holders, on purpose.** Source files name the author
-  (`Copyright 2026 laughingman7743`); everything a *published artifact* declares names the project
-  (`Copyright 2026 The flink-gcp authors`). The artifact side is stated twice and both must move
-  together: the root POM's `<organization>`, which maven-remote-resources interpolates into the
-  `META-INF/NOTICE`, the `META-INF/DEPENDENCIES` and the `Implementation-Vendor` /
-  `Specification-Vendor` manifest entries of every module jar, and which maven-javadoc's default
-  `bottom` renders into the published API reference; and the shade transformer's `organizationName`,
-  which the five SQL uber-jars aggregate. Only the second is tested —
-  `AbstractSqlConnectorPackagingITCase` pins the uber-jar's holder line, so `<organization>` can
-  drift alone and nothing reports it. `check-notice.py` compares each `NOTICE.template` against its
-  generated `META-INF/NOTICE` and never against the POM, so the eleven NOTICE files are held to
-  each other and to nothing else
+- **One copyright holder, `The flink-gcp authors`, written in four independent places.** A change
+  to it has to move all four. Source-file headers of every type, pinned by
+  `check-license-headers.py` against `PROJECT_HOLDER`. The root POM's `<organization>`, which
+  maven-remote-resources
+  interpolates into the `META-INF/NOTICE`, the `META-INF/DEPENDENCIES` and the
+  `Implementation-Vendor` / `Specification-Vendor` manifest entries of every module jar, and which
+  maven-javadoc's default `bottom` renders into the published API reference. The shade transformer's
+  `organizationName`, which the five SQL uber-jars aggregate and `AbstractSqlConnectorPackagingITCase`
+  pins. And the eleven NOTICE files, which `check-notice.py` holds only against each other — it
+  compares a `NOTICE.template` with its generated `META-INF/NOTICE` and never with the POM. So the
+  headers and the uber-jars are guarded while `<organization>` and the NOTICE prose are not: those
+  two can drift alone, and only reading a built jar would show it
+- **Third-party holders on adapted files may not be rewritten.** Thirteen Pub/Sub sources keep
+  `Copyright 2023 Google LLC`; each is recorded in its module README's provenance section, and
+  `PRESERVED_HOLDERS` in the checker is what stops an unattributed third-party header passing as an
+  ordinary one. Add to that list only alongside the README record
 - Files written for this project carry the plain Apache-2.0 header. Files copied from Apache
   projects keep their ASF header.
   Apache RAT enforces the approved licence families over the whole tree (configuration overridden
   in the root POM; new unheaderable file types need a RAT exclude there), but its matcher identifies
   a family from one distinctive line and therefore cannot prove that the surrounding notice is
-  complete. `just check-java-license-headers` closes that gap for Java by requiring the full
-  copyright-bearing or ASF form before Maven runs. Still not checked for non-Java files: the contents of the
-  copyright line, and which of the two headers a given file carries. A third header would need a
-  deliberate checker and RAT change
+  complete. `just check-license-headers` closes that gap for Java by requiring the full
+  copyright-bearing or ASF form before Maven runs, and closes it for every other file type more
+  narrowly, by requiring the copyright *holder* to be a recorded one. Still not checked for
+  non-Java files: the rest of the notice, and which of the two headers a given file carries. A
+  third header would need a deliberate checker and RAT change
 - When adapting Apache-2.0 code from other projects (Beam, Dataproc connector,
   google/flink-connector-gcp, java-bigquerystorage, apache/flink-connector-gcp-pubsub):
   record the provenance in the module README and the repository `NOTICE`, and keep original

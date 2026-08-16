@@ -3,7 +3,7 @@ title: Reversed region
 ---
 
 <!--
-Copyright 2026 laughingman7743
+Copyright 2026 The flink-gcp authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
