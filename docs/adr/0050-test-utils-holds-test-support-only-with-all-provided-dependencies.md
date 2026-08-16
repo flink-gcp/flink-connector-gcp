@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290]); the source-reader outputs
-  2026-08-09 and the pull-assignment context fakes 2026-08-10 ([#437])
-- Issues: [#27], [#290], [#26], [#181], [#437]
+  2026-08-09 and the pull-assignment context fakes 2026-08-10 ([#437]); the Cloud Tasks
+  emulator fixture 2026-08-17 ([#776])
+- Issues: [#27], [#290], [#26], [#181], [#437], [#776]
 - Modules: test-utils
 - Current behavior: (Claude-facing module; nothing user-rendered)
 
@@ -33,14 +34,20 @@ limitations under the License.
   path to any artifact — which is what keeps the SQL uber-jars' shade-scope mediation
   undisturbed (ADR-0015's test-scope demotion trap).
 - **No forced unification of emulator container fixtures.** The goccy BigQuery and aertje Cloud
-  Tasks fixtures are hand-rolled, single-consumer, structurally unlike the testcontainers
-  `PubSubEmulatorContainer`; they stay in their modules. Only what has multiple consumers moves
-  here — and [#290] is what that rule looks like when it fires: the BigQuery SQL smoke test
-  needed the goccy container, so **its container half moved and nothing else did**
+  Tasks fixtures were hand-rolled and single-consumer when this was decided, structurally unlike
+  the testcontainers `PubSubEmulatorContainer`; a fixture stays in its module until a second
+  consumer exists. Only what has multiple consumers moves here — and [#290] is what that rule
+  looks like when it fires: the BigQuery SQL smoke test needed the goccy container, so **its
+  container half moved and nothing else did**
   (`testutils.bigquery.BigQueryEmulatorContainers` owns image/ports/wait strategy/stock REST
   client; `AbstractBigQueryEmulatorITCase` keeps the halves naming connector types). Not
   tidiness: the SQL module runs its tests against the *relocated* connector, so a helper naming
-  a connector type could not compile there at all.
+  a connector type could not compile there at all. The aertje fixture followed the same path on
+  2026-08-17 ([#776]): the Cloud Tasks SQL uber-jar's smoke test had become its second consumer
+  (with the container declaration and the plaintext stock-client construction duplicated —
+  identical code, the connector copy alone carrying the explanatory comment), so both halves moved — `testutils.cloudtasks.CloudTasksEmulatorContainers` and
+  `CloudTasksTestClients`, neither naming a connector type. A refinement, not a reversal: the
+  rule is unchanged, its "single-consumer" premise for that fixture had simply been overtaken.
 - **The second firing of that rule is the source-reader outputs** ([#437]): the BigQuery source
   ([#390]) wrote its own `CollectingSourceOutput` and `CollectingReaderOutput` because
   `flink-connector-base`'s test jar is a dependency of no module here, which made the Pub/Sub
@@ -119,3 +126,4 @@ limitations under the License.
 [#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
 [#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
 [#437]: https://github.com/laughingman7743/flink-connector-gcp/issues/437
+[#776]: https://github.com/flink-gcp/flink-connector-gcp/issues/776

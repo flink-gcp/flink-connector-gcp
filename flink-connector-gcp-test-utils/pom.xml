@@ -131,9 +131,9 @@ limitations under the License.
 
         <!-- The BigQuery half (testutils.bigquery). -->
         <dependency>
-            <!-- GenericContainer for the goccy emulator, which testcontainers has no
-                 module for - unlike Pub/Sub's, whose container type comes from `gcloud`
-                 above. -->
+            <!-- GenericContainer for the goccy and aertje emulators, which testcontainers
+                 has no modules for - unlike Pub/Sub's, whose container type comes from
+                 `gcloud` above. -->
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers</artifactId>
             <scope>provided</scope>
@@ -148,6 +148,17 @@ limitations under the License.
             <!-- NoCredentials for the emulator's unauthenticated REST client. -->
             <groupId>com.google.cloud</groupId>
             <artifactId>google-cloud-core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- The Cloud Tasks half (testutils.cloudtasks): the stock client the emulator
+             harnesses administer queues and inspect tasks with. The aertje container runs
+             on the plain GenericContainer above, as the goccy BigQuery emulator does, and
+             the plaintext channel reuses the gax/gax-grpc/grpc-api trio declared under the
+             Pub/Sub half. -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-tasks</artifactId>
             <scope>provided</scope>
         </dependency>
 

@@ -18,11 +18,6 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
-import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
-import com.google.cloud.tasks.v2.CloudTasksClient;
-import com.google.cloud.tasks.v2.CloudTasksSettings;
 import com.google.cloud.tasks.v2.ListTasksRequest;
 import com.google.cloud.tasks.v2.LocationName;
 import com.google.cloud.tasks.v2.Queue;
@@ -37,13 +32,12 @@ import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.github.flink.gcp.connector.testutils.cloudtasks.CloudTasksEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.cloudtasks.CloudTasksTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -65,11 +59,10 @@ import java.util.stream.Collectors;
 import static org.testcontainers.Testcontainers.exposeHostPorts;
 
 /**
- * Shared harness for integration tests against the Cloud Tasks emulator
- * (aertje/cloud-tasks-emulator — Google publishes no official emulator and testcontainers' GCloud
- * module has no Cloud Tasks support, so it runs as a plain {@link GenericContainer}): the
- * container, a harness-owned {@link CloudTasksClient} for queue administration and task inspection,
- * and an HTTP server the emulator dispatches tasks to.
+ * Shared harness for integration tests against the Cloud Tasks emulator (the shared {@code
+ * testutils.cloudtasks} fixture — aertje's community image, since Google publishes no official
+ * emulator): the container, a harness-owned {@link CloudTasksClient} for queue administration and
+ * task inspection, and an HTTP server the emulator dispatches tasks to.
  *
  * <p>Writers under test are wired through the production {@code DefaultTaskCreatorFactory} in its
  * emulator-endpoint mode, so these tests exercise the client construction that ships. They
@@ -91,8 +84,6 @@ abstract class AbstractCloudTasksEmulatorITCase {
 
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
-    private static final int EMULATOR_PORT = 8123;
-
     /** How long a dispatch is waited for; generous, since a passing test does not spend it. */
     private static final Duration DISPATCH_TIMEOUT = Duration.ofSeconds(60);
 
@@ -113,42 +104,24 @@ abstract class AbstractCloudTasksEmulatorITCase {
     private static final HttpServer RECEIVER = startReceiver();
 
     @Container
-    private static final GenericContainer<?> EMULATOR =
-            new GenericContainer<>("ghcr.io/aertje/cloud-tasks-emulator:1.2.0")
-                    // The emulator binds to localhost by default, which nothing outside the
-                    // container could reach.
-                    .withCommand("-host", "0.0.0.0", "-port", String.valueOf(EMULATOR_PORT))
-                    .withExposedPorts(EMULATOR_PORT)
-                    .waitingFor(Wait.forListeningPorts(EMULATOR_PORT));
+    private static final GenericContainer<?> EMULATOR = CloudTasksEmulatorContainers.newContainer();
 
-    private static ManagedChannel channel;
-    private static CloudTasksClient client;
+    private static CloudTasksTestClients clients;
 
     @BeforeAll
     static void createClient() throws IOException {
-        channel = ManagedChannelBuilder.forTarget(emulatorEndpoint()).usePlaintext().build();
-        client =
-                CloudTasksClient.create(
-                        CloudTasksSettings.newBuilder()
-                                .setTransportChannelProvider(
-                                        FixedTransportChannelProvider.create(
-                                                GrpcTransportChannel.create(channel)))
-                                .setCredentialsProvider(NoCredentialsProvider.create())
-                                .build());
+        clients = CloudTasksTestClients.forEmulator(emulatorEndpoint());
     }
 
     @AfterAll
     static void closeClient() {
-        if (client != null) {
-            client.close();
-        }
-        if (channel != null) {
-            channel.shutdownNow();
+        if (clients != null) {
+            clients.close();
         }
     }
 
     static String emulatorEndpoint() {
-        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(EMULATOR_PORT);
+        return CloudTasksEmulatorContainers.endpoint(EMULATOR);
     }
 
     /**
@@ -200,16 +173,19 @@ abstract class AbstractCloudTasksEmulatorITCase {
 
     private static QueueDestination createQueue(String queueId, boolean paused) {
         QueueDestination destination = QueueDestination.of(PROJECT, LOCATION, queueId);
-        client.createQueue(
-                LocationName.of(PROJECT, LOCATION),
-                Queue.newBuilder()
-                        .setName(destination.toQueuePath())
-                        // The emulator runs one dispatch worker per allowed concurrent dispatch and
-                        // defaults to 1000 of them; a small cap keeps the container cheap.
-                        .setRateLimits(RateLimits.newBuilder().setMaxConcurrentDispatches(10))
-                        .build());
+        clients.client()
+                .createQueue(
+                        LocationName.of(PROJECT, LOCATION),
+                        Queue.newBuilder()
+                                .setName(destination.toQueuePath())
+                                // The emulator runs one dispatch worker per allowed concurrent
+                                // dispatch and
+                                // defaults to 1000 of them; a small cap keeps the container cheap.
+                                .setRateLimits(
+                                        RateLimits.newBuilder().setMaxConcurrentDispatches(10))
+                                .build());
         if (paused) {
-            client.pauseQueue(QueueName.of(PROJECT, LOCATION, queueId));
+            clients.client().pauseQueue(QueueName.of(PROJECT, LOCATION, queueId));
         }
         return destination;
     }
@@ -217,7 +193,8 @@ abstract class AbstractCloudTasksEmulatorITCase {
     /** Returns the tasks currently held by the queue. */
     static List<Task> listTasks(QueueDestination destination) {
         List<Task> tasks = new ArrayList<>();
-        client.listTasks(
+        clients.client()
+                .listTasks(
                         ListTasksRequest.newBuilder()
                                 .setParent(destination.toQueuePath())
                                 // The emulator ignores response_view, but Cloud Tasks omits bodies
