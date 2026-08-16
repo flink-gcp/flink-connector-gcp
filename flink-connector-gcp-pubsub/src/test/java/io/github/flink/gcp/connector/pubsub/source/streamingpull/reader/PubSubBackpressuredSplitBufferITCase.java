@@ -66,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       went on delivering — because a client that died would produce the same flat line.
  * </ul>
  *
- * <p>The instrument is {@link NotifyingPullSubscriber#bufferUsage()} rather than the {@code
+ * <p>The instrument is {@link PullSubscriber#bufferUsage()} rather than the {@code
  * messagesReceived} counter the paused class uses: that counter equals the deque only for a split
  * nothing drains, which is exactly the arm this class adds.
  *

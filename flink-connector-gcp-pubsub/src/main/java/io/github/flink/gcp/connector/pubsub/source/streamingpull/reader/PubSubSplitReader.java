@@ -112,7 +112,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             PubSubSourceReaderMetrics metrics) {
         this(
                 (split, signal) ->
-                        new PubSubNotifyingPullSubscriber(
+                        new StreamingPullSubscriber(
                                 split.splitId(),
                                 split.getSubscription(),
                                 subscriberFactory,
@@ -149,9 +149,9 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     private static final class AssignedSplit {
 
         private final SubscriptionSplit split;
-        @Nullable private NotifyingPullSubscriber subscriber;
+        @Nullable private PullSubscriber subscriber;
 
-        private AssignedSplit(SubscriptionSplit split, NotifyingPullSubscriber subscriber) {
+        private AssignedSplit(SubscriptionSplit split, PullSubscriber subscriber) {
             this.split = split;
             this.subscriber = subscriber;
         }
@@ -174,7 +174,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
          * @return the opened subscriber
          * @throws IOException if the subscriber cannot be opened
          */
-        NotifyingPullSubscriber open(SubscriptionSplit split, Runnable dataAvailableSignal)
+        PullSubscriber open(SubscriptionSplit split, Runnable dataAvailableSignal)
                 throws IOException;
     }
 
@@ -211,11 +211,11 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
      * Reports a permanent failure of a split the drain above skipped (#348).
      *
      * <p>{@link #drainInto} reports one for every split it visits, because {@link
-     * NotifyingPullSubscriber#pullMessages} throws — but a paused split is not visited, and nothing
-     * else ever reads that subscriber's failure. So a subscriber that dies while watermark
-     * alignment holds its split leaves the job running and green with one subscription silently
-     * dead, and the reader closing while it is still paused loses the failure for good, since the
-     * client's re-report at teardown is absorbed (#325).
+     * PullSubscriber#pullMessages} throws — but a paused split is not visited, and nothing else
+     * ever reads that subscriber's failure. So a subscriber that dies while watermark alignment
+     * holds its split leaves the job running and green with one subscription silently dead, and the
+     * reader closing while it is still paused loses the failure for good, since the client's
+     * re-report at teardown is absorbed (#325).
      *
      * <p>Evaluated from {@link #fetch()}, and beside {@link MissingCheckpointDetector#check()}
      * rather than inside the drain, because the two are the same kind of guard: both exist for a
@@ -314,7 +314,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                     entry.getKey(),
                     usage,
                     pausedSplitBufferLimits);
-            NotifyingPullSubscriber subscriber = assigned.subscriber;
+            PullSubscriber subscriber = assigned.subscriber;
             // Marked parked before the release, so a release that throws cannot leave the reader
             // holding a half-closed client it would go on to drain or close a second time.
             assigned.subscriber = null;
@@ -369,10 +369,9 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
         splits.put(split.splitId(), new AssignedSplit(split, openSubscriber(split)));
     }
 
-    private NotifyingPullSubscriber openSubscriber(SubscriptionSplit split) {
+    private PullSubscriber openSubscriber(SubscriptionSplit split) {
         try {
-            NotifyingPullSubscriber subscriber =
-                    subscriberOpener.open(split, this::signalDataAvailable);
+            PullSubscriber subscriber = subscriberOpener.open(split, this::signalDataAvailable);
             // The one place a subscriber is created, so the one place the buffer gauges have to
             // hear about it; a reopen after a park re-registers under the same split id.
             metrics.subscriberOpened(split.splitId(), subscriber);
@@ -399,7 +398,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             metrics.splitUnparked();
             return;
         }
-        NotifyingPullSubscriber subscriber = assigned.subscriber;
+        PullSubscriber subscriber = assigned.subscriber;
         LOG.info("Closing the Pub/Sub subscriber for removed split {}.", split.splitId());
         try {
             // The failure check comes before the close, and is the last chance to report one: a
@@ -491,9 +490,9 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             //
             // A parked split contributes neither step: its shutdown already ran, and with it the
             // nack, so there is nothing left to release.
-            List<NotifyingPullSubscriber> open = openSubscribers();
+            List<PullSubscriber> open = openSubscribers();
             List<AutoCloseable> steps = new ArrayList<>(open.size() * 2);
-            for (NotifyingPullSubscriber subscriber : open) {
+            for (PullSubscriber subscriber : open) {
                 steps.add(subscriber::shutdown);
             }
             steps.addAll(open);
@@ -517,8 +516,8 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     }
 
     /** Returns the subscribers of every split that is not parked, in assignment order. */
-    private List<NotifyingPullSubscriber> openSubscribers() {
-        List<NotifyingPullSubscriber> open = new ArrayList<>(splits.size());
+    private List<PullSubscriber> openSubscribers() {
+        List<PullSubscriber> open = new ArrayList<>(splits.size());
         for (AssignedSplit assigned : splits.values()) {
             if (!assigned.isParked()) {
                 open.add(assigned.subscriber);

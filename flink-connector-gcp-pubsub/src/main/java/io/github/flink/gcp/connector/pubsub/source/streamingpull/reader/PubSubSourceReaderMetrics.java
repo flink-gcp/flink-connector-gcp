@@ -84,16 +84,15 @@ public final class PubSubSourceReaderMetrics {
      *
      * <p>A registry rather than a shadow tally, so the gauges cannot come to disagree with the
      * number the paused-split bound is evaluated against: both read the same {@link
-     * NotifyingPullSubscriber#bufferUsage()}. It also means an entry that outlives its subscriber
-     * cannot corrupt the value — {@code shutdown()} empties the buffer, so a stale entry reports
-     * zero — and re-registering under the same split id is what a reopen after a park does.
+     * PullSubscriber#bufferUsage()}. It also means an entry that outlives its subscriber cannot
+     * corrupt the value — {@code shutdown()} empties the buffer, so a stale entry reports zero —
+     * and re-registering under the same split id is what a reopen after a park does.
      *
      * <p>Here rather than in the split reader for {@link #parkedSplits}'s reasons: a fetcher may be
      * rebuilt over a reader's life, and the metric reporter reads this from a thread of its own
      * while the fetcher thread writes it.
      */
-    private final Map<String, NotifyingPullSubscriber> bufferedSubscribers =
-            new ConcurrentHashMap<>();
+    private final Map<String, PullSubscriber> bufferedSubscribers = new ConcurrentHashMap<>();
 
     /**
      * Registers the counters on the reader's metric group.
@@ -210,7 +209,7 @@ public final class PubSubSourceReaderMetrics {
      * @param splitId the split the subscriber serves
      * @param subscriber the subscriber whose buffer to include
      */
-    public void subscriberOpened(String splitId, NotifyingPullSubscriber subscriber) {
+    public void subscriberOpened(String splitId, PullSubscriber subscriber) {
         bufferedSubscribers.put(splitId, subscriber);
     }
 
@@ -225,7 +224,7 @@ public final class PubSubSourceReaderMetrics {
 
     private long sumBuffers(ToLongFunction<BufferUsage> dimension) {
         long total = 0;
-        for (NotifyingPullSubscriber subscriber : bufferedSubscribers.values()) {
+        for (PullSubscriber subscriber : bufferedSubscribers.values()) {
             total += dimension.applyAsLong(subscriber.bufferUsage());
         }
         return total;

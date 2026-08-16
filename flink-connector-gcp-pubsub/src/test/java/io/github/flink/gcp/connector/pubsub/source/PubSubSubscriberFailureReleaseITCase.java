@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * What the SDK subscriber releases when its streaming pull fails permanently — the empirical half
  * of what {@link
- * io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubNotifyingPullSubscriber}'s
+ * io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.StreamingPullSubscriber}'s
  * {@code startOrRelease} javadoc argues (#349).
  *
  * <p><b>What it measures is narrower than that argument, and the difference is worth naming.</b>

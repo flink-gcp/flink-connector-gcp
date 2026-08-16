@@ -86,7 +86,7 @@ The two that re-report:
   `closeAsync()` ends in `asException()` and `close()` rethrows it as
   `new BatchingException(cause.getMessage())`. #238.
 - **google-cloud-pubsub 1.152.0 `Subscriber.awaitTerminated(long, TimeUnit)`** — the source's
-  `NotifyingPullSubscriber`. `Subscriber extends AbstractApiService`, whose
+  `PullSubscriber`. `Subscriber extends AbstractApiService`, whose
   `InnerService extends` Guava's `AbstractService`; `checkCurrentState(TERMINATED)` on a
   `FAILED` service throws `IllegalStateException(..., failureCause())`, and that cause is the
   same `Throwable` the failure listener already recorded as `permanentError` and `pullMessages`

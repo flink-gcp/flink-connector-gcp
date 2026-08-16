@@ -16,10 +16,6 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
-import org.apache.flink.util.ExceptionUtils;
-
-import com.google.protobuf.ByteString;
-import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -28,31 +24,24 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for the client lifecycle {@link PubSubNotifyingPullSubscriber} drives — the paths a working
- * client never takes, and which nothing reached before #325 made the three operations injectable:
- * the client that fails to start, the one that never terminates, and the one that reports at
- * teardown a failure this subscriber has already delivered.
- *
- * <p>The message path is covered by the emulator ITCases through the production factory; what is
- * here is what only a misbehaving client produces.
+ * Tests for {@link SubscriberTeardown}'s three-exit classification — the re-reported failure, the
+ * failure nothing else reports, and the shutdown wait that expired — and the doc-quoted WARN
+ * fragments those exits log (#325/#351/#358/#359). Driven through {@link StreamingPullSubscriber},
+ * because the teardown is reached only through it.
  */
 @Timeout(30)
-class PubSubNotifyingPullSubscriberTest {
+class SubscriberTeardownTest {
 
     private static final SubscriptionDestination SUBSCRIPTION =
             SubscriptionDestination.of("project", "orders");
@@ -78,8 +67,8 @@ class PubSubNotifyingPullSubscriberTest {
     private static final String QUOTED_FAILED_START =
             "did not shut down cleanly after failing to start";
 
-    private final RecordingAckTracker ackTracker = new RecordingAckTracker();
     private final List<String> calls = new ArrayList<>();
+    private final RecordingAckTracker ackTracker = new RecordingAckTracker(calls);
 
     /**
      * Before and after, so this class can assert absolute counts and still leave the fork as it
@@ -97,44 +86,9 @@ class PubSubNotifyingPullSubscriberTest {
     }
 
     @Test
-    void aPermanentFailureReachesTheReaderThroughPullMessages() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
-        IllegalStateException boom = new IllegalStateException("the streaming pull gave up");
-
-        client.fail(boom);
-
-        // The wake-up is load-bearing and easy to lose: the fetcher parks on this signal with no
-        // timeout, so without it a permanently failed subscriber never reports at all — the thread
-        // simply stops asking.
-        assertThat(calls).containsExactly("dataAvailable");
-
-        // This is the report the reader consumes and fails the job on. It is what makes the one
-        // absorbed below a *re*-report rather than a first one.
-        assertThatThrownBy(() -> subscriber.pullMessages(10))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining(SUBSCRIPTION.toString())
-                .hasCause(boom);
-    }
-
-    @Test
-    void theFirstFailureIsTheOneReported() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
-        IllegalStateException first = new IllegalStateException("the streaming pull gave up");
-
-        client.fail(first);
-        client.fail(new IllegalStateException("and the shutdown that followed also failed"));
-
-        // First wins: a later failure is usually a consequence of the first, and the first is the
-        // one that explains the job's death.
-        assertThatThrownBy(() -> subscriber.pullMessages(10)).hasCause(first);
-    }
-
-    @Test
     void absorbsTheClientsReportOfTheFailureItAlreadyDelivered() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client);
         IllegalStateException boom = new IllegalStateException("the streaming pull gave up");
         client.fail(boom);
         // Delivering it is what makes the one below a *re*-report, and this class is where that
@@ -150,7 +104,7 @@ class PubSubNotifyingPullSubscriberTest {
                         "Expected the service to be TERMINATED, but it FAILED", boom);
         client.failTerminationWith(report);
 
-        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             assertThatCode(subscriber::close).doesNotThrowAnyException();
 
             // The log is the whole of the report, so it is what has to carry the subscription and
@@ -184,15 +138,15 @@ class PubSubNotifyingPullSubscriberTest {
         // to read it — pullMessages will not be called again — and arrives here as the same
         // IllegalStateException the re-report above does. Absorbing it is right; reporting it as
         // a repeat of something already handled was not.
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client);
         IllegalStateException raisedAtShutdown =
                 new IllegalStateException("the connections would not close");
         client.failTerminationWith(
                 new IllegalStateException(
                         "Expected the service to be TERMINATED, but it FAILED", raisedAtShutdown));
 
-        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             assertThatCode(subscriber::close).doesNotThrowAnyException();
 
             assertThat(capture.getEvents())
@@ -223,8 +177,8 @@ class PubSubNotifyingPullSubscriberTest {
         // subscriber's shutdown() before any close(), so stopAsync() has already run — and the
         // thread doStop() spawns can record its failure through the listener in that window. The
         // failure is then in the field but has been read by nobody.
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client);
         IllegalStateException raisedByTheStop =
                 new IllegalStateException("the connections would not close");
         client.failWhenStopped(raisedByTheStop);
@@ -232,7 +186,7 @@ class PubSubNotifyingPullSubscriberTest {
                 new IllegalStateException(
                         "Expected the service to be TERMINATED, but it FAILED", raisedByTheStop));
 
-        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             subscriber.shutdown();
             assertThatCode(subscriber::close).doesNotThrowAnyException();
 
@@ -256,8 +210,8 @@ class PubSubNotifyingPullSubscriberTest {
         // second, unrelated one a repeat. The SDK is not expected to produce this — Guava keeps the
         // first cause, which the production javadoc argues from — so this defends the code against
         // that argument turning out to be wrong rather than against a case seen in the wild.
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client);
         IllegalStateException reported = new IllegalStateException("the streaming pull gave up");
         client.fail(reported);
         assertThatThrownBy(() -> subscriber.pullMessages(10)).isInstanceOf(IOException.class);
@@ -267,7 +221,7 @@ class PubSubNotifyingPullSubscriberTest {
                 new IllegalStateException(
                         "Expected the service to be TERMINATED, but it FAILED", unrelated));
 
-        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             assertThatCode(subscriber::close).doesNotThrowAnyException();
 
             assertThat(capture.getEvents())
@@ -287,12 +241,12 @@ class PubSubNotifyingPullSubscriberTest {
 
     @Test
     void absorbsAClientThatDoesNotTerminateWithinTheTimeout() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
+        ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client);
         TimeoutException expired = new TimeoutException("still shutting down");
         client.failTerminationWith(expired);
 
-        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             assertThatCode(subscriber::close).doesNotThrowAnyException();
 
             assertThat(capture.getEvents())
@@ -317,7 +271,7 @@ class PubSubNotifyingPullSubscriberTest {
 
     @Test
     void aCleanTeardownCountsNothing() throws Exception {
-        ScriptedClient client = new ScriptedClient();
+        ScriptedClient client = new ScriptedClient(calls);
 
         subscriberOf(client).close();
 
@@ -329,91 +283,13 @@ class PubSubNotifyingPullSubscriberTest {
     }
 
     @Test
-    void aThrowingNackStillLeavesTheClientAskedToStopAndWaitedOut() throws Exception {
-        // #350: closed is set before the nack, so a nack that threw used to leave shutdown()
-        // claiming the client had been asked to stop. close() then returned at the idempotence
-        // guard, awaitTerminated spent the whole budget on a client nobody had told to stop, and a
-        // WARN about an unclean shutdown was its only trace. Measured on google-cloud-pubsub
-        // 1.152.0, the production AckHandle cannot in fact throw — nack() ends in
-        // SettableApiFuture.set, which returns a boolean — so this is robustness over an SPI whose
-        // implementations need not all be ours, argued as that rather than as a bug closed.
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
-        RuntimeException refused = new RuntimeException("the consumer was already settled");
-        ackTracker.failNackWith(refused);
-
-        assertThatThrownBy(subscriber::close).isSameAs(refused);
-
-        // Both halves, and neither held before: the stop ran although the nack failed, and the
-        // wait ran although the shutdown failed.
-        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
-    }
-
-    @Test
-    void waitsOutTheShutdownForTheConfiguredTimeout() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-
-        subscriberOf(client).close();
-
-        // The budget is a knob (PubSubSubscriberOptions.shutdownTimeout), so a hand-off that
-        // dropped it would leave the client's own default in force and look identical.
-        assertThat(client.awaitedMillis).containsExactly(SHUTDOWN_TIMEOUT.toMillis());
-        assertThat(client.awaitedUnits).containsExactly(TimeUnit.MILLISECONDS);
-    }
-
-    @Test
-    void closeNacksAndStopsBeforeItWaits() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-
-        subscriberOf(client).close();
-
-        // Order, not just occurrence: waiting before asking the client to stop would spend the
-        // whole budget on a client that had not been told to shut down, and nacking after the wait
-        // would hold the split's messages for its duration.
-        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
-    }
-
-    @Test
-    void aSecondShutdownNeitherNacksNorStopsAgain() throws Exception {
-        ScriptedClient client = new ScriptedClient();
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(client);
-
-        subscriber.shutdown();
-        subscriber.shutdown();
-        // The reader shuts every split down and then closes every one, so close() meets an
-        // already-shut-down subscriber on the ordinary path and must only wait.
-        subscriber.close();
-
-        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
-    }
-
-    @Test
-    void stopsTheClientWhenItFailsToStart() {
-        ScriptedClient client = new ScriptedClient();
-        IllegalStateException refused =
-                new IllegalStateException("could not reach the subscription");
-        client.failStartWith(refused);
-
-        assertThatThrownBy(() -> subscriberOf(client))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining(SUBSCRIPTION.toString())
-                .hasCause(refused);
-
-        // The client is asked to stop before the failure is reported. Read this as pinning the
-        // call, not a leak-free restart: against the real SDK a failed start leaves the service
-        // FAILED, where Guava's stopAsync() is a no-op — startOrRelease's javadoc has the
-        // measurement. Nothing was nacked: nothing had been received.
-        assertThat(calls).containsExactly("stopAsync", "awaitTerminated");
-    }
-
-    @Test
     void aFailedStartsTeardownIsReportedAsTheReleaseOfAClientThatNeverRan() throws Exception {
         // The release path has its own message because both of awaitTerminated()'s would be false
         // here. There is no repeat to identify — the start failure is on its way to the caller —
         // and asking would be a race besides: Guava dispatches the failure listener from the SDK's
         // own thread after releasing the monitor awaitRunning() blocks on, so permanentError can
         // still be unset, as it is here. Nor has anything been nacked, shutdown() never having run.
-        ScriptedClient client = new ScriptedClient();
+        ScriptedClient client = new ScriptedClient(calls);
         IllegalStateException refused =
                 new IllegalStateException("could not reach the subscription");
         client.failStartWith(refused);
@@ -421,7 +297,7 @@ class PubSubNotifyingPullSubscriberTest {
                 new IllegalStateException(
                         "Expected the service to be TERMINATED, but it FAILED", refused));
 
-        try (LogCapture capture = LogCapture.of(PubSubNotifyingPullSubscriber.class)) {
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             assertThatThrownBy(() -> subscriberOf(client))
                     .isInstanceOf(IOException.class)
                     .hasCause(refused);
@@ -445,80 +321,6 @@ class PubSubNotifyingPullSubscriberTest {
         assertThat(unreportedFailures()).isZero();
     }
 
-    @Test
-    void stopsTheClientWhenItsFirstClassloadFails() {
-        ScriptedClient client = new ScriptedClient();
-        NoClassDefFoundError missing = new NoClassDefFoundError("io/grpc/netty/shaded/Absent");
-        client.failStartWith(missing);
-
-        // Rethrown unchanged, not wrapped: an Error is not an IOException, and it is the type
-        // Flink's escalation reads.
-        assertThatThrownBy(() -> subscriberOf(client)).isSameAs(missing);
-
-        // The Error takes the same release as the exception above — the same rule as the sibling
-        // guard in DefaultMutationBatcherFactory.create (#324). Same caveat as that test's.
-        assertThat(calls).containsExactly("stopAsync", "awaitTerminated");
-    }
-
-    @Test
-    void reportsWhatIsBufferedInBothDimensions() throws Exception {
-        // Messages of different sizes, deliberately: an accounting that counted messages where it
-        // means bytes passes every same-size test there is.
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
-        PubsubMessage small = message("s", "x");
-        PubsubMessage large = message("l", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
-
-        subscriber.receiveMessage(small, new RecordingAckHandle("s"));
-        subscriber.receiveMessage(large, new RecordingAckHandle("l"));
-
-        assertThat(subscriber.bufferUsage().messages()).isEqualTo(2);
-        assertThat(subscriber.bufferUsage().bytes())
-                .isEqualTo(small.getSerializedSize() + large.getSerializedSize());
-    }
-
-    @Test
-    void aDrainReleasesExactlyWhatItRemoved() throws Exception {
-        // The half that decides whether the reader's bound is a bound at all: without the drain's
-        // subtraction the load only ever grows, so a busy split would eventually be parked the
-        // moment it was paused.
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
-        PubsubMessage first = message("1", "x");
-        PubsubMessage second = message("2", "xxxxxxxxxx");
-        subscriber.receiveMessage(first, new RecordingAckHandle("1"));
-        subscriber.receiveMessage(second, new RecordingAckHandle("2"));
-
-        assertThat(subscriber.pullMessages(1)).containsExactly(first);
-
-        assertThat(subscriber.bufferUsage().messages()).isEqualTo(1);
-        assertThat(subscriber.bufferUsage().bytes()).isEqualTo(second.getSerializedSize());
-    }
-
-    @Test
-    void shutdownEmptiesTheUsageItReports() throws Exception {
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
-        subscriber.receiveMessage(message("1", "xxxxx"), new RecordingAckHandle("1"));
-
-        subscriber.shutdown();
-
-        // The buffer is discarded and nacked by the shutdown, so what a parked subscriber reports
-        // holding is nothing.
-        assertThat(subscriber.bufferUsage().messages()).isZero();
-        assertThat(subscriber.bufferUsage().bytes()).isZero();
-    }
-
-    @Test
-    void aMessageArrivingAfterShutdownIsNackedRatherThanBuffered() throws Exception {
-        PubSubNotifyingPullSubscriber subscriber = subscriberOf(new ScriptedClient());
-        subscriber.shutdown();
-        RecordingAckHandle late = new RecordingAckHandle("late");
-
-        subscriber.receiveMessage(message("1", "xxxxx"), late);
-
-        assertThat(subscriber.bufferUsage().messages()).isZero();
-        assertThat(subscriber.bufferUsage().bytes()).isZero();
-        assertThat(late.isNacked()).isTrue();
-    }
-
     private static long abandonedShutdowns() {
         return PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.sum();
     }
@@ -527,15 +329,8 @@ class PubSubNotifyingPullSubscriberTest {
         return PubSubShutdownResidue.SUBSCRIBER_FAILURES_UNREPORTED.sum();
     }
 
-    private static PubsubMessage message(String messageId, String payload) {
-        return PubsubMessage.newBuilder()
-                .setMessageId(messageId)
-                .setData(ByteString.copyFromUtf8(payload))
-                .build();
-    }
-
-    private PubSubNotifyingPullSubscriber subscriberOf(ScriptedClient client) throws IOException {
-        return new PubSubNotifyingPullSubscriber(
+    private StreamingPullSubscriber subscriberOf(ScriptedClient client) throws IOException {
+        return new StreamingPullSubscriber(
                 SPLIT_ID,
                 SUBSCRIPTION,
                 ackTracker,
@@ -544,117 +339,5 @@ class PubSubNotifyingPullSubscriberTest {
                 client::start,
                 client::stopAsync,
                 client::awaitTerminated);
-    }
-
-    /**
-     * A client whose three lifecycle operations can be made to misbehave, standing in for the SDK
-     * {@code Subscriber} — which cannot be subclassed, its only constructor being private.
-     */
-    private final class ScriptedClient {
-
-        private final List<Long> awaitedMillis = new ArrayList<>();
-        private final List<TimeUnit> awaitedUnits = new ArrayList<>();
-
-        @Nullable private Consumer<Throwable> onPermanentFailure;
-        @Nullable private Throwable startFailure;
-        @Nullable private Throwable terminationFailure;
-        @Nullable private Throwable stopFailure;
-
-        /** Takes a {@link Throwable} so a test can script an {@link Error} as well. */
-        void failStartWith(Throwable failure) {
-            this.startFailure = failure;
-        }
-
-        void failTerminationWith(Throwable failure) {
-            this.terminationFailure = failure;
-        }
-
-        /** Delivers a permanent failure the way the client's own service listener would. */
-        void fail(Throwable failure) {
-            requireStarted().accept(failure);
-        }
-
-        void start(Consumer<Throwable> onPermanentFailure) {
-            this.onPermanentFailure = onPermanentFailure;
-            if (startFailure != null) {
-                ExceptionUtils.rethrow(startFailure);
-            }
-        }
-
-        /**
-         * Makes the stop deliver a permanent failure the way {@code Subscriber.doStop()}'s own
-         * thread does, which is the only way the field can be written after the shutdown began.
-         */
-        void failWhenStopped(Throwable failure) {
-            this.stopFailure = failure;
-        }
-
-        void stopAsync() {
-            calls.add("stopAsync");
-            if (stopFailure != null) {
-                requireStarted().accept(stopFailure);
-            }
-        }
-
-        void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
-            calls.add("awaitTerminated");
-            awaitedMillis.add(unit.toMillis(timeout));
-            awaitedUnits.add(unit);
-            if (terminationFailure instanceof TimeoutException) {
-                throw (TimeoutException) terminationFailure;
-            }
-            if (terminationFailure instanceof RuntimeException) {
-                throw (RuntimeException) terminationFailure;
-            }
-        }
-
-        private Consumer<Throwable> requireStarted() {
-            if (onPermanentFailure == null) {
-                throw new IllegalStateException("the subscriber was never started");
-            }
-            return onPermanentFailure;
-        }
-    }
-
-    /** Records the one call this class makes, and answers the rest with nothing. */
-    private final class RecordingAckTracker implements AckTracker {
-
-        @Nullable private RuntimeException nackFailure;
-
-        /**
-         * Makes {@link #nackSplit} throw, which is the step {@code shutdown()} runs before it asks
-         * the client to stop.
-         */
-        void failNackWith(RuntimeException nackFailure) {
-            this.nackFailure = nackFailure;
-        }
-
-        @Override
-        public void addPendingAck(String splitId, String messageId, AckHandle ackHandle) {}
-
-        @Override
-        public void stagePendingAck(String splitId, String messageId) {}
-
-        @Override
-        public void ackPendingImmediately(String splitId, String messageId) {}
-
-        @Override
-        public void nackPendingImmediately(String splitId, String messageId) {}
-
-        @Override
-        public void addCheckpoint(long checkpointId) {}
-
-        @Override
-        public void notifyCheckpointComplete(long checkpointId) {}
-
-        @Override
-        public void nackSplit(String splitId) {
-            calls.add("nackSplit");
-            if (nackFailure != null) {
-                // After the record, as the real tracker's own nacks happen before anything can
-                // fail: this is a nack that ran and then threw, not one that never started.
-                throw nackFailure;
-            }
-        }
     }
 }

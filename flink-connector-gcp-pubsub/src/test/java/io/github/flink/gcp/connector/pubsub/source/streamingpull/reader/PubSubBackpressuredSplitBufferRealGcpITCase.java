@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * while its drain is under the refill rate and not while it is over. That reading rests on the
  * flow-control permit being the only thing that gates delivery. One channel sits outside it: when a
  * lease finally lapses the service redelivers the message, {@code
- * PubSubNotifyingPullSubscriber.receiveMessage} appends the new copy <em>beside</em> the one the
+ * StreamingPullSubscriber.receiveMessage} appends the new copy <em>beside</em> the one the
  * connector is still holding, and {@code PubSubAckTracker.addPendingAck} nacks the superseded
  * handle — returning the permit the redelivery took. A redelivery therefore adds a buffered message
  * at no permit cost, and nothing in the deque dedupes.

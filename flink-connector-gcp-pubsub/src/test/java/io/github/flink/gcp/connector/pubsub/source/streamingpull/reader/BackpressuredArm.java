@@ -58,9 +58,9 @@ import java.util.stream.IntStream;
  * are in turn {@link PubSubPausedSplitBufferITCase}'s, so all three series can be read together;
  * that class's javadoc is where each value is argued.
  *
- * <p>The buffer is read through {@link NotifyingPullSubscriber#bufferUsage()} on a handle the
- * opener records, because once anything is drained the {@code messagesReceived} counter stops
- * equalling the deque. Sampling it from another thread is what the SPI requires of it.
+ * <p>The buffer is read through {@link PullSubscriber#bufferUsage()} on a handle the opener
+ * records, because once anything is drained the {@code messagesReceived} counter stops equalling
+ * the deque. Sampling it from another thread is what the SPI requires of it.
  *
  * <p>{@link #start()} is what opens the subscriber, deliberately not the constructor: arms are
  * built one after another, each publishing its own backlog, so a subscriber opened in the
@@ -114,7 +114,7 @@ final class BackpressuredArm {
     private final double ratePerSecond;
     private final TestReaderMetrics metrics = new TestReaderMetrics();
     private final PubSubAckTracker ackTracker;
-    private final AtomicReference<NotifyingPullSubscriber> subscriber = new AtomicReference<>();
+    private final AtomicReference<PullSubscriber> subscriber = new AtomicReference<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
 
     /** What killed the drain, so a run that lost its drain cannot be read as a measurement. */
@@ -163,8 +163,8 @@ final class BackpressuredArm {
         this.reader =
                 new PubSubSplitReader(
                         (assigned, signal) -> {
-                            PubSubNotifyingPullSubscriber opened =
-                                    new PubSubNotifyingPullSubscriber(
+                            StreamingPullSubscriber opened =
+                                    new StreamingPullSubscriber(
                                             assigned.splitId(),
                                             assigned.getSubscription(),
                                             factory,
@@ -281,7 +281,7 @@ final class BackpressuredArm {
      * Records the buffer's size if it, or the delivery count, has changed since the last sample.
      */
     private void sample() {
-        NotifyingPullSubscriber opened = subscriber.get();
+        PullSubscriber opened = subscriber.get();
         if (opened == null) {
             return;
         }

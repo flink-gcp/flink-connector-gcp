@@ -195,8 +195,8 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
   `maxDeliveryAttempts` on messages nobody is consuming and diverting live data to the dead-letter
   topic.
 - **Block in the receiver callback.** Ruled out by the design already recorded on
-  `PubSubNotifyingPullSubscriber`: it stalls an ordering key's dispatch chain and holds a
-  client-library thread.
+  `StreamingPullSubscriber` (then named `PubSubNotifyingPullSubscriber`): it stalls an ordering
+  key's dispatch chain and holds a client-library thread.
 
 ## Consequences
 

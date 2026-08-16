@@ -72,9 +72,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * sets rather than a duration it waits out; what is left to wait for is only the fetcher thread
  * reaching its block.
  *
- * <p>This runs without an emulator: the messages come from {@link FakeNotifyingPullSubscriber}, and
- * what is under measurement is Flink's fetcher loop, not Pub/Sub. Whether the *buffer* grows in
- * this state is a different question, measured against the emulator by {@link
+ * <p>This runs without an emulator: the messages come from {@link FakePullSubscriber}, and what is
+ * under measurement is Flink's fetcher loop, not Pub/Sub. Whether the *buffer* grows in this state
+ * is a different question, measured against the emulator by {@link
  * PubSubBackpressuredSplitBufferITCase}.
  */
 @Timeout(60)
@@ -344,10 +344,9 @@ class PubSubBackpressuredReaderGuardTest {
      * <p>Runs on the fetcher thread, inside {@code handleSplitsChanges}, which is the same thread
      * that later drains the fake — so the fake needs no synchronization of its own.
      */
-    private NotifyingPullSubscriber preloaded(
+    private PullSubscriber preloaded(
             SubscriptionSplit split, Runnable dataAvailableSignal, int count) {
-        FakeNotifyingPullSubscriber subscriber =
-                new FakeNotifyingPullSubscriber(dataAvailableSignal);
+        FakePullSubscriber subscriber = new FakePullSubscriber(dataAvailableSignal);
         List<PubsubMessage> messages = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             String messageId = "m" + index;
@@ -396,12 +395,12 @@ class PubSubBackpressuredReaderGuardTest {
     }
 
     /** Counts messages handed out of the subscriber, which the deque no longer holds. */
-    private static final class PullCountingSubscriber implements NotifyingPullSubscriber {
+    private static final class PullCountingSubscriber implements PullSubscriber {
 
-        private final NotifyingPullSubscriber delegate;
+        private final PullSubscriber delegate;
         private final AtomicInteger pulled;
 
-        private PullCountingSubscriber(NotifyingPullSubscriber delegate, AtomicInteger pulled) {
+        private PullCountingSubscriber(PullSubscriber delegate, AtomicInteger pulled) {
             this.delegate = delegate;
             this.pulled = pulled;
         }

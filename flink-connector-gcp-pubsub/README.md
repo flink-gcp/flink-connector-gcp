@@ -112,14 +112,17 @@ because they still hold upstream's code:
   whose `open` (and, on the read side, `getProducedType`) forward to the wrapped Flink schema and
   have no other possible form
 
-Four because an exact upstream declaration survives in them — `AckTracker`,
-`NotifyingPullSubscriber`, `PubSubSerializationSchema` and `PubSubDeserializationSchema`. A method
-name and an empty parameter list very likely carry no authorship, but the project does not need to
-be right about that, so the notice stays and the question is not reached.
+Four because an exact upstream declaration survives in them — `AckTracker`, `PullSubscriber`
+(formerly `NotifyingPullSubscriber`), `PubSubSerializationSchema` and
+`PubSubDeserializationSchema`. A method name and an empty parameter list very likely carry no
+authorship, but the project does not need to be right about that, so the notice stays and the
+question is not reached.
 
-And `PubSubNotifyingPullSubscriber`, which is under review rather than settled: its message buffer
-is declared as upstream declares it, and the class is being rewritten
-([#755](https://github.com/flink-gcp/flink-connector-gcp/issues/755)).
+And `StreamingPullSubscriber` (formerly `PubSubNotifyingPullSubscriber`), re-measured after the
+rewrite that split its teardown out ([#755](https://github.com/flink-gcp/flink-connector-gcp/issues/755)):
+its message buffer is still declared exactly as upstream declares it and `receiveMessage` keeps
+upstream's statement arrangement, so the notice stays. The extracted `SubscriberTeardown` carries
+this repository's own header — the teardown machinery has no upstream counterpart at all.
 
 The four files whose header was retired — `PubSubWriter`, `PubSubSplitReader`,
 `PubSubRecordEmitter` and `SubscriptionSplit` — share nothing with upstream but generic Java and
