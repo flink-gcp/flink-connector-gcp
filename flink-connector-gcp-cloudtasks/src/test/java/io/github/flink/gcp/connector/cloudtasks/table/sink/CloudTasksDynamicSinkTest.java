@@ -333,6 +333,13 @@ class CloudTasksDynamicSinkTest {
                 .hasMessageContaining("app-engine-service");
     }
 
+    @SuppressWarnings("unchecked")
+    private static CloudTasksCreateTaskSink<RowData> runtimeOf(CloudTasksDynamicSink sink) {
+        SinkV2Provider provider =
+                (SinkV2Provider) sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
+        return (CloudTasksCreateTaskSink<RowData>) provider.createSink();
+    }
+
     @Test
     void dynamicUrlAndTaskIdMetadataReachTheirSeparateRuntimeContracts() throws Exception {
         CloudTasksDynamicSink sink = sink(null, true);
@@ -342,10 +349,7 @@ class CloudTasksDynamicSinkTest {
                         DataTypes.FIELD("payload", DataTypes.STRING()),
                         DataTypes.FIELD("target", DataTypes.STRING().notNull()),
                         DataTypes.FIELD("dedupe", DataTypes.STRING())));
-        SinkV2Provider provider =
-                (SinkV2Provider) sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false));
-        CloudTasksCreateTaskSink<RowData> runtime =
-                (CloudTasksCreateTaskSink<RowData>) provider.createSink();
+        CloudTasksCreateTaskSink<RowData> runtime = runtimeOf(sink);
         GenericRowData row =
                 GenericRowData.of(
                         StringData.fromString("payload"),
@@ -358,6 +362,24 @@ class CloudTasksDynamicSinkTest {
         assertThat(runtime.getConfig().getTaskIdExtractor().extractTaskId(row))
                 .isEqualTo("event-17");
         assertThat(task.getName()).isEmpty();
+    }
+
+    @Test
+    void aNullTaskIdColumnExtractsAsANullKey() throws Exception {
+        // The metadata column is nullable, so a row may carry SQL NULL there, and the extractor
+        // has to read that through isNullAt rather than through the value: a heap row answers
+        // getString with null while a binary one answers it with an empty string, so only the
+        // null check gives the same key for the same SQL NULL. The writer then rejects a null
+        // key by naming the record - CloudTasksWriterFailureHandlerTest holds that half.
+        CloudTasksDynamicSink sink = sink("https://example.com");
+        sink.applyWritableMetadata(
+                java.util.Collections.singletonList("task-id"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("payload", DataTypes.STRING()),
+                        DataTypes.FIELD("dedupe", DataTypes.STRING())));
+        GenericRowData row = GenericRowData.of(StringData.fromString("payload"), null);
+
+        assertThat(runtimeOf(sink).getConfig().getTaskIdExtractor().extractTaskId(row)).isNull();
     }
 
     @Test
