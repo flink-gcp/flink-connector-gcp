@@ -61,10 +61,16 @@ limitations under the License.
          interpolates it into the META-INF/NOTICE it stamps into every module jar. Without
          this block every artifact this project builds claims "Copyright 2026 The Apache
          Software Foundation", which is both wrong and exactly the text the SQL uber-jar's
-         ApacheNoticeResourceTransformer would aggregate. -->
+         ApacheNoticeResourceTransformer would aggregate.
+
+         The name is the one every published artifact's NOTICE carries, so it is a
+         licensing statement rather than a URL: "The <org> authors" rather than the
+         org's login, because it stays correct as contributors other than the founder
+         appear and needs no edit when they do. Source-file headers still name the
+         author individually; that is a separate question and a separate change. -->
     <organization>
-        <name>laughingman7743</name>
-        <url>https://github.com/laughingman7743</url>
+        <name>The flink-gcp authors</name>
+        <url>https://github.com/flink-gcp</url>
     </organization>
 
     <modules>
@@ -543,8 +549,8 @@ limitations under the License.
                                              - setting only the project name still yields
                                              "Copyright 2006-2026 The Apache Software
                                              Foundation". Measured, not assumed. -->
-                                        <organizationName>laughingman7743</organizationName>
-                                        <organizationURL>https://github.com/laughingman7743</organizationURL>
+                                        <organizationName>The flink-gcp authors</organizationName>
+                                        <organizationURL>https://github.com/flink-gcp</organizationURL>
                                         <inceptionYear>2026</inceptionYear>
                                         <encoding>UTF-8</encoding>
                                     </transformer>

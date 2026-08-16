@@ -503,8 +503,20 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
 
 ## Licensing and provenance
 
-- Files written for this project carry the plain Apache-2.0 header
-  (`Copyright 2026 laughingman7743`). Files copied from Apache projects keep their ASF header.
+- **Two copyright holders, on purpose.** Source files name the author
+  (`Copyright 2026 laughingman7743`); everything a *published artifact* declares names the project
+  (`Copyright 2026 The flink-gcp authors`). The artifact side is stated twice and both must move
+  together: the root POM's `<organization>`, which maven-remote-resources interpolates into the
+  `META-INF/NOTICE`, the `META-INF/DEPENDENCIES` and the `Implementation-Vendor` /
+  `Specification-Vendor` manifest entries of every module jar, and which maven-javadoc's default
+  `bottom` renders into the published API reference; and the shade transformer's `organizationName`,
+  which the five SQL uber-jars aggregate. Only the second is tested —
+  `AbstractSqlConnectorPackagingITCase` pins the uber-jar's holder line, so `<organization>` can
+  drift alone and nothing reports it. `check-notice.py` compares each `NOTICE.template` against its
+  generated `META-INF/NOTICE` and never against the POM, so the eleven NOTICE files are held to
+  each other and to nothing else
+- Files written for this project carry the plain Apache-2.0 header. Files copied from Apache
+  projects keep their ASF header.
   Apache RAT enforces the approved licence families over the whole tree (configuration overridden
   in the root POM; new unheaderable file types need a RAT exclude there), but its matcher identifies
   a family from one distinctive line and therefore cannot prove that the surrounding notice is
