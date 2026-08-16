@@ -238,9 +238,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   exist here, and staying clear of them is why `NOTICE` needs no entry. Hugo's own built-ins
   (`relref`, `param`) are fine; prefer `{{< param BookRepo >}}` over hardcoding the repository URL
 - Syntax highlighting is class-based (`markup.highlight.noClasses = false`) with the palettes
-  selected by `prefers-color-scheme` in `docs/assets/_custom.scss`, which hugo-book bundles into
-  its own stylesheet. Regenerate the palettes with `just docs-chroma`, which is where the two
-  `hugo gen chromastyles` style names live (verbatim output; apache-rat excludes them)
+  selected in `docs/assets/_custom.scss`, which hugo-book bundles into its own stylesheet.
+  Regenerate the palettes with `just docs-chroma`, which is where the two `hugo gen chromastyles`
+  style names live (verbatim output; apache-rat excludes them). Each palette is imported **twice**:
+  once under `prefers-color-scheme` for the reader whose scheme the OS decides, once under
+  `[data-theme]` for the reader who used the colour-scheme toggle. Keep the two arms mutually
+  exclusive — the media-query arm is scoped with `:root:not([data-theme])` — because the generated
+  files are not symmetric, and a selector one palette omits will otherwise keep painting from the
+  other
 - **New or materially changed runnable Java guidance opts into one compiled source with
   `java-snippet`** (#658; ADR-0115). The source lives under
   `flink-connector-gcp-docs-validation/src/test/java`, the shortcode renders the exact tagged

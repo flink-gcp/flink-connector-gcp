@@ -1,0 +1,74 @@
+{{/*
+Copyright 2026 laughingman7743
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{- /*
+  The colour-scheme control, at the top right of the page.
+
+  This partial rather than inject/toc-before, which is where the theme's own
+  right-hand column starts: docs/toc.html is rendered twice, once for the
+  desktop column and once inside the mobile header's collapsed aside, so a
+  button placed there exists twice in every document and is two taps deep on a
+  phone. This one renders once, on every page, and is visible immediately at
+  either width.
+
+  Both states are rendered and one is hidden in CSS, so the button stays
+  correct without JavaScript writing into it — which matters because the script
+  runs in <head>, before this markup exists.
+
+  The icons are decorative. The accessible name comes from the visually-hidden
+  label beside them, and it is a verb phrase rather than the bare name of a
+  scheme: "Dark theme, button" cannot tell a screen-reader user whether that is
+  the scheme they are in or the one they would get, and a sighted user resolves
+  that ambiguity from the page itself, so the ambiguity would land only on the
+  reader with no other cue.
+
+  The shapes are drawn here rather than added under assets/icons/ beside the
+  theme's own Material-style icons: a crescent and a disc with eight rays are
+  geometry, and taking an icon set into this repository would owe provenance and
+  NOTICE entries that two shapes do not justify. They take `currentColor`, so
+  they follow the theme without the `--icon-filter` inversion the theme applies
+  to its own icons.
+*/ -}}
+<div class="book-theme">
+  <button class="book-theme-toggle" type="button">
+    {{- /* A disc with a second disc masked out of it. The arc-flag form of the
+           same crescent is shorter and was tried first: it rendered as a
+           lopsided ring, because the subtracted circle ran outside the viewBox
+           and was clipped to a straight edge. A mask has no flags to get wrong
+           and keeps both circles' geometry legible. */ -}}
+    <svg class="book-theme-icon book-theme-to-dark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <mask id="book-theme-crescent">
+        <rect width="24" height="24" fill="white" />
+        <circle cx="20" cy="6" r="9.5" fill="black" />
+      </mask>
+      <circle cx="12" cy="12" r="9" fill="currentColor" mask="url(#book-theme-crescent)" />
+    </svg>
+    <svg class="book-theme-icon book-theme-to-light" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="4.6" fill="currentColor" />
+      <g stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="12" y1="1.6" x2="12" y2="4" />
+        <line x1="12" y1="20" x2="12" y2="22.4" />
+        <line x1="1.6" y1="12" x2="4" y2="12" />
+        <line x1="20" y1="12" x2="22.4" y2="12" />
+        <line x1="4.6" y1="4.6" x2="6.3" y2="6.3" />
+        <line x1="17.7" y1="17.7" x2="19.4" y2="19.4" />
+        <line x1="4.6" y1="19.4" x2="6.3" y2="17.7" />
+        <line x1="17.7" y1="6.3" x2="19.4" y2="4.6" />
+      </g>
+    </svg>
+    <span class="book-theme-label book-theme-to-dark">{{ partial "docs/text/i18n" "Switch to the dark theme" }}</span>
+    <span class="book-theme-label book-theme-to-light">{{ partial "docs/text/i18n" "Switch to the light theme" }}</span>
+  </button>
+</div>

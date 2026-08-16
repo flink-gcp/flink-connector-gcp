@@ -15,23 +15,175 @@
 // Site-level styles. hugo-book imports this file from its own book.scss, so it
 // is bundled into the single stylesheet the theme already ships.
 
+// --- the reader's colour scheme -------------------------------------------
+//
+// Three things have to agree on which scheme is showing: the theme's own
+// colours, the syntax-highlighting palette, and the label on the toggle. Each
+// is written twice below, once for "the OS decides" and once for "the reader
+// decided", and the second wins by specificity rather than by order — the
+// theme applies `theme-auto` to a bare `:root` (0,1,0), and every rule keyed on
+// `[data-theme]` is at least one step above it. That is why this file may stay
+// where hugo-book imports it, ahead of the `:root` block it overrides.
+//
+// `data-theme` is absent only when the reader has no JavaScript; theme-toggle.js
+// resolves the OS preference to a concrete value on every load. So the
+// media-query half is not dead code for a scheme nobody uses — it is the whole
+// experience for that reader, minus the button.
+//
+// The two mixins named below are the pair `BookTheme = "auto"` resolves to.
+// hugo-book ships other palette families (ayu, catppuccin, contrast) under
+// assets/plugins/_themes.scss; moving hugo.toml to one of those without editing
+// here would leave the toggle switching readers into *this* pair while `:root`
+// used the configured one, and nothing would report it.
+
+:root[data-theme="light"] {
+  @include theme-light;
+  // Native scrollbars, form controls and the like follow this rather than the
+  // theme's custom properties. hugo-book ships `<meta name="color-scheme"
+  // content="light dark">`, which defers to the OS — correct until the reader
+  // overrides it, at which point a forced-dark page keeps light scrollbars.
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  @include theme-dark;
+  color-scheme: dark;
+}
+
 // Syntax highlighting follows the reader's colour scheme the way the rest of
 // the theme does under BookTheme = "auto". Hugo's default inlines one fixed
 // palette into every code block, which leaves dark code sitting on a light
 // page; instead the highlighter emits CSS classes
 // (markup.highlight.noClasses = false) and the two palettes below are selected
-// by the same media query the theme uses for its own colours.
+// the same way the theme's own colours are.
 //
 // Both files are verbatim generator output. Regenerate them with
 // `just docs-chroma`, which is where the two style names are set — do not edit
 // them, and do not repeat the style names here.
-// Both imports are scoped: the light palette carries a few selectors the dark
-// one does not (`.chroma .p`, `.chroma .na`), which would otherwise leak
-// near-black punctuation onto the dark background.
+//
+// **Exactly one palette may be live at a time, and that is what the
+// `:not([data-theme])` below buys.** The two files are not symmetric: the light
+// one carries selectors the dark one has no rule for at all (`.chroma .p`,
+// `.chroma .na` — punctuation and, for Java, every method name after a dot),
+// which the dark palette leaves to inherit from `.chroma`. Specificity does not
+// help there, because there is nothing to outrank: an explicit declaration from
+// a still-matching light media query beats the dark palette's inheritance. Drop
+// the guard and a reader on a light OS who asks for dark gets `#1f2328`
+// punctuation on a `#0d1117` block — 1.18:1, i.e. invisible, across the 592
+// `.p` and 205 `.na` occurrences this site renders. Measured, on the first
+// version of this file.
+//
+// Each palette is therefore imported twice: once for the reader whose scheme
+// the OS decides, once for the reader who has decided. That is the price of the
+// generated files being flat `.chroma` rules with no hook to re-target.
 @media not all and (prefers-color-scheme: dark) {
-  @import "chroma-light";
+  :root:not([data-theme]) {
+    @import "chroma-light";
+  }
 }
 
 @media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    @import "chroma-dark";
+  }
+}
+
+:root[data-theme="light"] {
+  @import "chroma-light";
+}
+
+:root[data-theme="dark"] {
   @import "chroma-dark";
+}
+
+// Nesting the palettes raised every `.chroma` rule by two class-steps, which
+// puts the generated `.chroma` background (0,3,0) above the theme's
+// `.markdown pre` (0,1,1) that used to win. Left alone, that changes the
+// code-block background for every reader with JavaScript — not only for the one
+// who touches the toggle — and leaves block code no longer matching inline
+// code, inside a border drawn for the old colour. Restore the theme's own.
+:root[data-theme] .markdown {
+  pre.chroma,
+  pre .chroma {
+    background-color: var(--gray-100);
+  }
+}
+
+// --- the toggle ------------------------------------------------------------
+//
+// Sits at the top right of the page, above the article and level with the
+// start of the table of contents. Hidden until theme-toggle.js announces
+// itself, because without it the button is the one control on the page that
+// cannot do anything.
+.book-theme {
+  display: none;
+}
+
+.book-js .book-theme {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.book-theme-toggle {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 0.25rem;
+  color: var(--body-font-color);
+  cursor: pointer;
+  display: flex;
+  // Wider than the icon so the tap target clears the 24px a pointer needs,
+  // while the icon itself stays the size of the theme's own header icons.
+  padding: 0.4rem;
+}
+
+.book-theme-toggle:hover {
+  background: var(--gray-100);
+}
+
+// The theme sets no focus style of its own on this element, and removing the
+// border above would otherwise leave keyboard users with nothing to follow.
+.book-theme-toggle:focus-visible {
+  outline: 2px solid var(--color-link);
+  outline-offset: 2px;
+}
+
+.book-theme-icon {
+  height: 1.25rem;
+  width: 1.25rem;
+}
+
+// The accessible name. Kept in the document rather than replaced by an
+// aria-label so that the name and the icon are chosen by the same rule below
+// and cannot drift apart.
+.book-theme-label {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+// The button names the scheme a click switches *to*, so exactly one icon and
+// one label are ever in the document.
+.book-theme-to-light {
+  display: none;
+}
+
+:root[data-theme="dark"] {
+  .book-theme-to-light {
+    display: block;
+  }
+
+  .book-theme-to-dark {
+    display: none;
+  }
+
+  .book-theme-label.book-theme-to-light {
+    position: absolute;
+  }
 }
