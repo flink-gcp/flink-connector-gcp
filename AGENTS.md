@@ -114,7 +114,8 @@ green; use the clean-state procedures in that guide for such changes.
 - Use `gh` for GitHub operations. Do not push directly to `main` or create an issue without the
   user's routing decision.
 - Before every PR-branch push, use `$push-pr-branch`: fetch, rebase onto `origin/main`, squash only
-  after rebasing, and inspect `git diff --diff-filter=D --name-only origin/main`.
+  after rebasing, and inspect `git diff --diff-filter=D --name-only origin/main`. A PR closes its
+  issue with an unformatted `Closes #N`, checked with `closingIssuesReferences`, never by eye.
 - After creating the draft PR, run `$self-review`, apply verified findings, push fixes, and then run
   `$self-review-round-two` when its trigger applies. Record findings and reasoned deferrals on the
   PR. Re-run affected tests after review changes.
