@@ -41,7 +41,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -60,7 +59,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     @Nullable private String changeStreamName;
     @Nullable private SpannerChangeStreamDeserializationSchema<T> deserializer;
     private StartPosition startPosition = StartPosition.latest();
-    private Optional<StartPosition> resumeFallback = Optional.empty();
+    @Nullable private StartPosition resumeFallback;
     private Duration absentRetentionFallback = DEFAULT_ABSENT_RETENTION_FALLBACK;
     private Duration heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
     private SpannerRpcPriority rpcPriority = SpannerRpcPriority.HIGH;
@@ -78,11 +77,26 @@ public final class SpannerChangeStreamSourceBuilder<T> {
 
     SpannerChangeStreamSourceBuilder() {}
 
+    /**
+     * Sets the database holding the change stream. Required.
+     *
+     * @param database the database
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> database(SpannerDatabase database) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         return this;
     }
 
+    /**
+     * Sets the change stream to read. Required.
+     *
+     * <p>The name is the one the {@code CREATE CHANGE STREAM} statement gave it; the source calls
+     * the read function Spanner generates for it.
+     *
+     * @param changeStreamName the change stream name, not blank and without surrounding whitespace
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> changeStreamName(String changeStreamName) {
         Preconditions.checkNotNull(changeStreamName, "changeStreamName must not be null");
         Preconditions.checkArgument(
@@ -95,6 +109,15 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets the schema turning each data-change record into output records. Required.
+     *
+     * <p>Zero or more outputs per record, collected synchronously; see the schema's own
+     * documentation for what emitting nothing means.
+     *
+     * @param deserializer the deserialization schema
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> deserializer(
             SpannerChangeStreamDeserializationSchema<T> deserializer) {
         this.deserializer =
@@ -102,17 +125,36 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets where a fresh stream begins. Optional; defaults to {@link StartPosition#latest()}.
+     *
+     * <p>Resolved once, on the coordinator. It is ignored on a restore, where the checkpointed
+     * partition ledger decides — see {@link #resumeFallback(StartPosition)} for what happens when
+     * that ledger has expired.
+     *
+     * @param startPosition the start position
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> startPosition(StartPosition startPosition) {
         this.startPosition =
                 Preconditions.checkNotNull(startPosition, "startPosition must not be null");
         return this;
     }
 
+    /**
+     * Sets where to restart when a restored partition position has fallen outside the stream's
+     * retention. Optional; unset means such a restore <em>fails</em>.
+     *
+     * <p>Setting it is a decision to lose data rather than stop: the coordinator discards the whole
+     * checkpointed ledger and starts one new query from here, so the unavailable interval is never
+     * read and records at or after this position can be delivered again.
+     *
+     * @param resumeFallback the fallback start position
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> resumeFallback(StartPosition resumeFallback) {
         this.resumeFallback =
-                Optional.of(
-                        Preconditions.checkNotNull(
-                                resumeFallback, "resumeFallback must not be null"));
+                Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
         return this;
     }
 
@@ -120,6 +162,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * Sets the retention used when {@code INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS} has no explicit
      * retention row. The default is seven days. It must be longer than the one-minute retention
      * safety margin used when resolving the earliest readable timestamp.
+     *
+     * @param fallback the retention to assume
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> absentRetentionFallback(Duration fallback) {
         Preconditions.checkNotNull(fallback, "fallback must not be null");
@@ -128,7 +173,16 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
-    /** Sets the service heartbeat interval, from one second through five minutes. */
+    /**
+     * Sets the service heartbeat interval. Optional; defaults to two seconds.
+     *
+     * <p>Heartbeats are what advance a quiet partition's watermark, so this is the upper bound on
+     * how long the source's event time can stand still while the stream is idle.
+     *
+     * @param interval the heartbeat interval, from one second through five minutes and expressible
+     *     in whole milliseconds
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> heartbeatInterval(Duration interval) {
         Preconditions.checkNotNull(interval, "interval must not be null");
         Preconditions.checkArgument(
@@ -146,6 +200,16 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets the priority Spanner schedules the partition queries at. Optional; unset leaves the
+     * service's own handling in place, which is the same as {@code HIGH}.
+     *
+     * <p>Applies to every partition query in both dialects. Change Streams queries do not use Data
+     * Boost, so this is the only lever over what they cost the instance.
+     *
+     * @param rpcPriority the priority
+     * @return this builder
+     */
     public SpannerChangeStreamSourceBuilder<T> rpcPriority(SpannerRpcPriority rpcPriority) {
         this.rpcPriority = Preconditions.checkNotNull(rpcPriority, "rpcPriority must not be null");
         return this;
@@ -156,6 +220,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      *
      * <p>The default is eight. Job-wide configured capacity is source parallelism multiplied by
      * this value; it is a connector bound, not a published Spanner quota.
+     *
+     * @param maximum the per-subtask query bound, positive
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> maxConcurrentQueriesPerSubtask(int maximum) {
         Preconditions.checkArgument(maximum > 0, "maximum must be positive, but was %s", maximum);
@@ -169,6 +236,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      *
      * <p>An empty collection disables this filter. It is mutually exclusive with {@link
      * #tableExcludeList(Collection)}.
+     *
+     * @param patterns the Java regular expressions, each matching a complete table name
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> tableIncludeList(Collection<String> patterns) {
         this.tableIncludeList = compilePatterns(patterns, "tableIncludeList");
@@ -181,6 +251,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      *
      * <p>An empty collection disables this filter. It is mutually exclusive with {@link
      * #tableIncludeList(Collection)}.
+     *
+     * @param patterns the Java regular expressions, each matching a complete table name
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> tableExcludeList(Collection<String> patterns) {
         this.tableExcludeList = compilePatterns(patterns, "tableExcludeList");
@@ -193,6 +266,10 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      *
      * <p>Primary-key columns are always retained. An empty collection disables this filter. It is
      * mutually exclusive with {@link #columnExcludeList(Collection)}.
+     *
+     * @param patterns the Java regular expressions, each matching a complete {@code table.column}
+     *     identifier
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> columnIncludeList(Collection<String> patterns) {
         this.columnIncludeList = compilePatterns(patterns, "columnIncludeList");
@@ -205,6 +282,10 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      *
      * <p>Primary-key columns are always retained. An empty collection disables this filter. It is
      * mutually exclusive with {@link #columnIncludeList(Collection)}.
+     *
+     * @param patterns the Java regular expressions, each matching a complete {@code table.column}
+     *     identifier
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> columnExcludeList(Collection<String> patterns) {
         this.columnExcludeList = compilePatterns(patterns, "columnExcludeList");
@@ -216,6 +297,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      *
      * <p>The default is {@code false}, which delivers the record with empty projected value objects
      * so that transaction activity remains visible.
+     *
+     * @param skip whether to skip such a record
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> skipMessagesWithoutChange(boolean skip) {
         this.skipMessagesWithoutChange = skip;
@@ -229,6 +313,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * <p>The JobManager reads the file when the coordinator initializes, and each TaskManager reads
      * it when its reader opens. Only the path is serialized. This setting cannot be combined with
      * {@link #emulatorEndpoint(String)}, whose plaintext channel carries no credentials.
+     *
+     * @param serviceAccountKeyFile the service-account JSON key-file path
+     * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> serviceAccountKeyFile(String serviceAccountKeyFile) {
         String checked =
@@ -239,6 +326,18 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Points the source at a Spanner emulator, over a plaintext channel with no credentials. Never
+     * production.
+     *
+     * <p>The endpoint is parsed here rather than when the source connects, so a malformed value
+     * fails where the job is assembled instead of on a TaskManager.
+     *
+     * @param emulatorEndpoint the emulator endpoint as {@code host:port}
+     * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
+     */
     public SpannerChangeStreamSourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
         this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
         return this;
@@ -308,7 +407,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                         changeStreamName,
                         deserializer,
                         startPosition,
-                        resumeFallback.orElse(null),
+                        resumeFallback,
                         absentRetentionFallback,
                         heartbeatInterval.toMillis(),
                         rpcPriority,
