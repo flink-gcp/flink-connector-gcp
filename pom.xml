@@ -142,7 +142,7 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
-        <junit5.version>5.13.3</junit5.version>
+        <junit5.version>5.14.4</junit5.version>
         <testcontainers.version>1.21.4</testcontainers.version>
         <!-- protoc, for the test-only .proto sources of the BigQuery module. Not an
              exception to "Google Cloud library versions come only from libraries-bom":
