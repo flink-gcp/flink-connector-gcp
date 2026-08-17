@@ -45,6 +45,7 @@ import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSplitRea
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 
+import java.io.IOException;
 import java.util.function.Supplier;
 
 /**
@@ -129,7 +130,7 @@ public class SpannerBatchReadSource<T>
         return new SpannerPartitionSplitEnumerator(context, config, checkpoint);
     }
 
-    private void loadEnumeratorCredentials() throws java.io.IOException {
+    private void loadEnumeratorCredentials() throws IOException {
         if (config.getPlanner() instanceof BatchClientPartitionPlanner) {
             ((BatchClientPartitionPlanner) config.getPlanner()).loadCredentials();
         }

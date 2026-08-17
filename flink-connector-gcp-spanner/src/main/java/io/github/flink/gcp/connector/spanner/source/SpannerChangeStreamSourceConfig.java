@@ -31,6 +31,7 @@ import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 
 /** Immutable configuration assembled by {@link SpannerChangeStreamSourceBuilder}. */
 @Internal
@@ -38,20 +39,20 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    final SpannerDatabase database;
-    final String changeStreamName;
-    final SpannerChangeStreamDeserializationSchema<T> deserializer;
-    final StartPosition startPosition;
-    @Nullable final StartPosition resumeFallback;
-    final Duration absentRetentionFallback;
-    final long heartbeatMillis;
-    final SpannerRpcPriority rpcPriority;
-    final int maxConcurrentQueriesPerSubtask;
-    @Nullable final String serviceAccountKeyFile;
-    final SpannerChangeStreamRecordFilter recordFilter;
-    @Nullable final Instant endTimestamp;
-    final SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
-    final SpannerChangeStreamQueryClientFactory queryClientFactory;
+    private final SpannerDatabase database;
+    private final String changeStreamName;
+    private final SpannerChangeStreamDeserializationSchema<T> deserializer;
+    private final StartPosition startPosition;
+    @Nullable private final StartPosition resumeFallback;
+    private final Duration absentRetentionFallback;
+    private final long heartbeatMillis;
+    private final SpannerRpcPriority rpcPriority;
+    private final int maxConcurrentQueriesPerSubtask;
+    @Nullable private final String serviceAccountKeyFile;
+    private final SpannerChangeStreamRecordFilter recordFilter;
+    @Nullable private final Instant endTimestamp;
+    private final SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
+    private final SpannerChangeStreamQueryClientFactory queryClientFactory;
 
     SpannerChangeStreamSourceConfig(
             SpannerDatabase database,
@@ -100,8 +101,8 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         return startPosition;
     }
 
-    public java.util.Optional<StartPosition> getResumeFallback() {
-        return java.util.Optional.ofNullable(resumeFallback);
+    public Optional<StartPosition> getResumeFallback() {
+        return Optional.ofNullable(resumeFallback);
     }
 
     public Duration getAbsentRetentionFallback() {
@@ -120,8 +121,8 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         return maxConcurrentQueriesPerSubtask;
     }
 
-    public java.util.Optional<String> getServiceAccountKeyFile() {
-        return java.util.Optional.ofNullable(serviceAccountKeyFile);
+    public Optional<String> getServiceAccountKeyFile() {
+        return Optional.ofNullable(serviceAccountKeyFile);
     }
 
     public SpannerChangeStreamRecordFilter getRecordFilter() {

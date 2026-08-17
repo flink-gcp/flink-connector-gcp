@@ -63,13 +63,15 @@ public final class SpannerChangeStreamSource<T>
 
     @Override
     public Boundedness getBoundedness() {
-        return config.endTimestamp == null ? Boundedness.CONTINUOUS_UNBOUNDED : Boundedness.BOUNDED;
+        return config.getEndTimestamp() == null
+                ? Boundedness.CONTINUOUS_UNBOUNDED
+                : Boundedness.BOUNDED;
     }
 
     @Override
     public SourceReader<T, SpannerChangeStreamPartitionSplit> createReader(
             SourceReaderContext context) throws Exception {
-        config.deserializer.open(new ReaderInitializationContext(context));
+        config.getDeserializer().open(new ReaderInitializationContext(context));
         return new SpannerChangeStreamReader<>(context, config);
     }
 
@@ -92,11 +94,11 @@ public final class SpannerChangeStreamSource<T>
             SpannerChangeStreamEnumeratorState restored) {
         return new SpannerChangeStreamSplitEnumerator(
                 context,
-                config.coordinatorClientFactory,
-                config.startPosition,
-                java.util.Optional.ofNullable(config.resumeFallback),
-                config.endTimestamp,
-                config.heartbeatMillis,
+                config.getCoordinatorClientFactory(),
+                config.getStartPosition(),
+                config.getResumeFallback(),
+                config.getEndTimestamp(),
+                config.getHeartbeatMillis(),
                 restored);
     }
 
@@ -113,7 +115,7 @@ public final class SpannerChangeStreamSource<T>
 
     @Override
     public TypeInformation<T> getProducedType() {
-        return config.deserializer.getProducedType();
+        return config.getDeserializer().getProducedType();
     }
 
     private static final class ReaderInitializationContext

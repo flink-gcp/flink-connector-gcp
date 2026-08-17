@@ -41,6 +41,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /** Converts Flink internal values to typed Spanner values. */
 @Internal
@@ -244,7 +245,7 @@ final class RowDataToSpannerValueConverter {
             case PG_JSONB:
                 return Value.pgJsonbArray((List<String>) (List<?>) values);
             case UUID:
-                return Value.uuidArray((List<java.util.UUID>) (List<?>) values);
+                return Value.uuidArray((List<UUID>) (List<?>) values);
             case BYTES:
                 return Value.bytesArray((List<ByteArray>) (List<?>) values);
             case PROTO:
