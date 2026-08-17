@@ -71,7 +71,6 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             BigQueryProtoSerializer<? super T> serializer,
             @Nullable AdditionalFields<? super T> additionalFields,
             @Nullable CdcOptions<? super T> cdcOptions,
-            boolean manageCdcTableCreation,
             CreateDisposition createDisposition,
             TableCreateOptionsProvider tableCreateOptionsProvider,
             CdcTableOptionsProvider cdcTableOptionsProvider,
@@ -105,7 +104,10 @@ public final class BigQuerySinkConfig<T> implements Serializable {
                                 cdcOnly
                                         ? "Failed to add BigQuery CDC metadata to a serialized row"
                                         : "Failed to add fields to a serialized BigQuery row");
-        this.manageCdcTableCreation = manageCdcTableCreation;
+        // Derived, never passed: the only caller could only ever pass this. The *field* still
+        // exists so a job graph serialized before CDC auto-creation keeps Java's false default,
+        // and that path is deserialization, which never runs this constructor.
+        this.manageCdcTableCreation = cdcOptions != null;
         this.createDisposition = createDisposition;
         this.tableCreateOptionsProvider = tableCreateOptionsProvider;
         this.cdcTableOptionsProvider = cdcTableOptionsProvider;

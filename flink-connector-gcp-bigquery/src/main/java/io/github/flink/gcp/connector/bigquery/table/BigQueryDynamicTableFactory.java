@@ -381,24 +381,7 @@ public class BigQueryDynamicTableFactory
                     "A 'bigquery' source table must declare at least one physical column.");
         }
         TableDestination table = query.isPresent() ? null : destination(config, "source");
-        Optional<String> project = config.getOptional(BigQueryConnectorOptions.PROJECT);
-        String parentProject =
-                config.getOptional(BigQueryConnectorOptions.SOURCE_PARENT_PROJECT)
-                        .orElseGet(
-                                () ->
-                                        project.orElseThrow(
-                                                () ->
-                                                        new ValidationException(
-                                                                "A 'bigquery' query source"
-                                                                        + " requires option '"
-                                                                        + BigQueryConnectorOptions
-                                                                                .PROJECT
-                                                                                .key()
-                                                                        + "' or '"
-                                                                        + BigQueryConnectorOptions
-                                                                                .SOURCE_PARENT_PROJECT
-                                                                                .key()
-                                                                        + "'.")));
+        String parentProject = parentProject(config);
         boolean runsQuery = query.isPresent() || materializeViews;
 
         return new BigQueryDynamicSource(
@@ -688,5 +671,33 @@ public class BigQueryDynamicTableFactory
             builder.allowFieldRelaxation();
         }
         return builder.build();
+    }
+
+    /**
+     * Resolves the Storage Read and query billing project.
+     *
+     * <p>{@code source.parent-project} when set, else {@code project}. A direct-table source that
+     * did not name {@code project} has already been rejected by {@code destination(config,
+     * "source")}, so only a query source can reach the failure below.
+     *
+     * @param config the table options
+     * @return the billing project
+     */
+    private static String parentProject(ReadableConfig config) {
+        Optional<String> project = config.getOptional(BigQueryConnectorOptions.PROJECT);
+        Optional<String> parent =
+                config.getOptional(BigQueryConnectorOptions.SOURCE_PARENT_PROJECT);
+        if (parent.isPresent()) {
+            return parent.get();
+        }
+        if (project.isPresent()) {
+            return project.get();
+        }
+        throw new ValidationException(
+                "A 'bigquery' query source requires option '"
+                        + BigQueryConnectorOptions.PROJECT.key()
+                        + "' or '"
+                        + BigQueryConnectorOptions.SOURCE_PARENT_PROJECT.key()
+                        + "'.");
     }
 }

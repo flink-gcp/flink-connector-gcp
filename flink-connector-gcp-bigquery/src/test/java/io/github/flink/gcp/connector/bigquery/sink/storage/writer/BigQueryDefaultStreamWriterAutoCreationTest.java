@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldTyp
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -280,7 +281,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, destination -> options),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -306,7 +307,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         augmentedConfig(),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("computed", CONTEXT);
@@ -336,7 +337,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -361,7 +362,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -383,7 +384,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_NEVER, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -402,7 +403,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_NEVER, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -443,7 +444,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -464,7 +465,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_NEVER, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         assertThatThrownBy(() -> writer.write("aa", CONTEXT))
@@ -485,7 +486,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         2);
 
         writer.write("aa", CONTEXT);
@@ -507,7 +508,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -558,7 +559,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                         config(CreateDisposition.CREATE_IF_NEEDED, null),
                         factory,
                         creator,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         assertThatThrownBy(() -> writer.write("aa", CONTEXT))

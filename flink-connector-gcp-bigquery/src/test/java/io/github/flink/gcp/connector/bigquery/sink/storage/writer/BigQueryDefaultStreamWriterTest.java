@@ -608,7 +608,7 @@ class BigQueryDefaultStreamWriterTest {
                         factory,
                         admin,
                         TestSinkWriterMetricGroup.create(),
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         fastSchedule(3),
                         fastSchedule(3));
 

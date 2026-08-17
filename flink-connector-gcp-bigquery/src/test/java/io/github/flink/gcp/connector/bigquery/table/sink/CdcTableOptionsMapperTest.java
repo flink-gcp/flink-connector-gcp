@@ -71,11 +71,13 @@ class CdcTableOptionsMapperTest {
     }
 
     @Test
-    void reconciliationPolicyDefaultsToVerificationOnly() {
+    void anUnsetReconciliationPolicyLeavesTheSetterUncalled() {
         Configuration config = new Configuration();
 
-        assertThat(CdcTableOptionsMapper.policy(config))
-                .isEqualTo(CdcTableReconciliationPolicy.VERIFY_ONLY);
+        // Null, not the builder's VERIFY_ONLY: the sink null-guards this call, so an unset
+        // option leaves cdcTableReconciliationPolicy(...) uncalled and the builder supplies
+        // its own default. A copy here would be a second home for that default.
+        assertThat(CdcTableOptionsMapper.policy(config)).isNull();
 
         config.set(
                 BigQueryConnectorOptions.SINK_CDC_TABLE_RECONCILIATION,
