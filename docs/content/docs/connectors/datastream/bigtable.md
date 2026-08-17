@@ -1007,7 +1007,7 @@ $470 a month, so each gated class **creates an instance and deletes it afterward
 dies before deleting is swept by the next one — instance names carry their creation time, and
 anything older than two hours is reclaimed. Cleanup disables Change Streams on every table before
 deleting its instance, because Bigtable refuses the instance deletion while retained change data
-exists. The per-class teardown, its startup sweep and the daily sweep all use that order. That is
+exists. The per-class teardown, its startup sweep and the scheduled sweep all use that order. That is
 why nothing in `opentofu/` declares a Bigtable instance, only the API enablement and the grant.
 
 ### Where the emulator differs from the service

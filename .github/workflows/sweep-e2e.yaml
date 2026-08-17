@@ -22,27 +22,35 @@ name: Sweep E2E leftovers
 # Engine lifecycle wrapper stops its version after use. Those guards cannot run
 # after a killed runner, cancelled job or process crash. At $0.65 a node-hour a
 # leaked Bigtable instance is ~$109 over seven days, and a manual-scaling App
-# Engine instance is also billed while serving. This daily workflow is the
+# Engine instance is also billed while serving. This scheduled workflow is the
 # hard-cancellation fallback for all three resource types.
 #
-# Daily, so the worst case is ~$15 rather than ~$109. Detection of everything a
-# sweep cannot foresee is a separate question (a billing budget; see the issue),
-# deliberately not answered here. The cleanup needs no billing permissions or
-# account identifier in the repository.
+# The interval is a priced knob. A leak costs the two-hour staleness threshold
+# plus the wait for the next sweep, which at $0.65 a node-hour is about $3 at
+# this cadence. Below about two hours the threshold dominates the total and
+# further frequency buys almost nothing, which is where this stops; ADR-0119
+# prices the whole range rather than repeating it here. The repository being
+# public is what makes the added runs free; each takes about half a minute.
+# Detection of everything a sweep cannot foresee is a separate question (a
+# billing budget; see the issue), deliberately not answered here. The cleanup
+# needs no billing permissions or account identifier here.
 #
 # No Maven, no JDK: the sweep is a shell script over gcloud. It reads instance
 # prefixes and thresholds from Java and the App Engine identifiers from
 # OpenTofu, so the cleanup paths cannot drift apart.
 on:
   schedule:
-    # Daily, and off the hour and the half hour like every other schedule
-    # here. Clear of e2e.yaml's Saturday 01:17 slot plus its 60-minute ceiling,
-    # but that is tidiness rather than the safety property: what keeps this
-    # from deleting a running E2E instance is the two-hour threshold, which
-    # holds for a workflow_dispatch run at any time of day too. The coupling
-    # that would break it is raising e2e.yaml's timeout-minutes past two hours,
-    # which is why the note beside that ceiling says what depends on it.
-    - cron: '23 6 * * *'
+    # Every three hours, off the hour and the half hour like every other
+    # schedule here. These slots miss e2e.yaml's Saturday window (01:17 plus a
+    # 60-minute ceiling) by arithmetic rather than by design, and a scheduled
+    # run that drifts could still overlap one. That is safe: what keeps this
+    # from deleting a running E2E instance is the two-hour staleness threshold,
+    # never the timetable, which is also why workflow_dispatch can fire at any
+    # time of day. The coupling that would break it is raising e2e.yaml's
+    # timeout-minutes past two hours, which is why the note beside that ceiling
+    # says what depends on it. A local gated run has no such ceiling, so one
+    # left running past two hours can have its instance swept from under it.
+    - cron: '23 */3 * * *'
   workflow_dispatch:
 
 concurrency:

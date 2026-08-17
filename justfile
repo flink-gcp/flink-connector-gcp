@@ -265,7 +265,7 @@ worktree-env:
 # This costs real money beyond runner minutes, which the BigQuery and Pub/Sub
 # halves do not: the Cloud Tasks suite briefly starts its persistent B1 App
 # Engine version, while Bigtable and Spanner create one ephemeral instance per
-# gated class. A killed run is bounded by the daily sweep rather than left
+# gated class. A killed run is bounded by the scheduled sweep rather than left
 # standing indefinitely; normal Cloud Tasks completion verifies zero running
 # App Engine instances before either of the longer suites begins.
 #

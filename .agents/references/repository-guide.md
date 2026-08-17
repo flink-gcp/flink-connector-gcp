@@ -77,8 +77,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   after a hard cancellation: stale Bigtable and Spanner instances are deleted, and the fixed Cloud
   Tasks App Engine version is stopped. It reads the owned identifiers and thresholds from source,
   treats an unreadable source or listing as an error, attempts every service independently and
-  reports the worst status. The daily schedule, source-derived values, shell failure boundaries
-  and billing-account boundary are recorded in ADR-0119
+  reports the worst status. The schedule and how its interval is priced, source-derived values,
+  shell failure boundaries and billing-account boundary are recorded in ADR-0119
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in

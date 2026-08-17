@@ -80,7 +80,7 @@ limitations under the License.
   paused before selectively resuming them for dispatch.
   Its manually scaled App Engine fixture is started only around that suite and is stopped and
   verified at zero instances on success, failure or handled interruption.
-  The daily sweep restores that state after a hard cancellation that cannot run shell cleanup.
+  The scheduled sweep restores that state after a hard cancellation that cannot run shell cleanup.
 - Production uses application-default credentials unless `serviceAccountKeyFile(path)` selects a
   service-account JSON key. Only the path enters the job graph; each writer loads and scopes the
   key when it starts, so every eligible TaskManager must see the same path. Missing, malformed and
