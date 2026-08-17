@@ -248,8 +248,9 @@ public final class SubscriptionCreateOptions implements Serializable {
          * a sub-second remainder would be silently dropped. Defaults to the Pub/Sub default (10 s).
          *
          * <p>This is only the starting deadline. The client library extends it while a message is
-         * outstanding, up to {@link PubSubSubscriberOptions.Builder#maxAckExtensionPeriod}, which
-         * is what actually has to cover the source's checkpoint interval.
+         * outstanding, up to {@link
+         * PubSubSubscriberOptions.Builder#maxAckExtensionPeriod(Duration)}, which is what actually
+         * has to cover the source's checkpoint interval.
          *
          * @param ackDeadline the acknowledgement deadline
          * @return this builder

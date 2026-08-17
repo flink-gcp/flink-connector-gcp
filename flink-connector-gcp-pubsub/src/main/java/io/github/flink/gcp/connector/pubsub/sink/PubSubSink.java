@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.annotation.Public;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+
 /**
  * Entry point for building a Pub/Sub sink.
  *
@@ -26,9 +28,10 @@ import org.apache.flink.annotation.Public;
  * outstanding publishes at every checkpoint barrier.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
- * Under a dropping policy configured through {@link PubSubSinkBuilder#failedMessageHandler}, a
- * completed checkpoint means every record up to the barrier was either published, skipped by the
- * serializer, or handed to that handler.
+ * Under a dropping policy configured through {@link
+ * PubSubSinkBuilder#failedMessageHandler(FailureHandler)}, a completed checkpoint means every
+ * record up to the barrier was either published, skipped by the serializer, or handed to that
+ * handler.
  *
  * <p>Example:
  * <!-- javadoc-example file="JavadocPubSubExamples.java" tag="sink" -->
