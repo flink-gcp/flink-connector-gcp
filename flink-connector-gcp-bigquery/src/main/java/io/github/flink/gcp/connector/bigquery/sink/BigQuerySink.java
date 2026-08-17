@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Public;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+
 /**
  * Entry point for building a BigQuery sink.
  *
@@ -34,9 +36,9 @@ import org.apache.flink.annotation.Public;
  * </ul>
  *
  * <p>Those semantics assume the default {@code FailureHandler.failJob()} policy. Under a dropping
- * policy configured through {@link BigQuerySinkBuilder#failureHandler}, they cover every record
- * except those handed to that handler, which are never written at all. A record the serializer
- * skips by returning {@code null} is written nowhere either, under any policy.
+ * policy configured through {@link BigQuerySinkBuilder#failureHandler(FailureHandler)}, they cover
+ * every record except those handed to that handler, which are never written at all. A record the
+ * serializer skips by returning {@code null} is written nowhere either, under any policy.
  *
  * <p>Write methods that are not implemented yet are rejected by {@link BigQuerySinkBuilder#build()}
  * with an {@link UnsupportedOperationException}.

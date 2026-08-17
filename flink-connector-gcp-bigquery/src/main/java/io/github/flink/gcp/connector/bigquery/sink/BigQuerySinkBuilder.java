@@ -131,8 +131,9 @@ public class BigQuerySinkBuilder<T> {
      *
      * <p>The fields are added to protobuf rows and to the physical BigQuery schema used by every
      * write method for table creation and schema reconciliation. When this method is not called, it
-     * adds no fields or provider calls. If no other row decorator such as {@link #cdcOptions} is
-     * configured, the sink uses the serializer's schema, descriptor, and row bytes unchanged.
+     * adds no fields or provider calls. If no other row decorator such as {@link
+     * #cdcOptions(CdcOptions)} is configured, the sink uses the serializer's schema, descriptor,
+     * and row bytes unchanged.
      *
      * @param additionalFields ordered physical fields to append
      * @return this builder
