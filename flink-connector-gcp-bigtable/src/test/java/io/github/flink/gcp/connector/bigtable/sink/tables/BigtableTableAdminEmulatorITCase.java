@@ -76,7 +76,8 @@ class BigtableTableAdminEmulatorITCase {
         admin =
                 new BigtableTableAdmin(
                         EmulatorEndpoint.parse(
-                                EMULATOR.getHost() + ":" + EMULATOR.getEmulatorPort()));
+                                EMULATOR.getHost() + ":" + EMULATOR.getEmulatorPort(),
+                                "emulatorEndpoint"));
     }
 
     @AfterAll

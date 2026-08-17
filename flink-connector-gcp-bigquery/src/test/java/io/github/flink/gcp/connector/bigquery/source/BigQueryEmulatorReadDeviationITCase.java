@@ -166,12 +166,13 @@ class BigQueryEmulatorReadDeviationITCase extends AbstractBigQuerySourceEmulator
     }
 
     private static ReadSessionCreator sessionCreator() {
-        return new ReadClientSessionCreator(EmulatorEndpoint.parse(grpcEndpoint()));
+        return new ReadClientSessionCreator(
+                EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"));
     }
 
     private static RowStreamOpener streamOpener() {
         return new ReadClientRowStreamOpener(
-                EmulatorEndpoint.parse(grpcEndpoint()),
+                EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"),
                 BigQuerySourceBuilder.DEFAULT_RETRY_MAX_ATTEMPTS);
     }
 

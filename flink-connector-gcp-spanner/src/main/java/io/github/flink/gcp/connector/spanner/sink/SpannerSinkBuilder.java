@@ -154,7 +154,7 @@ public class SpannerSinkBuilder<T> {
      *     1..65535
      */
     public SpannerSinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
-        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint");
         return this;
     }
 

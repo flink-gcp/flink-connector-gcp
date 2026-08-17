@@ -326,7 +326,9 @@ class PubSubPausedSplitBufferITCase extends AbstractPubSubSourceEmulatorITCase {
                         .build();
         return new PubSubSplitReader(
                 new DefaultSubscriberFactory(
-                        options, OrderingMode.NONE, EmulatorEndpoint.parse(emulatorEndpoint())),
+                        options,
+                        OrderingMode.NONE,
+                        EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint")),
                 ackTracker,
                 options,
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount),

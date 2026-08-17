@@ -41,7 +41,7 @@ class EmulatorEndpointTest {
         "localhost:08086, localhost, 8086",
     })
     void parsesHostAndPort(String endpoint, String host, int port) {
-        EmulatorEndpoint parsed = EmulatorEndpoint.parse(endpoint);
+        EmulatorEndpoint parsed = EmulatorEndpoint.parse(endpoint, "emulatorEndpoint");
 
         assertThat(parsed.getHost()).isEqualTo(host);
         assertThat(parsed.getPort()).isEqualTo(port);
@@ -50,7 +50,7 @@ class EmulatorEndpointTest {
     @ParameterizedTest
     @ValueSource(strings = {"localhost:8086", "127.0.0.1:1", "[::1]:65535"})
     void theTargetIsTheFormItWasParsedFrom(String endpoint) {
-        EmulatorEndpoint parsed = EmulatorEndpoint.parse(endpoint);
+        EmulatorEndpoint parsed = EmulatorEndpoint.parse(endpoint, "emulatorEndpoint");
 
         assertThat(parsed.getTarget()).isEqualTo(endpoint);
         assertThat(parsed).hasToString(endpoint);
@@ -70,7 +70,7 @@ class EmulatorEndpointTest {
                 "",
             })
     void rejectsWhatIsNotHostAndPort(String endpoint) {
-        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint))
+        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint, "emulatorEndpoint"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulatorEndpoint must be host:port, was '" + endpoint + "'");
     }
@@ -81,7 +81,7 @@ class EmulatorEndpointTest {
     void rejectsWhitespaceRatherThanTrimmingIt(String endpoint) {
         // Trimming would accept an endpoint other than the one that was configured, and the stray
         // space is one of the typos issue #235 exists to catch.
-        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint))
+        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint, "emulatorEndpoint"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulatorEndpoint must be host:port, was '" + endpoint + "'");
     }
@@ -99,27 +99,42 @@ class EmulatorEndpointTest {
                 "localhost:99999999999",
             })
     void rejectsAPortThatIsNotOneToSixtyFiveThousand(String endpoint) {
-        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint))
+        assertThatThrownBy(() -> EmulatorEndpoint.parse(endpoint, "emulatorEndpoint"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulatorEndpoint must be host:port, was '" + endpoint + "'");
     }
 
     @Test
     void rejectsNull() {
-        assertThatThrownBy(() -> EmulatorEndpoint.parse(null))
+        assertThatThrownBy(() -> EmulatorEndpoint.parse(null, "emulatorEndpoint"))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("emulatorEndpoint must not be null");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"emulatorRestEndpoint", "emulator-endpoint"})
+    void bothRejectionsNameTheSettingTheyWereGiven(String name) {
+        // Every other assertion in this class passes the one name a fixed message would have
+        // rendered anyway, which is the blind spot that let BigQuery's emulatorRestEndpoint
+        // setters name a setter the caller may never have touched (issue #895). A SQL caller is
+        // the other shape: the name they typed is an option key, not a Java setter.
+        assertThatThrownBy(() -> EmulatorEndpoint.parse("localhost", name))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(name + " must be host:port, was 'localhost'");
+        assertThatThrownBy(() -> EmulatorEndpoint.parse(null, name))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage(name + " must not be null");
+    }
+
     @Test
     void equalsAndHashCodeAreValueBased() {
-        EmulatorEndpoint endpoint = EmulatorEndpoint.parse("localhost:8086");
+        EmulatorEndpoint endpoint = EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint");
 
         assertThat(endpoint)
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8086"))
-                .hasSameHashCodeAs(EmulatorEndpoint.parse("localhost:8086"))
-                .isNotEqualTo(EmulatorEndpoint.parse("localhost:8087"))
-                .isNotEqualTo(EmulatorEndpoint.parse("127.0.0.1:8086"))
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint"))
+                .hasSameHashCodeAs(EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint"))
+                .isNotEqualTo(EmulatorEndpoint.parse("localhost:8087", "emulatorEndpoint"))
+                .isNotEqualTo(EmulatorEndpoint.parse("127.0.0.1:8086", "emulatorEndpoint"))
                 .isNotEqualTo(null)
                 .isNotEqualTo("localhost:8086");
     }
@@ -127,7 +142,7 @@ class EmulatorEndpointTest {
     @Test
     void survivesSerialization() throws Exception {
         // Every consumer holds it inside a sink configuration that ships with the job graph.
-        EmulatorEndpoint endpoint = EmulatorEndpoint.parse("localhost:8086");
+        EmulatorEndpoint endpoint = EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint");
 
         EmulatorEndpoint deserialized =
                 InstantiationUtil.deserializeObject(

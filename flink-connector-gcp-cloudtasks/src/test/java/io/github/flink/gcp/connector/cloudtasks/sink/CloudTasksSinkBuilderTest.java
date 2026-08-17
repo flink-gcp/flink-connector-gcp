@@ -78,7 +78,7 @@ class CloudTasksSinkBuilderTest {
         assertThat(config.getTaskIdExtractor()).isSameAs(extractor);
         assertThat(config.getWriterOptions()).isSameAs(options);
         assertThat(config.getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8123"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8123", "emulatorEndpoint"));
     }
 
     @Test

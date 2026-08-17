@@ -30,7 +30,10 @@ import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests the credential-loading boundary of every Table API source runtime. */
+/**
+ * Tests the boundary where every Table API source runtime turns its configuration into client
+ * settings: the credential file it loads, and the emulator endpoint it parses.
+ */
 class BigtableRuntimeCredentialsTest {
 
     private static final TableDestination TABLE = TableDestination.of("p", "i", "t");
@@ -101,6 +104,47 @@ class BigtableRuntimeCredentialsTest {
                         (String) null);
 
         assertSanitized(() -> input.open(new GenericInputSplit(0, 1)));
+    }
+
+    @Test
+    void theLookupNamesTheOptionKeyWhenTheEndpointIsMalformed() {
+        // These runtimes hold the option's value and parse it when they open, on a TaskManager —
+        // so unlike a builder setter, the name a SQL caller typed is the WITH key (#895).
+        BigtableRowDataLookupFunction function =
+                new BigtableRowDataLookupFunction(
+                        TABLE,
+                        SCHEMA,
+                        null,
+                        "null",
+                        FILTER,
+                        Collections.singletonList(ByteStringRange.unbounded()),
+                        null,
+                        null,
+                        "localhost",
+                        0);
+
+        assertThatThrownBy(() -> function.open(null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulator-endpoint must be host:port, was 'localhost'");
+    }
+
+    @Test
+    void theFullCacheScanNamesTheOptionKeyWhenTheEndpointIsMalformed() {
+        BigtableFullCacheInputFormat input =
+                new BigtableFullCacheInputFormat(
+                        TABLE,
+                        SCHEMA,
+                        null,
+                        "null",
+                        FILTER,
+                        Collections.singletonList(ByteStringRange.unbounded()),
+                        null,
+                        null,
+                        "localhost");
+
+        assertThatThrownBy(() -> input.open(new GenericInputSplit(0, 1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulator-endpoint must be host:port, was 'localhost'");
     }
 
     private static void assertSanitized(ThrowingCall call) {

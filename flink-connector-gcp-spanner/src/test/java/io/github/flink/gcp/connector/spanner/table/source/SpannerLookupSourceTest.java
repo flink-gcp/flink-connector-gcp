@@ -225,6 +225,25 @@ class SpannerLookupSourceTest {
     }
 
     @Test
+    void theLookupNamesTheOptionKeyWhenTheEndpointIsMalformed() {
+        // The lookup holds the option's value and parses it when it opens, on a TaskManager, so
+        // the name a SQL caller typed is the WITH key rather than a Java setter (#895).
+        SpannerDatabaseRowLookup lookup =
+                new SpannerDatabaseRowLookup(
+                        SpannerDatabase.of("p", "i", "d"),
+                        "people",
+                        Collections.singletonList("id"),
+                        "localhost",
+                        null);
+
+        // Through open() rather than settings(), so this also pins that the parse runs before the
+        // client is built — the reason the case needs no emulator and no credentials.
+        assertThatThrownBy(lookup::open)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulator-endpoint must be host:port, was 'localhost'");
+    }
+
+    @Test
     void lookupInjectsRuntimeCredentialsIntoClientSettings() throws Exception {
         SpannerDatabaseRowLookup lookup =
                 new SpannerDatabaseRowLookup(

@@ -364,7 +364,7 @@ class PubSubSinkBuilderTest {
                                 .build();
 
         assertThat(sink.getConfig().getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8085"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8085", "emulatorEndpoint"));
     }
 
     @Test
@@ -409,6 +409,6 @@ class PubSubSinkBuilderTest {
                 .isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(copy.getConfig().getPublisherOptions()).isEqualTo(options);
         assertThat(copy.getConfig().getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8085"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8085", "emulatorEndpoint"));
     }
 }

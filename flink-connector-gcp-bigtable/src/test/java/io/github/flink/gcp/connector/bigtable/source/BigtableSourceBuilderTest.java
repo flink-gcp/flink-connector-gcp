@@ -253,7 +253,8 @@ class BigtableSourceBuilderTest {
     @Test
     void rejectsAMalformedEmulatorEndpointWhereItIsTyped() {
         assertThatThrownBy(() -> BigtableSource.<String>builder().emulatorEndpoint("localhost"))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost'");
     }
 
     @Test

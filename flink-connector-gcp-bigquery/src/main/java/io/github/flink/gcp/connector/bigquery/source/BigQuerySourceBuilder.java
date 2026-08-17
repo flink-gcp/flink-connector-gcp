@@ -507,7 +507,7 @@ public class BigQuerySourceBuilder<T> {
      *     1..65535
      */
     public BigQuerySourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
-        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint");
         return this;
     }
 
@@ -529,7 +529,8 @@ public class BigQuerySourceBuilder<T> {
      *     1..65535
      */
     public BigQuerySourceBuilder<T> emulatorRestEndpoint(String emulatorRestEndpoint) {
-        this.emulatorRestEndpoint = EmulatorEndpoint.parse(emulatorRestEndpoint);
+        this.emulatorRestEndpoint =
+                EmulatorEndpoint.parse(emulatorRestEndpoint, "emulatorRestEndpoint");
         return this;
     }
 

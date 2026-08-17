@@ -144,6 +144,7 @@ class BatchClientPartitionPlannerTest {
     }
 
     private static BatchClientPartitionPlanner planner() {
-        return new BatchClientPartitionPlanner(DATABASE, EmulatorEndpoint.parse("localhost:1"));
+        return new BatchClientPartitionPlanner(
+                DATABASE, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
     }
 }

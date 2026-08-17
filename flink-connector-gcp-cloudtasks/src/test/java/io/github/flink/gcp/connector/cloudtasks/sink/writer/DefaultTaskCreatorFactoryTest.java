@@ -70,7 +70,9 @@ class DefaultTaskCreatorFactoryTest {
         // Nothing here talks to the endpoint: the channel connects lazily, so this covers the
         // plaintext/no-credentials wiring the emulator integration tests (#25) build on.
         TaskCreator creator =
-                new DefaultTaskCreatorFactory(EmulatorEndpoint.parse("localhost:8123")).create();
+                new DefaultTaskCreatorFactory(
+                                EmulatorEndpoint.parse("localhost:8123", "emulatorEndpoint"))
+                        .create();
 
         assertThat(creator).isNotNull();
         creator.close();
@@ -79,7 +81,8 @@ class DefaultTaskCreatorFactoryTest {
     @Test
     void isSerializableIntoTheJobGraph() throws Exception {
         DefaultTaskCreatorFactory factory =
-                new DefaultTaskCreatorFactory(EmulatorEndpoint.parse("localhost:8123"));
+                new DefaultTaskCreatorFactory(
+                        EmulatorEndpoint.parse("localhost:8123", "emulatorEndpoint"));
 
         Object restored =
                 InstantiationUtil.deserializeObject(

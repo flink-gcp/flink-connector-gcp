@@ -878,13 +878,18 @@ class BigQuerySinkBuilderTest {
     @Test
     void rejectsAMalformedEmulatorEndpointWhereItIsWritten() {
         // Parsed in the setter, not at build(): a typo is a client-side error, not a connection
-        // failure once the job has been deployed (#235).
+        // failure once the job has been deployed (#235). The message names the setter that was
+        // called: this is the connector with two of them, and naming the wrong one sends a user
+        // to a value that may be perfectly good (#895).
         assertThatThrownBy(() -> BigQuerySink.builder().emulatorEndpoint("localhost"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("localhost");
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost'");
         assertThatThrownBy(() -> BigQuerySink.builder().emulatorRestEndpoint("localhost:0"))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("localhost:0");
+                .hasMessage("emulatorRestEndpoint must be host:port, was 'localhost:0'");
+        assertThatThrownBy(() -> BigQuerySink.builder().emulatorRestEndpoint(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("emulatorRestEndpoint must not be null");
     }
 
     @Test

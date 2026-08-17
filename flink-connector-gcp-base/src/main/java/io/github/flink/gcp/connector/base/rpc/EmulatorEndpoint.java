@@ -24,14 +24,15 @@ import java.util.Objects;
 
 /**
  * The {@code host:port} of a Google Cloud emulator, parsed and validated once — in the builder
- * setter that accepts it, so a malformed value fails on the client at {@code build()} rather than
- * on a TaskManager after the job has been submitted (issue #235).
+ * setter that accepts it, so a malformed value fails on the client rather than on a TaskManager
+ * after the job has been submitted (issue #235). The exception is the Table API's lookup and
+ * full-cache scan paths, which hold the option's value and parse it when the runtime opens.
  *
- * <p>Every connector's {@code emulatorEndpoint(String)} funnels through {@link #parse(String)}, and
- * this type is the only form the value takes from there on: a client can therefore never be handed
- * an endpoint nothing has checked. Consumers building a channel or gax settings from a target
- * string take {@link #getTarget()}; consumers taking a host and a port separately — the Bigtable
- * client's emulator settings — take {@link #getHost()} and {@link #getPort()}.
+ * <p>Every setter that takes an emulator endpoint funnels through {@link #parse(String, String)},
+ * and this type is the only form the value takes from there on: a client can therefore never be
+ * handed an endpoint nothing has checked. Consumers building a channel or gax settings from a
+ * target string take {@link #getTarget()}; consumers taking a host and a port separately — the
+ * Bigtable client's emulator settings — take {@link #getHost()} and {@link #getPort()}.
  */
 @Internal
 public final class EmulatorEndpoint implements Serializable {
@@ -64,19 +65,25 @@ public final class EmulatorEndpoint implements Serializable {
      * {@link #getHost()} as an unvalidated string that the client resolves, not as a hostname this
      * type has vouched for.
      *
+     * <p>Both rejections name the setting the caller was given, and the name is required rather
+     * than defaulted: a default is how BigQuery's two {@code emulatorRestEndpoint(String)} setters
+     * spent their life naming a setter their caller may never have touched (issue #895).
+     *
      * @param emulatorEndpoint the endpoint as {@code host:port}
+     * @param name the setting to name in the failure messages: the setter a DataStream caller used,
+     *     or the option key a SQL caller wrote
      * @return the parsed endpoint
      * @throws NullPointerException if the endpoint is {@code null}
      * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
      *     1..65535
      */
-    public static EmulatorEndpoint parse(String emulatorEndpoint) {
-        Preconditions.checkNotNull(emulatorEndpoint, "emulatorEndpoint must not be null");
+    public static EmulatorEndpoint parse(String emulatorEndpoint, String name) {
+        Preconditions.checkNotNull(emulatorEndpoint, "%s must not be null", name);
         int separator = emulatorEndpoint.lastIndexOf(':');
         if (separator <= 0
                 || separator == emulatorEndpoint.length() - 1
                 || containsWhitespace(emulatorEndpoint)) {
-            throw malformed(emulatorEndpoint);
+            throw malformed(emulatorEndpoint, name);
         }
         String digits = emulatorEndpoint.substring(separator + 1);
         // Integer.parseInt on its own would accept a sign and any Unicode decimal digit; a port is
@@ -84,7 +91,7 @@ public final class EmulatorEndpoint implements Serializable {
         for (int i = 0; i < digits.length(); i++) {
             char c = digits.charAt(i);
             if (c < '0' || c > '9') {
-                throw malformed(emulatorEndpoint);
+                throw malformed(emulatorEndpoint, name);
             }
         }
         int port;
@@ -92,10 +99,10 @@ public final class EmulatorEndpoint implements Serializable {
             port = Integer.parseInt(digits);
         } catch (NumberFormatException e) {
             // More digits than an int holds; the range check below never sees it.
-            throw malformed(emulatorEndpoint);
+            throw malformed(emulatorEndpoint, name);
         }
         if (port < MIN_PORT || port > MAX_PORT) {
-            throw malformed(emulatorEndpoint);
+            throw malformed(emulatorEndpoint, name);
         }
         return new EmulatorEndpoint(emulatorEndpoint.substring(0, separator), port);
     }
@@ -127,9 +134,9 @@ public final class EmulatorEndpoint implements Serializable {
         return false;
     }
 
-    private static IllegalArgumentException malformed(String emulatorEndpoint) {
+    private static IllegalArgumentException malformed(String emulatorEndpoint, String name) {
         return new IllegalArgumentException(
-                "emulatorEndpoint must be host:port, was '" + emulatorEndpoint + "'");
+                name + " must be host:port, was '" + emulatorEndpoint + "'");
     }
 
     @Override

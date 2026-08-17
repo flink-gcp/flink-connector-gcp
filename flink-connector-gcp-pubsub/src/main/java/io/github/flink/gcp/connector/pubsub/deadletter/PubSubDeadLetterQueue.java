@@ -610,7 +610,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          *     1..65535
          */
         public Builder emulatorEndpoint(String emulatorEndpoint) {
-            this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
+            this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint");
             return this;
         }
 

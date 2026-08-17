@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
+import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 
 import javax.annotation.Nullable;
@@ -164,7 +165,10 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
 
     private BigtableDataSettings settings() throws IOException {
         EmulatorEndpoint endpoint =
-                emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
+                emulatorEndpoint == null
+                        ? null
+                        : EmulatorEndpoint.parse(
+                                emulatorEndpoint, BigtableConnectorOptions.EMULATOR_ENDPOINT.key());
         return BigtableDataClients.settings(
                         destination,
                         appProfileId,

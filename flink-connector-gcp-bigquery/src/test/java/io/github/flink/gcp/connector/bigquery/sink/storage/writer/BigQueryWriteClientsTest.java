@@ -54,7 +54,8 @@ class BigQueryWriteClientsTest {
         // from a bare InstantiatingGrpcChannelProvider.newBuilder() drops back to gRPC's 4 MiB
         // default, which fails only on the emulator and only once a response grows past it.
         BigQueryWriteSettings settings =
-                BigQueryWriteClients.emulatorSettings(EmulatorEndpoint.parse("localhost:9060"));
+                BigQueryWriteClients.emulatorSettings(
+                        EmulatorEndpoint.parse("localhost:9060", "emulatorEndpoint"));
 
         assertThat(provider(settings).toBuilder().getMaxInboundMessageSize())
                 .isEqualTo(Integer.MAX_VALUE);
@@ -63,7 +64,8 @@ class BigQueryWriteClientsTest {
     @Test
     void theEmulatorSettingsDialTheEmulatorWithoutCredentials() throws IOException {
         BigQueryWriteSettings settings =
-                BigQueryWriteClients.emulatorSettings(EmulatorEndpoint.parse("localhost:9060"));
+                BigQueryWriteClients.emulatorSettings(
+                        EmulatorEndpoint.parse("localhost:9060", "emulatorEndpoint"));
 
         assertThat(provider(settings).getEndpoint()).isEqualTo("localhost:9060");
         assertThat(provider(settings).toBuilder().getChannelConfigurator()).isNotNull();

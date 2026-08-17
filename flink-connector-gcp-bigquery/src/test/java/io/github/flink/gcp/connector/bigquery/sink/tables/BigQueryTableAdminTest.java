@@ -847,7 +847,8 @@ class BigQueryTableAdminTest {
     void emulatorOptionsCarryTheHostTheProjectAndNoCredentials() {
         BigQueryOptions options =
                 BigQueryTableAdmin.emulatorOptions(
-                        EmulatorEndpoint.parse("localhost:9050"), DESTINATION.getProject());
+                        EmulatorEndpoint.parse("localhost:9050", "emulatorRestEndpoint"),
+                        DESTINATION.getProject());
 
         assertThat(options.getHost()).isEqualTo("http://localhost:9050");
         // The project id is load-bearing rather than cosmetic: BigQueryOptions refuses to build

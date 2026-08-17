@@ -95,7 +95,8 @@ class ReadClientSessionCreatorTest {
         // mutation: the same-thread interrupt fires at the deadline, gax's retry loop does not
         // abort on it, and the wall clock does not move.
         ReadClientSessionCreator creator =
-                new ReadClientSessionCreator(EmulatorEndpoint.parse("localhost:1"));
+                new ReadClientSessionCreator(
+                        EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
         creator.close();
 
         assertThatThrownBy(() -> creator.create(CreateReadSessionRequest.getDefaultInstance()))

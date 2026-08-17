@@ -65,12 +65,19 @@ limitations under the License.
 - **`EmulatorEndpoint` is the parsed form of every connector's `emulatorEndpoint(String)`, and
   the only form that travels past the setter** ([#235]). It shares `base.rpc` with `StatusCodes`
   — that package is the client seam in both directions, and a one-class package would fail the
-  [#119] layer test. The five setters parse at `build()` time, so a client can never be handed
-  an endpoint nothing has checked. Public signatures stay `String`: the type is `@Internal` and
-  must not leak into a `@PublicEvolving` one. Two parse decisions not to re-litigate:
-  **whitespace is rejected, never trimmed** (a trimmed value is silently a different endpoint,
-  and the stray space is one of the typos [#235] exists to catch), and **the host is split at
-  the last colon and kept verbatim**, so a bracketed IPv6 literal reaches the client unchanged
+  [#119] layer test. Thirteen setters parse in the setter itself, so a client can never be handed
+  an endpoint nothing has checked; the Table API's lookup and full-cache runtimes are the
+  exception, holding the option's value and parsing when they open. Public signatures stay
+  `String`: the type is `@Internal` and must not leak into a `@PublicEvolving` one. **`parse`
+  takes the name of the setting to blame and has no one-argument form** ([#895]): a fixed
+  `emulatorEndpoint` told BigQuery's two `emulatorRestEndpoint` callers that the other setter was
+  malformed, which is the misdirection [#235] moved the parse into the setter to remove, so a
+  builder passes its setter's name and a runtime passes the `WITH` key its user typed — so one
+  SQL table can be told two different names, depending on whether the value reached a builder or
+  a lookup. Two parse decisions not to re-litigate: **whitespace is rejected, never trimmed**
+  (a trimmed value is silently a different endpoint, and the stray space is one of the typos
+  [#235] exists to catch), and **the host is split at the last colon and kept verbatim**, so a
+  bracketed IPv6 literal reaches the client unchanged
   and `getTarget()` reconstructs the input. One message covers every malformed value, which is
   why the old "must not be blank" is gone: a blank endpoint is not a separate kind of mistake.
 
@@ -78,3 +85,4 @@ limitations under the License.
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
 [#197]: https://github.com/laughingman7743/flink-connector-gcp/issues/197
 [#235]: https://github.com/laughingman7743/flink-connector-gcp/issues/235
+[#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895

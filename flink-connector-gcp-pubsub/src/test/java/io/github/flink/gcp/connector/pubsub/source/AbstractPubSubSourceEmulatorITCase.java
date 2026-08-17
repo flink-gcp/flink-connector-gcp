@@ -135,7 +135,8 @@ public abstract class AbstractPubSubSourceEmulatorITCase {
      * given, so it must not receive a harness-owned client.
      */
     public static SubscriptionAdmin newSubscriptionAdmin() {
-        return new PubSubSubscriptionAdmin(EmulatorEndpoint.parse(emulatorEndpoint()));
+        return new PubSubSubscriptionAdmin(
+                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"));
     }
 
     /** Returns whether the topic exists. */

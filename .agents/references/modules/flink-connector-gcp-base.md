@@ -88,7 +88,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   throwable and never walks the cause chain — traversal and classification stay per-connector.
 - `EmulatorEndpoint` is the only form an endpoint travels in past the setter; whitespace is
   rejected, never trimmed, and the host splits at the last colon, kept verbatim. Public
-  signatures stay `String`.
+  signatures stay `String`. **`parse` takes the setting's name and has no one-argument form**
+  (#895): both messages name what the caller was given — the setter for a builder, the option key
+  for the three Table API runtimes that parse when they open — and a defaulted name is exactly how
+  BigQuery's two `emulatorRestEndpoint` setters spent their life naming a setter the user may not
+  have called.
 - `EmulatorChannels` is split **by who owns the channel**, not by settings type (`docs/adr/0081`):
   `plaintextProvider` where the client closes its own channel, `openPlaintextChannel` +
   `fixedProvider` where the caller does — and the ownership difference is load-bearing at three

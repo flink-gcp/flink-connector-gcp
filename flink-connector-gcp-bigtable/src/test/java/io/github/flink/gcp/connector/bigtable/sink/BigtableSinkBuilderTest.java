@@ -64,7 +64,7 @@ class BigtableSinkBuilderTest {
         assertThat(config.getWriterOptions()).isSameAs(writerOptions);
         assertThat(config.getFailedMutationHandler()).isSameAs(handler);
         assertThat(config.getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8086"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint"));
     }
 
     @Test

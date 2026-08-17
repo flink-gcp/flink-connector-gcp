@@ -39,7 +39,8 @@ class SpannerClientsTest {
         // One call does all three, which is why nothing else here configures the emulator — and
         // why every test touching a production path can point at a closed port safely.
         SpannerOptions settings =
-                SpannerClients.settings(DATABASE, EmulatorEndpoint.parse("localhost:9010"));
+                SpannerClients.settings(
+                        DATABASE, EmulatorEndpoint.parse("localhost:9010", "emulatorEndpoint"));
 
         assertThat(settings.getProjectId()).isEqualTo("my-project");
         assertThat(settings.getHost()).isEqualTo("http://localhost:9010");
@@ -72,7 +73,8 @@ class SpannerClientsTest {
                         () ->
                                 SpannerClients.settings(
                                         DATABASE,
-                                        EmulatorEndpoint.parse("localhost:9010"),
+                                        EmulatorEndpoint.parse(
+                                                "localhost:9010", "emulatorEndpoint"),
                                         credentials))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cannot be combined");

@@ -65,7 +65,8 @@ class BigtableTableAdminTest {
         assertThatThrownBy(
                         () ->
                                 new BigtableTableAdmin(
-                                        EmulatorEndpoint.parse("localhost:8086"),
+                                        EmulatorEndpoint.parse(
+                                                "localhost:8086", "emulatorEndpoint"),
                                         NoCredentialsProvider.create()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cannot be combined with an emulator endpoint");

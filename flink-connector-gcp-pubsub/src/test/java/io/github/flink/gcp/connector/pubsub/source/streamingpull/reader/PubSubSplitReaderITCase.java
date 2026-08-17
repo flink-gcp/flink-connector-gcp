@@ -147,7 +147,9 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
                 PubSubSubscriberOptions.builder().maxRecordsPerFetch(MAX_RECORDS_PER_FETCH).build();
         return new PubSubSplitReader(
                 new DefaultSubscriberFactory(
-                        options, OrderingMode.NONE, EmulatorEndpoint.parse(emulatorEndpoint())),
+                        options,
+                        OrderingMode.NONE,
+                        EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint")),
                 ackTracker,
                 options,
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount),

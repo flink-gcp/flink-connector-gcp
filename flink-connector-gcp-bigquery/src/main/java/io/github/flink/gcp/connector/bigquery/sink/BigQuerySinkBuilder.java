@@ -409,7 +409,7 @@ public class BigQuerySinkBuilder<T> {
      *     1..65535
      */
     public BigQuerySinkBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
-        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint");
         return this;
     }
 
@@ -432,7 +432,8 @@ public class BigQuerySinkBuilder<T> {
      *     1..65535
      */
     public BigQuerySinkBuilder<T> emulatorRestEndpoint(String emulatorRestEndpoint) {
-        this.emulatorRestEndpoint = EmulatorEndpoint.parse(emulatorRestEndpoint);
+        this.emulatorRestEndpoint =
+                EmulatorEndpoint.parse(emulatorRestEndpoint, "emulatorRestEndpoint");
         return this;
     }
 

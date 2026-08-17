@@ -199,6 +199,9 @@ class PubSubBackpressuredSplitBufferITCase extends AbstractPubSubSourceEmulatorI
                 createTopicAndSubscription(name, ACK_DEADLINE_SECONDS);
         publish(name, BackpressuredArm.payloads(BACKLOG));
         return new BackpressuredArm(
-                name, ratePerSecond, subscription, EmulatorEndpoint.parse(emulatorEndpoint()));
+                name,
+                ratePerSecond,
+                subscription,
+                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"));
     }
 }

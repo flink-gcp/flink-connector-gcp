@@ -278,7 +278,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `database` | **required** | The database containing the table |
 | `schema` | *unset ⇒ empty GoogleSQL schema or PostgreSQL `public`* | Named schema containing the table; one canonical quoted or unquoted identifier component |
 | `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `schema` is set |
-| `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery |
+| `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery. The sink and the scans parse it when the planner builds them, and the rejection names the `emulatorEndpoint(...)` setter it went through; a lookup parses when the function opens on a TaskManager, where the rejection names `emulator-endpoint` |
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, Change Streams scan, and lookup paths; rejected with `emulator-endpoint` |
 | `schema.json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
 | `schema.uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |

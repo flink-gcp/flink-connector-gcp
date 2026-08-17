@@ -213,7 +213,7 @@ class SpannerRejectionITCase extends AbstractSpannerEmulatorITCase {
                 new DefaultSpannerDatabaseAccessFactory(
                                 database,
                                 SpannerWriterOptions.defaults(),
-                                EmulatorEndpoint.parse(emulatorEndpoint()))
+                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
                         .create()) {
             Refusal refusal = new Refusal();
             try {
