@@ -103,7 +103,7 @@ worth internalising before reading the rest of this page.
   It is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
 - `emulatorEndpoint("host:port")` points the sink at a Cloud Tasks emulator over a plaintext
   channel with no credentials, so it must only ever be used against an emulator — never against
-  production Cloud Tasks. The setter parses it, so a malformed value is rejected at `build()` on
+  production Cloud Tasks. The setter parses it, so a malformed value is rejected by that call on
   the client rather than surfacing as a connection failure on a task manager
   ([#235]({{< param BookRepo >}}/issues/235)).
 

@@ -76,7 +76,7 @@ API notes:
   and the topic auto-creation admin connect over a plaintext channel with no credentials, so it
   must only ever be used against an emulator (for example a testcontainers
   `PubSubEmulatorContainer`) — never against production Pub/Sub. The value is parsed by the
-  setter, so a malformed `host:port` is rejected at `build()` on the client rather than
+  setter, so a malformed `host:port` is rejected by that call on the client rather than
   surfacing as a connection failure on a task manager
   ([#235]({{< param BookRepo >}}/issues/235)).
 
@@ -914,8 +914,8 @@ API notes:
   with no credentials, so it must only ever be used against an emulator — never against production
   Pub/Sub. Unlike the vendored upstream, the source deliberately does **not** honor the
   `PUBSUB_EMULATOR_HOST` environment variable: a stray value on a task manager would silently
-  redirect a production job. As on the sink, the endpoint is parsed by the setter and a malformed
-  `host:port` is rejected at `build()` ([#235]({{< param BookRepo >}}/issues/235)).
+  redirect a production job. As on the sink, the endpoint is parsed by the setter, so a malformed
+  `host:port` is rejected by that call ([#235]({{< param BookRepo >}}/issues/235)).
 
 ### Subscriber options
 
