@@ -58,6 +58,7 @@ import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamEnvelopeSchema;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
+import org.assertj.core.api.AbstractThrowableAssert;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -878,13 +879,29 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
-    void requiresTheEnvelopeModeAndSingleClusterAppProfile() {
-        Map<String, String> noEnvelope = minimalChangeStreamOptions();
-        noEnvelope.remove("scan.change-stream.changelog-mode");
-        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, noEnvelope))
-                .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("is required when 'scan.mode' = 'change-stream'")
-                .hasStackTraceContaining("Set it to 'envelope'");
+    void requiresAChangelogModeAndSingleClusterAppProfile() {
+        Map<String, String> noChangelogMode = minimalChangeStreamOptions();
+        noChangelogMode.remove(BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE.key());
+        // Asserted as the one contiguous phrase, not as "both names appear somewhere". The stack
+        // trace also carries FactoryUtil's dump of the whole WITH clause, and a looser assertion
+        // survives dropping the lead-in or the separator while still finding both names.
+        AbstractThrowableAssert<?, ?> missingMode =
+                assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, noChangelogMode))
+                        .isInstanceOf(ValidationException.class)
+                        .hasStackTraceContaining("is required when 'scan.mode' = 'change-stream'")
+                        .hasStackTraceContaining(
+                                "Set it to one of: "
+                                        + Arrays.stream(ChangeStreamChangelogMode.values())
+                                                .map(mode -> "'" + mode + "'")
+                                                .collect(Collectors.joining(", ")));
+        // Built from values() rather than a literal, so a mode added later has to reach the message
+        // or this fails. The assertion it replaced required the message to name the envelope alone,
+        // which is how the message came to offer one of two valid modes.
+        for (ChangeStreamChangelogMode mode : ChangeStreamChangelogMode.values()) {
+            missingMode
+                    .as("changelog mode '%s' is offered", mode)
+                    .hasStackTraceContaining("'" + mode + "'");
+        }
 
         Map<String, String> noProfile = minimalChangeStreamOptions();
         noProfile.remove("scan.app-profile-id");
