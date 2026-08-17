@@ -31,9 +31,11 @@ import java.io.Serializable;
  * Serializes sink records into Bigtable row mutations.
  *
  * <p>Implementations return a full {@link RowMutationEntry}, so the row key and every mutation a
- * row accepts — {@code setCell}, {@code deleteCells}, {@code deleteFamily}, {@code deleteRow} — are
- * expressible, and one record may carry several of them. The mutations of one entry are applied
- * atomically; entries are not ordered against each other.
+ * row accepts — {@code setCell}, {@code deleteCells}, {@code deleteFamily}, {@code deleteRow}, and
+ * the aggregate {@code addToCell} and {@code mergeToCell} — are expressible, and one record may
+ * carry several of them. The two aggregate mutations take a value model the client library has not
+ * settled, so a client upgrade may move their argument types. The mutations of one entry are
+ * applied atomically; entries are not ordered against each other.
  * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="serialization-schema" -->
  *
  * <pre>{@code

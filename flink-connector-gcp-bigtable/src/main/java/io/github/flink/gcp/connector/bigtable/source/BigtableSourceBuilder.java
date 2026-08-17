@@ -222,10 +222,11 @@ public class BigtableSourceBuilder<T> {
 
     /**
      * Authenticates the source with the service-account JSON key at the given path instead of
-     * application-default credentials. The JobManager reads the file when a fresh or unplanned
-     * restored enumerator samples row keys, and each TaskManager reads it when its reader first
-     * opens a stream. Every eligible process must therefore see the same path. Optional; when unset
-     * the source uses application-default credentials.
+     * application-default credentials. The JobManager reads the file when its enumerator is created
+     * or restored, whether or not that enumerator goes on to sample row keys, and each TaskManager
+     * reads it when its reader is created, before any split is assigned to it. Every eligible
+     * process must therefore see the same path. Optional; when unset the source uses
+     * application-default credentials.
      *
      * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
      * Workload Identity where the deployment supports one. This setting cannot be combined with
