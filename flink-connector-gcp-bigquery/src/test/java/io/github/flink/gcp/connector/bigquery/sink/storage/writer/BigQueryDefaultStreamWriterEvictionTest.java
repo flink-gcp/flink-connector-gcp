@@ -198,7 +198,7 @@ class BigQueryDefaultStreamWriterEvictionTest {
                 factory,
                 NOOP_ADMIN,
                 new DefaultStreamWriterMetrics(TestSinkWriterMetricGroup.create(), false),
-                BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 fastSchedule(1),
                 fastSchedule(1),
                 IDLE_TIMEOUT,

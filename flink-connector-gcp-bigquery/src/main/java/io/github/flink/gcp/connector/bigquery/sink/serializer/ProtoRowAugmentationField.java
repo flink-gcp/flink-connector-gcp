@@ -66,6 +66,15 @@ public final class ProtoRowAugmentationField<T> implements Serializable {
         WriteOnlyField(String fieldName) {
             this.fieldName = fieldName;
         }
+
+        /**
+         * Returns the BigQuery pseudocolumn name this field writes.
+         *
+         * @return the field name
+         */
+        public String getFieldName() {
+            return fieldName;
+        }
     }
 
     /** Serializable provider whose validation may report a row-level {@link IOException}. */

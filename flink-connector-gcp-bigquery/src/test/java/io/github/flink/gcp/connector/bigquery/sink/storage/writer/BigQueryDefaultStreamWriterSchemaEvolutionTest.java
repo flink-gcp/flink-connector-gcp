@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -306,7 +307,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                 factory,
                 admin,
                 TestSinkWriterMetricGroup.create(),
-                BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 BigQueryDefaultStreamWriterTest.fastSchedule(recoveryMaxAttempts),
                 BigQueryDefaultStreamWriterTest.fastSchedule(schemaWaitMaxAttempts));
     }

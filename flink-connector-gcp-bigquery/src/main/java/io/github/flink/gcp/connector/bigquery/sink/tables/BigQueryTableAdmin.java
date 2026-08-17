@@ -255,7 +255,7 @@ public class BigQueryTableAdmin implements TableAdmin, CdcTableProvisioner.Servi
     }
 
     @Override
-    public boolean create(
+    public boolean tryCreate(
             TableDestination destination,
             TableSchema schema,
             TableCreateOptions createOptions,

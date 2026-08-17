@@ -267,7 +267,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                         factory,
                         admin,
                         metrics,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         BigQueryDefaultStreamWriterTest.fastSchedule(3),
                         BigQueryDefaultStreamWriterTest.fastSchedule(3));
 
@@ -339,7 +339,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                         factory,
                         admin,
                         metrics,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         BigQueryDefaultStreamWriterTest.fastSchedule(3),
                         BigQueryDefaultStreamWriterTest.fastSchedule(3));
 
@@ -374,7 +374,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                         factory,
                         admin,
                         metrics,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         BigQueryDefaultStreamWriterTest.fastSchedule(3),
                         BigQueryDefaultStreamWriterTest.fastSchedule(3));
 
@@ -408,7 +408,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                         factory,
                         admin,
                         metrics,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         BigQueryDefaultStreamWriterTest.fastSchedule(3),
                         BigQueryDefaultStreamWriterTest.fastSchedule(3));
 
@@ -492,7 +492,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                         factory,
                         vanished,
                         metrics,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         BigQueryDefaultStreamWriterTest.fastSchedule(3),
                         BigQueryDefaultStreamWriterTest.fastSchedule(3));
 
@@ -668,7 +668,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                 factory,
                 tableAdmin,
                 metrics,
-                BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 BigQueryDefaultStreamWriterTest.fastSchedule(3),
                 BigQueryDefaultStreamWriterTest.fastSchedule(3));
     }
@@ -688,7 +688,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                 factory,
                 admin,
                 metrics,
-                BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                 BigQueryDefaultStreamWriterTest.fastSchedule(3),
                 BigQueryDefaultStreamWriterTest.fastSchedule(3));
     }

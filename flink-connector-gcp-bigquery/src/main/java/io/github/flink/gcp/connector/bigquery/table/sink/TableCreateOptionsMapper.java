@@ -113,9 +113,7 @@ public final class TableCreateOptionsMapper {
         if (present.isEmpty()) {
             return null;
         }
-        if (!present.isEmpty()) {
-            checkDispositionCreates(config, present);
-        }
+        checkDispositionCreates(config, present);
 
         Optional<TableCreateOptions.TimePartitioningType> type =
                 config.getOptional(

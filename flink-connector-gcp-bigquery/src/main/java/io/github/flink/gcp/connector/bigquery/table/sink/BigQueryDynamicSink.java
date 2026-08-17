@@ -113,10 +113,15 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         this.cdcEnabled = builder.cdcEnabled;
         this.debeziumMySqlSourceUuids =
                 Collections.unmodifiableList(new ArrayList<>(builder.debeziumMySqlSourceUuids));
+        this.tiCdcClusterId = builder.tiCdcClusterId;
+        // Constructed and discarded for the IllegalArgumentException their constructors throw on a
+        // malformed uuid list or an empty cluster id, so the table is rejected as it is built. The
+        // encoders that do the work are built in getSinkRuntimeProvider, and only when a CDC
+        // sequence metadata column is selected — without these two, a malformed value would go
+        // unreported until then, and unreported entirely when no such column is selected.
         if (!debeziumMySqlSourceUuids.isEmpty()) {
             new DebeziumMySqlCdcSequenceNumberEncoder(debeziumMySqlSourceUuids);
         }
-        this.tiCdcClusterId = builder.tiCdcClusterId;
         if (tiCdcClusterId != null) {
             new TiCdcSequenceNumberEncoder(tiCdcClusterId);
         }

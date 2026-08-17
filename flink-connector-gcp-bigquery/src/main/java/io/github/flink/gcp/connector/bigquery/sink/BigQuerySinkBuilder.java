@@ -452,7 +452,6 @@ public class BigQuerySinkBuilder<T> {
                         serializer,
                         additionalFields,
                         cdcOptions,
-                        cdcOptions != null,
                         createDisposition,
                         tableCreateOptionsProvider,
                         cdcTableOptionsProvider,

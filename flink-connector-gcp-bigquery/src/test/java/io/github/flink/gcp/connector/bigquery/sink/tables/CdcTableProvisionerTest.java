@@ -726,7 +726,7 @@ class CdcTableProvisionerTest {
         }
 
         @Override
-        public boolean create(
+        public boolean tryCreate(
                 TableDestination destination,
                 TableSchema schema,
                 TableCreateOptions createOptions,

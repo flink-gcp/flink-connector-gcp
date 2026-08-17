@@ -24,6 +24,8 @@ import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
@@ -60,9 +62,18 @@ public final class CdcTableOptionsMapper {
         return builder.build();
     }
 
-    /** Returns the configured policy, defaulting to verification only. */
+    /**
+     * Returns the configured policy, or {@code null} when the option is unset.
+     *
+     * <p>Null rather than the builder's default: an unset option has to leave its setter uncalled,
+     * so that the table layer carries no copy of a default {@code BigQuerySinkBuilder} owns.
+     *
+     * @param config the table options
+     * @return the policy, or null
+     */
+    @Nullable
     public static CdcTableReconciliationPolicy policy(ReadableConfig config) {
         return config.getOptional(BigQueryConnectorOptions.SINK_CDC_TABLE_RECONCILIATION)
-                .orElse(CdcTableReconciliationPolicy.VERIFY_ONLY);
+                .orElse(null);
     }
 }

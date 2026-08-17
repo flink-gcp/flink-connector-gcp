@@ -77,13 +77,14 @@ import java.util.function.LongSupplier;
  * per-record table destinations.
  *
  * <p>Per destination, rows are buffered into append batches (bounded by {@code
- * DefaultStreamOptions#maxAppendRequestBytes}, default {@link #DEFAULT_MAX_APPEND_REQUEST_BYTES})
- * and appended asynchronously; backpressure is provided by the stream writer's own in-flight
- * limits. {@link #flush(boolean)} appends all pending batches and awaits every in-flight append,
- * inspecting each response directly, so records never pass a checkpoint barrier unacknowledged —
- * this is what makes the sink at-least-once. Records the serializer skips by returning {@code null}
- * are written nowhere and so are outside that claim. Asynchronous append failures are additionally
- * captured by completion callbacks and handled on the next {@link #write} or {@link #flush} call.
+ * DefaultStreamOptions#maxAppendRequestBytes}, default {@link
+ * DefaultStreamOptions#DEFAULT_MAX_APPEND_REQUEST_BYTES}) and appended asynchronously; backpressure
+ * is provided by the stream writer's own in-flight limits. {@link #flush(boolean)} appends all
+ * pending batches and awaits every in-flight append, inspecting each response directly, so records
+ * never pass a checkpoint barrier unacknowledged — this is what makes the sink at-least-once.
+ * Records the serializer skips by returning {@code null} are written nowhere and so are outside
+ * that claim. Asynchronous append failures are additionally captured by completion callbacks and
+ * handled on the next {@link #write} or {@link #flush} call.
  *
  * <p>The writer is <em>stateless</em>: it stores nothing in Flink state, so discarding operator
  * state can never lose sink-buffered data (the {@code AsyncSinkWriter}-style alternative of
@@ -155,13 +156,6 @@ public class BigQueryDefaultStreamWriter<T>
         implements SinkWriter<T>, DestinationResolutionDispatcher.Visitor<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigQueryDefaultStreamWriter.class);
-
-    /**
-     * Maximum serialized-row bytes buffered per destination before an append request is issued.
-     * Well below the Storage Write API's 10 MB request limit; larger batches amortize request
-     * overhead, smaller ones bound memory and latency.
-     */
-    static final long DEFAULT_MAX_APPEND_REQUEST_BYTES = 512 * 1024;
 
     /**
      * Hard per-row limit, kept under the Storage Write API's 10 MB AppendRows request cap (with

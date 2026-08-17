@@ -75,6 +75,7 @@ public final class DefaultStreamOptions implements Serializable {
     /**
      * Default for {@link Builder#maxAppendRequestBytes(long)}: 512 KiB of serialized rows per
      * append request, well under the 10 MB request limit while amortizing per-request overhead.
+     * Smaller batches bound memory and latency instead.
      */
     public static final long DEFAULT_MAX_APPEND_REQUEST_BYTES = 512 * 1024;
 

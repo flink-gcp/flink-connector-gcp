@@ -33,8 +33,10 @@ import java.util.regex.Pattern;
 @Internal
 public final class CdcProtoRowFields {
 
-    static final String CHANGE_TYPE_FIELD = "_change_type";
-    static final String SEQUENCE_NUMBER_FIELD = "_change_sequence_number";
+    // Delegated rather than repeated: the enum carries the authoritative spelling of these
+    // BigQuery pseudocolumn names, and a second copy of a wire contract can only drift.
+    static final String CHANGE_TYPE_FIELD = WriteOnlyField.CDC_CHANGE_TYPE.getFieldName();
+    static final String SEQUENCE_NUMBER_FIELD = WriteOnlyField.CDC_SEQUENCE_NUMBER.getFieldName();
 
     private static final Pattern SEQUENCE_PATTERN =
             Pattern.compile("[0-9A-Fa-f]{1,16}(?:/[0-9A-Fa-f]{1,16}){0,3}");

@@ -65,7 +65,8 @@ final class CdcTableProvisioner {
         @Nullable
         TableState read(TableDestination destination) throws IOException;
 
-        boolean create(
+        /** Creates the labelled table; false means a concurrent creator won the race. */
+        boolean tryCreate(
                 TableDestination destination,
                 TableSchema schema,
                 TableCreateOptions createOptions,
@@ -188,7 +189,7 @@ final class CdcTableProvisioner {
                             "TableCreateOptionsProvider returned null for %s",
                             destination);
             boolean createWon =
-                    service.create(destination, schema, createOptions, cdcOptions, initialLabel);
+                    service.tryCreate(destination, schema, createOptions, cdcOptions, initialLabel);
             state = service.read(destination);
             if (state == null) {
                 throw new RetriableTableAdminException(

@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
+import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.grpc.Status;
@@ -263,7 +264,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -309,7 +310,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -347,7 +348,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         2);
 
         writer.write("aa", CONTEXT);
@@ -367,7 +368,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -386,7 +387,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -415,7 +416,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -436,7 +437,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -462,7 +463,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -489,7 +490,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -514,7 +515,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), throwingHandler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -535,7 +536,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -566,7 +567,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), unflushableHandler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -586,7 +587,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("ok", CONTEXT);
@@ -608,7 +609,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), FailureHandler.failJob()),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         assertThatThrownBy(() -> writer.write("unserializable", CONTEXT))
@@ -624,7 +625,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new OversizedSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("big", CONTEXT);
@@ -644,7 +645,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new UncheckedFailingSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("poison", CONTEXT);
@@ -668,7 +669,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -698,7 +699,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -720,7 +721,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
 
         writer.write("aa", CONTEXT);
@@ -742,7 +743,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
                 writer(
                         config(new StringSerializer(), handler),
                         factory,
-                        BigQueryDefaultStreamWriter.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
                         3);
         writer.write("aa", CONTEXT);
         writer.flush(false);

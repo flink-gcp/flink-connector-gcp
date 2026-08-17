@@ -811,13 +811,13 @@ class BigQueryTableAdminTest {
     }
 
     @Test
-    void cdcCreateTreatsAConflictAsSuccess() throws Exception {
+    void cdcTryCreateReportsALostRaceRatherThanSucceeding() throws Exception {
         StubBigQuery client = new StubBigQuery();
         client.createTableFailure = new BigQueryException(409, "Already Exists");
         BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
 
         assertThat(
-                        admin.create(
+                        admin.tryCreate(
                                 DESTINATION,
                                 SCHEMA,
                                 TableCreateOptions.defaults(),
