@@ -25,19 +25,22 @@ a reference page. It is offline and takes under a second.
 | `[[config_options]]` | source file → page | Which page must document this `ConfigOption` class's keys |
 | `[exempt]` | **source side** | A setter that exists and deliberately has *no* row. Keyed `Class.setter` |
 | `[extra]` | **page side** | A row that exists and has *no* setter or key behind it. Keyed by the name as the table writes it |
+| `[value_builders]` | **neither side** | A public builder that builds a *value*, so no row could exist for it. Keyed by repo-relative path |
 
 **`[exempt]` and `[extra]` point in opposite directions**, which is the thing to get right: one
 forgives a source the docs do not mention, the other forgives a doc entry the source does not
 declare. If you are unsure which you need, read the failure message — coverage failures name a
 `Class.setter` and want `[exempt]`; staleness failures name a page and line and want `[extra]`, or
-more likely a corrected row.
+more likely a corrected row. `[value_builders]` is not on that axis at all — it answers the
+whole-class guard below, which names a file rather than a setter or a row.
 
-Both are dictionaries of `key = "reason"`. The reason is read by the next person deciding whether
-the entry still applies, so it says *why this is not a row*, not *what the option is*.
+All three are dictionaries of `key = "reason"`. The reason is read by the next person deciding
+whether the entry still applies, so it says *why this is not a row*, not *what the option is*.
 
 **An entry that never fires is itself a failure**, the rule `check-flink-api-tiers.toml` applies to
 its allowlist. So an entry is never a safe way to quieten something: if the check passes without
-it, it has to go.
+it, it has to go. That holds for all three tables — a `[value_builders]` entry on a class that is
+`@Internal` anyway forgives nothing, and fails.
 
 ## Failure: "`Class.setter` is a builder option but no `Option`-headed table names it"
 
@@ -110,16 +113,29 @@ Spanner (issue #36) will hit. This is not an allowlist decision:
 
 A public builder the globs cannot see — the gap that left `PubSubDeadLetterQueue.Builder`'s five
 knobs unchecked in both directions from the day the class landed (issue #328). Neither direction says anything
-about a class it never reads, so this guard reports one before the silence starts. It is not an
-allowlist decision, and there are exactly two answers:
+about a class it never reads, so this guard reports one before the silence starts. There are three
+answers, and only the third is an allowlist entry:
 
 - **It is a user-facing option surface** → add its path to that module's `sources` list in
   `[[builders]]`, then write rows until the check passes. The class is then parsed, keyed and
   checked exactly as a glob-matched one, so `[exempt]` keys read `Class.setter` as usual. If the
   module has no `[[builders]]` entry at all, it needs one first — that is the section above.
-- **It is not** → annotate the class `@Internal`, which is the honest fix when the builder is
-  assembled by a factory rather than by a user (`BigQueryDynamicSink`, `SubscriptionInfo`). Only
-  the file's **first top-level type**'s annotation is read, so a nested `@Internal` will not do it.
+- **It is not a user surface at all** → annotate the class `@Internal`, which is the honest fix when
+  the builder is assembled by a factory rather than by a user (`BigQueryDynamicSink`,
+  `SubscriptionInfo`). Only the file's **first top-level type**'s annotation is read, so a nested
+  `@Internal` will not do it.
+- **It is public, and it builds a *value* rather than a configuration** → a `[value_builders]`
+  entry, keyed by repo-relative path. `DataChangeRecord` is the case that forced this one: a
+  `@Public` Spanner change record whose builder sets the thirteen fields Spanner reports, none of
+  them a job option. Both other answers are false for it — a reference row would document a data
+  model in a page about configuration, and `@Internal` would demote a type users receive to satisfy
+  a check, which is a stability decision wearing a documentation costume.
+
+**Reach for the third only when the first two are false, not when they are inconvenient.** The test
+is whether a *reader looking up a job option* could ever arrive at this class. A builder assembled
+by a factory is `@Internal`; a builder a user calls to configure the connector gets rows; a builder
+a user calls to construct a record the connector hands them is a value builder. If the class is the
+argument or the return type of a user's own SPI implementation, it is the third.
 
 An unannotated class is reported on purpose: `check-flink-api-tiers.py` treats an unannotated type
 as needing a decision rather than as absent, and so does this. Do not answer the guard by widening
