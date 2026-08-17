@@ -66,7 +66,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -873,7 +872,7 @@ class BigtableDynamicTableFactoryTest {
                         "single-cluster-profile",
                         "/var/run/secrets/bigtable.json",
                         StartPosition.at(Instant.ofEpochMilli(1000L)),
-                        Optional.of(StartPosition.earliest()),
+                        StartPosition.earliest(),
                         Instant.ofEpochMilli(2000L),
                         5);
     }

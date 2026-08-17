@@ -55,7 +55,7 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
 
     @Override
     public ChangeStreamPartitionSplit resolve(
-            ChangeStreamPartitionSplit split, Optional<StartPosition> fallback) throws Exception {
+            ChangeStreamPartitionSplit split, @Nullable StartPosition fallback) throws Exception {
         if (resolver == null) {
             try (DefaultChangeStreamCoordinatorClient client =
                     new DefaultChangeStreamCoordinatorClient(

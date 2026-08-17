@@ -46,6 +46,8 @@ import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamE
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableDynamicSource;
 import io.github.flink.gcp.connector.bigtable.table.source.ChangeStreamStartPositionMapper;
 
+import javax.annotation.Nullable;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -200,11 +202,15 @@ public class BigtableDynamicTableFactory
                 .build();
     }
 
+    /**
+     * Builds the change-stream source. The decoding format is {@code null} unless the changelog
+     * mode is selected-cell, which is the only mode that decodes a cell value through a format.
+     */
     private static DynamicTableSource createChangeStreamSource(
             Context context,
             ReadableConfig config,
             DataType physicalDataType,
-            DecodingFormat<DeserializationSchema<RowData>> decodingFormat) {
+            @Nullable DecodingFormat<DeserializationSchema<RowData>> decodingFormat) {
         ChangeStreamChangelogMode changelogMode =
                 config.getOptional(BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)
                         .orElseThrow(

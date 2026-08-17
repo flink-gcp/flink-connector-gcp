@@ -46,7 +46,6 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -142,7 +141,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedChangeStreamCoordinatorClient.with(WHOLE),
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         restored,
                         false,
                         false,
@@ -504,11 +503,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         Duration.ofDays(7), Collections.singletonList(WHOLE));
         BigtableChangeStreamSplitEnumerator enumerator =
                 new BigtableChangeStreamSplitEnumerator(
-                        context,
-                        client,
-                        StartPosition.latest(),
-                        Optional.of(StartPosition.latest()),
-                        restored);
+                        context, client, StartPosition.latest(), StartPosition.latest(), restored);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -576,7 +571,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         new ScriptedChangeStreamCoordinatorClient(
                                 Duration.ofDays(7), Collections.singletonList(WHOLE)),
                         StartPosition.latest(),
-                        Optional.of(StartPosition.latest()),
+                        StartPosition.latest(),
                         restored,
                         false,
                         true,
@@ -647,7 +642,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedChangeStreamCoordinatorClient.with(WHOLE),
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         restored,
                         false,
                         true,
@@ -716,7 +711,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT),
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         null,
                         true);
         enumerator.start();
@@ -913,7 +908,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedChangeStreamCoordinatorClient.with(WHOLE),
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         null,
                         false,
                         true,
@@ -946,7 +941,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedChangeStreamCoordinatorClient.with(),
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         null,
                         true);
         enumerator.start();
@@ -1131,7 +1126,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
             ScriptedChangeStreamCoordinatorClient client,
             BigtableChangeStreamEnumeratorState restored) {
         return new BigtableChangeStreamSplitEnumerator(
-                context, client, StartPosition.latest(), Optional.empty(), restored);
+                context, client, StartPosition.latest(), null, restored);
     }
 
     private static BigtableChangeStreamSplitEnumerator reconciling(
@@ -1143,7 +1138,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 context,
                 client,
                 StartPosition.latest(),
-                Optional.empty(),
+                null,
                 restored,
                 false,
                 true,
@@ -1156,14 +1151,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
             BigtableChangeStreamEnumeratorState restored,
             Clock clock) {
         return new BigtableChangeStreamSplitEnumerator(
-                context,
-                client,
-                StartPosition.latest(),
-                Optional.empty(),
-                restored,
-                true,
-                true,
-                clock);
+                context, client, StartPosition.latest(), null, restored, true, true, clock);
     }
 
     private static BigtableChangeStreamEnumeratorState restoredWithMissing(

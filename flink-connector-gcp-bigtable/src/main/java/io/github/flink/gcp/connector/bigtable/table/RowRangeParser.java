@@ -23,6 +23,8 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -149,6 +151,8 @@ final class RowRangeParser {
         return range;
     }
 
+    /** Decodes one endpoint, returning {@code null} for the empty endpoint that means unbounded. */
+    @Nullable
     private static ByteString decode(
             RowKeyEncoding encoding, StringBuilder endpoint, int entryNumber) {
         if (endpoint.length() == 0) {

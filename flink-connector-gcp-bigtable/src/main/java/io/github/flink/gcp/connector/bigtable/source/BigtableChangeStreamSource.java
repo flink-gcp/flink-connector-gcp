@@ -41,6 +41,8 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.Big
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.BigtableChangeStreamReader;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DefaultChangeStreamRestoreResolver;
 
@@ -69,22 +71,24 @@ public final class BigtableChangeStreamSource<T>
 
     @Override
     public Boundedness getBoundedness() {
-        return config.endTime == null ? Boundedness.CONTINUOUS_UNBOUNDED : Boundedness.BOUNDED;
+        return config.getEndTime() == null ? Boundedness.CONTINUOUS_UNBOUNDED : Boundedness.BOUNDED;
     }
 
     @Override
     public SourceReader<T, ChangeStreamPartitionSplit> createReader(SourceReaderContext context)
             throws Exception {
         CredentialsProvider credentials =
-                BigtableCredentials.loadDataAndTableAdmin(config.serviceAccountKeyFile);
-        if (config.opener instanceof DataClientChangeStreamOpener) {
-            ((DataClientChangeStreamOpener) config.opener).setCredentialsOverride(credentials);
+                BigtableCredentials.loadDataAndTableAdmin(config.getServiceAccountKeyFile());
+        ChangeStreamOpener opener = config.getOpener();
+        if (opener instanceof DataClientChangeStreamOpener) {
+            ((DataClientChangeStreamOpener) opener).setCredentialsOverride(credentials);
         }
-        if (config.restoreResolver instanceof DefaultChangeStreamRestoreResolver) {
-            ((DefaultChangeStreamRestoreResolver) config.restoreResolver)
+        ChangeStreamRestoreResolver restoreResolver = config.getRestoreResolver();
+        if (restoreResolver instanceof DefaultChangeStreamRestoreResolver) {
+            ((DefaultChangeStreamRestoreResolver) restoreResolver)
                     .setCredentialsOverride(credentials);
         }
-        config.deserializer.open(new ReaderInitializationContext(context));
+        config.getDeserializer().open(new ReaderInitializationContext(context));
         return new BigtableChangeStreamReader<>(context, config);
     }
 
@@ -108,21 +112,23 @@ public final class BigtableChangeStreamSource<T>
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             BigtableChangeStreamEnumeratorState restored)
             throws Exception {
-        ChangeStreamCoordinatorClient client = config.coordinatorClient;
+        ChangeStreamCoordinatorClient client = config.getCoordinatorClient();
         if (client == null) {
             DefaultChangeStreamCoordinatorClient defaultClient =
                     new DefaultChangeStreamCoordinatorClient(
-                            config.table, config.appProfileId, config.serviceAccountKeyFile);
+                            config.getTable(),
+                            config.getAppProfileId(),
+                            config.getServiceAccountKeyFile());
             defaultClient.loadCredentials();
             client = defaultClient;
         }
         return new BigtableChangeStreamSplitEnumerator(
                 context,
                 client,
-                config.startPosition,
-                java.util.Optional.ofNullable(config.resumeFallback),
+                config.getStartPosition(),
+                config.getResumeFallback(),
                 restored,
-                config.endTime != null,
+                config.getEndTime() != null,
                 true);
     }
 
@@ -139,7 +145,7 @@ public final class BigtableChangeStreamSource<T>
 
     @Override
     public TypeInformation<T> getProducedType() {
-        return config.deserializer.getProducedType();
+        return config.getDeserializer().getProducedType();
     }
 
     private static final class ReaderInitializationContext

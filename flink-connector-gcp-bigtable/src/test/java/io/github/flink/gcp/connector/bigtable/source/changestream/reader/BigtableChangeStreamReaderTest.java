@@ -27,6 +27,7 @@ import com.google.api.gax.rpc.ResponseObserver;
 import com.google.api.gax.rpc.StreamController;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -46,7 +47,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.CancellationException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -455,6 +455,33 @@ class BigtableChangeStreamReaderTest {
         assertThat(opener.controllers().get(0).requests).isZero();
     }
 
+    @Test
+    void handsTheConfiguredResumeFallbackToTheRestoreResolver() {
+        // The resolver is the only thing that sees the configured fallback, and the reader's own
+        // behaviour is identical whichever fallback it holds, so this asserts on the argument
+        // itself: with nothing recording it, passing null instead would look the same.
+        List<StartPosition> seen = new ArrayList<>();
+        StartPosition fallback = StartPosition.at(Instant.parse("2026-08-13T00:00:00Z"));
+        reader =
+                new BigtableChangeStreamReader<>(
+                        context,
+                        TableDestination.of("project", "instance", "table"),
+                        schema(),
+                        opener,
+                        (split, configured) -> {
+                            seen.add(configured);
+                            return split;
+                        },
+                        fallback,
+                        null,
+                        1,
+                        new BigtableChangeStreamReaderMetrics(metricGroup));
+
+        reader.addSplits(Collections.singletonList(split("restored")));
+
+        assertThat(seen).containsExactly(fallback);
+    }
+
     private BigtableChangeStreamReader<String> reader(int maximumStreams) {
         return new BigtableChangeStreamReader<>(
                 context,
@@ -462,7 +489,7 @@ class BigtableChangeStreamReaderTest {
                 schema(),
                 opener,
                 (split, ignored) -> split,
-                Optional.empty(),
+                null,
                 null,
                 maximumStreams,
                 new BigtableChangeStreamReaderMetrics(metricGroup));

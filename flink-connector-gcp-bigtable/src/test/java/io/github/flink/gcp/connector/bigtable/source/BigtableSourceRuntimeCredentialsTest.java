@@ -31,7 +31,6 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Collections;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -103,7 +102,7 @@ class BigtableSourceRuntimeCredentialsTest {
                         Collections.emptyList(),
                         Instant.EPOCH);
 
-        assertSanitized(() -> resolver.resolve(split, Optional.empty()));
+        assertSanitized(() -> resolver.resolve(split, null));
     }
 
     private static void assertSanitized(ThrowingCall call) {

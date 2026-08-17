@@ -53,7 +53,6 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -68,7 +67,7 @@ public final class BigtableChangeStreamReader<T>
     private final TableDestination table;
     private final ChangeStreamOpener opener;
     private final ChangeStreamRestoreResolver restoreResolver;
-    private final Optional<StartPosition> resumeFallback;
+    @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant endTime;
     private final int maximumStreams;
     private final BigtableChangeStreamRecordEmitter<T> emitter;
@@ -106,7 +105,7 @@ public final class BigtableChangeStreamReader<T>
             BigtableChangeStreamDeserializationSchema<T> deserializer,
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable Instant endTime,
             int maximumStreams,
             BigtableChangeStreamReaderMetrics metrics) {
@@ -130,7 +129,7 @@ public final class BigtableChangeStreamReader<T>
             BigtableChangeStreamDeserializationSchema<T> deserializer,
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable Instant endTime,
             int maximumStreams,
             BigtableChangeStreamMutationFilter mutationFilter,
@@ -140,8 +139,7 @@ public final class BigtableChangeStreamReader<T>
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         this.restoreResolver =
                 Preconditions.checkNotNull(restoreResolver, "restoreResolver must not be null");
-        this.resumeFallback =
-                Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
+        this.resumeFallback = resumeFallback;
         this.endTime = endTime;
         Preconditions.checkArgument(maximumStreams > 0, "maximumStreams must be positive");
         this.maximumStreams = maximumStreams;

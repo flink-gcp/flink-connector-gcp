@@ -26,7 +26,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -165,15 +164,11 @@ class StartPositionResolverTest {
     void validRestoredStateWinsWithoutResolvingAFallback() throws Exception {
         StartPositionResolver resolver = resolver(() -> RETENTION);
 
-        assertThat(
-                        resolver.resolveRestored(
-                                "partition-a", EARLIEST, Optional.of(StartPosition.latest())))
+        assertThat(resolver.resolveRestored("partition-a", EARLIEST, StartPosition.latest()))
                 .isEmpty();
         assertThat(
                         resolver.resolveRestored(
-                                "partition-b",
-                                EARLIEST.plusSeconds(1),
-                                Optional.of(StartPosition.earliest())))
+                                "partition-b", EARLIEST.plusSeconds(1), StartPosition.earliest()))
                 .isEmpty();
     }
 
@@ -182,8 +177,7 @@ class StartPositionResolverTest {
         StartPositionResolver resolver = resolver(() -> RETENTION);
         Instant restored = EARLIEST.minus(Duration.ofHours(6));
 
-        assertThatThrownBy(
-                        () -> resolver.resolveRestored("partition-a", restored, Optional.empty()))
+        assertThatThrownBy(() -> resolver.resolveRestored("partition-a", restored, null))
                 .isInstanceOf(FlinkRuntimeException.class)
                 .hasMessageContaining("partition-a")
                 .hasMessageContaining(restored.toString())
@@ -200,9 +194,7 @@ class StartPositionResolverTest {
         try (LogCapture capture = LogCapture.of(LogOwner.class)) {
             StartPositionResolver resolver = resolver(() -> RETENTION);
 
-            assertThat(
-                            resolver.resolveRestored(
-                                    "partition-a", restored, Optional.of(StartPosition.latest())))
+            assertThat(resolver.resolveRestored("partition-a", restored, StartPosition.latest()))
                     .contains(NOW);
             assertThat(capture.getMessages())
                     .singleElement()
@@ -228,9 +220,7 @@ class StartPositionResolverTest {
 
             assertThat(
                             resolver.resolveRestored(
-                                    "partition-a",
-                                    restored,
-                                    Optional.of(StartPosition.at(fallback))))
+                                    "partition-a", restored, StartPosition.at(fallback)))
                     .contains(EARLIEST);
             assertThat(capture.getMessages())
                     .singleElement()
@@ -251,7 +241,7 @@ class StartPositionResolverTest {
                                 resolver.resolveRestored(
                                         "partition-a",
                                         EARLIEST.minusSeconds(1),
-                                        Optional.of(StartPosition.at(NOW.plusSeconds(1)))))
+                                        StartPosition.at(NOW.plusSeconds(1))))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("after the enumerator startup instant");
     }
@@ -265,13 +255,9 @@ class StartPositionResolverTest {
                     resolver(Clock.fixed(NOW, ZoneOffset.UTC), retentionLookups, () -> RETENTION);
 
             resolver.resolveRestored(
-                    "partition-a",
-                    EARLIEST.minus(Duration.ofHours(1)),
-                    Optional.of(StartPosition.latest()));
+                    "partition-a", EARLIEST.minus(Duration.ofHours(1)), StartPosition.latest());
             resolver.resolveRestored(
-                    "partition-b",
-                    EARLIEST.minus(Duration.ofHours(2)),
-                    Optional.of(StartPosition.latest()));
+                    "partition-b", EARLIEST.minus(Duration.ofHours(2)), StartPosition.latest());
 
             assertThat(retentionLookups).hasValue(1);
             assertThat(capture.getMessages())
@@ -311,7 +297,7 @@ class StartPositionResolverTest {
         assertThatThrownBy(() -> resolver.inspectRestored("", restored))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("partition must not be empty");
-        assertThatThrownBy(() -> resolver.resolveRestored("", restored, Optional.empty()))
+        assertThatThrownBy(() -> resolver.resolveRestored("", restored, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("partition must not be empty");
     }
