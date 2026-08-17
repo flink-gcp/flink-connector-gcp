@@ -62,9 +62,11 @@ internal values.**
 The mapping covers scalar, decimal, temporal, nested row, array, map, and multiset shapes and is
 serializable with the job graph.
 Storage Read's Avro `time-micros` value is converted to Flink's millisecond-based internal value.
-Flink 1.20 and 2.2 resolve SQL `TIME(p)` to `TIME(0)` before the connector sees it, while 2.3
-retains precision through `TIME(3)`; a programmatically constructed catalog schema can carry
-`TIME(1)` through `TIME(3)` on every supported version. `TIMESTAMP(6)` and `TIMESTAMP_LTZ(6)`
+Flink 1.20 and 2.2 resolve SQL `TIME(p)` to `TIME(0)` before the connector sees it, while 2.3 and
+newer retain precision through `TIME(3)`: 2.3 is where that changed, and `2.4-SNAPSHOT` behaves as
+2.3 does, measured by the weekly `next` row once #933 had corrected a test that keyed the boundary
+to 2.3 alone. A programmatically
+constructed catalog schema can carry `TIME(1)` through `TIME(3)` on every supported version. `TIMESTAMP(6)` and `TIMESTAMP_LTZ(6)`
 preserve BigQuery's microseconds.
 A decimal overflow fails the read rather than silently producing `NULL`.
 

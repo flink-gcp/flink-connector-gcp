@@ -710,9 +710,9 @@ are migrating from it, this is the row to check.
 
 BigQuery Storage Read returns `TIME` as Avro `time-micros`. Flink 1.20 and 2.2 resolve a SQL
 declaration such as `TIME(3)` to `TIME(0)` before the connector sees the schema, so source and sink
-SQL paths on those versions carry only whole seconds. Flink 2.3 retains the declared precision and
-the connector preserves milliseconds through `TIME(3)`. Use a query source that casts the value to
-`STRING` when fractional text must be preserved on the earlier versions.
+SQL paths on those versions carry only whole seconds. Flink 2.3 and newer retain the declared
+precision and the connector preserves milliseconds through `TIME(3)`. Use a query source that casts
+the value to `STRING` when fractional text must be preserved on the earlier versions.
 
 A catalog schema constructed programmatically can carry `TIME(1)` through `TIME(3)` to the
 connector on every supported version, whose internal value stores milliseconds. The connector

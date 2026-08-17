@@ -217,14 +217,10 @@ class BigQueryDynamicTableFactoryTest {
                 "CREATE TABLE times (clock TIME(3)) WITH ('connector'='bigquery', "
                         + "'project'='my-project', 'dataset'='my_dataset', 'table'='my_table')");
 
-        DataType expected = flinkRetainsSqlTimePrecision() ? DataTypes.TIME(3) : DataTypes.TIME(0);
+        DataType expected =
+                FlinkVersions.retainsSqlTimePrecision() ? DataTypes.TIME(3) : DataTypes.TIME(0);
         assertThat(table.from("times").getResolvedSchema().getColumnDataTypes())
                 .containsExactly(expected);
-    }
-
-    private static boolean flinkRetainsSqlTimePrecision() {
-        String version = DataTypes.class.getPackage().getImplementationVersion();
-        return version != null && version.startsWith("2.3.");
     }
 
     @Test
