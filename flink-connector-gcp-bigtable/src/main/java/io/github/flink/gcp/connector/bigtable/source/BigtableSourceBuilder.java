@@ -142,8 +142,8 @@ public class BigtableSourceBuilder<T> {
      * <p>Without this, {@code rowRange("", "")} — the shape a start/end pair takes when the
      * configuration it came from defaulted to the empty string — becomes a scan of the whole table,
      * and {@link RowRanges#isEmpty} cannot object because an unbounded side is never empty. The
-     * whole table is what {@link #prefix} means by an empty argument; it is not what these
-     * overloads mean.
+     * whole table is what {@link #prefix(ByteString)} means by an empty argument; it is not what
+     * these overloads mean.
      */
     private static void checkBoundKey(ByteString key, String name) {
         Preconditions.checkNotNull(key, name + " must not be null");
