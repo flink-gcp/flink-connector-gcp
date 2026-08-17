@@ -264,6 +264,19 @@
                                     <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.io.perfmark</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <!-- jackson-core arrives behind opentelemetry-gcp-resources,
+                                         which google-cloud-bigtable pulled in as of libraries-bom
+                                         26.86.0 and which reads the metadata server's JSON through
+                                         it at runtime. Its package root matches neither its group
+                                         id nor the artifact that brought it, so shade leaves it in
+                                         place unless named - which is how it arrived, as an
+                                         unrelocated root the packaging ITCase reported. The
+                                         BigQuery module relocates the same root, reached there
+                                         through google-cloud-bigquerystorage instead. -->
+                                    <pattern>com.fasterxml.jackson</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.com.fasterxml.jackson</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>org.threeten</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.bigtable.shaded.org.threeten</shadedPattern>
                                 </relocation>
