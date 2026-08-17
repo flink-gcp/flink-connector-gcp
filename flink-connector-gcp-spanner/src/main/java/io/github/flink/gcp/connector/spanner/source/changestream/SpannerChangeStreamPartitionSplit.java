@@ -29,7 +29,31 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 
-/** One Spanner Change Streams partition and its checkpointed coordinator lifecycle. */
+/**
+ * One Spanner Change Streams partition and its checkpointed coordinator lifecycle.
+ *
+ * <p>Two halves that behave differently. The <b>definition</b> — token, parents, start and end
+ * timestamps, heartbeat interval — is fixed when Spanner reports the partition. The <b>progress</b>
+ * — position, lifecycle state, watermark — moves, and every mutation returns a new instance. {@link
+ * #samePartitionDefinition} compares only the first half, which is what lets the coordinator merge
+ * a returned split's progress into the ledger's entry while still refusing a split that claims a
+ * different partition under the same id.
+ *
+ * <p><b>The id is derived, never stored.</b> A partition is identified by its token ({@code
+ * change-stream-token:<token>}) or, for the one query that starts the stream, by {@link
+ * #INITIAL_PARTITION_ID}. Spanner reports the same child from every parent that leads to it, so
+ * deriving the id is what makes those reports converge on one ledger entry instead of several.
+ *
+ * <p>Parents are deduplicated and sorted on construction for the same reason: two readers may
+ * report the same child with the parents in different orders, and the definition comparison above
+ * has to see those as one partition.
+ *
+ * <p>The two shapes are mutually enforcing — the initial split has a null token and no parents, and
+ * a token partition must name at least one parent — so a split cannot be built that is neither.
+ *
+ * <p>{@link #toString} prints whether a token is present, never the token itself: it is an opaque
+ * blob nothing can look up, and printing it would push the assignment being logged off the line.
+ */
 @Internal
 public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
 

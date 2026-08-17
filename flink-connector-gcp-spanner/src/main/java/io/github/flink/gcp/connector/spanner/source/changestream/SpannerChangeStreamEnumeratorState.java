@@ -30,7 +30,27 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
 
-/** Checkpointed Spanner Change Streams partition ledger. */
+/**
+ * Checkpointed Spanner Change Streams partition ledger: every partition the coordinator knows
+ * about, and the watermark frontier it had reached.
+ *
+ * <p>This is the whole recovery record. There is no metadata table in the user's database, so what
+ * is not here does not survive a restart — which is why the ledger keeps <em>finished</em> entries
+ * too: a finished parent is what proves a child may run, and dropping it would make the child
+ * unschedulable after a restore.
+ *
+ * <p>Two constructors, and the difference is who is trusted. The public one validates the whole
+ * ledger — unique ids, every named parent present, no state ahead of an unfinished parent, and no
+ * cycle in the lineage — because it is reached from a restore, where the bytes come from outside
+ * this process. {@link #snapshotOfCoordinatorLedger} skips those checks, because the coordinator's
+ * own mutation paths have enforced them on every transition and re-deriving a topological sort at
+ * every checkpoint would cost the ledger's size for an answer that cannot have changed.
+ *
+ * <p>The frontier is stored rather than recomputed. It is checked against the ledger on the
+ * validating path — a watermark ahead of the minimum unfinished entry is rejected — but a restore
+ * has to replay the value the readers actually saw, not a value re-derived from entries that have
+ * moved on since.
+ */
 @Internal
 public final class SpannerChangeStreamEnumeratorState {
 

@@ -52,7 +52,31 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** Converts one Spanner data-change record into an atomic batch of Flink changelog rows. */
+/**
+ * Converts one Spanner data-change record into an atomic batch of Flink changelog rows.
+ *
+ * <p><b>Atomic is the word that matters.</b> Every row is staged into a local list and the list is
+ * returned only once the last mod has converted; a malformed later mod therefore emits nothing at
+ * all rather than leaving the first half of a record downstream. A record is one Spanner
+ * transaction's view of one table, and half of it is not a smaller truth.
+ *
+ * <p>The validation runs before any of that, and it is deliberately strict in one direction only: a
+ * watched column the DDL does not declare is ignored, while a declared column the record omits, a
+ * type that does not match, or a capture type the changelog mode cannot satisfy is a failure. The
+ * asymmetry follows from what each case means — a stream may legitimately watch more than this
+ * table declares, but a column the DDL promises and the record does not carry has no value to
+ * produce, and inventing SQL {@code NULL} for it would be a lie about the row.
+ *
+ * <p><b>A failure names the record and carries no cause.</b> {@code failure(...)} reports table,
+ * commit timestamp, transaction id, record sequence and mod index — enough to find the record in
+ * Spanner — and deliberately attaches no cause, because the exception underneath holds the JSON
+ * that failed to parse, which is the row's own data. The mod index is tracked as the loop runs so
+ * that it survives into the message.
+ *
+ * <p>Physical conversion lives here rather than in the deserialization schema that wraps it: that
+ * class is the collector and produced-type adapter, and growing conversion branches back into it
+ * would put the changelog rules in two places ({@code docs/adr/0105}).
+ */
 @Internal
 final class DataChangeRecordToRowDataConverter implements Serializable {
     private static final long serialVersionUID = 1L;
