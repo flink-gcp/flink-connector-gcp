@@ -1837,9 +1837,9 @@ many records reached the dead-letter policy in the first place is
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
 case, a single repair can take about a minute of SDK retries plus a minute of writer re-appends
-before surfacing as terminal (with the default schedules). Both schedules are configurable on
-both Storage Write API paths — via `DefaultStreamOptions` and via `BufferedStreamOptions` (see
-[Tuning](#tuning)); only the connection-pool group is absent from the buffered-stream options.
+before surfacing as terminal (with the default schedules). Both schedules are configurable on both
+Storage Write API paths — via `DefaultStreamOptions` and via `BufferedStreamOptions`, which
+[Tuning](#tuning) states carry the same knobs with the same defaults.
 
 ## Source
 

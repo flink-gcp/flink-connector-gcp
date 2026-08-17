@@ -666,13 +666,16 @@ existing table — so whichever column modes the serializer derives are decided 
 
 ## Pointing the sink at an emulator
 
-The sink takes **two** emulator endpoints, one per transport, because
-[goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator) speaks gRPC and REST on
-separate ports — a deviation from the sibling connectors, whose emulators speak one protocol on one
-port. `emulatorEndpoint(...)` points the Storage Write API traffic at it; `emulatorRestEndpoint(...)`
-points the table metadata traffic at it, which means table creation under `CREATE_IF_NEEDED` and
-connector-driven schema updates. A sink that only appends to a table that already exists needs the
-first alone.
+The sink takes **two** emulator endpoints, one per transport, because BigQuery serves table metadata
+over REST and the Storage Write API over gRPC — where every sibling connector needs one transport
+and so exposes one endpoint. Against
+[goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator), `emulatorEndpoint(...)` points
+the Storage Write API traffic at it; `emulatorRestEndpoint(...)` points the table metadata traffic at
+it, which means table creation under `CREATE_IF_NEEDED`, connector-driven schema updates and the CDC
+table contract. A sink that only appends to a table that already exists needs the first alone. Any
+other sink — one that creates a table, evolves a schema or manages a CDC table — needs both: given
+only `emulatorEndpoint(...)`, its metadata half **still reaches real BigQuery, under ADC and without
+saying so**, so a run meant for local development can create or alter production tables.
 
 Both are rejected under `FILE_LOADS`, which stages files to Cloud Storage that no emulator here
 stands in for: an endpoint could only be honored by the metadata half of that write method and

@@ -30,7 +30,7 @@ page, linked from each section.
 | Page | Covers |
 |---|---|
 | [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) | The shared resolver contract, per-destination resources, idle eviction, auto-creation and Pub/Sub ordering across all five sinks |
-| [BigQuery]({{< relref "docs/examples/bigquery" >}}) | A table per day from the event timestamp, both exactly-once write methods and how to redeploy them, table auto-creation |
+| [BigQuery]({{< relref "docs/examples/bigquery" >}}) | A table per day from the event timestamp, both exactly-once write methods and how to redeploy them, table auto-creation, the emulator |
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | A topic per record, topic and subscription auto-creation, the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
 | [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Several mutations per record, a table per day, skipping records, dropping bad rows, reading a key range, filtering on the server, the emulator |
@@ -52,5 +52,7 @@ behaviour**. Where the two disagree the real service decides, and each emulator 
 that matter: a green emulator run is not a green integration. The pages say what each one cannot
 show, which is the part worth reading before trusting one.
 
-BigQuery has no emulator path on its public API at all, which is a decision with a reason —
-[the BigQuery page]({{< relref "docs/examples/bigquery" >}}#no-emulator-path) records it.
+BigQuery is the one that takes two endpoints rather than one, because it serves table metadata over
+REST and the Storage Write API over gRPC —
+[the BigQuery page]({{< relref "docs/examples/bigquery" >}}#pointing-the-sink-at-an-emulator) sets
+out both, and what a run against that emulator cannot show.

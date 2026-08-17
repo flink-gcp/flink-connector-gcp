@@ -392,9 +392,9 @@ public class BigQuerySinkBuilder<T> {
      *
      * <p>BigQuery serves its two transports on <em>separate</em> ports — gRPC for the Storage Write
      * API, REST for table metadata — so this endpoint covers the gRPC half only, and a job that
-     * also creates tables or evolves their schemas needs {@link #emulatorRestEndpoint(String)}
-     * beside it. That is a deviation from the sibling connectors, whose emulators speak one
-     * protocol on one port.
+     * also creates tables, evolves their schemas or manages a CDC table needs {@link
+     * #emulatorRestEndpoint(String)} beside it. That is a deviation from the sibling connectors,
+     * each of which needs one transport and so exposes one endpoint.
      *
      * <p>Rejected under {@link WriteMethod#FILE_LOADS}: that write method stages files to Cloud
      * Storage, which no emulator here stands in for, so an endpoint could only be half honored.
@@ -414,10 +414,12 @@ public class BigQuerySinkBuilder<T> {
 
     /**
      * Points the sink's table metadata traffic — table creation under {@link
-     * CreateDisposition#CREATE_IF_NEEDED} and connector-driven schema updates — at a BigQuery
-     * emulator instead of the production service. The REST client is built against {@code
-     * http://host:port} with no credentials, so this must only ever be used against an emulator.
-     * Optional; when unset the metadata client uses configured credentials or ADC.
+     * CreateDisposition#CREATE_IF_NEEDED}, connector-driven schema updates and the CDC table
+     * contract — at a BigQuery emulator instead of the production service. The REST client is built
+     * against {@code http://host:port} with no credentials, so this must only ever be used against
+     * an emulator. Optional; when unset the metadata client uses configured credentials or ADC — so
+     * a sink doing any of those three with only {@link #emulatorEndpoint(String)} set still reaches
+     * real BigQuery.
      *
      * <p>This is the REST half of {@link #emulatorEndpoint(String)}; see there for why the two are
      * separate and for the {@link WriteMethod#FILE_LOADS} rejection, which applies to both.
