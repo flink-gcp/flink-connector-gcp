@@ -71,6 +71,22 @@ class RowToRowDataConverterTest {
                                                                     "m", DataTypes.DOUBLE()))))
                                     .getLogicalType());
 
+    /**
+     * A minimal schema whose row key is fixed-width, which {@link #SCHEMA}'s {@code STRING} key
+     * cannot be: only a fixed-width decoder can fail on a key that is too short.
+     */
+    private static final BigtableTableSchema LONG_KEY_SCHEMA =
+            BigtableTableSchema.of(
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("rowkey", DataTypes.BIGINT()),
+                                            DataTypes.FIELD(
+                                                    "cf1",
+                                                    DataTypes.ROW(
+                                                            DataTypes.FIELD(
+                                                                    "a", DataTypes.BIGINT()))))
+                                    .getLogicalType());
+
     private static final byte[] LONG_7 = {0, 0, 0, 0, 0, 0, 0, 7};
     private static final byte[] DOUBLE_1 = {0x3f, (byte) 0xf0, 0, 0, 0, 0, 0, 0};
 
@@ -276,6 +292,29 @@ class RowToRowDataConverterTest {
                 .hasMessageContaining("cf1:b")
                 .hasMessageContaining("'k1'")
                 .hasMessageContaining("4 byte(s)");
+    }
+
+    @Test
+    void aMalformedRowKeyIsReportedTheWayAMalformedCellIs() {
+        // The mirror of the case above, on the one decode that sat outside the guard. A row key is
+        // as externally written as a cell, so a BIGINT row-key column meeting a four-byte key from
+        // an HBase-written table produced a bare ArrayIndexOutOfBoundsException naming nothing.
+        // Row.create rather than the row(String, ...) helper: that one encodes the key as UTF-8,
+        // and this case needs the four raw bytes a foreign writer would have stored.
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(LONG_KEY_SCHEMA, null, NULL_LITERAL);
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        Row.create(
+                                                ByteString.copyFrom(new byte[] {0, 0, 0, 7}),
+                                                Collections.singletonList(
+                                                        cell("cf1", "a", 1_000L, LONG_7)))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("row key")
+                .hasMessageContaining("4 byte(s)")
+                .hasCauseInstanceOf(ArrayIndexOutOfBoundsException.class);
     }
 
     @Test

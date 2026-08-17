@@ -99,7 +99,10 @@ public final class TableCreateOptionsMapper {
         List<String> present = new ArrayList<>(FAMILY.size());
         for (ConfigOption<?> option : FAMILY) {
             if (config.getOptional(option).isPresent()) {
-                present.add(option.key());
+                // Quoted and joined by hand rather than interpolating the list: the factory's two
+                // equivalent messages render a key list as 'a', 'b', and a bare %s over a List
+                // would put Java's brackets in front of a SQL user instead.
+                present.add("'" + option.key() + "'");
             }
         }
         if (present.isEmpty()) {
@@ -112,7 +115,7 @@ public final class TableCreateOptionsMapper {
                 String.format(
                         "Options %s describe the column families the sink would create, but this"
                                 + " table does not create any. Remove them, or set '%s' = '%s'.",
-                        present,
+                        String.join(", ", present),
                         BigtableConnectorOptions.SINK_CREATE_DISPOSITION.key(),
                         CreateDisposition.CREATE_IF_NEEDED));
     }

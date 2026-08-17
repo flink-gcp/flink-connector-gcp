@@ -332,8 +332,8 @@ public final class BigtableConnectorOptions {
                     .defaultValue(InsertOnlyInputMode.UPSERT)
                     .withDescription(
                             "What changelog mode the sink advertises when the requested input"
-                                    + " contains inserts alone. UPSERT exposes Flink conflict"
-                                    + " strategies and is the default. INSERT_ONLY keeps a plain"
+                                    + " contains inserts alone. 'upsert' exposes Flink conflict"
+                                    + " strategies and is the default. 'insert-only' keeps a plain"
                                     + " INSERT portable when an ON CONFLICT clause is unavailable,"
                                     + " but disables that clause for the statement.");
 
