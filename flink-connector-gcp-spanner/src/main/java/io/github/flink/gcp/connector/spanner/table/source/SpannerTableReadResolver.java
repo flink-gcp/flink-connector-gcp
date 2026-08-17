@@ -112,27 +112,27 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
                             + metadata.indexState);
         }
 
-        List<SpannerFilterPushDown.KeyPart> keyParts = new ArrayList<>();
+        List<KeyColumn> keyColumns = new ArrayList<>();
         for (IndexColumn column : metadata.keyColumns) {
             int physicalIndex = physicalIndex(column.name);
-            keyParts.add(
-                    new SpannerFilterPushDown.KeyPart(
+            keyColumns.add(
+                    new KeyColumn(
                             column.name,
                             physicalIndex,
                             "DESC".equals(column.ordering),
                             column.nullable));
         }
         if (index == null) {
-            validateDeclaredPrimaryKey(keyParts);
+            validateDeclaredPrimaryKey(keyColumns);
         }
         if (metadata.nullFiltered) {
-            for (SpannerFilterPushDown.KeyPart keyPart : keyParts) {
-                if (keyPart.isNullable()
-                        && (keyPart.physicalIndex() < 0
-                                || !filters.provesNonNull(keyPart.physicalIndex()))) {
+            for (KeyColumn keyColumn : keyColumns) {
+                if (keyColumn.isNullable()
+                        && (keyColumn.physicalIndex() < 0
+                                || !filters.provesNonNull(keyColumn.physicalIndex()))) {
                     throw invalid(
                             "omits rows where nullable key column '"
-                                    + keyPart.name()
+                                    + keyColumn.name()
                                     + "' is NULL, but the pushed filters do not exclude them");
                 }
             }
@@ -163,7 +163,7 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
             columns = Collections.singletonList(schema.getColumns().get(0).getName());
         }
 
-        KeySet keys = filters.keySet(keyParts);
+        KeySet keys = filters.keySet(keyColumns);
         if (keys == null) {
             keys = KeySet.all();
         }
@@ -173,8 +173,7 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
                         table.apiName(), index.apiName(), keys, columns);
     }
 
-    private void validateDeclaredPrimaryKey(List<SpannerFilterPushDown.KeyPart> live)
-            throws IOException {
+    private void validateDeclaredPrimaryKey(List<KeyColumn> live) throws IOException {
         int[] declaredIndexes = schema.getPrimaryKeyIndexes();
         if (live.size() != declaredIndexes.length) {
             throw invalid(

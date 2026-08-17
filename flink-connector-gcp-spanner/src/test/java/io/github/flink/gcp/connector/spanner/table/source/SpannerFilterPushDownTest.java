@@ -128,16 +128,15 @@ class SpannerFilterPushDownTest {
     }
 
     @Test
-    void descendingKeyPartsReverseThePhysicalRangeEndpoints() {
+    void descendingKeyColumnsReverseThePhysicalRangeEndpoints() {
         ResolvedExpression lower =
                 call(BuiltInFunctionDefinitions.GREATER_THAN, field(2), literal(10));
         ResolvedExpression upper =
                 call(BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, field(2), literal(20));
         SpannerFilterPushDown.State state =
                 SpannerFilterPushDown.translate(SCHEMA, Arrays.asList(lower, upper), true);
-        List<SpannerFilterPushDown.KeyPart> descending =
-                Collections.singletonList(
-                        new SpannerFilterPushDown.KeyPart("score", 2, true, true));
+        List<KeyColumn> descending =
+                Collections.singletonList(new KeyColumn("score", 2, true, true));
 
         assertThat(state.keySet(descending).getRanges())
                 .containsExactly(KeyRange.closedOpen(Key.of(20L), Key.of(10L)));
@@ -276,10 +275,7 @@ class SpannerFilterPushDownTest {
 
         assertResult(
                 state.result(), Collections.emptyList(), Collections.singletonList(fractional));
-        assertThat(
-                        state.keySet(
-                                Collections.singletonList(
-                                        new SpannerFilterPushDown.KeyPart("id", 1, false, false))))
+        assertThat(state.keySet(Collections.singletonList(new KeyColumn("id", 1, false, false))))
                 .isNull();
     }
 
@@ -296,8 +292,7 @@ class SpannerFilterPushDownTest {
         assertThat(
                         state.keySet(
                                 Collections.singletonList(
-                                        new SpannerFilterPushDown.KeyPart(
-                                                "tenant", 0, false, false))))
+                                        new KeyColumn("tenant", 0, false, false))))
                 .isNull();
     }
 
@@ -359,8 +354,7 @@ class SpannerFilterPushDownTest {
             assertThat(
                             state.keySet(
                                     Collections.singletonList(
-                                            new SpannerFilterPushDown.KeyPart(
-                                                    "ratio", 3, false, true))))
+                                            new KeyColumn("ratio", 3, false, true))))
                     .isNull();
         }
     }
@@ -383,8 +377,7 @@ class SpannerFilterPushDownTest {
         assertThat(
                         exact.keySet(
                                 Collections.singletonList(
-                                        new SpannerFilterPushDown.KeyPart(
-                                                "tenant", 0, false, false))))
+                                        new KeyColumn("tenant", 0, false, false))))
                 .isEqualTo(KeySet.singleKey(Key.of(UUID.fromString(value))));
         assertResult(
                 residual.result(), Collections.emptyList(), Collections.singletonList(ordered));
@@ -458,9 +451,8 @@ class SpannerFilterPushDownTest {
                 Collections.emptyMap());
     }
 
-    private static List<SpannerFilterPushDown.KeyPart> typedPrimaryKey(int index, String name) {
-        return Collections.singletonList(
-                new SpannerFilterPushDown.KeyPart(name, index, false, false));
+    private static List<KeyColumn> typedPrimaryKey(int index, String name) {
+        return Collections.singletonList(new KeyColumn(name, index, false, false));
     }
 
     private static FieldReferenceExpression typedField(int index) {
@@ -480,17 +472,16 @@ class SpannerFilterPushDownTest {
         return new ValueLiteralExpression(value);
     }
 
-    private static List<SpannerFilterPushDown.KeyPart> primaryKey() {
+    private static List<KeyColumn> primaryKey() {
         return Arrays.asList(
-                new SpannerFilterPushDown.KeyPart("tenant", 0, false, false),
-                new SpannerFilterPushDown.KeyPart("id", 1, false, false));
+                new KeyColumn("tenant", 0, false, false), new KeyColumn("id", 1, false, false));
     }
 
-    private static List<SpannerFilterPushDown.KeyPart> secondaryKey() {
+    private static List<KeyColumn> secondaryKey() {
         return Arrays.asList(
-                new SpannerFilterPushDown.KeyPart("score", 2, false, true),
-                new SpannerFilterPushDown.KeyPart("tenant", 0, false, false),
-                new SpannerFilterPushDown.KeyPart("id", 1, false, false));
+                new KeyColumn("score", 2, false, true),
+                new KeyColumn("tenant", 0, false, false),
+                new KeyColumn("id", 1, false, false));
     }
 
     private static void assertResult(

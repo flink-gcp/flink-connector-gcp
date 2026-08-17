@@ -62,10 +62,10 @@ final class SpannerFilterPushDown {
             parsedFilters.add(parsed);
         }
 
-        List<KeyPart> primaryKey = new ArrayList<>();
+        List<KeyColumn> primaryKey = new ArrayList<>();
         for (int index : schema.getPrimaryKeyIndexes()) {
             primaryKey.add(
-                    new KeyPart(schema.getColumns().get(index).getName(), index, false, false));
+                    new KeyColumn(schema.getColumns().get(index).getName(), index, false, false));
         }
         Compiled primary = compile(primaryKey, predicates);
         @Nullable KeyConstraint primaryConstraint = primary.constraint;
@@ -159,15 +159,15 @@ final class SpannerFilterPushDown {
         return nextId + 1;
     }
 
-    static Compiled compile(List<KeyPart> keyParts, List<Predicate> predicates) {
+    static Compiled compile(List<KeyColumn> keyColumns, List<Predicate> predicates) {
         Set<Integer> used = new HashSet<>();
         List<Object> prefix = new ArrayList<>();
         @Nullable Bound lower = null;
         @Nullable Bound upper = null;
         boolean empty = false;
 
-        for (KeyPart keyPart : keyParts) {
-            List<Predicate> onColumn = predicatesFor(predicates, keyPart.physicalIndex);
+        for (KeyColumn keyColumn : keyColumns) {
+            List<Predicate> onColumn = predicatesFor(predicates, keyColumn.physicalIndex());
             List<Predicate> equalities = withComparison(onColumn, Comparison.EQUALS);
             if (!equalities.isEmpty()) {
                 Object equality = equalities.get(0).value;
@@ -207,7 +207,7 @@ final class SpannerFilterPushDown {
         if (!used.isEmpty()) {
             constraint =
                     new KeyConstraint(
-                            prefix, prefix.size() == keyParts.size(), lower, upper, empty);
+                            prefix, prefix.size() == keyColumns.size(), lower, upper, empty);
         }
         return new Compiled(constraint, used);
     }
@@ -305,8 +305,8 @@ final class SpannerFilterPushDown {
         }
 
         @Nullable
-        KeySet keySet(List<KeyPart> keyParts) {
-            return runtime().keySet(keyParts);
+        KeySet keySet(List<KeyColumn> keyColumns) {
+            return runtime().keySet(keyColumns);
         }
 
         boolean hasPrimaryKeyConstraint() {
@@ -314,7 +314,7 @@ final class SpannerFilterPushDown {
         }
 
         @Nullable
-        KeySet directionIndependentPrimaryKeySet(List<KeyPart> primaryKey) {
+        KeySet directionIndependentPrimaryKeySet(List<KeyColumn> primaryKey) {
             return primaryConstraint == null || primaryConstraint.hasRange()
                     ? null
                     : primaryConstraint.toKeySet(primaryKey);
@@ -370,9 +370,9 @@ final class SpannerFilterPushDown {
         }
 
         @Nullable
-        KeySet keySet(List<KeyPart> keyParts) {
-            Compiled compiled = compile(keyParts, predicates);
-            return compiled.constraint == null ? null : compiled.constraint.toKeySet(keyParts);
+        KeySet keySet(List<KeyColumn> keyColumns) {
+            Compiled compiled = compile(keyColumns, predicates);
+            return compiled.constraint == null ? null : compiled.constraint.toKeySet(keyColumns);
         }
 
         boolean provesNonNull(int physicalField) {
@@ -408,54 +408,6 @@ final class SpannerFilterPushDown {
         @Override
         public int hashCode() {
             return Objects.hash(predicates, nonNullFields, primaryConstraint);
-        }
-    }
-
-    static final class KeyPart implements Serializable {
-        private static final long serialVersionUID = 1L;
-
-        private final String name;
-        private final int physicalIndex;
-        private final boolean descending;
-        private final boolean nullable;
-
-        KeyPart(String name, int physicalIndex, boolean descending, boolean nullable) {
-            this.name = name;
-            this.physicalIndex = physicalIndex;
-            this.descending = descending;
-            this.nullable = nullable;
-        }
-
-        String name() {
-            return name;
-        }
-
-        int physicalIndex() {
-            return physicalIndex;
-        }
-
-        boolean isNullable() {
-            return nullable;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            KeyPart keyPart = (KeyPart) o;
-            return physicalIndex == keyPart.physicalIndex
-                    && descending == keyPart.descending
-                    && nullable == keyPart.nullable
-                    && name.equals(keyPart.name);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(name, physicalIndex, descending, nullable);
         }
     }
 
@@ -576,7 +528,7 @@ final class SpannerFilterPushDown {
             return lower != null || upper != null;
         }
 
-        private KeySet toKeySet(List<KeyPart> keyParts) {
+        private KeySet toKeySet(List<KeyColumn> keyColumns) {
             if (empty) {
                 return KeySet.newBuilder().build();
             }
@@ -588,9 +540,9 @@ final class SpannerFilterPushDown {
                 return KeySet.range(KeyRange.closedClosed(prefixKey, prefixKey));
             }
 
-            KeyPart rangedPart = keyParts.get(prefix.size());
-            Bound start = rangedPart.descending ? upper : lower;
-            Bound end = rangedPart.descending ? lower : upper;
+            KeyColumn rangedPart = keyColumns.get(prefix.size());
+            Bound start = rangedPart.isDescending() ? upper : lower;
+            Bound end = rangedPart.isDescending() ? lower : upper;
             KeyRange.Builder range = KeyRange.newBuilder();
             range.setStart(start == null ? key(prefix, null) : key(prefix, start.value));
             range.setStartType(
