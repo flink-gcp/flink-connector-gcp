@@ -117,10 +117,10 @@ final class InFlightTracker {
 
     /**
      * When {@link #warnIfStalled} last spoke; touched only on the task thread. A field rather than
-     * a per-wait flag because a wait is not an incident: the writer's isolation pass drains once
-     * per parked message, and a parked batch runs to about twice {@code maxInFlightMessages}, so
-     * one {@code flush} can make a thousand waits and a per-wait flag would put a line in the log
-     * for each of them.
+     * a per-wait flag because a wait is not an incident: {@link TopicRepairer}'s isolation pass
+     * drains once per parked message, and a parked batch runs to about twice {@code
+     * maxInFlightMessages}, so one {@code flush} can make a thousand waits and a per-wait flag
+     * would put a line in the log for each of them.
      */
     private long lastStallWarnNanos;
 

@@ -58,7 +58,7 @@ import java.util.function.Consumer;
  * maxAckExtensionPeriod}</em>. Past it the client releases a message's flow-control permit while
  * this subscriber is still holding the message, and pulling resumes with nothing capping what
  * accumulates (#357, measured by {@code PubSubPausedSplitBufferITCase}). What bounds it after that
- * is {@link PubSubSplitReader}, which reads {@link #bufferUsage()} and stops the client of a paused
+ * is {@link SubscriberRoster}, which reads {@link #bufferUsage()} and stops the client of a paused
  * split that has outgrown it.
  *
  * <p>The client's three lifecycle operations are held as functional values rather than as a {@link
@@ -387,8 +387,8 @@ public class StreamingPullSubscriber implements PullSubscriber {
             bufferedBytes = 0L;
         }
         // One list rather than two calls, for the reason #297 gave the same shape one level up in
-        // PubSubSplitReader.close(): closed is already true by the time these run, so the stop must
-        // not be skipped when the nack throws. It would leave this method's idempotence guard
+        // SubscriberRoster.closeAll(): closed is already true by the time these run, so the stop
+        // must not be skipped when the nack throws. It would leave this method's idempotence guard
         // claiming a client had been asked to stop that had not, close() returning at that guard,
         // and awaitTerminated spending its whole budget on it — reported by nothing but a WARN
         // about an unclean shutdown. closeAll finishes the list before reporting, so the order the

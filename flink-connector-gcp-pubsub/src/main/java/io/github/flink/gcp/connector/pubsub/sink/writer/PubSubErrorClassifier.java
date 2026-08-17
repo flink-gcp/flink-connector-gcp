@@ -43,8 +43,8 @@ import java.util.concurrent.CancellationException;
  *       that rejects all-or-nothing, and the SDK sets the one request-level status on every
  *       co-batched future with nothing naming the offender (measured on real Pub/Sub, 2026-08-06,
  *       one run, #264). How the verdict is confirmed — and that only a message rejected on its own
- *       single-message request reaches the failure handler — is {@link PubSubWriter}'s isolation
- *       republish.
+ *       single-message request reaches the failure handler — is {@link TopicRepairer}'s isolation
+ *       pass.
  *   <li>{@link Kind#FATAL} — everything else, including failures the SDK's own retries gave up on
  *       ({@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, …), {@code PERMISSION_DENIED} and failures
  *       carrying no status at all. These fail the ongoing write or checkpoint.

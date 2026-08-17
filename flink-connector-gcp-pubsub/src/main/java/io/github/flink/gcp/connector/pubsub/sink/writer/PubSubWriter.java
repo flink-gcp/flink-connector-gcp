@@ -57,12 +57,17 @@ import java.util.Map;
  *
  * <h2>Threading model</h2>
  *
- * <p>All mutable state — the publisher map, the in-flight counters, the pending-retry buffers and
- * the captured asynchronous error — is touched only on the task thread. Publish completion
- * callbacks do not mutate state directly; they re-dispatch onto the {@link MailboxExecutor}, whose
- * mails run on the task thread inside {@link MailboxExecutor#yield()} calls. This is the
- * backpressure model of the Apache {@code flink-connector-gcp-pubsub} writer (a design reference;
- * no code is copied from it).
+ * <p>Every mutable field this class owns — the publisher map, each destination's repair debt, the
+ * parked-message count and the captured asynchronous error — is <em>written</em> only on the task
+ * thread. A publish completion callback re-dispatches onto the {@link MailboxExecutor}, whose mails
+ * run on the task thread inside {@link MailboxExecutor#yield()} calls, rather than acting on any of
+ * it from the SDK's thread; the one thing it does do there is stamp {@link InFlightTracker}'s
+ * progress clock, which that class documents as its single off-thread write. Reads are not all on
+ * the task thread, and that is what shapes {@link #parkedMessages}: the metric reporter runs on a
+ * thread of its own, so a gauge over a plain {@code int} is safe where one summing the destination
+ * maps would race the task thread mutating them. The in-flight ledger is the tracker's and carries
+ * the tracker's own rules. This is the backpressure model of the Apache {@code
+ * flink-connector-gcp-pubsub} writer (a design reference; no code is copied from it).
  *
  * <h2>Delivery guarantees and state</h2>
  *
@@ -356,9 +361,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             if (repairNeeded) {
                 repairPendingTopics();
             }
-            for (DestinationState state : states.values()) {
-                state.publisher.flushOutstanding();
-            }
+            sendWhatIsStillBatched();
             inFlight.drainToEmpty();
         } while (repairNeeded);
         // After the drain, never before it: the failures that reach the handler are discovered by
@@ -500,9 +503,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * callers do, which is why the tracker is handed this as a hook rather than doing it for both
      * waits. {@link #repairPendingTopics} calls this and then drains, because it is reached from a
      * {@link #write} whose predecessor was parked by a failure mail during a capacity wait, so its
-     * in-flight message can be sitting unflushed in exactly the same way; {@link #flush} and the
-     * isolation pass flush their destinations before draining too. Doing it inside the drain
-     * instead would repeat a flush those callers have just made.
+     * in-flight message can be sitting unflushed in exactly the same way; {@link #flush} calls it
+     * before its own drain, and the isolation pass flushes the destination it is publishing to.
+     * Doing it inside the drain instead would repeat a flush those callers have just made.
      */
     private void sendWhatIsStillBatched() {
         for (DestinationState state : states.values()) {
