@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.spanner.sink;
 
 import org.apache.flink.annotation.Public;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+
 /**
  * Entry point for building a Spanner sink.
  *
@@ -45,9 +47,10 @@ import org.apache.flink.annotation.Public;
  * mutation groups may be applied in an unspecified order.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
- * Under a dropping policy configured through {@link SpannerSinkBuilder#failedMutationHandler}, a
- * completed checkpoint means every record up to the barrier was either applied, skipped by the
- * serializer, or handed to that handler.
+ * Under a dropping policy configured through {@link
+ * SpannerSinkBuilder#failedMutationHandler(FailureHandler)}, a completed checkpoint means every
+ * record up to the barrier was either applied, skipped by the serializer, or handed to that
+ * handler.
  *
  * <p>Example:
  * <!-- javadoc-example file="JavadocSpannerExamples.java" tag="sink" -->
