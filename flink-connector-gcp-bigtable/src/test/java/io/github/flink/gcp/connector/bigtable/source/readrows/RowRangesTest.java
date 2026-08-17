@@ -22,8 +22,11 @@ import com.google.protobuf.ByteString;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -367,19 +370,57 @@ class RowRangesTest {
     }
 
     @Test
-    void rendersTheUnboundedSentinelAndARowKeyStarAlike() {
-        // The renderer is not injective, deliberately: escape() keeps printable ASCII readable and
-        // 0x2A is both printable and the sentinel. Pinned so that nobody reaches for format() as an
-        // identity again — ByteStringRange is the identity, and it separates these.
+    void separatesTheUnboundedSentinelFromARowKeyStar() {
+        // 0x2A is printable and is also the sentinel format() prints for an absent bound, so it is
+        // escaped like an unprintable byte. Without that, each pair below renders one string, and
+        // an operator reading a warning cannot tell the two partitions apart.
         ByteStringRange unboundedEnd = ByteStringRange.unbounded().startClosed("a");
         ByteStringRange endsAtStar = ByteStringRange.unbounded().startClosed("a").endOpen("*");
-        assertThat(RowRanges.format(unboundedEnd)).isEqualTo(RowRanges.format(endsAtStar));
-        assertThat(unboundedEnd).isNotEqualTo(endsAtStar);
+        assertThat(RowRanges.format(unboundedEnd)).isEqualTo("[a, *)");
+        assertThat(RowRanges.format(endsAtStar)).isEqualTo("[a, \\x2a)");
 
         ByteStringRange unboundedStart = ByteStringRange.unbounded().endOpen("z");
         ByteStringRange startsAfterStar = ByteStringRange.unbounded().startOpen("*").endOpen("z");
-        assertThat(RowRanges.format(unboundedStart)).isEqualTo(RowRanges.format(startsAfterStar));
-        assertThat(unboundedStart).isNotEqualTo(startsAfterStar);
+        assertThat(RowRanges.format(unboundedStart)).isEqualTo("(*, z)");
+        assertThat(RowRanges.format(startsAfterStar)).isEqualTo("(\\x2a, z)");
+    }
+
+    @Test
+    void rendersEveryDistinctRangeToItsOwnString() {
+        // Injectivity as a property rather than as examples. Two things are needed for this to be
+        // able to fail for the reason its name gives, and the first draft had only one of them.
+        //
+        // Every byte escape() spends on structure must appear inside a key: "\", "*" and ",".
+        // And for the comma the alphabet must also be *closed under the split* — a key holding
+        // ", " only collides with the pair of keys either side of it, so "a, b" and "b, c" catch
+        // nothing unless "b" and "c" are here to be a bound on their own. Dropping them lets the
+        // comma escape be deleted with this test still green, which is how the control caught it.
+        List<String> keys = Arrays.asList("a", "b", "c", "*", ",", "\\", "a, b", "b, c", "*x");
+        List<ByteStringRange> ranges = new ArrayList<>();
+        ranges.add(ByteStringRange.unbounded());
+        for (String start : keys) {
+            ranges.add(ByteStringRange.unbounded().startClosed(start));
+            ranges.add(ByteStringRange.unbounded().startOpen(start));
+            ranges.add(ByteStringRange.unbounded().endClosed(start));
+            ranges.add(ByteStringRange.unbounded().endOpen(start));
+            for (String end : keys) {
+                ranges.add(ByteStringRange.unbounded().startClosed(start).endOpen(end));
+                ranges.add(ByteStringRange.unbounded().startOpen(start).endClosed(end));
+            }
+        }
+        ranges.add(ByteStringRange.create(ByteString.EMPTY, key("m")));
+        ranges.add(ByteStringRange.create(key("m"), ByteString.EMPTY));
+
+        Map<String, ByteStringRange> byRendering = new LinkedHashMap<>();
+        for (ByteStringRange range : ranges) {
+            String rendering = RowRanges.format(range);
+            ByteStringRange clash = byRendering.put(rendering, range);
+            // Only distinct ranges count as a clash: the loops build some ranges twice, and an
+            // empty key normalises to an unbounded bound whichever setter produced it.
+            if (clash != null) {
+                assertThat(clash).as("two ranges render as %s", rendering).isEqualTo(range);
+            }
+        }
     }
 
     @Test

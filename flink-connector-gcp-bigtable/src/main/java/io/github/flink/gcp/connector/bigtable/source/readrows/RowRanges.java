@@ -444,6 +444,17 @@ public final class RowRanges {
      * otherwise an identity hash. Printable ASCII is shown as itself and every other byte as {@code
      * \xNN}, so a key that is not text stays readable and a key that is text stays recognisable.
      *
+     * <p>Three printable bytes are shown escaped rather than as themselves, because each carries
+     * structure here: {@code \} introduces an escape, {@code *} is the sentinel for an absent
+     * bound, and {@code ,} separates the two bounds. A key holding one of them would otherwise make
+     * two different ranges render as one string — {@code [a, b, c)} is both "from {@code a, b} to
+     * {@code c}" and "from {@code a} to {@code b, c}" — and these strings are what an operator
+     * reads to tell two ranges apart in a warning. The rendering is therefore injective, and a test
+     * asserts that as a property.
+     *
+     * <p>That is a readability property, not a contract: <b>nothing decides identity from a
+     * rendering, and nothing should</b>. Range identity is {@code ByteStringRange.equals}.
+     *
      * @param range the range to render
      * @return a rendering such as {@code [row-1, row-9)} or {@code (\x00ff, *]}
      */
@@ -604,11 +615,20 @@ public final class RowRanges {
         }
     }
 
+    /**
+     * Renders a key readably, escaping every byte that carries structure in {@link #format}'s
+     * output as well as every unprintable one.
+     *
+     * <p>Three printable bytes are structural, and a key holding one has to be escaped or the
+     * rendering becomes ambiguous: {@code \} introduces an escape, {@code *} is the sentinel for an
+     * absent bound, and {@code ,} separates the two bounds. Escaping the comma is what leaves
+     * {@code ", "} occurring exactly once, so the two halves can always be told apart.
+     */
     private static String escape(ByteString key) {
         StringBuilder text = new StringBuilder(key.size());
         for (int i = 0; i < key.size(); i++) {
             int b = key.byteAt(i) & 0xFF;
-            if (b >= 0x20 && b < 0x7F && b != '\\') {
+            if (b >= 0x20 && b < 0x7F && b != '\\' && b != '*' && b != ',') {
                 text.append((char) b);
             } else {
                 text.append(String.format("\\x%02x", b));

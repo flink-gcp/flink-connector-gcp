@@ -555,6 +555,17 @@ numbers. Splitting more finely than a tablet is not something the read path can 
 A restore does **not** sample the table again. Tablets split and merge while a job runs, so a second
 sampling would name different ranges under the split ids the readers are already holding.
 
+**How a range is written in a log line or an error.** Both this source and the Change Streams source
+render ranges as `[start, end)`, where `[` and `]` include the key, `(` and `)` exclude it, and `*`
+stands for a bound the range does not have — so `(*, row-9)` is everything below `row-9` and
+`(*, *)` is the whole table. A key is shown as text where it is printable, and any other byte as
+`\xNN`. Three printable bytes are also shown escaped, because each means something in the notation
+itself: `\x5c` for a backslash, `\x2a` for `*`, and `\x2c` for a comma. That last one is what keeps
+`[a\x2c b, c)` — the range from `a, b` to `c` — from reading as a range from `a` to `b, c`. Two
+different ranges therefore never print the same way, which is what lets you tell two of them apart
+in a warning; the rendering is for reading, though, and the connector never uses it to decide
+whether two ranges are the same.
+
 ### Push-down: ranges, prefixes and filters
 
 `rowRange(...)` and `prefix(...)` are repeatable and additive; with none set the whole table is

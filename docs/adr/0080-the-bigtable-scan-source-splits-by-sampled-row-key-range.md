@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0080: The Bigtable scan source splits by sampled row-key range, and a checkpoint truncates the range
 
 - Status: Accepted
-- Date: 2026-08-09, revised by [#587] (2026-08-13)
-- Issues: [#216], [#34], [#248], [#481], [#587]
+- Date: 2026-08-09, revised by [#587] (2026-08-13) and [#947] (2026-08-17)
+- Issues: [#216], [#34], [#248], [#481], [#587], [#910], [#947]
 - Modules: bigtable (`source`, `source.readrows`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Source
 
@@ -150,6 +150,33 @@ emulator-versus-credentials branch is exactly the code that reads green on a dev
 red in CI — the failure ADR-0064 exists to describe — so the sink's batcher factory was refactored
 onto it rather than left as a second copy.
 
+### Refinement, [#947] (2026-08-17): a rendered range escapes every structural byte
+
+`RowRanges.format` renders a range for a log line or a message, and `escape` shows printable ASCII
+as itself so a text key stays recognisable. Three printable bytes carry structure in that output —
+`\` introduces an escape, `*` is the sentinel for an absent bound, and `,` separates the two bounds
+— and only the first was escaped. A key holding one of the other two made two different ranges
+render as one string: `[a, b, c)` is both "from `a, b` to `c`" and "from `a` to `b, c`", and a
+partition ending at the row key `*` rendered exactly like one running to the end of the table.
+
+**This reverses a position the repository had recorded and tested.**
+`PendingMergeAccumulatorTest.partitionKeysDoNotAliasLogRenderings` asserted the comma collision
+*deliberately*, as the evidence for its real claim — that a partition key is a range and never a
+rendering — and [#910] declined making the renderer injective for the same reason: correctness
+should not depend on a display form. That reasoning still stands and is unchanged. What it did not
+weigh is that these strings are also **what an operator reads to tell two ranges apart**, in the
+`StartPositionResolver` retention-expiry warning and in four other messages, at exactly the moment
+the distinction matters. Documenting the ambiguity was the alternative, and it costs about the same
+work while delivering a caveat instead of a fix.
+
+Escaping the comma is what leaves `", "` occurring exactly once, so the two halves can always be
+told apart; with all three escaped the rendering is injective, asserted as a property over an
+alphabet containing each of them rather than over bound shapes alone. Only keys *containing* one of
+the three render differently.
+
+The property is a readability guarantee and **not a licence to compare renderings**: nothing decides
+identity from one, and [#910] is why.
+
 ## Alternatives declined
 
 - **An offset-based split.** `ReadRows` has no row offset; there is nothing to count from.
@@ -191,3 +218,5 @@ onto it rather than left as a second copy.
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
 [#481]: https://github.com/laughingman7743/flink-connector-gcp/issues/481
 [#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587
+[#910]: https://github.com/laughingman7743/flink-connector-gcp/issues/910
+[#947]: https://github.com/laughingman7743/flink-connector-gcp/issues/947
