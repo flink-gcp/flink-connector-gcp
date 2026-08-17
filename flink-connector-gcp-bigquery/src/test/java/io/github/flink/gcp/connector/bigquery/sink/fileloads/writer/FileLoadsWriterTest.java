@@ -908,6 +908,46 @@ class FileLoadsWriterTest {
     }
 
     @Test
+    void closeClosesTheStagingStorage() throws Exception {
+        // #820: GcsStagingStorage holds a Storage client for the life of the task and no close()
+        // path reached it. The writer owns its own deserialized copy of the sink's storage, so it
+        // is the writer's close() that has to release it.
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(new CollectingHandler()),
+                        storage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+
+        writer.close();
+
+        assertThat(storage.getCloseCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aStagingStorageCloseFailureIsSuppressedOntoTheOneAlreadyBeingReported() throws Exception {
+        // The staging client is last in the Closers.closeAll list, which reports the *first*
+        // failure and suppresses the rest onto it. So a client this writer has finished with can
+        // never displace what an abort or the handler had to say — and the handler still closes.
+        CollectingHandler handler = new CollectingHandler();
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(config(handler), storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+        writer.write(new TestRow("t1", "a", 1L), CONTEXT);
+        storage.closeFailure = new NoClassDefFoundError("staged file close blew up");
+        IllegalStateException clientTeardown =
+                new IllegalStateException("staging client teardown blew up");
+        storage.failOnClose(clientTeardown);
+
+        assertThatThrownBy(writer::close)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("staged file close blew up")
+                .satisfies(e -> assertThat(e.getSuppressed()).containsExactly(clientTeardown));
+        assertThat(handler.closed).isTrue();
+        assertThat(storage.getCloseCount()).isEqualTo(1);
+    }
+
+    @Test
     void multiplePrepareCommitCyclesYieldDistinctUris() throws Exception {
         // Streaming execution calls prepareCommit once per checkpoint; the per-destination file
         // sequence must keep growing so a later checkpoint's file never reuses an earlier URI.

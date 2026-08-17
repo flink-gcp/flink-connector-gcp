@@ -155,6 +155,18 @@ class FileLoadsCommitterTest {
     }
 
     @Test
+    void closeClosesTheStagingStorage() throws Exception {
+        // #820: this close() was an empty body while the committer held a staging storage of its
+        // own. The committer sits behind addPreCommitTopology's global exchange, in a vertex of
+        // its own, so the writer closing its copy of the sink's storage releases nothing here.
+        Harness harness = new Harness();
+
+        harness.committer.close();
+
+        assertThat(harness.storage.getCloseCount()).isEqualTo(1);
+    }
+
+    @Test
     void theDefaultAdminFactoryWrapsForTheCreationRetry() {
         // Every case above injects its own factory, so a public constructor that stopped wrapping
         // would leave them all green — and the only thing to notice would be a commit failing a

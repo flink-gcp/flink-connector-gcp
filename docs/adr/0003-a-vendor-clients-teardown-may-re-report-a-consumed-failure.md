@@ -17,10 +17,12 @@ limitations under the License.
 # ADR-0003: A vendor client's teardown may re-report a failure the connector already consumed
 
 - Status: Accepted
-- Date: 2026-08-07
+- Date: 2026-08-07; `StagingStorage` re-measured into the set 2026-08-17
+  ([#820](https://github.com/laughingman7743/flink-connector-gcp/issues/820))
 - Issues: [#325](https://github.com/laughingman7743/flink-connector-gcp/issues/325),
   [#238](https://github.com/laughingman7743/flink-connector-gcp/issues/238),
-  [#351](https://github.com/laughingman7743/flink-connector-gcp/issues/351)
+  [#351](https://github.com/laughingman7743/flink-connector-gcp/issues/351),
+  [#820](https://github.com/laughingman7743/flink-connector-gcp/issues/820)
 - Modules: bigtable and pubsub carry the absorbs; the contract binds every client-wrapping SPI
 
 ## Context
@@ -66,17 +68,24 @@ Two rules the implementations turn on:
 Measured against the vendor sources on 2026-08-06, at the versions `libraries-bom` 26.85.1 pins.
 
 **The measured set, stated so it is reproducible**: every `@Internal` interface in this
-repository that declares a `close()` and whose implementations exist to wrap a GCP client — nine
+repository that declares a `close()` and whose implementations exist to wrap a GCP client — ten
 of them — plus `@Experimental` `DeadLetterQueue`, admitted on its implementation rather than its
 declaration, since `PubSubDeadLetterQueue` owns a `Publisher`. Two qualifiers the wording alone
 will not give you, both worth stating because a re-run otherwise disagrees with this list:
 `TopicAdmin` and `SubscriptionAdmin` are **in** although neither owns a long-lived client — they
 declare the `close()` and are the shape a future implementation might, which is what the
 contract is for — and `SubscriptionAdmin`'s closer is the split **enumerator**, not a writer or
-reader. `StagingStorage` is **out**, and this is the one exclusion that is a property of the
-type rather than a judgement: it declares no `close()` at all, its teardown being the staged
-object's own `OutputStream`, so there is no moment at which it could report anything a second
-time.
+reader.
+
+**The tenth is `StagingStorage`, and it joined the set by being changed rather than by being
+re-read.** The 2026-08-06 run excluded it on a property of the type — it declared no `close()` at
+all, its teardown being the staged object's own `OutputStream`, so there was no moment at which
+it could report anything a second time. That exclusion was also the defect
+[#820](https://github.com/laughingman7743/flink-connector-gcp/issues/820) reports: `GcsStagingStorage`
+holds a `Storage` for the life of the task and no teardown path reached it. Giving the interface a
+`close()` removes the exclusion's whole basis, so the type was measured like the rest, below. The
+membership rule earns its keep here: what put this type in the set was a source change, not a
+vendor upgrade, and nothing would have re-run the 2026-08-06 sweep to notice.
 
 The two that re-report:
 
@@ -109,6 +118,17 @@ The two that re-report:
   `ConnectionWorker.cleanupInflightRequests()` completes only futures **still in the inflight
   queue**: a first report, not a repeat, and the nearest miss in the set.
 - `TopicAdmin` and `SubscriptionAdmin` — no long-lived client, `close()` empty.
+- `StagingStorage` — google-cloud-storage 2.70.0 `Storage.close()` is a **`default` method on the
+  interface whose body is `return`**, and `StorageImpl` does not override it: closing this client
+  is literally a no-op, so it reports nothing, let alone a repeat. `StorageImpl` is what
+  `GcsStagingStorage` builds, by both of its paths —
+  `StorageOptions.getDefaultInstance().getService()` and `StorageOptions.newBuilder()` alike reach
+  `StorageOptions$DefaultStorageFactory`, which delegates to
+  `HttpStorageOptions$HttpStorageFactory` and returns `new StorageImpl(…)`. Only
+  `GrpcStorageImpl` overrides `close()`, with
+  `StorageClient.shutdownNow()` and an `awaitTermination` whose `boolean` nothing here reads —
+  a transport this connector does not select, and one that inspects no per-object outcome either
+  way. Measured on 2.71.0 as well, the next version in the line: unchanged in both respects.
 - `MutationBatcher`'s *client* half, which is a second teardown inside one SPI —
   `BigtableDataClient.close()` → `EnhancedBigtableStub.close()`, which is **not** a
   `BackgroundResourceAggregation` but `BigtableClientContext.close()`'s own loop over the

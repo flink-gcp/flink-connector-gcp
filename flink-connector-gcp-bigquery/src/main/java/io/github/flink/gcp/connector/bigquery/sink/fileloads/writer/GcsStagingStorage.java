@@ -115,6 +115,22 @@ public final class GcsStagingStorage implements StagingStorage {
         }
     }
 
+    /**
+     * Closes the client, if this instance ever built one. A client is built on the first {@link
+     * #createObject} or {@link #deleteObjects}, so an instance that only ever crossed the job graph
+     * has nothing to release.
+     *
+     * <p>On the HTTP transport this instance builds, the SDK's {@code close()} is the interface's
+     * inherited no-op — {@code StorageImpl} does not override it. The call is here for the
+     * contract, not for a leak that has been observed.
+     */
+    @Override
+    public void close() throws Exception {
+        if (storage != null) {
+            storage.close();
+        }
+    }
+
     private Storage storage() throws IOException {
         if (storage == null) {
             storage =
