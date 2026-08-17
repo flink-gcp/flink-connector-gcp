@@ -43,7 +43,7 @@ public final class BigtableMetricNames {
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_ENTRIES = "parkedEntries";
 
-    /** Registered by the sink writer and by the scan source's reader, on their own groups. */
+    /** Registered by the sink writer and by the source readers, on their own groups. */
     public static final String RECORDS_SKIPPED = "recordsSkipped";
 
     public static final String TABLES_CREATED = "tablesCreated";
@@ -81,9 +81,12 @@ public final class BigtableMetricNames {
             "changeStreamPartitionsReconciled";
     public static final String CHANGE_STREAM_TOKENLESS_RESTARTS = "changeStreamTokenlessRestarts";
 
-    // Registered by the scan source's split enumerator (BigtableScanSplitEnumerator).
+    // Registered by the source split enumerators, on their own groups.
     public static final String SPLITS_ASSIGNED = "splitsAssigned";
     public static final String SPLITS_RETURNED = "splitsReturned";
+
+    // Registered by an enumerator that plans by sampling, which the Change Streams enumerator does
+    // not: it takes its partitions from the service.
     public static final String ROW_KEY_SAMPLES_TAKEN = "rowKeySamplesTaken";
 
     private BigtableMetricNames() {}
