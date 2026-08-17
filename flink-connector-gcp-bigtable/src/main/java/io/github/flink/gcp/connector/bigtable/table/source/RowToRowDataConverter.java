@@ -127,7 +127,22 @@ final class RowToRowDataConverter implements Serializable {
     GenericRowData convert(Row row) {
         GenericRowData out = new GenericRowData(arity);
         if (rowKeySlot >= 0) {
-            out.setField(rowKeySlot, rowKeyDecoder.decode(row.getKey().toByteArray()));
+            byte[] key = row.getKey().toByteArray();
+            try {
+                out.setField(rowKeySlot, rowKeyDecoder.decode(key));
+            } catch (RuntimeException e) {
+                // The same guard the cell decode below carries, for the same reason: a row key is
+                // as externally written as a cell — interop with HBase-written tables is what
+                // CellValueCodec exists for — and a fixed-width decoder reading a shorter key
+                // otherwise throws a bare ArrayIndexOutOfBoundsException naming nothing.
+                throw new IllegalStateException(
+                        String.format(
+                                "The row key of the row '%s' holds %d byte(s), which the declared"
+                                        + " row-key column type cannot decode. Was the row written"
+                                        + " under a different encoding?",
+                                row.getKey().toStringUtf8(), key.length),
+                        e);
+            }
         }
         GenericRowData[] familyRows = new GenericRowData[familySlots.length];
         // A per-row seen-marker rather than a contiguity assumption: the timestamp order within a

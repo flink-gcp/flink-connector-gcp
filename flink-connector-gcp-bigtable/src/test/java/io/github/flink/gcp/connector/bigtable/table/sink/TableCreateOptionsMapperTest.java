@@ -152,4 +152,23 @@ class TableCreateOptionsMapperTest {
                     .hasMessageContaining("this table does not create any");
         }
     }
+
+    @Test
+    void theRejectedKeysAreQuotedTheWayTheFactoryQuotesItsOwn() {
+        // The factory's two equivalent messages render a key list as 'a', 'b'; this one rendered a
+        // List directly, so a SQL user met Java's brackets. Asserted on both halves so a
+        // regression to either the brackets or an unquoted key fails here.
+        assertThatThrownBy(
+                        () ->
+                                TableCreateOptionsMapper.map(
+                                        configuration(
+                                                "sink.table-create.gc-rule.max-versions", "2",
+                                                "sink.table-create.gc-rule.max-age", "1h"),
+                                        TWO_FAMILIES))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Options 'sink.table-create.gc-rule.max-versions',"
+                                + " 'sink.table-create.gc-rule.max-age' describe")
+                .hasMessageNotContaining("[");
+    }
 }
