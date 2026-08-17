@@ -624,8 +624,7 @@ public class BigQueryBufferedStreamWriter<T>
             LOG.info(
                     "An append to {} failed with a schema mismatch, reconciling the table schema",
                     state.destination);
-            reconcileSchema(state.destination);
-            refreshAppenderSchema(state);
+            reconcileAndRefresh(state);
             schemaUpdated = true;
             schedule = schemaWaitSchedule;
         }
@@ -696,11 +695,10 @@ public class BigQueryBufferedStreamWriter<T>
                             "A re-append to {} failed with a schema mismatch, reconciling the"
                                     + " table schema",
                             state.destination);
-                    reconcileSchema(state.destination);
+                    reconcileAndRefresh(state);
                     schemaUpdated = true;
                     schedule = schemaWaitSchedule;
                     attempt = 0;
-                    refreshAppenderSchema(state);
                     continue;
                 }
                 refreshAppenderSchema(state);
@@ -715,23 +713,14 @@ public class BigQueryBufferedStreamWriter<T>
                             || AppendErrorClassifier.isOffsetOutOfRange(failure)
                             || AppendErrorClassifier.isWriterClosed(failure)
                             || (schemaUpdated && schemaMismatch);
-            if (!retriable || attempt >= schedule.maxAttempts()) {
-                throw wrapFailure(
-                        "Re-appending to BigQuery stream "
-                                + state.streamName
-                                + " at offset "
-                                + offset
-                                + " failed"
-                                + (retriable ? ", the retry budget is exhausted" : "")
-                                + " ("
-                                + attempt
-                                + " attempt(s))",
-                        failure);
-            }
-            if (AppendErrorClassifier.isWriterClosed(failure)) {
-                reopenAppender(state);
-            }
-            sleep(schedule.backoffMs(attempt));
+            backOffOrGiveUp(
+                    state,
+                    "Re-appending to BigQuery stream",
+                    offset,
+                    retriable,
+                    attempt,
+                    schedule,
+                    failure);
         }
         throw new IllegalStateException("unreachable");
     }
@@ -813,11 +802,10 @@ public class BigQueryBufferedStreamWriter<T>
                             "A replayed append to {} failed with a schema mismatch, reconciling"
                                     + " the table schema",
                             state.destination);
-                    reconcileSchema(state.destination);
+                    reconcileAndRefresh(state);
                     schemaUpdated = true;
                     schedule = schemaWaitSchedule;
                     attempt = 0;
-                    refreshAppenderSchema(state);
                     continue;
                 }
                 refreshAppenderSchema(state);
@@ -845,28 +833,65 @@ public class BigQueryBufferedStreamWriter<T>
                 continue;
             }
             attempt++;
+            // Deliberately narrower than resendAtSameOffset's set, which also retries
+            // OFFSET_OUT_OF_RANGE. There it re-appends at a fixed offset, where out-of-range
+            // cascades from an earlier, since-repaired failure (see recover's javadoc); here the
+            // offset is recomputed from the destination's own tail, so the same rejection would
+            // repeat rather than settle. The asymmetry is deliberate but recorded only on #818.
             boolean retriable =
                     AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT
                             || AppendErrorClassifier.isWriterClosed(failure)
                             || (schemaUpdated && schemaMismatch);
-            if (!retriable || attempt >= schedule.maxAttempts()) {
-                throw wrapFailure(
-                        "Replaying an append to BigQuery stream "
-                                + state.streamName
-                                + " at offset "
-                                + state.nextOffset
-                                + " failed"
-                                + (retriable ? ", the retry budget is exhausted" : "")
-                                + " ("
-                                + attempt
-                                + " attempt(s))",
-                        failure);
-            }
-            if (AppendErrorClassifier.isWriterClosed(failure)) {
-                reopenAppender(state);
-            }
-            sleep(schedule.backoffMs(attempt));
+            backOffOrGiveUp(
+                    state,
+                    "Replaying an append to BigQuery stream",
+                    state.nextOffset,
+                    retriable,
+                    attempt,
+                    schedule,
+                    failure);
         }
+    }
+
+    /**
+     * The shared give-up-or-back-off step of the same-offset and replay loops: throws when the
+     * failure is terminal or the budget is spent, then replaces a client-side-closed appender and
+     * sleeps this attempt's backoff. Callers compute {@code retriable} themselves because the two
+     * loops classify differently, and pass {@code action} as the whole phrase up to the stream name
+     * so that each full message still exists as one literal to grep for.
+     *
+     * <p>{@code probeRestoredStream} deliberately does not use this. It resolves a closed writer
+     * and an offset conflict earlier, each with its own message and outcome, so by its epilogue
+     * there is no appender left to reopen, and it reports a spent budget and a terminal failure in
+     * the same words rather than distinguishing them.
+     */
+    private void backOffOrGiveUp(
+            DestinationState state,
+            String action,
+            long offset,
+            boolean retriable,
+            int attempt,
+            RetrySchedule schedule,
+            Throwable failure)
+            throws IOException {
+        if (!retriable || attempt >= schedule.maxAttempts()) {
+            throw wrapFailure(
+                    action
+                            + " "
+                            + state.streamName
+                            + " at offset "
+                            + offset
+                            + " failed"
+                            + (retriable ? ", the retry budget is exhausted" : "")
+                            + " ("
+                            + attempt
+                            + " attempt(s))",
+                    failure);
+        }
+        if (AppendErrorClassifier.isWriterClosed(failure)) {
+            reopenAppender(state);
+        }
+        sleep(schedule.backoffMs(attempt));
     }
 
     /**
@@ -915,6 +940,17 @@ public class BigQueryBufferedStreamWriter<T>
             metrics.schemaReconciled();
         }
         return outcome;
+    }
+
+    /**
+     * Reconciles the destination's table and reconnects the appender to it. The <em>first</em>
+     * schema mismatch at each of the four recovery sites does both, because appending against a
+     * table the appender's descriptor no longer matches would fail the same way; a repeat mismatch
+     * refreshes alone, the table having been reconciled already. Only the pair lives here.
+     */
+    private void reconcileAndRefresh(DestinationState state) throws IOException {
+        reconcileSchema(state.destination);
+        refreshAppenderSchema(state);
     }
 
     /**
@@ -992,11 +1028,10 @@ public class BigQueryBufferedStreamWriter<T>
                                     + " reconciling {}",
                             state.streamName,
                             state.destination);
-                    reconcileSchema(state.destination);
+                    reconcileAndRefresh(state);
                     schemaUpdated = true;
                     schedule = schemaWaitSchedule;
                     attempt = 0;
-                    refreshAppenderSchema(state);
                     continue;
                 }
                 if (attempt >= schedule.maxAttempts()) {
