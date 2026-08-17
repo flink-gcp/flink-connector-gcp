@@ -48,7 +48,7 @@ uses it and deletes it. What is Spanner's own:
   anything older than two hours at the start of each class, and a threshold far above the E2E
   workflow's ceiling so the sweep cannot reach a live run. That ceiling moved from 40 to 60 minutes
   when this suite joined and must stay under two hours.
-- **The daily sweep became one script over both services.** `scripts/sweep-bigtable-e2e.sh` is now
+- **The scheduled sweep became one script over both services.** `scripts/sweep-bigtable-e2e.sh` is now
   `scripts/sweep-e2e.sh`, sweeping Bigtable and Spanner independently and reporting the worst
   status. Not tidiness: `just` stops at its first failing line, so a recipe line per service would
   let one service's failed delete skip the other's sweep entirely — the guardrail failing quietly in

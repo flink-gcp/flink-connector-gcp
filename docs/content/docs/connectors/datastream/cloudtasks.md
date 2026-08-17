@@ -678,7 +678,7 @@ the fixture service and version, and stops the version on normal exit and handle
 before checking that it is `STOPPED` with zero instances.
 It preserves a test or signal exit status if cleanup also fails, while still surfacing a cleanup
 failure after a successful test.
-The daily sweep restores the stopped state after a hard cancellation that cannot run shell cleanup.
+The scheduled sweep restores the stopped state after a hard cancellation that cannot run shell cleanup.
 The remaining gated suites run after the fixture has returned to its idle state.
 
 What remains uncovered by the emulator and this App Engine suite:

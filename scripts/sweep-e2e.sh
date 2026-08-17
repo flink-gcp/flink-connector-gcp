@@ -21,7 +21,8 @@
 # Bigtable and Spanner sweep at the start of each gated class, and the App
 # Engine lifecycle wrapper stops its version after use. A killed runner,
 # cancelled job or process crash can bypass those guards. This script repeats
-# all three cleanups daily so their worst-case billed lifetime is one day.
+# all three cleanups on a schedule so their worst-case billed lifetime is the
+# staleness threshold plus one interval rather than unbounded.
 #
 # One script rather than one recipe line per resource type, and the reason is
 # not tidiness: a just recipe stops at its first failing line, so one cleanup

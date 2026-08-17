@@ -691,4 +691,4 @@ creates a 100-processing-unit regional Spanner instance in the `STANDARD` editio
 deletes it — nothing persistent is provisioned, because an instance bills for as long as it exists.
 `STANDARD` is enough, and the suite shows it rather than citing it: the Data Boost tests run on that
 instance and read every row, so exercising Data Boost needs no edition upgrade. Instance names carry their creation time, so a run that dies before its teardown
-is reclaimed both by the next run and by a daily sweep.
+is reclaimed both by the next run and by a scheduled sweep.

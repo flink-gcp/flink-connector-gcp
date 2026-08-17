@@ -14,14 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0119: A daily source-derived sweep returns billed E2E fixtures to their idle state
+# ADR-0119: A scheduled source-derived sweep returns billed E2E fixtures to their idle state
 
 - Status: Accepted
-- Date: 2026-08-02; revised by [#224] (2026-08-10) and [#630] (2026-08-14)
+- Date: 2026-08-02; revised by [#224] (2026-08-10), [#630] (2026-08-14) and the interval change
+  of 2026-08-18
 - Issues: [#224], [#246], [#630]
 - Modules: bigtable, spanner, cloudtasks (tests), scripts, CI
 - Current behavior: [`sweep-e2e.sh`](../../scripts/sweep-e2e.sh),
-  [daily sweep workflow](../../.github/workflows/sweep-e2e.yaml),
+  [sweep workflow](../../.github/workflows/sweep-e2e.yaml),
   [`just sweep-e2e`](../../justfile)
 
 ## Context
@@ -40,8 +41,10 @@ Each fixture has a normal cleanup path, but all need a process-independent fallb
 ## Decision
 
 The Bigtable, Spanner and App Engine fixtures in the shared sweep have two cleanup layers.
-The harness or lifecycle wrapper restores the idle state after an ordinary run, and a daily GitHub Actions workflow invokes `just sweep-e2e` after hard cancellation prevents that cleanup.
-The schedule changes the intended fallback interval from weekly to daily.
+The harness or lifecycle wrapper restores the idle state after an ordinary run, and a scheduled GitHub Actions workflow invokes `just sweep-e2e` after hard cancellation prevents that cleanup.
+The interval is a priced parameter rather than a fixed property of the design: it moved from weekly to daily when the sweep was introduced, and to three hours once the repository became public and its Actions minutes free.
+The staleness threshold, not the timetable, is what keeps a sweep from deleting a running instance, so shortening the interval is the safe direction and lowering the threshold is not.
+That safety rests on every run finishing inside the threshold, which `e2e.yaml`'s 60-minute ceiling guarantees and a local gated run does not: one left running past two hours can have its instance swept from under it, and a shorter interval makes that pre-existing hazard likelier to be hit.
 It is not a service-side expiry and cannot bound a delayed or disabled workflow run.
 
 One shell script owns the shared sweep.
@@ -66,6 +69,24 @@ A billing budget detects costs that this resource-specific sweep cannot foresee,
 [PR #259](https://github.com/laughingman7743/flink-connector-gcp/pull/259) implemented the Bigtable sweep and priced one daily interval at about $15 using the same historical rate, compared with about $109 for the previous seven-day interval.
 The existing WIF condition already admitted `schedule` and `workflow_dispatch` on `main`, so the workflow required no new OpenTofu grant.
 
+The 2026-08-18 change to three hours priced the whole range the same way.
+A leaked instance is billed for the two-hour staleness threshold plus the wait for the next sweep, at the same historical $0.65 a node-hour this ADR has used throughout, for the single node an ephemeral instance runs:
+
+| Interval | Worst-case billed lifetime | Cost |
+| --- | --- | --- |
+| Weekly | 170 h | ~$110 |
+| Daily | 26 h | ~$17 |
+| Every three hours | 5 h | ~$3 |
+| Hourly | 3 h | ~$2 |
+
+The knee is the threshold: below roughly two hours it dominates the total, so an hourly sweep saves about a dollar over a three-hourly one while running three times as often — 24 runs a day against 8.
+What moved the trade-off is not the arithmetic but the repository becoming public, which makes the added runs free; each sweep run took 20 to 30 seconds across the eight most recent runs before the change, seven scheduled and one manual.
+
+A leak observed on 2026-08-17 cost about $9 and is what prompted the repricing.
+An interrupted gated run created an instance at 13:04 UTC; the killed run's own teardown never ran, and the next run's sweep correctly skipped it at 1.4 hours old.
+The then-daily workflow would have reclaimed it 17 hours later, and it was deleted by hand instead.
+All three cleanup layers behaved as specified, which is why this is an interval change rather than a defect fix.
+
 The first script piped the resource listing into a loop.
 A failed process substitution did not trip `set -e`, so an authentication or API failure produced an empty list and a false successful result.
 Capturing and checking the listing before iteration made that failure loud.
@@ -74,7 +95,7 @@ Six mutation probes covered prefix, age, date parsing, listing failure, dry-run 
 When [#224] added Spanner, the script became service-parameterized and preserved independent attempts.
 That refactor found a second shell boundary: calling a function under `|| outcome=$?` suppresses errexit inside the function, so the resource listing remains explicitly checked rather than relying on shell mode.
 
-[PR #643](https://github.com/laughingman7743/flink-connector-gcp/pull/643) added the fixed App Engine fixture and reused the same lifecycle wrapper after OpenTofu apply, around gated acceptance and in the daily sweep.
+[PR #643](https://github.com/laughingman7743/flink-connector-gcp/pull/643) added the fixed App Engine fixture and reused the same lifecycle wrapper after OpenTofu apply, around gated acceptance and in the shared sweep.
 The verified idle state is `STOPPED` with zero instances, and runtime instance-count changes are the only part excluded from OpenTofu ownership.
 
 ## Alternatives declined
@@ -88,10 +109,10 @@ The verified idle state is `STOPPED` with zero instances, and runtime instance-c
 
 ## Consequences
 
-Adding a billed E2E fixture extends both its normal lifecycle cleanup and the shared daily sweep.
+Adding a billed E2E fixture extends both its normal lifecycle cleanup and the shared scheduled sweep.
 Its safe idle state, source of identifiers and failure behavior must be testable without creating a real resource.
 
-The daily job shortens the intended fallback interval for known fixture leaks but does not claim a hard time or spending bound, or general billing detection.
+The scheduled job shortens the intended fallback interval for known fixture leaks but does not claim a hard time or spending bound, or general billing detection.
 Any proposal to manage those concerns must separately address billing-account permissions and identifier handling.
 
 [#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224

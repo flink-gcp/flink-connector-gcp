@@ -42,10 +42,10 @@ tracks per class.
   reach a live run. The cluster id is built from the run id rather than the instance id, which
   at 28 characters leaves no room under a cluster id's own 30-character limit. Measured
   2026-08-02: the two classes together, provisioning included, take about 7½ minutes.
-  ([#246]'s daily `sweep-e2e` bounds what a run whose teardown never executed can cost.)
+  ([#246]'s scheduled `sweep-e2e` bounds what a run whose teardown never executed can cost.)
 - **Every deletion disables Change Streams on the instance's tables first.** Bigtable rejects an
   instance deletion with `FAILED_PRECONDITION` while any table retains change-stream data. The
-  per-class teardown, its startup sweep and the daily sweep all apply that prerequisite, so a
+  per-class teardown, its startup sweep and the scheduled sweep all apply that prerequisite, so a
   failed Change Streams test does not turn the cleanup path itself into a permanent leak.
 - **`BIGTABLE_IT_PROJECT` in a shell used to make every `just verify` create instances**,
   because the gate is on the classes and `verify` runs the same `integration-tests` execution
