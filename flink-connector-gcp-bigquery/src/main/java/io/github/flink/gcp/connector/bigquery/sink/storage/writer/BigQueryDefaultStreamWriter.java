@@ -181,7 +181,7 @@ public class BigQueryDefaultStreamWriter<T>
 
     /**
      * Stops the periodic-flush timer from re-arming (and from flushing closed appenders) once the
-     * writer is closed. Written and read on the task thread only, like {@link #states}: processing
+     * writer is closed. Written and read on the task thread only, like {@code states}: processing
      * time timer callbacks run on the mailbox.
      */
     private boolean closed;
@@ -206,7 +206,7 @@ public class BigQueryDefaultStreamWriter<T>
     /**
      * Set by completion callbacks when an append failed in a way the task thread can repair (a
      * recoverable missing-table verdict, schema mismatches, transient failures, row-level
-     * failures); the task thread then sweeps {@link #inFlight} for failed batches and repairs them.
+     * failures); the task thread then sweeps {@code inFlight} for failed batches and repairs them.
      */
     private final AtomicBoolean repairNeeded = new AtomicBoolean();
 
@@ -363,7 +363,7 @@ public class BigQueryDefaultStreamWriter<T>
 
     /**
      * Arms the next periodic flush. The callback runs on the mailbox (task) thread, which is what
-     * makes calling {@link #flush(boolean)} — and touching {@link #states} — safe from it.
+     * makes calling {@link #flush(boolean)} — and touching {@code states} — safe from it.
      */
     private void scheduleFlush() {
         timerService.registerTimer(
@@ -498,7 +498,7 @@ public class BigQueryDefaultStreamWriter<T>
     /**
      * Closes and drops the per-destination state of destinations idle beyond the configured timeout
      * — memory hygiene for long-lived jobs with dynamic destinations (for example date-suffixed
-     * tables), whose {@link #states} map otherwise grows without bound. Runs at the end of a
+     * tables), whose {@code states} map otherwise grows without bound. Runs at the end of a
      * successful flush, when every destination's pending batch is empty and every in-flight append
      * has been awaited, so closing an appender here cannot cancel a live append (the invariant the
      * repair path maintains with {@code collectFailedSiblings}). The pending check is defensive: a
@@ -719,7 +719,7 @@ public class BigQueryDefaultStreamWriter<T>
                     }
 
                     /**
-                     * Leaves repairable failures in {@link #inFlight} for the task thread to repair
+                     * Leaves repairable failures in {@code inFlight} for the task thread to repair
                      * on the next {@code write()} or {@code flush()}; terminal ones are captured
                      * immediately.
                      */
@@ -772,7 +772,7 @@ public class BigQueryDefaultStreamWriter<T>
     }
 
     /**
-     * Sweeps {@link #inFlight} for batches whose append failed and repairs them. Called on the task
+     * Sweeps {@code inFlight} for batches whose append failed and repairs them. Called on the task
      * thread between checkpoints; {@link #flush(boolean)} reaches the same repair through its own
      * response inspection.
      */
@@ -801,7 +801,7 @@ public class BigQueryDefaultStreamWriter<T>
      * reconciling the table schema (when updates are enabled), transient and stale-writer failures
      * are re-appended within the retry budget, row-level failures are routed to the {@link
      * FailureHandler} (surviving rows are re-appended), and anything else fails the writer. The
-     * {@link #inFlight} removal arbitrates ownership against the completion callbacks.
+     * {@code inFlight} removal arbitrates ownership against the completion callbacks.
      */
     private void handleFailedAppend(ApiFuture<AppendRowsResponse> future, Throwable cause)
             throws IOException {
@@ -1234,7 +1234,7 @@ public class BigQueryDefaultStreamWriter<T>
      * <ul>
      *   <li><b>Down to the recovery schedule for a missing-table verdict.</b> Table-creation
      *       metadata propagates in seconds, but {@code createTableIfMissing} is reached from schema
-     *       repairs too, which run on the fifteen-minute {@link #schemaWaitSchedule}. Without this,
+     *       repairs too, which run on the fifteen-minute {@code schemaWaitSchedule}. Without this,
      *       a masked {@code PERMISSION_DENIED} that is a <em>genuine</em> denial — an existing
      *       table the credentials cannot write to, where the creation attempt returns HTTP 409 and
      *       is swallowed as success — would inherit that budget and turn a failure that used to be

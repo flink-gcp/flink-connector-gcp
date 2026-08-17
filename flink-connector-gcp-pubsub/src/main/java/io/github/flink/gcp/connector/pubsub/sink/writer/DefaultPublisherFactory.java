@@ -182,7 +182,7 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
     /**
      * Builds the SDK retry settings: the mirrored SDK defaults overlaid with the set knobs (the
-     * SDK's own defaults are package-private; see {@link #DEFAULT_RETRY_SETTINGS}).
+     * SDK's own defaults are package-private; see {@code DEFAULT_RETRY_SETTINGS}).
      */
     @VisibleForTesting
     static RetrySettings retrySettings(PubSubPublisherOptions options) {

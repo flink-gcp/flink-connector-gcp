@@ -16,24 +16,29 @@
 """Hold Javadoc member references to the ones Javadoc can actually resolve (issue #897).
 
 A ``{@link Type#member}`` written without a parameter list resolves against
-**fields before methods**, and does not disambiguate overloads. Two shapes go
-wrong, both measured on this repository rather than inferred:
+**fields before methods**, and does not disambiguate overloads. Three shapes go
+wrong, each measured on this repository rather than inferred:
 
 * a method shadowed by a field of the same name renders the label with **no
   anchor at all** (issue #893, measured on the generated ``PubSubSink.html``);
 * an overloaded method renders **one anchor on an overload the reader cannot
-  predict** (issue #894, measured on ``BoundedShutdown.html``).
+  predict** (issue #894, measured on ``BoundedShutdown.html``);
+* a field the API reference does not document — private or package-private,
+  with no method of the name — renders **no anchor** either (issue #931,
+  measured on ``PubSubWriter.html`` and three sibling writers).
 
-``mvn javadoc:aggregate`` exits 0 on both, ``failOnWarnings`` included, so
+``mvn javadoc:aggregate`` exits 0 on all three, ``failOnWarnings`` included, so
 nothing else in CI sees them. This script reads every main-tree source, indexes
-the types it declares, and fails on a reference of either shape. The repair is
-the parameter list the message names.
+the types it declares, and fails on a reference of any of the three. The repair
+is in the message: the parameter list where there is a method to name, and
+``{@code member}`` where the sentence means the state itself.
 
 What it does not do: it judges only references whose target type it can find in
 this repository — ``{@link Duration#ZERO}`` belongs to the JDK and is skipped —
 and only members the target type declares itself, so a method inherited from a
-supertype is left alone. It says nothing about whether a reference points at
-the *right* member.
+supertype is left alone. A reference that already carries a parameter list is
+not checked against the declared signatures. And it says nothing about whether
+a reference points at the *right* member.
 
 Exit codes: 0 clean, 1 an unresolvable reference, 2 no sources to read.
 
@@ -448,12 +453,15 @@ def enclosing_type(source: SourceFile, start: int, end: int) -> JavaType | None:
     A comment sitting immediately before a type declaration documents *that*
     type, so its ``#member`` references resolve against it; anything else
     resolves against the type whose body holds the comment.
+
+    "Immediately before" has to step over the type's annotations. Every public
+    type in this repository carries a Flink API-tier one, so reading `@Public`
+    as something other than whitespace left every class javadoc without a
+    context and every bare reference in one unchecked (issue #930).
     """
     for candidate in all_types(source):
-        if (
-            candidate.decl_start >= end
-            and not source.masked[end : candidate.decl_start].strip()
-        ):
+        between = source.masked[end : candidate.decl_start]
+        if candidate.decl_start >= end and not ANNOTATION.sub("", between).strip():
             return candidate
     containing = [
         candidate
@@ -593,9 +601,9 @@ def check() -> tuple[int, list[str]]:
                     continue
                 member = match.group("member")
                 target = declaring_scope(target, member, bare=not match.group("type"))
-                overloads = target.methods.get(member) if target else None
-                if not overloads:
+                if target is None:
                     continue
+                overloads = target.methods.get(member)
                 checked += 1
                 line = line_at(source.text, start + 3 + offsets[match.start()])
                 shown = (
@@ -611,13 +619,18 @@ def check() -> tuple[int, list[str]]:
                     # the field it binds is one the reference can reach.
                     if visibility in ("public", "protected"):
                         continue
+                    repair = (
+                        f"Write `{shown}{overloads[0]}`"
+                        if overloads
+                        else f"Write `{{@code {member}}}` for the state itself, or name a "
+                        f"method with its parameter list"
+                    )
                     problems.append(
                         f"{where}: `{shown}` resolves to the {visibility} field "
                         f"`{member}` of {target.simple}, which the API reference does "
-                        f"not document, so Javadoc renders no anchor. Write "
-                        f"`{shown}{overloads[0]}`."
+                        f"not document, so Javadoc renders no anchor. {repair}."
                     )
-                elif len(overloads) > 1:
+                elif overloads and len(overloads) > 1:
                     listed = ", ".join(
                         f"`{shown}{signature}`" for signature in overloads
                     )
@@ -645,7 +658,9 @@ def main() -> int:
         )
         return 1
 
-    print(f"{checked} parameterless Javadoc member references resolve unambiguously.")
+    print(
+        f"{checked} parameterless Javadoc member references reach a member they can name."
+    )
     return 0
 
 

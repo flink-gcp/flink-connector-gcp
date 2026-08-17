@@ -53,9 +53,8 @@ final class DestinationState {
     /**
      * Ordering keys of messages the failure handler dropped, which the publisher paused and will
      * never resume on its own. Drained by the next repair attempt, and mid-pass by the isolation
-     * pass after each drop. Separate from {@link #pendingRetries} because the dropped message
-     * itself is gone: the key needs handing back even when there is nothing left to republish for
-     * it.
+     * pass after each drop. Separate from {@code pendingRetries} because the dropped message itself
+     * is gone: the key needs handing back even when there is nothing left to republish for it.
      */
     final Set<String> keysToResume = new LinkedHashSet<>();
 
@@ -68,7 +67,7 @@ final class DestinationState {
     /**
      * Whether a request-level {@code INVALID_ARGUMENT} is among the reasons this destination owes a
      * repair — the only one that calls for republishing the batch one message per request. Cleared
-     * by the attempt that answers it, like {@link #topicMissing}, and re-set by any later batched
+     * by the attempt that answers it, like {@code topicMissing}, and re-set by any later batched
      * rejection.
      */
     boolean isolationNeeded;

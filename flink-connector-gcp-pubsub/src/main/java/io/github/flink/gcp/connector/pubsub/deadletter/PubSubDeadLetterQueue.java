@@ -159,7 +159,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     /** Pub/Sub's limit on an attribute value, in bytes. */
     @VisibleForTesting static final int MAX_ATTRIBUTE_VALUE_BYTES = 1024;
 
-    /** Marks an error truncated to fit {@link #MAX_ATTRIBUTE_VALUE_BYTES}; ASCII, so 3 bytes. */
+    /** Marks an error truncated to fit {@code MAX_ATTRIBUTE_VALUE_BYTES}; ASCII, so 3 bytes. */
     @VisibleForTesting static final String TRUNCATION_MARKER = "...";
 
     /** The default outstanding bound: high enough that a rare failure never waits. */
@@ -200,7 +200,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * The two steps {@link #close()} runs, held as fields rather than called directly so a test can
      * drive its failure path: {@link Publisher} cannot be subclassed (non-final, but its only
      * constructor is private, which forbids a subclass just as effectively — #324), so there is no
-     * other seam. Set together with {@link #publisher} by {@link #open(FailureHandlerContext)} and
+     * other seam. Set together with {@code publisher} by {@link #open(FailureHandlerContext)} and
      * cleared with it, which is why the first of them stands in for it as the not-open guard.
      *
      * <p>The first is a {@link BoundedShutdown}: the SDK's own {@code shutdown()} is not guaranteed
@@ -208,7 +208,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      */
     @Nullable @VisibleForTesting transient AutoCloseable publisherShutdown;
 
-    /** The second of the two; see {@link #publisherShutdown}. */
+    /** The second of the two; see {@code publisherShutdown}. */
     @Nullable @VisibleForTesting transient AutoCloseable channelShutdown;
 
     /** Publishes not yet awaited; task-thread only, like every other field here. */

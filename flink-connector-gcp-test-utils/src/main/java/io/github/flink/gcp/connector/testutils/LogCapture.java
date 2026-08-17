@@ -103,7 +103,7 @@ public final class LogCapture implements AutoCloseable {
     private final LoggerConfig owned;
     private final CollectingAppender appender;
 
-    /** True when this capture created {@link #owned} and so must remove it again. */
+    /** True when this capture created {@code owned} and so must remove it again. */
     private final boolean created;
 
     /** The explicit level found on a pre-existing config, or null for none. Unused if created. */

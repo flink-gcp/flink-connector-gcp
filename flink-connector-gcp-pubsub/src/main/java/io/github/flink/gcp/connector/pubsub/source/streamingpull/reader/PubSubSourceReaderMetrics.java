@@ -88,7 +88,7 @@ public final class PubSubSourceReaderMetrics {
      * corrupt the value — {@code shutdown()} empties the buffer, so a stale entry reports zero —
      * and re-registering under the same split id is what a reopen after a park does.
      *
-     * <p>Here rather than in the split reader for {@link #parkedSplits}'s reasons: a fetcher may be
+     * <p>Here rather than in the split reader for {@code parkedSplits}'s reasons: a fetcher may be
      * rebuilt over a reader's life, and the metric reporter reads this from a thread of its own
      * while the fetcher thread writes it.
      */

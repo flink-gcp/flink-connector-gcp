@@ -98,7 +98,7 @@ public final class ProtoSchemaOptions implements Serializable {
 
     private final Set<String> geographyFieldPaths;
 
-    /** As {@link #jsonFieldOptions}, for {@code GEOGRAPHY} columns. */
+    /** As {@code jsonFieldOptions}, for {@code GEOGRAPHY} columns. */
     private final Map<Integer, String> geographyFieldOptions;
 
     private final boolean deriveRequiredColumns;

@@ -73,8 +73,8 @@ import java.time.Duration;
  * checkpointing (the checkpoint is the load trigger), {@link WriteDisposition#WRITE_APPEND} (other
  * dispositions are meaningless per checkpoint), and a checkpoint interval that stays clear of
  * BigQuery's daily load-job and destination-table modification limits — below {@link
- * FileLoadsOptions#getMinCheckpointInterval()} is an error, below {@link
- * #QUOTA_WARN_CHECKPOINT_INTERVAL} a warning.
+ * FileLoadsOptions#getMinCheckpointInterval()} is an error, below {@code
+ * QUOTA_WARN_CHECKPOINT_INTERVAL} a warning.
  *
  * @param <T> type of the records written by the sink
  */

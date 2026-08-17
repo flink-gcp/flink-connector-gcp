@@ -115,7 +115,7 @@ final class SpannerErrorClassifier {
      * {@code OUT_OF_RANGE}. Both are here because a policy named after constraint violations that
      * covered only one of them would be a lie the first time someone added a {@code CHECK}.
      *
-     * <p>Whether they join {@link #ROW_LEVEL_CODES} is the job's decision rather than this class's,
+     * <p>Whether they join {@code ROW_LEVEL_CODES} is the job's decision rather than this class's,
      * because both readings of such a refusal are defensible; see {@link
      * ConstraintViolationPolicy}.
      */

@@ -119,7 +119,7 @@ public class StreamingPullSubscriber implements PullSubscriber {
     private final Deque<PubsubMessage> messages = new ArrayDeque<>();
 
     /**
-     * The serialized size of everything in {@link #messages}, maintained alongside it because
+     * The serialized size of everything in {@code messages}, maintained alongside it because
      * summing on demand is O(n) on a buffer whose whole problem is growing large.
      */
     @GuardedBy("this")
@@ -130,7 +130,7 @@ public class StreamingPullSubscriber implements PullSubscriber {
     private Throwable permanentError;
 
     /**
-     * Whether {@link #permanentError} has been handed to a caller, which is what {@link
+     * Whether {@code permanentError} has been handed to a caller, which is what {@link
      * #awaitTerminated} needs to know and is not the same question as whether it has been recorded.
      */
     @GuardedBy("this")
@@ -417,7 +417,7 @@ public class StreamingPullSubscriber implements PullSubscriber {
      * Whether the given cause is the failure this subscriber has already handed to a caller.
      *
      * <p>Asks the question directly rather than through a proxy, which a first draft of this got
-     * wrong twice over. Snapshotting {@link #permanentError} before the shutdown looks equivalent
+     * wrong twice over. Snapshotting {@code permanentError} before the shutdown looks equivalent
      * and is not: on the reader's own close path every subscriber's {@link #shutdown()} runs before
      * any {@link #close()}, so the snapshot would be taken after {@code stopAsync()} — and a
      * failure the teardown itself produced in that window would be in it, and reported as a repeat

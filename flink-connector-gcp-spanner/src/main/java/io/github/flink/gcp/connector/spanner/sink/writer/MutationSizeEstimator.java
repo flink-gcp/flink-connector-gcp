@@ -41,7 +41,7 @@ import java.util.List;
  * receives. See {@link #base64Length(int)} for the measurement. Every other type is counted as
  * itself, and the framing this still ignores is about sixty bytes a mutation.
  *
- * <p>A value this estimator cannot size is counted at {@link #UNKNOWN_VALUE_BYTES} rather than
+ * <p>A value this estimator cannot size is counted at {@code UNKNOWN_VALUE_BYTES} rather than
  * rejected — a type the client library adds later, and a {@code Value.untyped(...)}, which carries
  * no {@code Type} at all. Neither must stop a running job, and an under-count of one value is
  * absorbed by that same headroom.

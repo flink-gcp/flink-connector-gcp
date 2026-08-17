@@ -73,7 +73,9 @@ green; use the clean-state procedures in that guide for such changes.
   compiled backing regions; abbreviated blocks are visibly classified and explain their omission.
 - A Javadoc reference to a method carries its parameter list: `{@link Type#member(ParamType)}`.
   Without one it binds a same-named field first and renders no anchor, which the javadoc build does
-  not report; `just check-javadoc-links` does, and its message names the list to write.
+  not report. Only a public or protected field is linkable at all; where the sentence means
+  internal state, write `{@code member}` rather than a link. `just check-javadoc-links` holds both,
+  and its message carries the repair.
 - Option and metric inventories belong only in their reference/DataStream tables; use the matching
   `curate-*` skill when a checker fails.
 - Module `README.md` files are overviews: status table, minimal sample, docs link, and provenance.

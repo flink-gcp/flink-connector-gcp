@@ -127,12 +127,12 @@ public final class BigtableWriterOptions implements Serializable {
      */
     private static final long CLIENT_MAX_OUTSTANDING_ENTRIES = 20_000;
 
-    /** The byte half of the budget {@link #CLIENT_MAX_OUTSTANDING_ENTRIES} documents. */
+    /** The byte half of the budget {@code CLIENT_MAX_OUTSTANDING_ENTRIES} documents. */
     private static final long CLIENT_MAX_OUTSTANDING_BYTES = 100L * 1024 * 1024;
 
     /**
-     * The largest {@link Builder#batchElementCount(long)} this connector accepts: one under {@link
-     * #CLIENT_MAX_OUTSTANDING_ENTRIES}. Written as the subtraction rather than as 19,999 so that a
+     * The largest {@link Builder#batchElementCount(long)} this connector accepts: one under {@code
+     * CLIENT_MAX_OUTSTANDING_ENTRIES}. Written as the subtraction rather than as 19,999 so that a
      * client release moving its budget moves this with it, instead of leaving a ceiling that admits
      * a value the client then refuses.
      *
@@ -144,8 +144,8 @@ public final class BigtableWriterOptions implements Serializable {
     static final long MAX_BATCH_ELEMENT_COUNT_LIMIT = CLIENT_MAX_OUTSTANDING_ENTRIES - 1;
 
     /**
-     * The largest {@link Builder#batchByteSize(long)} this connector accepts: one byte under {@link
-     * #CLIENT_MAX_OUTSTANDING_BYTES}, for the reason {@link #MAX_BATCH_ELEMENT_COUNT_LIMIT} gives.
+     * The largest {@link Builder#batchByteSize(long)} this connector accepts: one byte under {@code
+     * CLIENT_MAX_OUTSTANDING_BYTES}, for the reason {@code MAX_BATCH_ELEMENT_COUNT_LIMIT} gives.
      *
      * <p><b>No service figure stands behind this one</b>, and none exists to: Bigtable's quotas
      * page states no size limit for a {@code MutateRows} request at all — its size rows bound a

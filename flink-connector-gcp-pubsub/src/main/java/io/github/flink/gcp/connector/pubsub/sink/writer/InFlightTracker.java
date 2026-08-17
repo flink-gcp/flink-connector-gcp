@@ -332,7 +332,7 @@ final class InFlightTracker {
      * Runs one mailbox mail, failing if nothing has completed a publish for {@code
      * publishProgressTimeout}.
      *
-     * <p>What is bounded is a <b>stall, not a slow topic</b>: {@link #lastCompletionNanos} is
+     * <p>What is bounded is a <b>stall, not a slow topic</b>: {@code lastCompletionNanos} is
      * restamped by every completion the publisher reports, so one that keeps answering never spends
      * the budget however long the wait lasts in total, while one that has stopped answering
      * entirely fails the job once. That distinction is the whole design — a plain deadline on the
@@ -340,7 +340,7 @@ final class InFlightTracker {
      * issue raised against bounding the sink's own writes at all (#333).
      *
      * <p>Both callers pass the moment their wait began, which is what stops an idle writer from
-     * expiring immediately: with no publish in the last hour, {@link #lastCompletionNanos} is an
+     * expiring immediately: with no publish in the last hour, {@code lastCompletionNanos} is an
      * hour old and only the later of the two is the honest start of <em>this</em> wait.
      *
      * <p>{@link MailboxExecutor#yield()} cannot be used here — it blocks until a mail arrives, and
@@ -351,7 +351,7 @@ final class InFlightTracker {
      *
      * <p>The budget is read only once {@code tryYield} has come back empty; the body says what that
      * costs and why the alternative costs more. Returns the time this wait has gone without
-     * progress, or {@link #RAN_A_MAIL} if it ran one instead — which is what tells {@link
+     * progress, or {@code RAN_A_MAIL} if it ran one instead — which is what tells {@link
      * #awaitCapacity()} the mailbox is empty, so that the flush and the warning are worth doing.
      * The caller owns the once-per-wait flag for the flush, because {@link #awaitCapacity()} is on
      * the record path and a state object here would be an allocation per record.

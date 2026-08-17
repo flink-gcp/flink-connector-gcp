@@ -49,6 +49,90 @@ def audit(check_javadoc_links) -> list[str]:
     return problems
 
 
+def test_a_class_javadoc_is_read_through_the_types_annotations(
+    tree, check_javadoc_links
+):
+    """The comment documents the type below it, annotations and all.
+
+    Every public type here carries a Flink API-tier annotation, so treating
+    `@Public` as something other than whitespace left the class javadoc of the
+    whole repository without a context, and every bare reference in one
+    unchecked (issue #930).
+    """
+    write(
+        tree / "Builder.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Entry point, configured through {@link #handler}. */
+@Public
+public class Builder {
+    private Handler handler;
+
+    public Builder handler(Handler handler) {
+        return this;
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "Builder.java:5" in problems[0]
+    assert "`#handler(Handler)`" in problems[0]
+
+
+def test_a_reference_to_a_private_field_offers_a_code_span(tree, check_javadoc_links):
+    """No method of the name means no parameter list to suggest.
+
+    The reference is dead all the same — a private field is not in the
+    generated documentation — so the message offers the other repair, which is
+    what the prose almost always meant (issue #931).
+    """
+    write(
+        tree / "Writer.java",
+        """package demo;
+
+public class Writer {
+    private Throwable asyncError;
+
+    /** Set by the callback thread; {@link #asyncError} is read on the next write. */
+    public void write(String record) {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "`{@code asyncError}`" in problems[0]
+    assert "parameter list" in problems[0]
+
+
+def test_a_package_private_field_is_no_more_documented_than_a_private_one(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "State.java",
+        """package demo;
+
+public class State {
+    boolean topicMissing;
+
+    /** Cleared once the topic exists; see {@link #topicMissing}. */
+    public void repair() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "package field `topicMissing`" in problems[0]
+
+
 def test_a_method_shadowed_by_a_private_field_fails(tree, check_javadoc_links):
     write(
         tree / "Builder.java",

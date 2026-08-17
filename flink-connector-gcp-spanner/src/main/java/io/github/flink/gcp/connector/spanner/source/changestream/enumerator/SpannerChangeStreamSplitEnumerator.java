@@ -75,7 +75,7 @@ import java.util.function.LongSupplier;
  * <p>Spanner's change stream hands out partitions as a lineage: reading one partition discovers its
  * children, and a child may only be read once <em>every</em> parent that names it has finished.
  * Beam keeps that lineage in a metadata table in the user's database. This connector keeps it in
- * {@link #ledger} and checkpoints it, so the source needs no table of its own and no write
+ * {@code ledger} and checkpoints it, so the source needs no table of its own and no write
  * permission — which also means a lost checkpoint is a lost lineage, and there is no second copy to
  * reconcile against.
  *
@@ -109,8 +109,8 @@ import java.util.function.LongSupplier;
  *
  * <p>{@link #start} hands the metadata read — dialect, stream scope, retention, partition mode — to
  * {@code callAsync}, because it is an RPC and the coordinator thread must not block on one. Reader
- * events that arrive in that window have no ledger to apply to yet, so they are parked in {@link
- * #deferredActions} and replayed in order once initialization completes; {@link #snapshotState}
+ * events that arrive in that window have no ledger to apply to yet, so they are parked in {@code
+ * deferredActions} and replayed in order once initialization completes; {@link #snapshotState}
  * refuses to run before that point rather than checkpointing a ledger those events have not reached
  * yet.
  *

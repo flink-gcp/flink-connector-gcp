@@ -62,7 +62,7 @@ final class PubSubDeadLetterQueueMetrics {
     private volatile long flushMillis;
 
     /**
-     * The longest wait this writer has seen, in milliseconds, which is the one {@link #flushMillis}
+     * The longest wait this writer has seen, in milliseconds, which is the one {@code flushMillis}
      * cannot keep: waits happen as often as the queue drains — once per <em>element</em> under
      * {@code WRITE_THROUGH} — so a slow one is overwritten long before a reporter reads it (#405).
      *
