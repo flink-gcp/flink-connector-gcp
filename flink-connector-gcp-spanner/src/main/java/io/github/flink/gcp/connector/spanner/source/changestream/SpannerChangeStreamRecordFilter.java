@@ -34,7 +34,31 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Applies connector-side table and column filters to decoded data-change records. */
+/**
+ * Applies connector-side table and column filters to decoded data-change records.
+ *
+ * <p>Connector-side, and that is a cost rather than a saving: Spanner has already produced the
+ * whole record and sent it, so these filters reduce what reaches the deserializer and nothing else.
+ * Use the change stream's own DDL when the service must not produce a value at all.
+ *
+ * <p><b>Nothing is copied unless something is removed.</b> The column loop leaves {@code
+ * columnTypes} null until it meets the first rejected column, then copies the prefix it has already
+ * passed; a projection that retains every column returns the original record untouched, with no
+ * list allocated and no mod JSON reparsed. That path is the common one — a filter usually rejects
+ * columns of tables it is not about — so it is the one worth not paying for.
+ *
+ * <p>Primary-key columns and their metadata always survive, whatever the patterns say. A projected
+ * record without its key would describe a change to a row nobody can identify.
+ *
+ * <p>{@code skipMessagesWithoutChange} fires only when projection <em>removed</em> the change: the
+ * record must have reported non-key values and have none left. A record that carried no non-key
+ * values to begin with — a delete under a value-capture type that reports none — is delivered,
+ * because the option is about what this filter took away, not about what Spanner never sent.
+ *
+ * <p>Patterns match the complete identifier, {@code table} or {@code table.column}, and neither
+ * case-folding nor quoting is applied: the names come from the record Spanner produced, and
+ * approximating that identity with a regex is how a filter silently matches the wrong table.
+ */
 @Internal
 public final class SpannerChangeStreamRecordFilter implements Serializable {
 
