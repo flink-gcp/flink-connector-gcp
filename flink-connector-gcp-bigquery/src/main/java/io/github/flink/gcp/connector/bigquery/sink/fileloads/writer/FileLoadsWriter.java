@@ -268,6 +268,10 @@ public final class FileLoadsWriter<T>
         // aborted. Cleared after the loop above has taken every open file.
         destinations.clear();
         closeables.add(config.getFailureHandler()::close);
+        // The staging client goes last because Closers.closeAll reports the *first* failure and
+        // suppresses the rest onto it: whatever an abort or the handler has to say outranks a
+        // teardown failure from a client this writer is finished with.
+        closeables.add(storage::close);
         Closers.closeAll(closeables);
     }
 

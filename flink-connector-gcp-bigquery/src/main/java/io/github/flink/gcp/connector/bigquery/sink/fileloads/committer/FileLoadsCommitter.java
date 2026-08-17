@@ -23,6 +23,7 @@ import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
@@ -243,6 +244,18 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         lastStreamingCommitMillis = now;
     }
 
+    /**
+     * Releases the staging client. The committer holds its own instance, not the writer's: the
+     * global exchange that {@code BigQueryFileLoadsSink.addPreCommitTopology} ends with puts the
+     * committer in a vertex of its own, so it deserializes its own copy of the sink and builds its
+     * own client. The writer closing its copy releases nothing here.
+     *
+     * <p>The lazily built {@link LoadJobRunner} and {@link TableAdmin} are not released here
+     * because neither declares a {@code close()}, and neither has to: {@code
+     * com.google.cloud.bigquery.BigQuery}, the client behind both, is not {@code AutoCloseable}.
+     */
     @Override
-    public void close() {}
+    public void close() throws Exception {
+        Closers.closeAll(storage::close);
+    }
 }

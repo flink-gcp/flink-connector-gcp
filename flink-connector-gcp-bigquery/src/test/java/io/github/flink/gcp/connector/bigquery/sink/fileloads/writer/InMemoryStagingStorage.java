@@ -46,6 +46,15 @@ public final class InMemoryStagingStorage implements StagingStorage {
      */
     Throwable closeFailure;
 
+    /**
+     * When set, {@link #close()} throws it — the storage's own teardown failing, which is a
+     * different thing from {@link #closeFailure} above: that one belongs to a staged object's
+     * stream.
+     */
+    private Throwable storageCloseFailure;
+
+    private int closeCount;
+
     @Override
     public OutputStream createObject(String gcsUri) {
         return new ByteArrayOutputStream() {
@@ -66,6 +75,24 @@ public final class InMemoryStagingStorage implements StagingStorage {
             objects.remove(gcsUri);
             deleted.add(gcsUri);
         }
+    }
+
+    @Override
+    public void close() throws Exception {
+        closeCount++;
+        if (storageCloseFailure != null) {
+            ExceptionUtils.rethrow(storageCloseFailure);
+        }
+    }
+
+    /** Counts the closes rather than raising a flag, which could not tell one close from two. */
+    public int getCloseCount() {
+        return closeCount;
+    }
+
+    /** Makes {@link #close()} throw, so a caller's ordering of its closes can be asserted. */
+    public void failOnClose(Throwable failure) {
+        this.storageCloseFailure = failure;
     }
 
     Map<String, byte[]> getObjects() {

@@ -29,7 +29,7 @@ import java.util.List;
  * <p>Abstracts the GCS client so writer and orchestration logic are unit-testable.
  */
 @Internal
-public interface StagingStorage extends Serializable {
+public interface StagingStorage extends Serializable, AutoCloseable {
 
     /**
      * Opens a new staging object for writing. The object becomes visible atomically when the
@@ -48,4 +48,23 @@ public interface StagingStorage extends Serializable {
      * @param gcsUris the object URIs to delete
      */
     void deleteObjects(List<String> gcsUris);
+
+    /**
+     * Releases whatever client this staging area holds. Called once per instance at task teardown,
+     * by both the writer and the committer, each of which deserializes its own instance.
+     *
+     * <p>Redeclared here rather than inherited silently from {@link AutoCloseable}, and carrying no
+     * {@code default} body, because an implementation that owns a client must be made to say what
+     * it does with it: the defect this method exists for was a client that no teardown path
+     * reached.
+     *
+     * <p>An implementation whose client re-reports at teardown a failure this connector has already
+     * consumed must absorb it, as ADR-0003 requires of every client-wrapping SPI here. The Cloud
+     * Storage implementation does not have to, and that ADR records the measurement rather than
+     * leaving the next implementation to guess.
+     *
+     * @throws Exception if the client cannot be released
+     */
+    @Override
+    void close() throws Exception;
 }
