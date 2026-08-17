@@ -116,12 +116,12 @@ Two properties made the SDK's version unusable as the sink's byte bound:
 
 - It blocks the task thread rather than yielding to the mailbox, which is what the writer's own
   cap exists to avoid.
-- It **cannot be combined with message ordering.** In `google-cloud-pubsub` 1.152.0,
-  `Publisher.publish` acquires a flow-control permit *before* the paused-ordering-key check, and
-  neither the paused-key rejection nor the per-key cancellation path releases it (verified in the
-  SDK source). After a per-key publish failure, leaked permits permanently shrink — and under
-  `Block` eventually exhaust — the budget, hanging the task thread with no exception. That left
-  ordered sinks, where a paused key holds its whole cascade, with no byte bound at all.
+- It **cannot be combined with message ordering.** `Publisher.publish` acquires a flow-control
+  permit *before* the paused-ordering-key check, and neither the paused-key rejection nor the
+  per-key cancellation path releases it. After a per-key publish failure, leaked permits
+  permanently shrink — and under `Block` eventually exhaust — the budget, hanging the task thread
+  with no exception. That left ordered sinks, where a paused key holds its whole cascade, with no
+  byte bound at all.
 
 **`retryTotalTimeout` and `retryMaxAttempts` cannot be combined with message ordering either**, and
 `PubSubPublisherOptions.build()` rejects the pair rather than accepting settings the SDK will
@@ -876,12 +876,12 @@ asynchronously, so any latency this writer could report would measure its own bo
 than the service's response time — a missing number beats a wrong one. There is no committer here
 either (the sink is single-phase), so Flink's committer metrics do not apply.
 
-**The SDK contributes nothing to these numbers**, measured against `google-cloud-pubsub` 1.152.0
-(libraries-bom 26.85.1): `Publisher` exposes no metric or statistics accessor, and its only telemetry
-surface is `setEnableOpenTelemetryTracing`/`setOpenTelemetry`, which emits **spans** — not meters —
-into an OpenTelemetry instance a Flink job need not have configured. A Kafka-style passthrough of
-client-native metrics therefore has nothing to read. The connector leaves that tracing switch alone;
-a job that wants publish spans configures OpenTelemetry itself.
+**The SDK contributes nothing to these numbers**: `Publisher` exposes no metric or statistics
+accessor, and its only telemetry surface is `setEnableOpenTelemetryTracing`/`setOpenTelemetry`,
+which emits **spans** — not meters — into an OpenTelemetry instance a Flink job need not have
+configured. A Kafka-style passthrough of client-native metrics therefore has nothing to read. The
+connector leaves that tracing switch alone; a job that wants publish spans configures OpenTelemetry
+itself.
 
 ## Source
 

@@ -307,9 +307,9 @@ Checkpointing must be enabled in streaming jobs; without it `flush()` is never c
 and outstanding creates are lost on failure. Batch execution is covered by the end-of-input flush.
 
 **Retries are this sink's responsibility, unlike every other connector here.** The generated client
-gives `CreateTask` an *empty* set of retryable status codes and a 20-second total timeout — verified
-in `CloudTasksStubSettings` for `google-cloud-tasks` 2.94.0, where `getTask`, `listTasks` and
-`deleteTask` all retry on `DEADLINE_EXCEEDED`/`UNAVAILABLE` and `createTask` alone does not. The
+gives `CreateTask` an *empty* set of retryable status codes and a 20-second total timeout — it is
+`CloudTasksStubSettings` that says so, where `getTask`, `listTasks` and `deleteTask` all retry on
+`DEADLINE_EXCEEDED`/`UNAVAILABLE` and `createTask` alone does not. The
 same empty-retry configuration covers every mutating method (`createQueue`, `updateQueue`,
 `purgeQueue`, `pauseQueue`, `resumeQueue`, `runTask`), so it reads as a blanket "do not retry
 mutations" rather than a judgement about `CreateTask` specifically — but the consequence is the
@@ -361,14 +361,15 @@ one — which is why even the short `NOT_FOUND` budget carries it.
 
 ## Queues, rate limits and sink concurrency
 
-**There is no batch create available to a JVM sink.** `BatchCreateTasks` is documented in v2beta3
-(long-running, explicitly non-atomic, 100 tasks maximum) and `BufferTask` is a GA v2 method — but
-**neither exists in `google-cloud-tasks` 2.94.0**, not even on its v2beta3 surface: both are
-REST-only, so dropping to a beta client would not buy batching either. The Java client also
-configures no method with batching — there is no `BatchingSettings` in `CloudTasksSettings` or
+**This sink does not use a batch create, and creation costs one RPC per record.** `BufferTask` is a
+GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does, but only on the
+**v2beta3** surface — long-running, explicitly non-atomic, 100 tasks maximum — while this
+connector targets v2. Adopting it is planned in [#937]({{< param BookRepo >}}/issues/937) rather
+than done: a non-atomic long-running call has to be reconciled against a sink that reports
+per-task outcomes. The Java client also
+configures no method with gax batching — there is no `BatchingSettings` in `CloudTasksSettings` or
 `CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
-are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright, and
-creation costs one RPC per record.
+are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.
 
 What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a cap on outstanding
 creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
