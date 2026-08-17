@@ -53,7 +53,58 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Reads several Spanner Change Streams partition queries concurrently in one source subtask. */
+/**
+ * Reads several Spanner Change Streams partition queries concurrently in one source subtask.
+ *
+ * <h2>Threading, and the one-slot handover</h2>
+ *
+ * <p>Two threads meet here. The client's callback thread delivers a record, a completion or a
+ * failure; the task thread drains it in {@link #pollNext}. They meet at exactly one place per query
+ * — {@code ActiveQuery.handover}, an {@code AtomicReference} holding <b>at most one undrained
+ * result</b>. The callback publishes with a compare-and-set and throws if it finds the slot
+ * occupied, because a second undrained result would mean the query had resumed before the mailbox
+ * consumed the first, and the memory this reader holds would stop being bounded.
+ *
+ * <p>That bound is what the callback's {@code PAUSE} return buys, and it is why {@code resume()} is
+ * called from {@code pollNext} <em>after</em> the result has been emitted, never from the callback.
+ * Everything Flink-facing — collecting to the output, sending coordinator events, advancing split
+ * progress — happens on the task thread as a result, so no user code and no Flink output is ever
+ * reached from a client thread.
+ *
+ * <p>{@link #isAvailable()} is the other crossing: the callback completes the future and {@code
+ * pollNext} replaces it once it has drained everything. Both sides hold {@code availabilityLock}
+ * for that, which is the only lock in this class.
+ *
+ * <h2>Capacity</h2>
+ *
+ * <p>At most {@code maxConcurrentQueriesPerSubtask} queries are open at once. Splits beyond that
+ * sit in a FIFO that is part of {@link #snapshotState}, so a restored reader that was over capacity
+ * stays over capacity rather than dropping the excess. A split is requested from the enumerator
+ * only when active and queued together leave room, and only one request is ever outstanding.
+ *
+ * <h2>What ends a query, and what that reports</h2>
+ *
+ * <p>A query that fails <b>fails the task and keeps its split</b>: the split is still in {@link
+ * #snapshotState}, so recovery re-opens it at the checkpointed position. Only a query that ended
+ * successfully sends a {@link PartitionFinishedEvent}, because that event is what lets the
+ * coordinator schedule the partition's children — sending it for a failed query would advance the
+ * lineage past a partition nobody finished reading.
+ *
+ * <h2>Time</h2>
+ *
+ * <p>A data record is emitted at its own commit timestamp. The watermark is not this reader's to
+ * compute: the coordinator owns the complete-ledger frontier and broadcasts it, and this reader
+ * emits it through the <em>main</em> source output rather than a per-split one, so a partition no
+ * reader currently holds still counts toward Flink's minimum. Heartbeats never reach the user
+ * deserializer; they advance the position this reader reports back to the coordinator.
+ *
+ * <p>Queries do not open until the coordinator's initialization event arrives, because a restored
+ * split must not reach Spanner before the coordinator has decided whether its position is still
+ * within retention.
+ *
+ * <p>See {@code docs/adr/0101} for the evidence behind these choices, and {@code docs/adr/0099} for
+ * the coordinator protocol these events belong to.
+ */
 @Internal
 public final class SpannerChangeStreamReader<T>
         implements SourceReader<T, SpannerChangeStreamPartitionSplit> {
