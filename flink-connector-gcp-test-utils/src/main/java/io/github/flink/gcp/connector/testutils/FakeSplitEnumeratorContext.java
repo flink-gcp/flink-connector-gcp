@@ -208,8 +208,6 @@ public final class FakeSplitEnumeratorContext<SplitT extends SourceSplit>
         }
     }
 
-    // Planning is the one asynchronous step both current enumerators take, and it is one-shot.
-
     @Override
     public <T> void callAsync(
             Callable<T> callable,

@@ -21,15 +21,17 @@ import org.apache.flink.annotation.Internal;
 import java.util.UUID;
 
 /**
- * Random resource-name helpers for the gated integration tests against real GCP: concurrent runs
- * must not collide on resource names, and a crashed run must leave behind names that identify it.
+ * Random resource-name helpers for tests whose resources share a namespace — the gated real-GCP
+ * suites above all, where concurrent runs must not collide on resource names and a crashed run must
+ * leave behind names that identify it, but also an emulator harness giving each test a database of
+ * its own.
  */
 @Internal
 public final class TestNames {
 
     /**
      * Returns {@code prefix} plus a full random UUID, dash-separated — for resources whose names
-     * allow dashes (Pub/Sub topics and subscriptions, Cloud Tasks queues).
+     * allow dashes.
      */
     public static String unique(String prefix) {
         return prefix + "-" + UUID.randomUUID();
@@ -38,7 +40,7 @@ public final class TestNames {
     /**
      * Returns a short random run id (eight hex characters) to suffix onto several related resource
      * names, so one run's resources group together — for names built with underscores where dashes
-     * are unwelcome (BigQuery table ids shared with GCS staging prefixes).
+     * are unwelcome.
      */
     public static String runId() {
         return UUID.randomUUID().toString().substring(0, 8);

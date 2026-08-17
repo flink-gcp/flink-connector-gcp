@@ -22,8 +22,8 @@ import org.testcontainers.containers.BigtableEmulatorContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * The Bigtable emulator image shared by every harness that starts the emulator — the connector
- * module's own integration harness and the SQL module's smoke test — so they cannot drift apart.
+ * The Bigtable emulator image shared by every harness that starts the emulator, so they cannot
+ * drift apart.
  *
  * <p>The sibling of {@code testutils.pubsub.PubSubEmulatorContainers}, which pins the same gcloud
  * CLI image in a constant of its own — emulator fixtures are deliberately not unified (issue #27) —
