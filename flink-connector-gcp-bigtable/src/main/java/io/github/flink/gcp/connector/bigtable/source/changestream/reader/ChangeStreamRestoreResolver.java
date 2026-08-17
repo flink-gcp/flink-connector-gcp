@@ -21,13 +21,23 @@ import org.apache.flink.annotation.Internal;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
-import java.util.Optional;
 
 /** Resolves a reader-restored split against current retention. */
 @Internal
 public interface ChangeStreamRestoreResolver extends Serializable {
 
+    /**
+     * Returns the split to read, restarted at the fallback position when the restored one expired.
+     *
+     * @param split the split the reader was assigned after a restore
+     * @param fallback the configured fallback start position, or {@code null} when none was
+     *     configured, in which case an expired position fails the job
+     * @return the given split, or a copy restarted at the resolved fallback position
+     * @throws Exception if retention discovery fails
+     */
     ChangeStreamPartitionSplit resolve(
-            ChangeStreamPartitionSplit split, Optional<StartPosition> fallback) throws Exception;
+            ChangeStreamPartitionSplit split, @Nullable StartPosition fallback) throws Exception;
 }

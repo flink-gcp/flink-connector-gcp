@@ -75,7 +75,7 @@ public final class BigtableChangeStreamSplitEnumerator
     private final SplitEnumeratorContext<ChangeStreamPartitionSplit> context;
     private final ChangeStreamCoordinatorClient client;
     private final StartPosition startPosition;
-    private final Optional<StartPosition> resumeFallback;
+    @Nullable private final StartPosition resumeFallback;
     private final boolean bounded;
     private final boolean reconciliationEnabled;
     private final Clock clock;
@@ -113,7 +113,7 @@ public final class BigtableChangeStreamSplitEnumerator
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ChangeStreamCoordinatorClient client,
             StartPosition startPosition,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState) {
         this(context, client, startPosition, resumeFallback, restoredState, false, false);
     }
@@ -122,7 +122,7 @@ public final class BigtableChangeStreamSplitEnumerator
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ChangeStreamCoordinatorClient client,
             StartPosition startPosition,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded) {
         this(context, client, startPosition, resumeFallback, restoredState, bounded, false);
@@ -132,7 +132,7 @@ public final class BigtableChangeStreamSplitEnumerator
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ChangeStreamCoordinatorClient client,
             StartPosition startPosition,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded,
             boolean reconciliationEnabled) {
@@ -151,7 +151,7 @@ public final class BigtableChangeStreamSplitEnumerator
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ChangeStreamCoordinatorClient client,
             StartPosition startPosition,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded,
             boolean reconciliationEnabled,
@@ -160,8 +160,7 @@ public final class BigtableChangeStreamSplitEnumerator
         this.client = Preconditions.checkNotNull(client, "client must not be null");
         this.startPosition =
                 Preconditions.checkNotNull(startPosition, "startPosition must not be null");
-        this.resumeFallback =
-                Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
+        this.resumeFallback = resumeFallback;
         this.restoredState = restoredState;
         this.bounded = bounded;
         this.reconciliationEnabled = reconciliationEnabled;

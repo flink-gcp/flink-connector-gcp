@@ -37,7 +37,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -53,7 +52,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private String appProfileId;
     @Nullable private String serviceAccountKeyFile;
     private StartPosition startPosition = StartPosition.latest();
-    private Optional<StartPosition> resumeFallback = Optional.empty();
+    @Nullable private StartPosition resumeFallback;
     @Nullable private Instant endTime;
     private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
     private List<Pattern> familyIncludeList = Collections.emptyList();
@@ -115,11 +114,23 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets where a partition restarts when its restored position has fallen outside the table's
+     * change-stream retention. Optional; unset means such a restore <em>fails</em> the job rather
+     * than advancing over records that can no longer be read.
+     *
+     * <p>It applies per partition, not to the whole restore: only the partitions whose checkpointed
+     * position expired restart from here, while the others resume from their continuation tokens.
+     * Setting it is a decision to lose the unavailable interval of those partitions rather than to
+     * stop, and a position older than the retained window is moved forward to the earliest readable
+     * instant.
+     *
+     * @param resumeFallback the fallback start position
+     * @return this builder
+     */
     public BigtableChangeStreamSourceBuilder<T> resumeFallback(StartPosition resumeFallback) {
         this.resumeFallback =
-                Optional.of(
-                        Preconditions.checkNotNull(
-                                resumeFallback, "resumeFallback must not be null"));
+                Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
         return this;
     }
 

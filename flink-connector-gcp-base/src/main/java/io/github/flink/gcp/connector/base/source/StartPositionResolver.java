@@ -132,26 +132,24 @@ public final class StartPositionResolver {
      *
      * @param partition the connector's stable description of the restored partition
      * @param restoredPosition the partition's checkpointed read position or low watermark
-     * @param fallback the explicitly configured fallback, if any
+     * @param fallback the explicitly configured fallback, or {@code null} when none was configured
      * @return empty to retain restored state, or the fallback instant to restart from
      * @throws Exception if retention discovery fails
      */
     public Optional<Instant> resolveRestored(
-            String partition, Instant restoredPosition, Optional<StartPosition> fallback)
+            String partition, Instant restoredPosition, @Nullable StartPosition fallback)
             throws Exception {
-        Preconditions.checkNotNull(fallback, "fallback must not be null");
         Optional<RestoreExpiry> expiry = inspectRestored(partition, restoredPosition);
         if (!expiry.isPresent()) {
             return Optional.empty();
         }
 
         RestoreExpiry expired = expiry.get();
-        if (!fallback.isPresent()) {
+        if (fallback == null) {
             throw expired.asFailure();
         }
 
-        StartPosition requestedFallback = fallback.get();
-        Instant resolvedFallback = resolveFallback(requestedFallback);
+        Instant resolvedFallback = resolveFallback(fallback);
         log.warn(
                 "Restored change-stream position {} for partition {} is older than the computed"
                         + " earliest position {}; the unavailable range is {}. Restarting that"
@@ -160,7 +158,7 @@ public final class StartPositionResolver {
                 expired.getPartition(),
                 expired.getComputedEarliest(),
                 expired.getUnavailableRange(),
-                requestedFallback,
+                fallback,
                 resolvedFallback);
         return Optional.of(resolvedFallback);
     }

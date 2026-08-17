@@ -89,6 +89,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
     }
 
     @Override
+    @Nullable
     public Row read(ByteString rowKey) {
         if (!isInRange(rowKey)) {
             return null;
