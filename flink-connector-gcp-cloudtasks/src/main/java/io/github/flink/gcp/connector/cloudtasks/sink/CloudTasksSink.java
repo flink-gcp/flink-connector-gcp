@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 
 import org.apache.flink.annotation.Public;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+
 /**
  * Entry point for building a Cloud Tasks sink.
  *
@@ -27,9 +29,10 @@ import org.apache.flink.annotation.Public;
  * created it — decide how fast the tasks run. The sink only decides how fast tasks are handed over.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
- * Under a dropping policy configured through {@link CloudTasksSinkBuilder#failedTaskHandler}, a
- * completed checkpoint means every record up to the barrier was either durably accepted, skipped by
- * the serializer, or handed to that handler.
+ * Under a dropping policy configured through {@link
+ * CloudTasksSinkBuilder#failedTaskHandler(FailureHandler)}, a completed checkpoint means every
+ * record up to the barrier was either durably accepted, skipped by the serializer, or handed to
+ * that handler.
  *
  * <p>Example:
  * <!-- javadoc-example file="JavadocCloudTasksExamples.java" tag="sink" -->

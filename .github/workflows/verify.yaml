@@ -299,7 +299,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, build, api_tiers, option_docs, metric_docs, gated_tags, skill_frontmatter]
+    needs: [changes, build, api_tiers, option_docs, metric_docs, javadoc_links, gated_tags, skill_frontmatter]
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -480,6 +480,34 @@ jobs:
 
       - name: Check every metric is documented, and every documented metric exists
         run: just check-metric-docs
+
+  # The Javadoc reference check (issue #897): fails when a `{@link}`,
+  # `{@linkplain}` or `@see` reference written without a parameter list binds a
+  # field that shadows the method it names, or names an overloaded method. The
+  # first renders no anchor and the second renders an unpredictable one, and the
+  # javadoc build reports neither — failOnWarnings does not cover this shape,
+  # which is why three pull requests (#840, #890, #891) repaired a site of it by
+  # hand before anything checked for it.
+  #
+  # Its inputs are the Java main sources, so a job here for option_docs's
+  # reasons, and not behind the changes job for metric_docs's.
+  javadoc_links:
+    name: Check the Javadoc references
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2.85.12
+        with:
+          tool: just
+
+      - name: Check every Javadoc reference resolves to the member it names
+        run: just check-javadoc-links
 
   # The gated-suite pairing check (issue #245): a real-GCP ITCase carries both
   # the @EnabledIfEnvironmentVariable the E2E suite is discovered by and the
