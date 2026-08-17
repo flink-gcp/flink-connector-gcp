@@ -68,7 +68,62 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
-/** Coordinates the checkpointed parent-child lifecycle of Spanner Change Streams partitions. */
+/**
+ * Coordinates the checkpointed parent-child lifecycle of Spanner Change Streams partitions.
+ *
+ * <h2>The ledger is the only record</h2>
+ *
+ * <p>Spanner's change stream hands out partitions as a lineage: reading one partition discovers its
+ * children, and a child may only be read once <em>every</em> parent that names it has finished.
+ * Beam keeps that lineage in a metadata table in the user's database. This connector keeps it in
+ * {@link #ledger} and checkpoints it, so the source needs no table of its own and no write
+ * permission — which also means a lost checkpoint is a lost lineage, and there is no second copy to
+ * reconcile against.
+ *
+ * <p>An entry moves {@code CREATED} → {@code SCHEDULED} → {@code RUNNING} → {@code FINISHED}.
+ * {@code CREATED} is the state that carries the dependency: a discovered child sits there until
+ * {@link #allParentsFinished} holds, which is why {@code childrenByParent} exists and why finishing
+ * a partition is the event that promotes children rather than discovering them.
+ *
+ * <p><b>Child discovery does not finish a parent.</b> A reader forwards child-partitions records as
+ * it meets them and sends a separate completion event only when its query ends successfully, so a
+ * parent that failed part-way through cannot leave its children schedulable.
+ *
+ * <h2>The watermark frontier</h2>
+ *
+ * <p>The source-wide watermark is the minimum watermark across every <em>unfinished</em> entry, and
+ * it is the enumerator's rather than each reader's because a partition that is scheduled but not
+ * yet assigned belongs to nobody — a per-reader minimum would silently omit it and let the source
+ * advance past work it has not started.
+ *
+ * <p>{@code unfinishedWatermarkCounts} is a counted ordered index maintained incrementally, rather
+ * than a scan of the ledger on every progress event: a ledger grows for the life of the job, and
+ * progress events arrive per record. {@link #replacePartition} keeps it in step, and skips both
+ * halves of the update when an entry's indexed watermark has not moved. It is rebuilt from the
+ * ledger on restore rather than checkpointed beside it, so the two can never disagree.
+ *
+ * <p>A transition that would move the frontier backwards is rejected rather than absorbed: readers
+ * have already emitted the old value, and Flink treats records at or below a watermark as late, so
+ * a frontier that retreated would silently reclassify records that were on time.
+ *
+ * <h2>Initialization happens off the coordinator thread</h2>
+ *
+ * <p>{@link #start} hands the metadata read — dialect, stream scope, retention, partition mode — to
+ * {@code callAsync}, because it is an RPC and the coordinator thread must not block on one. Reader
+ * events that arrive in that window have no ledger to apply to yet, so they are parked in {@link
+ * #deferredActions} and replayed in order once initialization completes; {@link #snapshotState}
+ * refuses to run before that point rather than checkpointing a ledger those events have not reached
+ * yet.
+ *
+ * <p>On restore the checkpointed ledger wins and never seeds a second null-token query. If an
+ * unfinished position has fallen outside retention the default is to fail, because the alternative
+ * silently loses the unavailable interval; an explicit fallback discards the <em>whole</em> ledger
+ * and starts one null-token query, since advancing a single stale token could skip the terminal
+ * child record that would have completed the lineage.
+ *
+ * <p>See {@code docs/adr/0099} for the protocol's evidence and {@code docs/adr/0094} for the start
+ * position and restore-expiry rules.
+ */
 @Internal
 public final class SpannerChangeStreamSplitEnumerator
         implements SplitEnumerator<
