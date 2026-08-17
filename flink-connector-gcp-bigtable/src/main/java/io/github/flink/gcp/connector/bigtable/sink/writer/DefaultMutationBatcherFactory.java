@@ -176,9 +176,9 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      * Closes every client this factory built. Called by the writer after every batcher has been
      * closed.
      *
-     * <p>Through {@link Closers#closeAll} so one client failing to close cannot strand the rest,
-     * and the map is cleared whatever happens: a factory that reported a failure must not hand a
-     * closed client to a later {@link #create(TableDestination)}.
+     * <p>Through {@link Closers#closeAll(Iterable)} so one client failing to close cannot strand
+     * the rest, and the map is cleared whatever happens: a factory that reported a failure must not
+     * hand a closed client to a later {@link #create(TableDestination)}.
      */
     @Override
     public void close() throws Exception {
