@@ -91,31 +91,11 @@ public final class PubSubDynamicSink implements DynamicTableSink, SupportsWritin
      * @param topicCreateOptions the settings a created topic takes, or {@code null} for service
      *     defaults
      * @param publisherOptions the publisher and writer tuning
+     * @param serviceAccountKeyFile the service-account JSON key path each writer loads, or {@code
+     *     null} for application-default credentials
      * @param emulatorEndpoint the emulator to use instead of the service, or {@code null}
      * @param parallelism the sink operator's parallelism, or {@code null} for the job's
      */
-    public PubSubDynamicSink(
-            DataType physicalDataType,
-            EncodingFormat<SerializationSchema<RowData>> encodingFormat,
-            TopicDestination topic,
-            @Nullable CreateDisposition createDisposition,
-            @Nullable TopicCreateOptions topicCreateOptions,
-            PubSubPublisherOptions publisherOptions,
-            @Nullable String emulatorEndpoint,
-            @Nullable Integer parallelism) {
-        this(
-                physicalDataType,
-                encodingFormat,
-                topic,
-                createDisposition,
-                topicCreateOptions,
-                publisherOptions,
-                null,
-                emulatorEndpoint,
-                parallelism);
-    }
-
-    /** Builds a sink with an optional service-account key-file path. */
     public PubSubDynamicSink(
             DataType physicalDataType,
             EncodingFormat<SerializationSchema<RowData>> encodingFormat,

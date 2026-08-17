@@ -160,6 +160,7 @@ class PubSubDynamicSourceTest {
                 null,
                 PubSubSubscriberOptions.defaults(),
                 null,
+                null,
                 null);
     }
 
@@ -265,6 +266,7 @@ class PubSubDynamicSourceTest {
                                 null,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 .isNotEqualTo(
                         source(
@@ -284,6 +286,7 @@ class PubSubDynamicSourceTest {
                                 null,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
@@ -295,6 +298,7 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                null,
                                 null,
                                 null))
                 .isNotEqualTo(
@@ -308,6 +312,7 @@ class PubSubDynamicSourceTest {
                                 null,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
@@ -319,6 +324,7 @@ class PubSubDynamicSourceTest {
                                 OrderingMode.PER_KEY,
                                 null,
                                 defaults,
+                                null,
                                 null,
                                 null))
                 .isNotEqualTo(
@@ -332,6 +338,7 @@ class PubSubDynamicSourceTest {
                                 DeserializationFailurePolicy.DROP,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSource(
@@ -344,11 +351,11 @@ class PubSubDynamicSourceTest {
                                 null,
                                 PubSubSubscriberOptions.builder().parallelPullCount(3).build(),
                                 null,
+                                null,
                                 null))
-                // The field this test left null on both sides until #786: the ten-argument
-                // constructor omits serviceAccountKeyFile, so nothing varied it, and a mutant
-                // dropping it from equals passed the whole module suite. A field outside a table
-                // source's identity is one the planner may reuse a plan across.
+                // The field this test left null on both sides until #786: a mutant dropping it from
+                // equals passed the whole module suite. A field outside a table source's identity
+                // is one the planner may reuse a plan across.
                 .isNotEqualTo(
                         new PubSubDynamicSource(
                                 PHYSICAL_DATA_TYPE,
@@ -372,6 +379,7 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                null,
                                 "localhost:8085",
                                 null))
                 .isNotEqualTo(
@@ -384,6 +392,7 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                null,
                                 null,
                                 4));
     }
@@ -410,6 +419,7 @@ class PubSubDynamicSourceTest {
                 null,
                 PubSubSubscriberOptions.defaults(),
                 null,
+                null,
                 null);
     }
 
@@ -431,6 +441,7 @@ class PubSubDynamicSourceTest {
                                         null,
                                         null,
                                         PubSubSubscriberOptions.defaults(),
+                                        null,
                                         null,
                                         null))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -459,6 +470,7 @@ class PubSubDynamicSourceTest {
                         OrderingMode.PER_KEY,
                         DeserializationFailurePolicy.DROP,
                         PubSubSubscriberOptions.defaults(),
+                        null,
                         "localhost:8085",
                         4);
         source.applyReadableMetadata(Collections.singletonList("subscription"), PRODUCED_DATA_TYPE);
@@ -494,6 +506,7 @@ class PubSubDynamicSourceTest {
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),
+                        null,
                         null,
                         null);
 
@@ -535,6 +548,7 @@ class PubSubDynamicSourceTest {
                         null,
                         PubSubSubscriberOptions.defaults(),
                         null,
+                        null,
                         null);
 
         Source<RowData, ?, ?> built =
@@ -561,6 +575,7 @@ class PubSubDynamicSourceTest {
                                                 null,
                                                 null,
                                                 PubSubSubscriberOptions.defaults(),
+                                                null,
                                                 null,
                                                 null)
                                         .getScanRuntimeProvider(
@@ -591,6 +606,7 @@ class PubSubDynamicSourceTest {
                         null,
                         PubSubSubscriberOptions.defaults(),
                         null,
+                        null,
                         null);
 
         assertThatThrownBy(() -> source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
@@ -610,6 +626,7 @@ class PubSubDynamicSourceTest {
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),
+                        null,
                         null,
                         null);
 
