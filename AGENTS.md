@@ -48,8 +48,8 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
   symlink.
-- `just check-option-docs`, `just check-metric-docs`, and `just check-flink-api-tiers`: run the
-  repository-specific source/documentation audits.
+- `just check-option-docs`, `just check-metric-docs`, `just check-javadoc-links`, and
+  `just check-flink-api-tiers`: run the repository-specific source/documentation audits.
 - `just e2e`: run credential-gated real-GCP suites. A fresh worktree first needs
   `just worktree-env` to link the main checkout's uncommitted `.env`.
 
@@ -71,6 +71,9 @@ green; use the clean-state procedures in that guide for such changes.
 - Before adding or changing a public Javadoc code block, or for a Javadoc-specific
   `just check-doc-snippets` failure, use `$maintain-javadoc-examples`. Runnable blocks map to exact
   compiled backing regions; abbreviated blocks are visibly classified and explain their omission.
+- A Javadoc reference to a method carries its parameter list: `{@link Type#member(ParamType)}`.
+  Without one it binds a same-named field first and renders no anchor, which the javadoc build does
+  not report; `just check-javadoc-links` does, and its message names the list to write.
 - Option and metric inventories belong only in their reference/DataStream tables; use the matching
   `curate-*` skill when a checker fails.
 - Module `README.md` files are overviews: status table, minimal sample, docs link, and provenance.

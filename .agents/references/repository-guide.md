@@ -113,13 +113,27 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   prose or the event/state naming judgment, so a rename still sweeps those by hand. Its own
   `verify.yaml` job is recorded in ADR-0058; the checker design is ADR-0117, and every failure
   routes through `.agents/skills/curate-metric-docs/`
+- `just check-javadoc-links` — holds every `{@link}`, `{@linkplain}` and `@see` member reference in
+  the main sources to a member Javadoc can actually reach (#897). Two shapes fail: one bound by a
+  field that shadows the method it names, which renders no anchor at all, and one naming an
+  overloaded method, which renders an anchor on an overload the reader cannot predict. Both were
+  measured on the generated reference, and neither reaches the build — `failOnWarnings` does not
+  cover this shape, so `just docs-javadoc` is green either way, which is how the same defect
+  outlived three pull requests that each repaired a site of it by hand (#840, #890, #891). It
+  judges only types this
+  repository declares, and only members those types declare themselves, so an inherited or vendor
+  member is left alone; it says nothing about whether a resolvable reference names the *right*
+  member. Its own `verify.yaml` job, for `check-option-docs`'s reason: its inputs are every Java
+  main source. **The second checker with no `curate-*` skill**, on the argument the next entry
+  makes: no allowlist to judge, and the failure message carries the whole repair — the parameter
+  list to write, spelled from the declared signatures
 - `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
   (#245; ADR-0065 records both failure directions): the `@EnabledIfEnvironmentVariable` the E2E
   suite is *discovered* by, and the `@Tag("gated")` that keeps the class out of every ordinary
   build. `scripts/e2e-gated-its.sh --check-tags`, deliberately **gate-agnostic** so
   `BigQueryDefaultStreamSchemaEvolutionITCase` is covered too. Its own `verify.yaml` job
   (ADR-0058; its inputs are the Java *test* sources), and it needs no JDK, no Python and no
-  network. **The one checker with no `curate-*` skill**, and the exemption is argued rather than
+  network. **A checker with no `curate-*` skill**, and the exemption is argued rather than
   an oversight: those skills exist for allowlist judgment — which entry, with what reason — and
   this check has no allowlist and exactly two mechanical fixes, both named in the failure message
 - `just ci-maven-args` — CI's module-selection decision (#243; ADR-0058 carries the design):
