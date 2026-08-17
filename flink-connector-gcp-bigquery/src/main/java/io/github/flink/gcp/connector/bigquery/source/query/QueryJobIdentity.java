@@ -154,7 +154,7 @@ public final class QueryJobIdentity {
      * <p>Each field is length-prefixed before the concatenation, so no two distinct inputs
      * concatenate alike whatever characters a query carries, and a {@code null} is encoded
      * distinctly from every string including the empty one. Sixteen hex characters follows {@code
-     * LoadJobOrchestrator}'s choice for its deterministic load-job ids.
+     * CommitPlanner}'s choice for its deterministic load-job ids.
      */
     private static String digest(String jobName, QuerySpec spec, long windowMillis) {
         String material =
@@ -172,7 +172,7 @@ public final class QueryJobIdentity {
         return value == null ? "-:" : value.length() + ":" + value;
     }
 
-    // Mirrors LoadJobOrchestrator's private copy; the two live on opposite sides of the
+    // Mirrors CommitPlanner's private copy; the two live on opposite sides of the
     // sink/source split, and a shared home for ten lines would be a package neither owns.
     private static String sha256Hex(String value) {
         MessageDigest digest;

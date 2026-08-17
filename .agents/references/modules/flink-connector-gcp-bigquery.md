@@ -183,7 +183,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Parquet unchanged.
 - **The staging format travels in the committable, and load jobs group on it.** A committable
   restored from state must load as the format its file was written in, which configuration read at
-  commit time cannot tell you — so `LoadJobOrchestrator` keys on `(destination, format)` and the
+  commit time cannot tell you — so `CommitPlanner` keys on `(destination, format)` and the
   transitional commit after a format change can contain two groups.
   `WRITE_APPEND` and `WRITE_EMPTY` retain separate direct loads when both groups fit.
   `WRITE_TRUNCATE` and `WRITE_TRUNCATE_DATA` must combine the groups through temporary tables and
