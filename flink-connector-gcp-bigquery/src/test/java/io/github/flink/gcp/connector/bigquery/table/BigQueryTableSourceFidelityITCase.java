@@ -166,7 +166,7 @@ class BigQueryTableSourceFidelityITCase {
         assertThat(set.getField("day_value")).isEqualTo(LocalDate.of(1969, 12, 31));
         DataType timeType = table.from("fidelity").getResolvedSchema().getColumnDataTypes().get(7);
         DataType expectedTimeType =
-                flinkRetainsSqlTimePrecision() ? DataTypes.TIME(3) : DataTypes.TIME(0);
+                FlinkVersions.retainsSqlTimePrecision() ? DataTypes.TIME(3) : DataTypes.TIME(0);
         assertThat(timeType).isEqualTo(expectedTimeType);
         LocalTime expectedTime =
                 timeType.equals(DataTypes.TIME(3))
@@ -414,11 +414,6 @@ class BigQueryTableSourceFidelityITCase {
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         table.getConfig().set("parallelism.default", "1");
         return table;
-    }
-
-    private static boolean flinkRetainsSqlTimePrecision() {
-        String version = DataTypes.class.getPackage().getImplementationVersion();
-        return version != null && version.startsWith("2.3.");
     }
 
     private static String options() {
