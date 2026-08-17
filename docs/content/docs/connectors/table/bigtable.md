@@ -207,9 +207,10 @@ Two consequences:
 
 - A family the physical table has but the DDL does not declare is never read.
 - **A family the DDL declares but the table lacks fails the scan** with the service's `NOT_FOUND`
-  ("Requested column family not found"). The source does not pre-validate the DDL against the
-  table — that would cost every scan a metadata read to soften an error the service already
-  reports precisely. A row-key-only query still answers, its keys-only filter naming no family.
+  ("Error while reading table '…' : Requested column family not found"). The source does not
+  pre-validate the DDL against the table — that would cost every scan a metadata read to soften an
+  error the service already reports precisely, naming the table it read. A row-key-only query still
+  answers, its keys-only filter naming no family.
 
 **Which rows a query sees follows from the storage model.** A Bigtable row exists while it has a
 cell, so a query that reads families returns the rows with at least one cell in a family it reads

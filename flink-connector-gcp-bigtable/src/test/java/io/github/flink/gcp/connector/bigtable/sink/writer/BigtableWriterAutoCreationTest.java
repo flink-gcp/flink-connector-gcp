@@ -227,7 +227,7 @@ class BigtableWriterAutoCreationTest {
                 .hasMessageContaining("Bigtable table p.i.orders")
                 .hasMessageContaining("column families [undeclared]")
                 .hasMessageContaining("tableCreateOptions")
-                .hasStackTraceContaining(BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION);
+                .hasStackTraceContaining(BigtableErrorClassifier.MISSING_COLUMN_FAMILY_PHRASE);
         // The initial verdict, one ensure and one re-application: the remaining four attempts and
         // their backoffs are skipped because creation cannot add an undeclared family.
         assertThat(admin.ensured).containsExactly(TABLE);

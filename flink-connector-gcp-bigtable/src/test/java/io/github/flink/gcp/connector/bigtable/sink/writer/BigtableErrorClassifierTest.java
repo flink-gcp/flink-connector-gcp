@@ -16,12 +16,15 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.ApiExceptionFactory;
 import com.google.api.gax.rpc.StatusCode;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 
@@ -44,25 +47,79 @@ class BigtableErrorClassifierTest {
     }
 
     @Test
-    void recognizesTheRealServicesMissingFamilyDescription() {
+    void recognizesTheDescriptionTheServiceActuallySends() {
+        // Verbatim from the service (2026-08-17, google-cloud-bigtable 2.81.0), caught by
+        // BigtableAutoCreationRealGcpITCase and reported in #948; the resource path is redacted.
+        // The phrase the classifier looks for ends a sentence naming the row and the table, so
+        // comparing it against the whole description — which is what the classifier used to do —
+        // never held against the service, and the writer spent its whole recovery budget instead
+        // of naming the family.
         Throwable failure =
                 new IOException(
                         "outer",
                         FakeMutationBatcher.apiException(
                                 StatusCode.Code.NOT_FOUND,
-                                BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION));
+                                "Error while mutating the row 'row-1'"
+                                        + " (projects/p/instances/i/tables/unrepairable-family) :"
+                                        + " Requested column family not found."));
+
+        assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isTrue();
+    }
+
+    @Test
+    void recognizesTheBarePhraseAsAWholeDescription() {
+        Throwable failure =
+                new IOException(
+                        "outer",
+                        FakeMutationBatcher.apiException(
+                                StatusCode.Code.NOT_FOUND,
+                                BigtableErrorClassifier.MISSING_COLUMN_FAMILY_PHRASE));
 
         assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isTrue();
     }
 
     @Test
     void doesNotReadTheDescriptionFromADifferentStatusInTheChain() {
+        // What keeps the phrase from being read out of a failure that is not the missing family is
+        // the status of the node carrying it, not how much of that node's message it accounts for.
         Throwable failure =
                 FakeMutationBatcher.apiException(
                         StatusCode.Code.NOT_FOUND,
                         FakeMutationBatcher.apiException(
                                 StatusCode.Code.INTERNAL,
-                                BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION));
+                                "Error while mutating the row 'row-1' : "
+                                        + BigtableErrorClassifier.MISSING_COLUMN_FAMILY_PHRASE));
+
+        assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isFalse();
+    }
+
+    @Test
+    void answersFalseForANotFoundCarryingNoDescriptionAtAll() {
+        // The failure would be an NPE raised inside a mailbox mail, which reaches the job as
+        // something that names neither Bigtable nor the mutation.
+        Throwable failure =
+                FakeMutationBatcher.apiException(
+                        StatusCode.Code.NOT_FOUND,
+                        ApiExceptionFactory.createException(
+                                null, null, GrpcStatusCode.of(Status.Code.NOT_FOUND), false));
+
+        assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                // Both wordings as ADR-0073 measured them, resources redacted: the service's on
+                // 2026-08-09, the emulator's on 2026-08-08.
+                "No tables found for instance projects/p/instances/i",
+                "table projects/p/instances/i/tables/orders not found"
+            })
+    void doesNotTakeAMissingTableForAMissingFamily(String description) {
+        // The other half of what the writer routes on: a table that does not exist is repairable by
+        // creation, so it must keep the bounded retry rather than fail fast naming a family. A
+        // description matched by containment has to stay narrow enough to tell the two apart.
+        Throwable failure =
+                FakeMutationBatcher.apiException(StatusCode.Code.NOT_FOUND, description);
 
         assertThat(BigtableErrorClassifier.isMissingColumnFamily(failure)).isFalse();
     }

@@ -157,7 +157,7 @@ final class FakeMutationBatcher implements MutationBatcher {
                         .setException(
                                 apiException(
                                         StatusCode.Code.NOT_FOUND,
-                                        BigtableErrorClassifier.MISSING_COLUMN_FAMILY_DESCRIPTION));
+                                        missingFamilyDescription(index)));
             } else if (missing) {
                 futures.get(index)
                         .setException(
@@ -242,6 +242,27 @@ final class FakeMutationBatcher implements MutationBatcher {
 
     private String rowKey(int index) {
         return entries.get(index).toProto().getRowKey().toStringUtf8();
+    }
+
+    /**
+     * The description the service sends for a mutation naming a family the table lacks: the phrase
+     * the classifier looks for, at the <em>end</em> of a sentence naming the row and the table
+     * resource. Scripting the bare phrase is what let #948 through — the classifier compared the
+     * whole description for equality, which no service response satisfies, and no fake or emulator
+     * contradicted it (the emulator answers {@code INTERNAL} to an unknown family entirely).
+     */
+    private String missingFamilyDescription(int index) {
+        return "Error while mutating the row '"
+                + rowKey(index)
+                + "' (projects/"
+                + destination.getProject()
+                + "/instances/"
+                + destination.getInstance()
+                + "/tables/"
+                + destination.getTable()
+                + ") : "
+                + BigtableErrorClassifier.MISSING_COLUMN_FAMILY_PHRASE
+                + ".";
     }
 
     static Exception apiException(StatusCode.Code code) {

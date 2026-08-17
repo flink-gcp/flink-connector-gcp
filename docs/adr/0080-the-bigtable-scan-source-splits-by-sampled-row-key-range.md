@@ -70,7 +70,11 @@ Checked against the pinned versions before the design was committed (`google-clo
   end_key" — while the closed-closed single-key range `[K, K]` is answered with that row alone, so
   the refusal is about a range empty by construction, not about `start == end`), and a read whose
   filter names a column family the table does not
-  have is `NOT_FOUND` ("Requested column family not found"). The emulator answers both empty with
+  have is `NOT_FOUND`, whose description names the table and *ends* with that phrase — "Error while
+  reading table 'projects/…/tables/…' : Requested column family not found", the full wording read
+  from this class's own gated run on 2026-08-17, correcting the fragment this bullet quoted as the
+  whole of it. Reading the mutate path's equivalent fragment as a whole description is what [#948]
+  was. The emulator answers both empty with
   no error (measured the same day against the pinned image), so neither refusal could have been
   found anywhere but the gated suite.
 
@@ -220,3 +224,4 @@ identity from one, and [#910] is why.
 [#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587
 [#910]: https://github.com/laughingman7743/flink-connector-gcp/issues/910
 [#947]: https://github.com/laughingman7743/flink-connector-gcp/issues/947
+[#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948
