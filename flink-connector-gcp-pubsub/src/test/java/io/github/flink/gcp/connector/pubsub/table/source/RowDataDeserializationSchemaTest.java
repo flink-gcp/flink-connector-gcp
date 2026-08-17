@@ -28,6 +28,7 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.InstantiationUtil;
 
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Timestamp;
@@ -127,6 +128,33 @@ class RowDataDeserializationSchemaTest {
     private static RowDataDeserializationSchema schema(ReadableMetadata... metadata) {
         return new RowDataDeserializationSchema(
                 new SplittingDecoder(RowKind.INSERT), metadata, PRODUCED_TYPE);
+    }
+
+    @Test
+    void metadataCrossesTheJobGraphAsEnumConstantsRatherThanConverters() throws Exception {
+        // Each ReadableMetadata constant holds a converter lambda, and this schema travels in the
+        // job graph. What keeps those lambdas out of the bytes is that the schema holds the
+        // constants themselves: an enum serializes as its own name, while a lambda would be
+        // rebound by a synthetic-method name the compiler picks — and lambdas sharing an enclosing
+        // declaration and a descriptor share one name hash, leaving only a trailing index between
+        // them, so adding a converter would silently rebind a restored one to another column's.
+        //
+        // Asserted through the constant names rather than through the absence of
+        // "SerializedLambda": the produced TypeInformation carries Flink's own RowData field
+        // getters, which are lambdas this project neither mints nor controls. Hoisting the
+        // converters into a MetadataConverter[] field would drop these names.
+        RowDataDeserializationSchema schema =
+                schema(ReadableMetadata.MESSAGE_ID, ReadableMetadata.ATTRIBUTES);
+        PubsubMessage message = message("a");
+
+        byte[] serialized = InstantiationUtil.serializeObject(schema);
+
+        assertThat(new String(serialized, StandardCharsets.ISO_8859_1))
+                .contains("MESSAGE_ID")
+                .contains("ATTRIBUTES");
+        RowDataDeserializationSchema restored =
+                InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
+        assertThat(collect(restored, message)).isEqualTo(collect(schema, message));
     }
 
     @Test

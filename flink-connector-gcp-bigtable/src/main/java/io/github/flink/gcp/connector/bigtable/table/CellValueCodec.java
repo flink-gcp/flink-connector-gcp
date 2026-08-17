@@ -31,6 +31,8 @@ import org.apache.flink.table.types.logical.TimestampType;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -178,11 +180,9 @@ public final class CellValueCodec {
         if (!type.isNullable()) {
             return encoder;
         }
-        if (type.is(LogicalTypeFamily.CHARACTER_STRING)) {
-            byte[] nullBytes = nullStringBytes.clone();
-            return (row, pos) -> row.isNullAt(pos) ? nullBytes : encoder.encode(row, pos);
-        }
-        return (row, pos) -> row.isNullAt(pos) ? EMPTY_BYTES : encoder.encode(row, pos);
+        return new NullableFieldEncoder(
+                encoder,
+                type.is(LogicalTypeFamily.CHARACTER_STRING) ? nullStringBytes.clone() : null);
     }
 
     /**
@@ -192,6 +192,10 @@ public final class CellValueCodec {
      * @return the encoder
      */
     public static FieldEncoder encoder(LogicalType type) {
+        return new TypedFieldEncoder(type);
+    }
+
+    private static FieldEncoder resolveEncoder(LogicalType type) {
         // Ordered as LogicalTypeRoot declares them, which is how HBaseSerde orders its own switch.
         switch (type.getTypeRoot()) {
             case CHAR:
@@ -254,11 +258,9 @@ public final class CellValueCodec {
         if (!type.isNullable()) {
             return decoder;
         }
-        if (type.is(LogicalTypeFamily.CHARACTER_STRING)) {
-            byte[] nullBytes = nullStringBytes.clone();
-            return value -> Arrays.equals(value, nullBytes) ? null : decoder.decode(value);
-        }
-        return value -> value.length == 0 ? null : decoder.decode(value);
+        return new NullableFieldDecoder(
+                decoder,
+                type.is(LogicalTypeFamily.CHARACTER_STRING) ? nullStringBytes.clone() : null);
     }
 
     /**
@@ -268,6 +270,10 @@ public final class CellValueCodec {
      * @return the decoder
      */
     public static FieldDecoder decoder(LogicalType type) {
+        return new TypedFieldDecoder(type);
+    }
+
+    private static FieldDecoder resolveDecoder(LogicalType type) {
         // Ordered as the encoder switch above, whose layouts these reverse.
         switch (type.getTypeRoot()) {
             case CHAR:
@@ -307,6 +313,128 @@ public final class CellValueCodec {
                 // Unreachable through the DDL, which is checked by checkSupported above. Kept as
                 // the invariant's backstop rather than as a second user-facing message.
                 throw new IllegalStateException("No cell decoding for type " + type);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    //  The codecs that cross the job graph
+    // ------------------------------------------------------------------------
+
+    /*
+     * The switches above return lambdas, and the schemas that hold an encoder or a decoder are
+     * serialized into the job graph. A serialized lambda's identity is its SerializedLambda
+     * synthetic-method name, and lambdas sharing an enclosing declaration and a descriptor share
+     * one name hash, leaving a trailing index as the only thing telling them apart: measured,
+     * `encoder` mints eight lambdas under one hash and `decoder` six. Both switches are ordered
+     * the way LogicalTypeRoot declares its constants, so supporting
+     * one more root inserts a case in the middle and renumbers every later one — and a job graph
+     * restored against such a build then binds a field to a *different* type's codec with no error
+     * at all. Measured: a BIGINT encoder restored that way wrote the four bytes of the INTEGER
+     * layout, silently truncating the value.
+     *
+     * So what crosses the job graph is the declared type, and the codec is resolved from it on both
+     * sides. Resolution stays eager — in the constructor as well as in readObject — so an
+     * unsupported root is still reported where it was before rather than at the first record.
+     */
+
+    /** An encoder resolved from its declared type on both sides of the job graph. */
+    private static final class TypedFieldEncoder implements FieldEncoder {
+
+        private static final long serialVersionUID = 1L;
+
+        private final LogicalType type;
+
+        private transient FieldEncoder delegate;
+
+        TypedFieldEncoder(LogicalType type) {
+            this.type = type;
+            this.delegate = resolveEncoder(type);
+        }
+
+        private void readObject(ObjectInputStream input)
+                throws IOException, ClassNotFoundException {
+            input.defaultReadObject();
+            this.delegate = resolveEncoder(type);
+        }
+
+        @Override
+        public byte[] encode(RowData row, int pos) {
+            return delegate.encode(row, pos);
+        }
+    }
+
+    /** The mirror of {@link TypedFieldEncoder}. */
+    private static final class TypedFieldDecoder implements FieldDecoder {
+
+        private static final long serialVersionUID = 1L;
+
+        private final LogicalType type;
+
+        private transient FieldDecoder delegate;
+
+        TypedFieldDecoder(LogicalType type) {
+            this.type = type;
+            this.delegate = resolveDecoder(type);
+        }
+
+        private void readObject(ObjectInputStream input)
+                throws IOException, ClassNotFoundException {
+            input.defaultReadObject();
+            this.delegate = resolveDecoder(type);
+        }
+
+        @Override
+        public Object decode(byte[] value) {
+            return delegate.decode(value);
+        }
+    }
+
+    /**
+     * Writes a null as {@code nullBytes}, or as an empty cell when that is {@code null} — which is
+     * every type but a character string.
+     */
+    private static final class NullableFieldEncoder implements FieldEncoder {
+
+        private static final long serialVersionUID = 1L;
+
+        private final FieldEncoder delegate;
+
+        @Nullable private final byte[] nullBytes;
+
+        NullableFieldEncoder(FieldEncoder delegate, @Nullable byte[] nullBytes) {
+            this.delegate = delegate;
+            this.nullBytes = nullBytes;
+        }
+
+        @Override
+        public byte[] encode(RowData row, int pos) {
+            if (!row.isNullAt(pos)) {
+                return delegate.encode(row, pos);
+            }
+            return nullBytes == null ? EMPTY_BYTES : nullBytes;
+        }
+    }
+
+    /** The mirror of {@link NullableFieldEncoder}, reading a null the way it wrote one. */
+    private static final class NullableFieldDecoder implements FieldDecoder {
+
+        private static final long serialVersionUID = 1L;
+
+        private final FieldDecoder delegate;
+
+        @Nullable private final byte[] nullBytes;
+
+        NullableFieldDecoder(FieldDecoder delegate, @Nullable byte[] nullBytes) {
+            this.delegate = delegate;
+            this.nullBytes = nullBytes;
+        }
+
+        @Override
+        @Nullable
+        public Object decode(byte[] value) {
+            boolean isNull =
+                    nullBytes == null ? value.length == 0 : Arrays.equals(value, nullBytes);
+            return isNull ? null : delegate.decode(value);
         }
     }
 

@@ -29,7 +29,9 @@ public interface CdcChangeTypeProvider<T> extends Serializable {
     CdcChangeType getChangeType(T element);
 
     /** Returns a provider that treats every record as an upsert. */
+    @SuppressWarnings("unchecked")
     static <T> CdcChangeTypeProvider<T> upsertOnly() {
-        return element -> CdcChangeType.UPSERT;
+        // Safe: the provider only consumes elements, and UpsertOnly accepts any of them.
+        return (CdcChangeTypeProvider<T>) CdcChangeTypeProviders.UpsertOnly.INSTANCE;
     }
 }

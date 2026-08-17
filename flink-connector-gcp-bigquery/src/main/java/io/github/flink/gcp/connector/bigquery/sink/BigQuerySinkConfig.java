@@ -50,6 +50,10 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    /** The contract a config restored without one falls back to. */
+    private static final CdcTableOptionsProvider DEFAULT_CDC_TABLE_OPTIONS_PROVIDER =
+            new FixedCdcTableOptionsProvider(CdcTableOptions.defaults());
+
     private final DestinationResolver<? super T> destinationResolver;
     private final BigQueryProtoSerializer<? super T> serializer;
     @Nullable private final CdcOptions<? super T> cdcOptions;
@@ -200,7 +204,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     /** Returns the per-destination desired CDC table contract. */
     public CdcTableOptionsProvider getCdcTableOptionsProvider() {
         return cdcTableOptionsProvider == null
-                ? destination -> CdcTableOptions.defaults()
+                ? DEFAULT_CDC_TABLE_OPTIONS_PROVIDER
                 : cdcTableOptionsProvider;
     }
 

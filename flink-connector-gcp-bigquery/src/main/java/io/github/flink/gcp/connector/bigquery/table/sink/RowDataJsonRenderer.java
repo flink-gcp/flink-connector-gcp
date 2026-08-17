@@ -29,6 +29,8 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.RowType;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.math.RoundingMode;
 import java.time.LocalDate;
@@ -70,7 +72,23 @@ final class RowDataJsonRenderer implements Serializable {
         void render(Object value, StringBuilder out);
     }
 
-    private final Renderer renderer;
+    private final LogicalType type;
+    private final String path;
+
+    /**
+     * The renderer tree, rebuilt on deserialization rather than serialized with the job graph.
+     *
+     * <p>Each node is a lambda, and a serialized lambda's identity is its {@code SerializedLambda}
+     * synthetic-method name. Lambdas sharing an enclosing declaration and a descriptor share one
+     * name hash and differ only by a trailing index — measured, eleven of this class's do — so
+     * supporting one more {@code LogicalTypeRoot} in {@link #build(LogicalType, String)} — which is
+     * ordered the way {@link LogicalTypeRoot} declares its constants, so a new root lands in the
+     * middle — renumbers every later node. A job graph restored against such a build then binds a
+     * node to a *different* type's renderer without any error, which is why the tree is derived
+     * from the type rather than carried in the bytes. {@code GenericRecordToRowDataConverter} keeps
+     * the read path's converters the same way.
+     */
+    private transient Renderer renderer;
 
     /**
      * Builds a renderer for a marked column.
@@ -80,7 +98,18 @@ final class RowDataJsonRenderer implements Serializable {
      * @throws IllegalArgumentException if the column, or anything nested in it, has no JSON form
      */
     RowDataJsonRenderer(LogicalType type, String path) {
+        this.type = type;
+        this.path = path;
+        initializeRenderer();
+    }
+
+    private void initializeRenderer() {
         this.renderer = build(type, path);
+    }
+
+    private void readObject(ObjectInputStream input) throws IOException, ClassNotFoundException {
+        input.defaultReadObject();
+        initializeRenderer();
     }
 
     /**

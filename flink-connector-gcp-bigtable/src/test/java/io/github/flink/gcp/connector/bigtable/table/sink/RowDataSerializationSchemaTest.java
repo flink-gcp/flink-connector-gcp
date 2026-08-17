@@ -23,6 +23,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.util.InstantiationUtil;
 
 import com.google.bigtable.v2.MutateRowsRequest;
 import com.google.bigtable.v2.Mutation;
@@ -31,6 +32,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -66,6 +68,31 @@ class RowDataSerializationSchemaTest {
         GenericRowData row = GenericRowData.of(key, cf1, cf2);
         row.setRowKind(kind);
         return row;
+    }
+
+    @Test
+    void crossesTheJobGraphWithoutItsCodecLambdas() throws Exception {
+        // This schema is what carries a CellValueCodec into the job graph, so the codec's own
+        // guard is half the statement: a restored schema must still write the same mutation. A
+        // lambda here would be rebound by a synthetic-method name the compiler picks, and the
+        // measured consequence was a BIGINT cell silently written as the four bytes of an INT.
+        RowData row =
+                row(
+                        RowKind.INSERT,
+                        StringData.fromString("r1"),
+                        GenericRowData.of(StringData.fromString("v"), 1L),
+                        GenericRowData.of(true));
+
+        byte[] serialized = InstantiationUtil.serializeObject(SERIALIZER);
+
+        assertThat(new String(serialized, StandardCharsets.ISO_8859_1))
+                .doesNotContain("SerializedLambda");
+        RowDataSerializationSchema restored =
+                InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
+        // Cell by cell, not whole protos: setCell stamps timestamp_micros from the clock, so two
+        // calls differ by construction — the same reason cells() exists for the tests below.
+        assertThat(cells(restored.serialize(row, null).toProto()))
+                .isEqualTo(cells(SERIALIZER.serialize(row, null).toProto()));
     }
 
     private static MutateRowsRequest.Entry serialize(RowData row) throws Exception {

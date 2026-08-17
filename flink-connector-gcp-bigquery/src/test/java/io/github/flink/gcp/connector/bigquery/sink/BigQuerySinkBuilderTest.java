@@ -27,13 +27,16 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcSequenceNumberProvider;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldValueProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
@@ -48,7 +51,9 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.ObjectStreamClass;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -67,6 +72,125 @@ class BigQuerySinkBuilderTest {
     void sinkConfigKeepsItsLegacySerializationIdentity() {
         assertThat(ObjectStreamClass.lookup(BigQuerySinkConfig.class).getSerialVersionUID())
                 .isEqualTo(1L);
+    }
+
+    @Test
+    void nothingTheBuilderMintsReachesTheJobGraphAsALambda() throws Exception {
+        // A serialized lambda is bound by its SerializedLambda synthetic-method name, which the
+        // compiler picks and no connector version pins. Whatever the builder supplies on the
+        // user's behalf must therefore be a named type; a lambda the user passes in is their own.
+        BigQueryDefaultStreamSink<String> defaults =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+        BigQueryDefaultStreamSink<String> configured =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .destination(DESTINATION)
+                                .serializer(new TestSerializer())
+                                // Named providers, so anything the assertion finds was minted here
+                                // rather than handed in: a user's own lambda is their business.
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "computed",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                new NamedValueProvider()))
+                                                .build())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(new NamedSequenceProvider())
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(Collections.singletonList("f"))
+                                                .build())
+                                .tableCreateOptions(
+                                        TableCreateOptions.builder()
+                                                .clusteredFields(Collections.singletonList("f"))
+                                                .build())
+                                .build();
+
+        assertThat(serializedForm(defaults)).doesNotContain("SerializedLambda");
+        assertThat(serializedForm(configured)).doesNotContain("SerializedLambda");
+
+        // Absence alone would also pass on a provider that came back empty, so read them back.
+        BigQuerySinkConfig<String> restored = InstantiationUtil.clone(configured).getConfig();
+        assertThat(
+                        restored.getCdcTableOptionsProvider()
+                                .optionsFor(DESTINATION)
+                                .getPrimaryKeyColumns())
+                .containsExactly("f");
+        assertThat(
+                        restored.getTableCreateOptionsProvider()
+                                .optionsFor(DESTINATION)
+                                .getClusteredFields())
+                .containsExactly("f");
+        assertThat(restored.getCdcOptions().getChangeTypeProvider().getChangeType("any"))
+                .isEqualTo(CdcChangeType.UPSERT);
+
+        BigQuerySinkConfig<String> restoredDefaults = InstantiationUtil.clone(defaults).getConfig();
+        assertThat(restoredDefaults.getCdcTableOptionsProvider().optionsFor(DESTINATION))
+                .isNotNull();
+        assertThat(restoredDefaults.getTableCreateOptionsProvider().optionsFor(DESTINATION))
+                .isNotNull();
+    }
+
+    @Test
+    void theConfigsOwnFallbackProviderIsNamedToo() throws Exception {
+        // The field is null only in a config restored from a job graph written before it existed,
+        // which no builder can produce and which is exactly the path this guard is about: the
+        // fallback the getter mints then travels on into the writers.
+        BigQuerySinkConfig<String> config =
+                new BigQuerySinkConfig<>(
+                        new FixedDestinationResolver(DESTINATION),
+                        new TestSerializer(),
+                        null,
+                        null,
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        new FixedTableCreateOptionsProvider(TableCreateOptions.defaults()),
+                        null,
+                        CdcTableReconciliationPolicy.VERIFY_ONLY,
+                        SchemaUpdateOptions.defaults(),
+                        FailureHandler.failJob(),
+                        "US",
+                        null,
+                        null,
+                        null);
+
+        CdcTableOptionsProvider fallback = config.getCdcTableOptionsProvider();
+
+        assertThat(serializedForm(fallback)).doesNotContain("SerializedLambda");
+        assertThat(fallback.optionsFor(DESTINATION)).isEqualTo(CdcTableOptions.defaults());
+    }
+
+    private static String serializedForm(Object value) throws Exception {
+        return new String(InstantiationUtil.serializeObject(value), StandardCharsets.ISO_8859_1);
+    }
+
+    /** A named additional-field provider, so the guard above measures only what the sink mints. */
+    private static final class NamedValueProvider implements AdditionalFieldValueProvider<String> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Object getValue(String element) {
+            return element;
+        }
+    }
+
+    /** The sequence-number half of the same, reaching the other write-only CDC field. */
+    private static final class NamedSequenceProvider implements CdcSequenceNumberProvider<String> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public String getSequenceNumber(String element) {
+            return "01";
+        }
     }
 
     /** A trivial serializable test serializer. */
