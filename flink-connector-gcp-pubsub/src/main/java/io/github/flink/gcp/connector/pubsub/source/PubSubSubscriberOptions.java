@@ -100,9 +100,11 @@ public final class PubSubSubscriberOptions implements Serializable {
     }
 
     /**
-     * Returns the default options: SDK-default flow control, connection count and
-     * acknowledgement-deadline extension, a 5 s subscriber shutdown budget, 1000 messages drained
-     * per split per fetch, and a 10 min first-checkpoint watchdog.
+     * Returns the default options: every knob left where {@link Builder} initialises it, which is
+     * the SDK's own default wherever the source has no reason to pick one.
+     *
+     * <p>The values themselves are on the {@code reference/pubsub.md} table, one row per setter,
+     * rather than enumerated here.
      *
      * @return the default options
      */
@@ -513,10 +515,11 @@ public final class PubSubSubscriberOptions implements Serializable {
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
             // Unlike the sink's knob of the same name, this one is spent in milliseconds — a
-            // range a million times wider, and the reader's CountDownLatch saturates rather than
-            // throwing when it converts them back. So this ceiling is far tighter than that
-            // conversion needs, and it is the rule (ADR-0068) rather than a crash: one answer for
-            // one knob name, whose "effectively unbounded" reading is the same on both sides.
+            // range a million times wider, and the wait it is handed to (SubscriberTeardown, over
+            // the SDK's own awaitTerminated) saturates rather than throwing when it converts them
+            // back. So this ceiling is far tighter than that conversion needs, and it is the rule
+            // (ADR-0068) rather than a crash: one answer for one knob name, whose "effectively
+            // unbounded" reading is the same on both sides.
             //
             // It runs before the floor, and the order is load-bearing: the floor converts with
             // toMillis(), which past about 292 million years throws an ArithmeticException naming

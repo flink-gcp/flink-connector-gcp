@@ -290,9 +290,11 @@ public class PubSubSourceBuilder<T> {
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
                         + " emulator uses a plaintext channel with no credentials. Remove one of"
                         + " the two settings.");
-        // Both settings are fixed at a subscription's creation and both are checked at startup, so
-        // catching them here is what stops the source creating a subscription it then refuses to
-        // consume — leaving an orphan behind and crash-looping.
+        // Both settings are checked at startup and this source never updates a subscription it
+        // created, so catching them here is what stops it creating one it then refuses to consume —
+        // leaving an orphan behind and crash-looping. (Ordering is genuinely fixed at creation; a
+        // dead-letter policy is not, which is why the enumerator's own rejection for it says to add
+        // one to the subscription.)
         for (Map.Entry<SubscriptionDestination, SubscriptionCreateOptions> entry :
                 createOptions.entrySet()) {
             Preconditions.checkState(

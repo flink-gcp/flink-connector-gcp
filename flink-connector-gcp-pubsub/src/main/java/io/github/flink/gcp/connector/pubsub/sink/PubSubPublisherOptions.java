@@ -121,11 +121,11 @@ public final class PubSubPublisherOptions implements Serializable {
     }
 
     /**
-     * Returns the default options: SDK-default batching and retries, ordering disabled, in-flight
-     * caps of 1000 messages and 64 MiB, a topic auto-creation recovery budget of 500 ms doubling to
-     * 10 s over 10 attempts, a 30 s publisher shutdown budget, and a job failure after {@value
-     * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
-     * policy.
+     * Returns the default options: every knob left where {@link Builder} initialises it, which is
+     * the SDK's own default wherever the sink has no reason to pick one.
+     *
+     * <p>The values themselves are on the {@code reference/pubsub.md} table, one row per setter,
+     * rather than enumerated here.
      *
      * @return the default options
      */

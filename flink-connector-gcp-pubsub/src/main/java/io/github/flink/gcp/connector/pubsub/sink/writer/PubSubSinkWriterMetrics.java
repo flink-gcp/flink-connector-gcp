@@ -40,9 +40,12 @@ import javax.annotation.Nullable;
  * are incremented from the client library's threads.
  *
  * <p><b>{@code numRecordsSend} counts records, not publish attempts.</b> A message republished
- * after its topic was auto-created is counted once, at the {@code write} that admitted it — see
- * {@code PubSubWriter}, where the increment sits before the publish call the repair re-enters.
- * {@code numBytesSend} follows it, and is therefore payload volume rather than wire volume.
+ * after its topic was auto-created is counted once, on the attempt the {@code write} that admitted
+ * it made: the increment sits inside {@code PubSubWriter.publishTo}, <em>after</em> the publish is
+ * accepted and under that method's {@code firstAttempt} flag, so a repair re-entering it counts
+ * nothing and a publish that throws synchronously — registering no callback, reaching the client
+ * not at all — is not counted either (ADR-0010). {@code numBytesSend} follows it, and is therefore
+ * payload volume rather than wire volume.
  *
  * <p><b>{@code publisherShutdownsAbandoned} is the exception to all of that</b>: its value is a
  * process-wide count, not this writer's own, so every subtask in a JVM reports the same number. It

@@ -36,6 +36,7 @@ import java.util.Map;
  * <p>Each option corresponds to a setter — one each, but for the three exceptions below — on {@link
  * io.github.flink.gcp.connector.pubsub.sink.PubSubSinkBuilder}, {@link
  * io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions.Builder}, {@link
+ * io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions.Builder}, {@link
  * io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder}, {@link
  * io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions.Builder} or {@link
  * io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions.Builder}: the DataStream
@@ -157,12 +158,9 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "How many messages a split paused by watermark alignment may buffer"
                                     + " before its subscriber is stopped, to be reopened when the"
-                                    + " split resumes. Defaults to twice the effective flow-control"
-                                    + " message limit, which is what one lease-expiry wave adds"
-                                    + " once the client library stops extending a paused split's"
-                                    + " leases. Lowering it can park a split while a checkpoint"
-                                    + " covering its output is still in flight, which re-emits"
-                                    + " those records on resume.");
+                                    + " split resumes. Lowering it can park a split while a"
+                                    + " checkpoint covering its output is still in flight, which"
+                                    + " re-emits those records on resume.");
 
     public static final ConfigOption<MemorySize> SCAN_PAUSED_SPLIT_BUFFER_MAX_BYTES =
             ConfigOptions.key("scan.paused-split-buffer.max-bytes")
@@ -170,8 +168,7 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The same in bytes, applied together with the message cap: whichever is"
-                                    + " exceeded first stops the subscriber. Defaults to twice the"
-                                    + " effective flow-control byte limit.");
+                                    + " exceeded first stops the subscriber.");
 
     public static final ConfigOption<Integer> SCAN_PARALLEL_PULL_COUNT =
             ConfigOptions.key("scan.parallel-pull-count")
@@ -599,9 +596,9 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Whether the sink registers per-topic send counters beside its totals."
-                                    + " Off by default: Flink cannot unregister a metric, so with"
-                                    + " dynamic destinations every topic the job writes to keeps a row"
-                                    + " in the metric registry for the lifetime of the task.");
+                                    + " Flink cannot unregister a metric, so with dynamic"
+                                    + " destinations every topic the job writes to keeps a row in"
+                                    + " the metric registry for the lifetime of the task.");
 
     private PubSubConnectorOptions() {}
 }
