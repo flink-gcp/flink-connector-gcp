@@ -48,7 +48,8 @@ public final class SpannerClients {
     /**
      * Builds the client settings for a database.
      *
-     * <p>Separate from {@link #open} so that the mapping is testable without opening a channel.
+     * <p>Separate from {@link #open(SpannerDatabase, SpannerOptions)} so that the mapping is
+     * testable without opening a channel.
      *
      * @param database the database the handle will reach
      * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service

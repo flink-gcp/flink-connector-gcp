@@ -30,8 +30,8 @@ import javax.annotation.Nullable;
 /**
  * Builder for the Spanner sink; created through {@link SpannerSink#builder()}.
  *
- * <p>{@link #database(SpannerDatabase)} and {@link #serializer} are required; everything else is
- * defaulted.
+ * <p>{@link #database(SpannerDatabase)} and {@link #serializer(SpannerMutationSerializationSchema)}
+ * are required; everything else is defaulted.
  *
  * @param <T> type of the records written by the sink
  */
@@ -106,8 +106,8 @@ public class SpannerSinkBuilder<T> {
      * Optional; defaults to {@link ConstraintViolationPolicy#FAIL_JOB}.
      *
      * <p>Under {@link ConstraintViolationPolicy#ROUTE_TO_FAILURE_HANDLER} such a mutation reaches
-     * {@link #failedMutationHandler}, so that handler decides whether it fails the job, is dropped
-     * or is dead-lettered.
+     * {@link #failedMutationHandler(FailureHandler)}, so that handler decides whether it fails the
+     * job, is dropped or is dead-lettered.
      *
      * @param constraintViolationPolicy the policy
      * @return this builder

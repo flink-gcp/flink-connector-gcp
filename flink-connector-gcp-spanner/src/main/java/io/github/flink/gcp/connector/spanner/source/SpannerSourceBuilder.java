@@ -155,7 +155,7 @@ public class SpannerSourceBuilder<T> {
      * Hints how much data each partition should cover. Optional; unset leaves the choice entirely
      * to the service.
      *
-     * <p>A hint, like {@link #maxPartitions}, and the two are asked for together at the service's
+     * <p>A hint, like {@link #maxPartitions(long)}, and the two are asked for together at the
      * discretion rather than combined by this connector.
      *
      * @param partitionSizeBytes the desired size of one partition, in bytes
