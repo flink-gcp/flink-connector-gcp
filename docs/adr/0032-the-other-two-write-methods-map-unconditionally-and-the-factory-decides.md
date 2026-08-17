@@ -28,8 +28,9 @@ limitations under the License.
 `FileLoadsOptions`, under ADR-0031's mapping rules. `WriteDisposition` gained the `toString()`
 its sibling enums carry, which made `BigQueryFileLoadsSink`'s streaming message mix spellings —
 that message names `WriteDisposition.WRITE_APPEND` &c. in prose, so the value beside them takes
-`.name()`. `LoadJobOrchestrator` is unaffected: it bridges through a `switch`, not
-`valueOf(name())`.
+`.name()`. The load path is unaffected: it bridges through a `switch`, not `valueOf(name())`
+(`CommitPlanner.toWriteDisposition`, which moved off `LoadJobOrchestrator` with the rest of
+planning).
 
 - **The two new mappers build unconditionally, and the factory decides whether to call them from
   the write method** — the one place these diverge from `DefaultStreamOptionsMapper`, whose

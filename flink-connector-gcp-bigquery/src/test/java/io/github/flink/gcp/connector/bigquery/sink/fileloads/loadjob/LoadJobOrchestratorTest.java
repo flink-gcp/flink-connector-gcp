@@ -171,7 +171,7 @@ class LoadJobOrchestratorTest {
                 Consumer<BigQuerySinkBuilder<Object>> customizer,
                 Long checkpointId,
                 TableSchema serializerSchema,
-                LoadJobOrchestrator.Limits limits) {
+                Limits limits) {
             BigQuerySinkBuilder<Object> builder =
                     BigQuerySink.builder()
                             .writeMethod(WriteMethod.FILE_LOADS)
@@ -217,7 +217,7 @@ class LoadJobOrchestratorTest {
                     checkpointId);
         }
 
-        static Harness withLimits(LoadJobOrchestrator.Limits limits) {
+        static Harness withLimits(Limits limits) {
             return new Harness(
                     FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
                     builder -> {},
@@ -876,17 +876,17 @@ class LoadJobOrchestratorTest {
     @Test
     void partitionRespectsFileCountAndByteLimits() {
         List<FileLoadsCommittable> manyFiles = new ArrayList<>();
-        for (int i = 0; i < LoadJobOrchestrator.MAX_FILES_PER_JOB + 1; i++) {
+        for (int i = 0; i < CommitPlanner.MAX_FILES_PER_JOB + 1; i++) {
             manyFiles.add(file(T1, String.format("f%05d", i), 1));
         }
-        List<List<FileLoadsCommittable>> byCount = LoadJobOrchestrator.partition(manyFiles);
+        List<List<FileLoadsCommittable>> byCount = CommitPlanner.partition(manyFiles);
         assertThat(byCount).hasSize(2);
-        assertThat(byCount.get(0)).hasSize(LoadJobOrchestrator.MAX_FILES_PER_JOB);
+        assertThat(byCount.get(0)).hasSize(CommitPlanner.MAX_FILES_PER_JOB);
         assertThat(byCount.get(1)).hasSize(1);
 
         long sixTiB = 6L << 40;
         List<List<FileLoadsCommittable>> byBytes =
-                LoadJobOrchestrator.partition(
+                CommitPlanner.partition(
                         List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", 1)));
         assertThat(byBytes).hasSize(2);
         assertThat(byBytes.get(0)).hasSize(1);
@@ -1069,22 +1069,19 @@ class LoadJobOrchestratorTest {
     @Test
     void firstHierarchyCaseCopiesTwelveHundredSourcesAndCarriesTheLast() throws IOException {
         Harness harness = Harness.streaming(7);
-        List<FileLoadsCommittable> files =
-                new ArrayList<>(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1);
+        List<FileLoadsCommittable> files = new ArrayList<>(Limits.MAX_SOURCE_TABLES_PER_COPY + 1);
         files.add(file(T1, "avro", 10, StagingFormat.AVRO));
-        IntStream.rangeClosed(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY)
+        IntStream.rangeClosed(1, Limits.MAX_SOURCE_TABLES_PER_COPY)
                 .mapToObj(i -> file(T1, "parquet-" + i, 6L << 40, StagingFormat.PARQUET))
                 .forEach(files::add);
 
         harness.orchestrator.run(files);
 
-        assertThat(harness.runner.loads)
-                .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 1);
+        assertThat(harness.runner.loads).hasSize(Limits.MAX_SOURCE_TABLES_PER_COPY + 1);
         assertThat(harness.runner.copies).hasSize(2);
         List<CopyJobSpec> copies = new ArrayList<>(harness.runner.copies.values());
         CopyJobSpec intermediate = copies.get(0);
-        assertThat(intermediate.getSourceTables())
-                .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY);
+        assertThat(intermediate.getSourceTables()).hasSize(Limits.MAX_SOURCE_TABLES_PER_COPY);
         assertThat(intermediate.getDestination().getTable()).contains("_c7_l1_g0");
         assertThat(intermediate.getCreateDisposition())
                 .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
@@ -1105,7 +1102,7 @@ class LoadJobOrchestratorTest {
         assertThat(finalCopy.getWriteDisposition())
                 .isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
         assertThat(harness.runner.deletedTables)
-                .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY + 2)
+                .hasSize(Limits.MAX_SOURCE_TABLES_PER_COPY + 2)
                 .contains(intermediate.getDestination());
         assertThat(harness.storage.getDeleted()).hasSize(files.size());
 
@@ -1124,27 +1121,26 @@ class LoadJobOrchestratorTest {
     @Test
     void copySourceTableLimitIsAcceptedAcrossFormats() throws IOException {
         Harness harness = Harness.streaming(7);
-        List<FileLoadsCommittable> files =
-                new ArrayList<>(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY);
+        List<FileLoadsCommittable> files = new ArrayList<>(Limits.MAX_SOURCE_TABLES_PER_COPY);
         files.add(file(T1, "avro", 10, StagingFormat.AVRO));
-        IntStream.range(1, LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY)
+        IntStream.range(1, Limits.MAX_SOURCE_TABLES_PER_COPY)
                 .mapToObj(i -> file(T1, "parquet-" + i, 6L << 40, StagingFormat.PARQUET))
                 .forEach(files::add);
 
         harness.orchestrator.run(files);
 
-        assertThat(harness.runner.loads).hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY);
+        assertThat(harness.runner.loads).hasSize(Limits.MAX_SOURCE_TABLES_PER_COPY);
         assertThat(harness.runner.copies.values())
                 .singleElement()
                 .satisfies(
                         copy ->
                                 assertThat(copy.getSourceTables())
-                                        .hasSize(LoadJobOrchestrator.MAX_SOURCE_TABLES_PER_COPY));
+                                        .hasSize(Limits.MAX_SOURCE_TABLES_PER_COPY));
     }
 
     @Test
     void reducedLimitsExerciseMultipleLevelsAndSubmissionWaves() throws IOException {
-        Harness harness = Harness.withLimits(new LoadJobOrchestrator.Limits(3, 100, 100, 2));
+        Harness harness = Harness.withLimits(new Limits(3, 100, 100, 2));
         List<FileLoadsCommittable> files =
                 IntStream.rangeClosed(1, 10)
                         .mapToObj(i -> file(T1, "part-" + i, 6L << 40))
@@ -1187,7 +1183,7 @@ class LoadJobOrchestratorTest {
 
     @Test
     void jobCapsAreValidatedBeforeTableOrJobSideEffects() {
-        Harness tooManyLoads = Harness.withLimits(new LoadJobOrchestrator.Limits(3, 3, 100, 2));
+        Harness tooManyLoads = Harness.withLimits(new Limits(3, 3, 100, 2));
 
         assertThatThrownBy(
                         () ->
@@ -1203,7 +1199,7 @@ class LoadJobOrchestratorTest {
         assertThat(tooManyLoads.runner.loads).isEmpty();
         assertThat(tooManyLoads.tableAdmin.created).isEmpty();
 
-        Harness tooManyCopies = Harness.withLimits(new LoadJobOrchestrator.Limits(3, 10, 1, 2));
+        Harness tooManyCopies = Harness.withLimits(new Limits(3, 10, 1, 2));
         long sixTiB = 6L << 40;
 
         assertThatThrownBy(
@@ -1223,28 +1219,27 @@ class LoadJobOrchestratorTest {
 
     @Test
     void publishedDailyJobBoundariesAreAcceptedAndRejectedOnTheCorrectSide() throws IOException {
-        LoadJobOrchestrator.validateJobCounts(
-                LoadJobOrchestrator.MAX_JOBS_PER_COMMIT, LoadJobOrchestrator.MAX_JOBS_PER_COMMIT);
+        CommitPlanner.validateJobCounts(Limits.MAX_JOBS_PER_COMMIT, Limits.MAX_JOBS_PER_COMMIT);
 
         assertThatThrownBy(
                         () ->
-                                LoadJobOrchestrator.validateJobCounts(
-                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT + 1L,
-                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT))
+                                CommitPlanner.validateJobCounts(
+                                        Limits.MAX_JOBS_PER_COMMIT + 1L,
+                                        Limits.MAX_JOBS_PER_COMMIT))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("100001 load jobs");
         assertThatThrownBy(
                         () ->
-                                LoadJobOrchestrator.validateJobCounts(
-                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT,
-                                        LoadJobOrchestrator.MAX_JOBS_PER_COMMIT + 1L))
+                                CommitPlanner.validateJobCounts(
+                                        Limits.MAX_JOBS_PER_COMMIT,
+                                        Limits.MAX_JOBS_PER_COMMIT + 1L))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("100001 copy jobs");
     }
 
     @Test
     void aFailureAtEveryCopyLevelStopsDependentWorkAndCleanup() throws IOException {
-        LoadJobOrchestrator.Limits limits = new LoadJobOrchestrator.Limits(3, 100, 100, 2);
+        Limits limits = new Limits(3, 100, 100, 2);
         List<FileLoadsCommittable> files =
                 IntStream.rangeClosed(1, 10)
                         .mapToObj(i -> file(T1, "part-" + i, 6L << 40))

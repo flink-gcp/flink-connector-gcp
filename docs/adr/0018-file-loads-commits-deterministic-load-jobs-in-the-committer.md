@@ -34,7 +34,7 @@ limitations under the License.
 - **A load job is one destination in one staging format** (refined by [#284]). The format travels
   in the committable rather than being read from configuration at commit time, because a
   committable recovered from state has to be loaded as the format its file was *actually* written
-  in — and a load job carries exactly one. So `LoadJobOrchestrator` keys on `(destination,
+  in — and a load job carries exactly one. So `CommitPlanner` keys on `(destination,
   format)`, which changes nothing for a commit whose committables share a format.
   The transitional commit after the format changes can contain both old and new formats.
   `WRITE_APPEND` and `WRITE_EMPTY` keep separate direct loads when both groups fit, preserving their
@@ -89,7 +89,12 @@ limitations under the License.
 - **The complete job graph is bounded and validated before side effects** ([#598]). One commit may
   plan at most 100,000 load jobs and 100,000 copy jobs, matching BigQuery's project-wide daily
   quotas. The planner constructs every copy with at most 1,200 sources before schema reconciliation,
-  table creation or job submission begins. This does not reserve shared quota: other workloads and
+  table creation or job submission begins. The planner is `CommitPlanner`, and its fields are the
+  sink configuration, the FILE_LOADS options, the Flink job id, the checkpoint id and the limits —
+  no runner, no table admin, no staging storage. So "before side effects" is a property of what
+  planning can reach rather than a rule each review has to re-apply; `LoadJobOrchestrator` receives
+  the finished `CommitPlan` and is the only half that can act on it.
+  This does not reserve shared quota: other workloads and
   failed attempts still consume the project's daily allowance. The cap is deliberately not a
   public option; a plan large enough to spend a whole project's default daily quota should be
   reduced with larger staging files or smaller commits instead.
