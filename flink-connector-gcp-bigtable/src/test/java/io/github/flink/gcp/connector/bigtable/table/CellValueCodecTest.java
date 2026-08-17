@@ -416,6 +416,51 @@ class CellValueCodecTest {
             assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(NULL_STRING))
                     .isEqualTo(StringData.fromString("NULL"));
         }
+
+        @Test
+        void underNotNullOnlyStringsAndBytesSurviveAnEmptyCell() {
+            // The SQL page tells a reader which declared types can hold an empty cell under a
+            // NOT NULL qualifier and which fail the read. Nothing else pins that split: the plain
+            // decoder a NOT NULL column gets has no null to offer, so the answer is whether the
+            // decoder reads a byte at all. Walked over SAMPLES rather than a hand-written list, so
+            // a root added to checkSupported later has to declare which side it falls on instead
+            // of going unasserted.
+            for (LogicalTypeRoot root : LogicalTypeRoot.values()) {
+                LogicalType sample = SAMPLES.get(root);
+                if (sample == null) {
+                    continue;
+                }
+                try {
+                    CellValueCodec.checkSupported("c", sample);
+                } catch (ValidationException e) {
+                    // Rejected where the table is declared, so it never reaches a read.
+                    continue;
+                }
+                CellValueCodec.FieldDecoder decoder =
+                        CellValueCodec.nullableDecoder(sample.copy(false), NULL_STRING);
+
+                switch (root) {
+                    case CHAR:
+                    case VARCHAR:
+                        assertThat(decoder.decode(new byte[0]))
+                                .describedAs("%s", root)
+                                .isEqualTo(StringData.fromString(""));
+                        break;
+                    case BINARY:
+                    case VARBINARY:
+                        assertThat(decoder.decode(new byte[0]))
+                                .describedAs("%s", root)
+                                .isEqualTo(new byte[0]);
+                        break;
+                    default:
+                        // Every remaining decoder indexes into the array, which is what
+                        // RowToRowDataConverter turns into the message naming the cell and its
+                        // row.
+                        assertThatThrownBy(() -> decoder.decode(new byte[0]), "%s", root)
+                                .isInstanceOf(IndexOutOfBoundsException.class);
+                }
+            }
+        }
     }
 
     @Nested
