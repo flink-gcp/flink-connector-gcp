@@ -844,7 +844,7 @@ class LoadJobOrchestratorTest {
         harness.tableAdmin.tables.put(T1, LIVE_F1_ONLY);
         long sixTiB = 6L << 40;
 
-        try (LogCapture capture = LogCapture.of(LoadJobOrchestrator.class)) {
+        try (LogCapture capture = LogCapture.of(FileLoadsSchemaReconciler.class)) {
             harness.orchestrator.run(
                     List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB)));
 

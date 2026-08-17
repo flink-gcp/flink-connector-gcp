@@ -337,6 +337,28 @@ class FileLoadsCommitterTest {
     }
 
     @Test
+    void eachCommitReconcilesTheDestinationAgain() throws IOException {
+        // The reconciliation memo is scoped to one commit, and nothing but the construction chain
+        // says so: the committer builds an orchestrator per commit, which builds the reconciler
+        // that owns the memo. Hoisting that construction out - accepting the reconciler as a
+        // parameter, say, which reads as ordinary dependency-injection hygiene - would make one
+        // memo outlive its commit and silently skip the second commit's reconciliation, and every
+        // other test in this suite would stay green.
+        Harness harness = new Harness();
+        // The table has to exist up front, and the count has to be checked after each commit rather
+        // than once at the end. Without the pre-population a missing table costs two reads on the
+        // first commit (miss, create, re-read) and a leaked memo costs zero on the second, so a
+        // single assertion of 2 at the end would pass on 2 + 0 exactly as it does on 1 + 1.
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+
+        harness.commit(file("a"));
+        assertThat(harness.tableAdmin.schemaReads).isEqualTo(1);
+
+        harness.commit(file("b").withCheckpointId(1));
+        assertThat(harness.tableAdmin.schemaReads).isEqualTo(2);
+    }
+
+    @Test
     void countsEveryLoadJobSubmitted() throws IOException {
         Harness harness = new Harness();
 
