@@ -794,9 +794,10 @@ without a window, a non-windowed join — is rejected when the plan is built, be
 append-only write paths cannot express a retraction and appending the `-U` and `-D` rows as ordinary
 ones would corrupt the table silently.
 
-Setting `sink.cdc.enabled` to `true` makes the sink consume an upsert changelog instead, so the same
-query plans. That path writes through BigQuery's CDC pseudocolumns rather than as ordinary appends,
-and it carries its own restrictions — the default stream is the only write method it runs on. See
+Setting `sink.cdc.enabled` to `true` makes the sink answer an updating query with an upsert changelog
+instead, so the same query plans; an insert-only query still gets insert-only. That path augments
+each row with BigQuery's CDC pseudocolumns, and it carries its own restrictions — it runs on
+`storage-api-at-least-once` and no other write method. See
 [Change data capture](#change-data-capture).
 
 ## Design decisions

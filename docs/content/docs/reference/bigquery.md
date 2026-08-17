@@ -51,7 +51,7 @@ section; the three forms of the Default column are explained
 | `bufferedStreamOptions` | **required** for `STORAGE_API_EXACTLY_ONCE` | [Tuning](#bufferedstreamoptions) for that method; rejected for the other two |
 | `fileLoadsOptions` | **required** for `FILE_LOADS` | [Settings](#fileloadsoptions) for that method; rejected for the other two |
 | `emulatorEndpoint` | — | Sends the Storage Write API traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. Rejected under `FILE_LOADS` |
-| `emulatorRestEndpoint` | — | The same for table creation and schema updates, which go over REST — a transport BigQuery serves on a different port, so the two endpoints are separate |
+| `emulatorRestEndpoint` | — | The same for table creation, schema updates and the CDC table contract, which go over REST — a transport BigQuery serves on a different port, so the two endpoints are separate |
 
 The two emulator endpoints are for testing against a local emulator and nothing else: both use
 plaintext and no credentials, and both are rejected under `FILE_LOADS`, which stages files to Cloud
@@ -213,8 +213,9 @@ Primary-key drift is always rejected.
 Both flags are off by default, which is what makes connector-driven schema updates opt-in — see
 [Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) for why.
 All three write methods accept an enabled options object. On `STORAGE_API_EXACTLY_ONCE` the
-reconciliation happens at a stream boundary: the writer drains its in-flight appends, reconciles
-the table schema, and reopens at the same offset.
+reconciliation crosses no stream boundary: the writer reconciles the table schema and reopens its
+local appender on the same buffered stream at the same next offset, so neither the stream nor the
+committables naming it change.
 
 | Option | Default | What it does |
 |---|---|---|
