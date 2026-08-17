@@ -503,6 +503,8 @@ public class BigQuerySourceBuilder<T> {
      *
      * @param emulatorEndpoint the emulator's gRPC endpoint as {@code host:port}
      * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
      */
     public BigQuerySourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
         this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
@@ -523,6 +525,8 @@ public class BigQuerySourceBuilder<T> {
      *
      * @param emulatorRestEndpoint the emulator's REST endpoint as {@code host:port}
      * @return this builder
+     * @throws IllegalArgumentException if the endpoint is not {@code host:port} with a port in
+     *     1..65535
      */
     public BigQuerySourceBuilder<T> emulatorRestEndpoint(String emulatorRestEndpoint) {
         this.emulatorRestEndpoint = EmulatorEndpoint.parse(emulatorRestEndpoint);
