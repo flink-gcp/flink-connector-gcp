@@ -212,13 +212,25 @@ public final class BigtableChangeStreamSplitEnumerator
                 restoredMerges.add(merge);
             }
         }
+        List<MissingPartition> restoredMissing =
+                new ArrayList<>(restoredState.getMissingPartitions().size());
+        for (MissingPartition missing : restoredState.getMissingPartitions()) {
+            // Of the two instants a MissingPartition carries, expiry is about the low
+            // watermark a tokenless restart would read from, not the grace timer.
+            Optional<Instant> fallback =
+                    resolver.resolveRestored(
+                            RowRanges.format(missing.getPartition()),
+                            missing.getLowWatermark(),
+                            resumeFallback);
+            restoredMissing.add(fallback.map(missing::restartAt).orElse(missing));
+        }
         return Initialization.restored(
                 restoredState.getStartTime(),
                 restoredNextSplitId,
                 restoredUnassigned,
                 restoredAssigned,
                 restoredMerges,
-                restoredState.getMissingPartitions());
+                restoredMissing);
     }
 
     private List<ChangeStreamPartitionSplit> resolveRestored(

@@ -517,6 +517,97 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.close();
     }
 
+    /**
+     * Expiry is a property of the low watermark a tokenless restart would read from, not of the
+     * grace timer, so the {@code firstObserved} here is deliberately recent and retained. The
+     * reconciliation-disabled {@code enumerator(...)} helper pins that the check happens at
+     * initialize regardless of whether a reconciler would ever consume the partition.
+     */
+    @Test
+    void expiredRestoredMissingPartitionFailsByDefault() throws Exception {
+        Instant now = Instant.now();
+        BigtableChangeStreamEnumeratorState restored =
+                restoredWithMissing(
+                        now.minusSeconds(60),
+                        7,
+                        new MissingPartition(
+                                WHOLE, now.minusSeconds(120), now.minus(Duration.ofDays(8))));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        new ScriptedChangeStreamCoordinatorClient(
+                                Duration.ofDays(7), Collections.singletonList(WHOLE)),
+                        restored);
+
+        enumerator.start();
+
+        assertThatThrownBy(context::runAsyncCalls)
+                .isInstanceOf(FlinkRuntimeException.class)
+                .hasMessageContaining("Failed to initialize Bigtable Change Streams")
+                .hasRootCauseInstanceOf(FlinkRuntimeException.class)
+                .hasStackTraceContaining("older than the computed earliest position");
+    }
+
+    /**
+     * The opt-in fallback replaces only the expired low watermark; the grace timer survives the
+     * rebuild, as checkpointed timers always have. With the timer already elapsed the first scan
+     * restarts immediately — a rebased timer would make that scan a no-op, which is what the final
+     * assertions rule out.
+     */
+    @Test
+    void expiredRestoredMissingPartitionUsesTheOptInFallbackAndKeepsItsGraceTimer()
+            throws Exception {
+        Instant base = Instant.now();
+        MissingPartition missing =
+                new MissingPartition(
+                        WHOLE,
+                        base.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                        base.minus(Duration.ofDays(8)));
+        BigtableChangeStreamEnumeratorState restored =
+                restoredWithMissing(base.minusSeconds(60), 7, missing);
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        new ScriptedChangeStreamCoordinatorClient(
+                                Duration.ofDays(7), Collections.singletonList(WHOLE)),
+                        StartPosition.latest(),
+                        Optional.of(StartPosition.latest()),
+                        restored,
+                        false,
+                        true,
+                        Clock.fixed(base, ZoneOffset.UTC));
+        enumerator.start();
+        context.runAsyncCalls();
+
+        // The resolver reads the system clock, so the fallback resolves at or after base; an
+        // exact-value assertion is impossible, but "no longer the expired position" is not.
+        assertThat(enumerator.snapshotState(1).getMissingPartitions())
+                .singleElement()
+                .satisfies(
+                        rebuilt -> {
+                            assertThat(rebuilt.getFirstObserved())
+                                    .isEqualTo(missing.getFirstObserved());
+                            assertThat(rebuilt.getLowWatermark()).isAfterOrEqualTo(base);
+                        });
+
+        enumerator.handleSplitRequest(0, "localhost");
+        context.runPeriodicAsyncCalls();
+
+        assertThat(context.assignedSplits(0))
+                .singleElement()
+                .satisfies(
+                        split -> {
+                            assertThat(split.getContinuationTokens()).isEmpty();
+                            assertThat(split.getLowWatermark()).isAfterOrEqualTo(base);
+                        });
+        assertThat(enumerator.snapshotState(2).getMissingPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS))
+                .isEqualTo(1);
+        enumerator.close();
+    }
+
     @Test
     void closesTheCoordinatorClientItOwns() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
@@ -531,7 +622,9 @@ class BigtableChangeStreamSplitEnumeratorTest {
 
     @Test
     void periodicReconciliationRestoresCheckpointedTokenlessTimer() throws Exception {
-        Instant now = Instant.parse("2026-08-11T12:00:00Z");
+        // Anchored to the real clock: the restored ledger must pass the system-clock
+        // restore-expiry check, which a parse-anchored date fails once it ages past retention.
+        Instant now = Instant.now();
         BigtableChangeStreamEnumeratorState restored =
                 new BigtableChangeStreamEnumeratorState(
                         true,
@@ -719,24 +812,26 @@ class BigtableChangeStreamSplitEnumeratorTest {
      * A tokenless restart may not ask for a position the change stream no longer retains, so the
      * recovery starts at the retention edge instead.
      *
-     * <p>The position is older than retention because it was <em>restored</em>: unlike a restored
-     * split or pending merge, a restored missing partition is not put through {@code
-     * StartPositionResolver.resolveRestored}, so ADR-0094's expiry rejection does not see it. That
-     * asymmetry is what makes this state reachable, and it is recorded on #726 rather than settled
-     * here — this test pins the clamp, not the omission that lets an expired position reach it.
+     * <p>The enumerator clock is fixed two hours ahead of the resolver's startup instant to model a
+     * position that was retained when the job was restored and then aged past retention while the
+     * job ran, as a backpressured ledger's tracked watermark can against a short retention. Aging
+     * during downtime is caught by the restore-expiry check on the next restore instead, so only
+     * this mid-run path reaches the clamp; the clamp, not an expiry failure, is the answer here
+     * because mid-run there is no restore decision point left to fail.
      */
     @Test
-    void aTokenlessRestartOlderThanRetentionStartsAtTheRetentionEdge() throws Exception {
-        Instant now = Instant.parse("2026-08-11T12:00:00Z");
+    void aMissingPartitionAgingPastRetentionMidRunRestartsAtTheRetentionEdge() throws Exception {
+        Instant restoreTime = Instant.now();
+        Instant scanTime = restoreTime.plus(Duration.ofHours(2));
         Duration retention = Duration.ofHours(1);
         BigtableChangeStreamEnumeratorState restored =
                 restoredWithMissing(
-                        now.minusSeconds(60),
+                        restoreTime.minusSeconds(60),
                         7,
                         new MissingPartition(
                                 WHOLE,
-                                now.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
-                                now.minus(Duration.ofDays(3))));
+                                scanTime.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                                restoreTime.minusSeconds(60)));
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         BigtableChangeStreamSplitEnumerator enumerator =
                 reconciling(
@@ -744,7 +839,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         new ScriptedChangeStreamCoordinatorClient(
                                 retention, Collections.singletonList(WHOLE)),
                         restored,
-                        now);
+                        scanTime);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -756,13 +851,15 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 .satisfies(
                         split ->
                                 assertThat(split.getLowWatermark())
-                                        .isEqualTo(now.minus(retention).plusSeconds(60)));
+                                        .isEqualTo(scanTime.minus(retention).plusSeconds(60)));
         enumerator.close();
     }
 
     @Test
     void aFailedReconciliationScanKeepsTheMissingPartitionForTheNextOne() throws Exception {
-        Instant now = Instant.parse("2026-08-11T12:00:00Z");
+        // Anchored to the real clock: the restored ledger must pass the system-clock
+        // restore-expiry check, which a parse-anchored date fails once it ages past retention.
+        Instant now = Instant.now();
         MissingPartition missing =
                 new MissingPartition(
                         WHOLE,

@@ -704,7 +704,9 @@ The same path must therefore be mounted on every eligible JobManager and TaskMan
 Fresh jobs default to `StartPosition.latest()`. Restores use the exact checkpointed continuation
 token and estimated low watermark instead. If that position has fallen outside the table's
 retention, restore fails by default; `resumeFallback(...)` explicitly accepts the resulting gap and
-restarts the affected partition without its stale token. `endTime(...)` makes the source bounded.
+restarts the affected partition without its stale token. The check covers every restored
+collection: assigned and unassigned partitions, pending merges, and the reconciler's checkpointed
+missing-partition ledger. `endTime(...)` makes the source bounded.
 
 Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may produce zero or more
 records. Every produced record carries the mutation's commit time as its Flink timestamp. A
@@ -729,7 +731,10 @@ A tracked low watermark that falls before one minute inside the retention window
 to that point, because the service answers no request for a position it no longer retains. Such a
 restart skips the changes between the position it tracked and the one it starts from, and nothing
 tells the two apart: `changeStreamTokenlessRestarts` counts a clamped restart and an unclamped one
-alike, and the WARN names the position the restart used rather than the one it replaced.
+alike, and the WARN names the position the restart used rather than the one it replaced. An
+expired restored position cannot reach this clamp, because the restore-expiry check fails the job
+or applies `resumeFallback(...)` before the reconciler runs; the clamp covers only a position that
+ages past retention while the job runs.
 
 Change Streams cover every column family. Garbage-collection changes can therefore appear beside
 application writes. Bigtable preserves the service's per-partition order, but records from

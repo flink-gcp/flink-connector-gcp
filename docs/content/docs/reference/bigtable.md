@@ -175,7 +175,7 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | `appProfileId` | **required** | A single-cluster-routing application profile used by every change-stream RPC |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's coordinator or a TaskManager's reader starts. Each component shares the provider among the data, table-admin and instance-admin clients that it owns, and every eligible process must see the same path. See the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |
-| `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position after clearing its stale token. Without it, an expired restore fails |
+| `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position, discarding any stale token it held. Without it, an expired restore fails |
 | `endTime` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
 | `maxConcurrentStreamsPerSubtask` | `2` | Bounds open `ReadChangeStream` RPCs in each source subtask. Source parallelism multiplied by this value is configured job-wide read capacity, not a Bigtable quota |
 | `familyIncludeList` | empty | Retains mutation entries whose family name fully matches at least one Java regular expression. Mutually exclusive with `familyExcludeList` |

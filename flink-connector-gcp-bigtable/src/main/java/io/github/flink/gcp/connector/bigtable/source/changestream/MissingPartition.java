@@ -54,6 +54,13 @@ public final class MissingPartition {
         return lowWatermark;
     }
 
+    /**
+     * Returns a copy restarting at {@code lowWatermark}, keeping the {@code firstObserved} timer.
+     */
+    public MissingPartition restartAt(Instant lowWatermark) {
+        return new MissingPartition(partition, firstObserved, lowWatermark);
+    }
+
     @Override
     public boolean equals(Object object) {
         if (this == object) {
