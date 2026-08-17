@@ -33,9 +33,9 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
-/** Converts writable metadata columns and fixed target options to a bodyless task builder. */
+/** Converts external HTTP fixed options and writable metadata to a bodyless task. */
 @Internal
-final class RowDataToTaskMetadataConverter implements RowDataToTaskConverter {
+final class RowDataToHttpTaskConverter implements RowDataToTaskConverter {
 
     private static final long serialVersionUID = 1L;
 
@@ -47,7 +47,7 @@ final class RowDataToTaskMetadataConverter implements RowDataToTaskConverter {
 
     @Nullable private transient HttpRequest prototype;
 
-    RowDataToTaskMetadataConverter(
+    RowDataToHttpTaskConverter(
             int physicalArity, WritableMetadata[] metadata, HttpTargetSpec target) {
         Preconditions.checkArgument(physicalArity >= 0, "physicalArity must not be negative");
         WritableMetadata[] checkedMetadata =
@@ -75,6 +75,7 @@ final class RowDataToTaskMetadataConverter implements RowDataToTaskConverter {
         return task;
     }
 
+    @Override
     @Nullable
     public String getBodyContentType() {
         return target.getBodyContentType();
@@ -110,7 +111,7 @@ final class RowDataToTaskMetadataConverter implements RowDataToTaskConverter {
             String value = header.getValue();
             String normalized = name.toLowerCase(Locale.ROOT);
             if (target.getBodyContentType() != null && "content-type".equals(normalized)) {
-                if (!HttpTargetSpec.sameContentType(target.getBodyContentType(), value)) {
+                if (!TargetSpec.sameContentType(target.getBodyContentType(), value)) {
                     throw new IOException(
                             "Cloud Tasks HTTP header metadata contains Content-Type '"
                                     + value
