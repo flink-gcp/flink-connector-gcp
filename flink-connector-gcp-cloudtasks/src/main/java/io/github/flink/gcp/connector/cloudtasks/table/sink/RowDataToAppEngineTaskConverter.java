@@ -87,12 +87,6 @@ final class RowDataToAppEngineTaskConverter implements RowDataToTaskConverter {
         return task;
     }
 
-    @Override
-    @Nullable
-    public String getBodyContentType() {
-        return target.getBodyContentType();
-    }
-
     private String relativeUri(RowData element) throws IOException {
         String value =
                 RowDataMetadataReader.readString(

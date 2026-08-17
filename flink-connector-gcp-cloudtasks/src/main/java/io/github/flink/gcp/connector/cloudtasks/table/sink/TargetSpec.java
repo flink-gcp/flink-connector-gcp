@@ -39,6 +39,14 @@ public abstract class TargetSpec implements Serializable {
     @Nullable
     abstract String fixedAddress();
 
+    /**
+     * Returns the Content-Type the body format owns, or {@code null} when the format claims none.
+     * Resolved once when the factory discovers the format, so it is the same for every row of the
+     * table.
+     */
+    @Nullable
+    abstract String getBodyContentType();
+
     abstract RowDataToTaskConverter converter(int physicalArity, WritableMetadata[] metadata);
 
     static boolean sameContentType(String expected, String actual) {

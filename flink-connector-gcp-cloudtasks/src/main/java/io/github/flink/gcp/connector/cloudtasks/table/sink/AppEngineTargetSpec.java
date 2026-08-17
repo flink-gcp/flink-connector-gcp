@@ -168,6 +168,7 @@ public final class AppEngineTargetSpec extends TargetSpec {
         return headers;
     }
 
+    @Override
     @Nullable
     String getBodyContentType() {
         return bodyContentType;

@@ -21,8 +21,6 @@ import org.apache.flink.table.data.RowData;
 
 import com.google.cloud.tasks.v2.Task;
 
-import javax.annotation.Nullable;
-
 import java.io.IOException;
 import java.io.Serializable;
 
@@ -31,7 +29,4 @@ import java.io.Serializable;
 interface RowDataToTaskConverter extends Serializable {
 
     Task.Builder convert(RowData element) throws IOException;
-
-    @Nullable
-    String getBodyContentType();
 }
