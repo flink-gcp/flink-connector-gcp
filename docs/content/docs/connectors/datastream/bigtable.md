@@ -717,9 +717,11 @@ The same path must therefore be mounted on every eligible JobManager and TaskMan
 Fresh jobs default to `StartPosition.latest()`. Restores use the exact checkpointed continuation
 token and estimated low watermark instead. If that position has fallen outside the table's
 retention, restore fails by default; `resumeFallback(...)` explicitly accepts the resulting gap and
-restarts the affected partition without its stale token. The check covers every restored
-collection: assigned and unassigned partitions, pending merges, and the reconciler's checkpointed
-missing-partition ledger. `endTime(...)` makes the source bounded.
+restarts the affected partition without its stale token. The check covers every restored position:
+assigned and unassigned partitions, pending merges, and the reconciler's checkpointed
+missing-partition ledger. A bounded run's completed ranges are restored without one, because a
+range that has already been read to the end time is never resumed from. `endTime(...)` makes the
+source bounded.
 
 Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may produce zero or more
 records. Every produced record carries the mutation's commit time as its Flink timestamp. A
@@ -737,8 +739,16 @@ The coordinator also compares the live service keyspace with its checkpointed as
 unassigned, and pending-merge ledger every 10 seconds. A missing partition is checkpointed with
 its first-observed time. Compatible parent tokens may reconstruct it after two minutes; only after
 20 minutes without a complete token set does the connector restart the remainder at its tracked
-low watermark, emit a WARN, and increment `changeStreamTokenlessRestarts`. These intervals are
-internal protocol constants rather than public tuning options.
+low watermark, emit a WARN naming that ledger, and increment `changeStreamTokenlessRestarts`.
+These intervals are internal protocol constants rather than public tuning options.
+
+Under `endTime(...)` the comparison also counts the ranges the run has already read to that end
+time. A bounded partition ends by closing without a successor, which retires its range from the
+live ledger, while the service goes on reporting that keyspace for as long as the table exists.
+Those
+completed ranges are checkpointed beside the rest of the ledger, so a bounded run neither reports
+its own finished work as missing nor re-reads it, and a restore resumes with the same account of
+what is left to do.
 
 A tracked low watermark that falls before one minute inside the retention window is moved forward
 to that point, because the service answers no request for a position it no longer retains. Such a

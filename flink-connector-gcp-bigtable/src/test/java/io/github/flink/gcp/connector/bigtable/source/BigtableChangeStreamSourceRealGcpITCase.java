@@ -47,9 +47,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -146,7 +148,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         environment.setParallelism(2);
         environment.enableCheckpointing(500L);
         List<String> keys = new ArrayList<>();
-        ExecutorService triggerExecutor = Executors.newSingleThreadExecutor();
+        ExecutorService triggerExecutor = Executors.newFixedThreadPool(2);
         Future<?> restartTrigger =
                 triggerExecutor.submit(
                         () -> {
@@ -157,6 +159,17 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                             seedRows(table, "row-0100");
                             return null;
                         });
+        // A bounded run that fails to notice it is over blocks here forever: hasNext() waits on the
+        // job, and JUnit's @Timeout interrupt does not break that wait, so the fork outlives its
+        // own
+        // deadline and keeps a paid instance alive (#951 ran for over 40 minutes this way).
+        // Cancelling the job is what ends the wait — CollectResultFetcher.close() cancels through
+        // the job client, and the fetch loop leaves by its terminated-job branch. That branch can
+        // also surface as an IOException instead of an orderly end, which is why the catch below
+        // reports the deadline rather than letting a cancellation stack stand as the diagnosis.
+        // Five minutes is well over twice the whole class's duration when the run completes.
+        CountDownLatch collectionFinished = new CountDownLatch(1);
+        AtomicBoolean cancelledByDeadline = new AtomicBoolean();
 
         try {
             try (CloseableIterator<ChangeStreamMutation> mutations =
@@ -165,14 +178,34 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                             .map(new ObserveConcurrencyAndFailAfterCheckpoint())
                             .returns(deserializer.getProducedType())
                             .executeAndCollect()) {
-                mutations.forEachRemaining(
-                        mutation -> keys.add(mutation.getRowKey().toStringUtf8()));
+                Future<?> collectDeadline =
+                        triggerExecutor.submit(
+                                () -> {
+                                    if (!collectionFinished.await(5, TimeUnit.MINUTES)) {
+                                        cancelledByDeadline.set(true);
+                                        mutations.close();
+                                    }
+                                    return null;
+                                });
+                try {
+                    mutations.forEachRemaining(
+                            mutation -> keys.add(mutation.getRowKey().toStringUtf8()));
+                } catch (Exception e) {
+                    if (!cancelledByDeadline.get()) {
+                        throw e;
+                    }
+                    throw new AssertionError(deadlineDiagnosis(), e);
+                } finally {
+                    collectionFinished.countDown();
+                }
+                collectDeadline.get();
             }
             restartTrigger.get();
         } finally {
             triggerExecutor.shutdownNow();
         }
 
+        assertThat(cancelledByDeadline).as(deadlineDiagnosis()).isFalse();
         assertThat(FAILED_ONCE).as("the gated job restarted from a completed checkpoint").isTrue();
         assertThat(keys).contains(expected);
         assertThat(TABLET_RANGES_BY_SUBTASK)
@@ -183,6 +216,13 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                 .as("the default opened at least two concurrent partition reads in each subtask")
                 .containsEntry(0, 2)
                 .containsEntry(1, 2);
+    }
+
+    private static String deadlineDiagnosis() {
+        return "the bounded Change Streams job did not complete at its end time and was cancelled"
+                + " by the five-minute collect deadline; the enumerator never signalled"
+                + " completion, so look for repeated tokenless partition restarts in the"
+                + " JobManager log (#951)";
     }
 
     /** Fails on the first mutation written after a checkpoint that included earlier mutations. */

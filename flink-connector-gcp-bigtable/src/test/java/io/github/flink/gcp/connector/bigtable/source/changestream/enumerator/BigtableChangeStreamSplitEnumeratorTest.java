@@ -32,13 +32,16 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTrans
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
@@ -738,6 +741,199 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.close();
     }
 
+    /**
+     * The test above runs with reconciliation off, which is the combination that hid #951. A
+     * bounded partition reaches the end time by closing with no successors, so it leaves the ledger
+     * and nothing replaces it — while the service keeps reporting its range for as long as the
+     * table exists. A scan that lands after one partition has finished and before the last one has
+     * therefore called a finished partition missing, and a non-empty missing ledger blocks the
+     * completion signal that is the only thing that stops the scans.
+     */
+    @Test
+    void aReconciliationScanBetweenTwoBoundedCompletionsDoesNotBlockTheCompletionSignal()
+            throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                boundedReconciling(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT),
+                        null,
+                        Clock.fixed(Instant.now(), ZoneOffset.UTC));
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        enumerator.handleSplitRequest(1, "localhost");
+        ChangeStreamPartitionSplit first = context.assignedSplits(0).get(0);
+        ChangeStreamPartitionSplit second = context.assignedSplits(1).get(0);
+
+        enumerator.handleSourceEvent(0, transition(first));
+        context.runPeriodicAsyncCalls();
+        enumerator.handleSourceEvent(1, transition(second));
+
+        assertThat(context.readersToldNoMoreSplits()).containsExactly(0, 1);
+        assertThat(enumerator.snapshotState(1).getMissingPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
+                .isZero();
+        enumerator.close();
+    }
+
+    /**
+     * The sharper half of the same defect. Here the run never drains, so its completion flag never
+     * turns the scans off, and only the record of what the run already finished can keep a
+     * partition that reached the end time from being restarted twenty minutes later.
+     */
+    @Test
+    void aBoundedRunDoesNotRestartAFinishedPartitionWhileAnotherIsStillReading() throws Exception {
+        AdvanceableClock clock = new AdvanceableClock(Instant.now());
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                boundedReconciling(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT),
+                        null,
+                        clock);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        enumerator.handleSplitRequest(1, "localhost");
+        ChangeStreamPartitionSplit first = context.assignedSplits(0).get(0);
+
+        enumerator.handleSourceEvent(0, transition(first));
+        context.runPeriodicAsyncCalls();
+        clock.advance(ChangeStreamPartitionReconciler.TOKENLESS_GRACE.plusMinutes(1));
+        context.runPeriodicAsyncCalls();
+
+        assertThat(context.readersToldNoMoreSplits()).isEmpty();
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits()).isEmpty();
+        assertThat(enumerator.snapshotState(2).getMissingPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS)).isZero();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
+                .isZero();
+        enumerator.close();
+    }
+
+    /**
+     * The completed ranges have to survive a restore, or a bounded run that checkpointed midway
+     * through draining would come back believing the service keyspace it already read is missing.
+     */
+    @Test
+    void aRestoredBoundedRunKeepsTheRangesItAlreadyFinished() throws Exception {
+        Instant now = Instant.now();
+        BigtableChangeStreamEnumeratorState restored =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        now.minusSeconds(60),
+                        7,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Arrays.asList(LEFT, RIGHT));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                boundedReconciling(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT),
+                        restored,
+                        Clock.fixed(now, ZoneOffset.UTC));
+        enumerator.start();
+        context.runAsyncCalls();
+
+        context.runPeriodicAsyncCalls();
+
+        assertThat(enumerator.snapshotState(1).getCompletedPartitions())
+                .containsExactly(LEFT, RIGHT);
+        assertThat(enumerator.snapshotState(2).getMissingPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED))
+                .isZero();
+        assertThat(context.readersToldNoMoreSplits()).containsExactly(0);
+        enumerator.close();
+    }
+
+    /**
+     * The counter says a range was uncovered; only the warning says by what, and it has to name
+     * what the scan saw rather than what the restart left behind — the restart puts the range
+     * straight back into the unassigned collection, so a rendering taken after the loop would
+     * report the partition as covered by the very split the warning is about.
+     */
+    @Test
+    void theTokenlessWarningNamesTheLedgerTheScanMeasuredAgainst() throws Exception {
+        Instant now = Instant.now();
+        MissingPartition missing =
+                new MissingPartition(
+                        RIGHT,
+                        now.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                        now.minusSeconds(90));
+        BigtableChangeStreamEnumeratorState restored =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        now.minusSeconds(60),
+                        7,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.singletonList(missing),
+                        Collections.singletonList(LEFT));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+
+        try (LogCapture capture = LogCapture.of(BigtableChangeStreamSplitEnumerator.class)) {
+            BigtableChangeStreamSplitEnumerator enumerator =
+                    boundedReconciling(
+                            context,
+                            ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT),
+                            restored,
+                            Clock.fixed(now, ZoneOffset.UTC));
+            enumerator.start();
+            context.runAsyncCalls();
+
+            context.runPeriodicAsyncCalls();
+
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .asString()
+                    .contains("unassigned none")
+                    .contains("assigned none")
+                    .contains("pending merges none")
+                    .contains("completed " + RowRanges.format(LEFT));
+            enumerator.close();
+        }
+    }
+
+    /**
+     * The opposite direction, which is what keeps the fix from being "stop reconciling". A
+     * continuous run has no end time to close a stream at, so a partition that disappears without
+     * successors is a loss rather than a completion and must still be restarted.
+     */
+    @Test
+    void aContinuousRunStillRestartsAPartitionThatVanishedWithoutSuccessors() throws Exception {
+        AdvanceableClock clock = new AdvanceableClock(Instant.now());
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        StartPosition.latest(),
+                        Optional.empty(),
+                        null,
+                        false,
+                        true,
+                        clock);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit only = context.assignedSplits(0).get(0);
+
+        enumerator.handleSourceEvent(0, transition(only));
+        context.runPeriodicAsyncCalls();
+        clock.advance(ChangeStreamPartitionReconciler.TOKENLESS_GRACE.plusMinutes(1));
+        context.runPeriodicAsyncCalls();
+
+        assertThat(enumerator.snapshotState(1).getCompletedPartitions()).isEmpty();
+        assertThat(context.counter(BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS))
+                .isEqualTo(1);
+        enumerator.close();
+    }
+
     @Test
     void aBoundedSourceWithNoPartitionsTellsAReaderThatAsksThatNothingIsComing() throws Exception {
         // The completion signal above is reached through a partition transition. This is the path
@@ -954,6 +1150,22 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 Clock.fixed(now, ZoneOffset.UTC));
     }
 
+    private static BigtableChangeStreamSplitEnumerator boundedReconciling(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            ScriptedChangeStreamCoordinatorClient client,
+            BigtableChangeStreamEnumeratorState restored,
+            Clock clock) {
+        return new BigtableChangeStreamSplitEnumerator(
+                context,
+                client,
+                StartPosition.latest(),
+                Optional.empty(),
+                restored,
+                true,
+                true,
+                clock);
+    }
+
     private static BigtableChangeStreamEnumeratorState restoredWithMissing(
             Instant startTime, long nextSplitId, MissingPartition missing) {
         return new BigtableChangeStreamEnumeratorState(
@@ -986,5 +1198,34 @@ class BigtableChangeStreamSplitEnumeratorTest {
             ByteStringRange target, ByteStringRange parent, String token) {
         return new PartitionTransitionEvent.Successor(
                 target, TestChangeStreamTokens.token(parent, token));
+    }
+
+    /** A clock a test can push past a grace period without waiting for one. */
+    private static final class AdvanceableClock extends Clock {
+
+        private Instant instant;
+
+        private AdvanceableClock(Instant instant) {
+            this.instant = instant;
+        }
+
+        private void advance(Duration amount) {
+            instant = instant.plus(amount);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return instant;
+        }
     }
 }

@@ -34,7 +34,7 @@ import java.util.List;
 public final class BigtableChangeStreamEnumeratorStateSerializer
         implements SimpleVersionedSerializer<BigtableChangeStreamEnumeratorState> {
 
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
     private static final int INITIAL_BUFFER_SIZE = 4096;
 
     @Override
@@ -67,13 +67,20 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
             ChangeStreamPartitionSplitSerializer.writeInstant(out, missing.getFirstObserved());
             ChangeStreamPartitionSplitSerializer.writeInstant(out, missing.getLowWatermark());
         }
+        // Once: the getter copies every range on each call, and a count taken from one copy while
+        // the loop walks another is a shape worth not having.
+        List<ByteStringRange> completedPartitions = state.getCompletedPartitions();
+        out.writeInt(completedPartitions.size());
+        for (ByteStringRange completed : completedPartitions) {
+            ChangeStreamPartitionSplitSerializer.writePartition(out, completed);
+        }
         return out.getCopyOfBuffer();
     }
 
     @Override
     public BigtableChangeStreamEnumeratorState deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != 1 && version != VERSION) {
+        if (version < 1 || version > VERSION) {
             throw new IOException(
                     "Unsupported Bigtable change-stream enumerator state serialization version "
                             + version
@@ -123,6 +130,15 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
                                 ChangeStreamPartitionSplitSerializer.readInstant(in)));
             }
         }
+        List<ByteStringRange> completedPartitions = new ArrayList<>();
+        if (version >= 3) {
+            int completedCount =
+                    ChangeStreamPartitionSplitSerializer.readCount(in, "completed partition");
+            completedPartitions = new ArrayList<>(Math.min(completedCount, 1024));
+            for (int i = 0; i < completedCount; i++) {
+                completedPartitions.add(ChangeStreamPartitionSplitSerializer.readPartition(in));
+            }
+        }
         return new BigtableChangeStreamEnumeratorState(
                 initialized,
                 startTime,
@@ -130,7 +146,8 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
                 unassigned,
                 assigned,
                 pendingMerges,
-                missingPartitions);
+                missingPartitions,
+                completedPartitions);
     }
 
     private static void writeSplits(

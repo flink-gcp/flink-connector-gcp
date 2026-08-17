@@ -221,7 +221,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Change Streams source (`docs/adr/0094`, `0097`)
 
 - **The enumerator is the metadata store.** It checkpoints unassigned and assigned partitions,
-  pending merge targets, the resolved start time and a monotonic split-id counter; there is no
+  pending merge targets, missing-partition timers, a bounded run's completed ranges, the resolved
+  start time and a monotonic split-id counter; there is no
   Beam-style metadata table or change-stream name. A restored plan never calls
   `GenerateInitialChangeStreamPartitions` again.
 - **A merge target waits for coverage, not a token count.** Every `CloseStream` contributes a token
@@ -253,6 +254,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   is silent: a table's last partition reads as a range ending at the empty key, so no gap is ever
   reported for it, and its first never matches the `MissingPartition` remembered from the previous
   scan, so neither grace period elapses and the partition is never restarted.
+- **A bounded run's finished ranges stay in the reconciliation ledger** (#951). A partition that
+  reaches `endTime` closes with no successor, so it leaves `assigned` and nothing replaces it,
+  while `generateInitialPartitions` goes on reporting that keyspace for as long as the table exists.
+  The
+  enumerator therefore records those ranges under `bounded`, the reconciler counts them as covered,
+  and they are checkpointed so a restore keeps the account. Skipping it deadlocks the run: a
+  non-empty missing ledger blocks `signalBoundedCompletionIfDrained`, and that signal is the only
+  thing that stops the scans. **The `bounded` gate is load-bearing in the other direction** — a
+  continuous run has no end time to close a stream at, so a successorless close there is a loss and
+  must still be restarted.
 - **`RowRanges.format` is a renderer and never an identity** (#910). Range identity is
   `ByteStringRange.equals`; the rendering call sites are correct as they are, and the four
   `StartPositionResolver.resolveRestored` arguments are labels for a log line and a message, which

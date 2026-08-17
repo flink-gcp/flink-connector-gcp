@@ -42,11 +42,16 @@ final class ChangeStreamPartitionReconciler {
     Result reconcile(
             List<ByteStringRange> servicePartitions,
             List<ChangeStreamPartitionSplit> ledger,
+            List<ByteStringRange> completed,
             List<PendingMerge> pendingMerges,
             List<MissingPartition> previous,
             Instant now,
             Instant fallbackLowWatermark) {
-        List<ByteStringRange> ledgerRanges = new ArrayList<>();
+        // A completed range covers the keyspace as firmly as a live split does. The service goes on
+        // reporting that keyspace for as long as the table exists, but a bounded run hands its
+        // range
+        // back once, at the end time; without this the run's own success reads as a gap (#951).
+        List<ByteStringRange> ledgerRanges = new ArrayList<>(completed);
         for (ChangeStreamPartitionSplit split : ledger) {
             ledgerRanges.add(split.getPartition());
         }

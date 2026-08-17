@@ -50,6 +50,7 @@ class ChangeStreamPartitionReconcilerTest {
                         Arrays.asList(split("left", LEFT), split("right", RIGHT)),
                         Collections.emptyList(),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         NOW,
                         NOW.minusSeconds(60));
 
@@ -77,6 +78,7 @@ class ChangeStreamPartitionReconcilerTest {
         ChangeStreamPartitionReconciler.Result result =
                 reconciler.reconcile(
                         Collections.singletonList(WHOLE),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.singletonList(merge),
                         Collections.singletonList(
@@ -107,6 +109,7 @@ class ChangeStreamPartitionReconcilerTest {
         ChangeStreamPartitionReconciler.Result result =
                 reconciler.reconcile(
                         Collections.singletonList(WHOLE),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.singletonList(missing),
@@ -141,6 +144,7 @@ class ChangeStreamPartitionReconcilerTest {
                 reconciler.reconcile(
                         Collections.singletonList(WHOLE),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         Collections.singletonList(tokens),
                         Collections.singletonList(beforeTokenGrace),
                         NOW,
@@ -156,6 +160,7 @@ class ChangeStreamPartitionReconcilerTest {
         ChangeStreamPartitionReconciler.Result tokenlessResult =
                 reconciler.reconcile(
                         Collections.singletonList(WHOLE),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.singletonList(beforeTokenlessGrace),
@@ -180,6 +185,7 @@ class ChangeStreamPartitionReconcilerTest {
                         Collections.singletonList(service),
                         Collections.singletonList(split("live", live)),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         Collections.singletonList(old),
                         NOW,
                         NOW);
@@ -193,6 +199,72 @@ class ChangeStreamPartitionReconcilerTest {
                                     .isEqualTo(RowRanges.format(ByteStringRange.create("m", "n")));
                             assertThat(recovery.tokenless).isTrue();
                         });
+    }
+
+    /**
+     * A bounded run finishes a range once and the service reports it forever, so a completed range
+     * has to count as covered or the run's own success reads as a gap (#951). The empty ledger here
+     * is what a drained bounded run holds.
+     */
+    @Test
+    void aCompletedRangeCoversItsServicePartition() {
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Arrays.asList(LEFT, RIGHT),
+                        Collections.emptyList(),
+                        Arrays.asList(LEFT, RIGHT),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        NOW,
+                        NOW.minusSeconds(60));
+
+        assertThat(result.missing).isEmpty();
+        assertThat(result.recoveries).isEmpty();
+    }
+
+    /**
+     * Completion is not all-or-nothing while a bounded run drains, and the two collections tile
+     * together: a range already read to the end time is covered by the completed list, one still
+     * being read by the ledger, and only what neither holds may be reported.
+     */
+    @Test
+    void completedRangesTileWithTheLiveLedgerAndLeaveOnlyTheRemainder() {
+        ByteStringRange service = ByteStringRange.create("a", "z");
+        ChangeStreamPartitionReconciler.Result covered =
+                reconciler.reconcile(
+                        Collections.singletonList(service),
+                        Collections.singletonList(split("live", ByteStringRange.create("a", "m"))),
+                        Collections.singletonList(ByteStringRange.create("m", "z")),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        NOW,
+                        NOW.minusSeconds(60));
+
+        assertThat(covered.missing).isEmpty();
+        assertThat(covered.recoveries).isEmpty();
+
+        ChangeStreamPartitionReconciler.Result shortOfTheEnd =
+                reconciler.reconcile(
+                        Collections.singletonList(service),
+                        Collections.singletonList(split("live", ByteStringRange.create("a", "m"))),
+                        Collections.singletonList(ByteStringRange.create("m", "t")),
+                        Collections.emptyList(),
+                        Collections.singletonList(
+                                new MissingPartition(
+                                        service,
+                                        NOW.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE),
+                                        NOW.minusSeconds(30))),
+                        NOW,
+                        NOW);
+
+        assertThat(shortOfTheEnd.recoveries)
+                .singleElement()
+                .satisfies(
+                        recovery ->
+                                assertThat(RowRanges.format(recovery.partition))
+                                        .isEqualTo(
+                                                RowRanges.format(
+                                                        ByteStringRange.create("t", "z"))));
     }
 
     @Test
@@ -210,6 +282,7 @@ class ChangeStreamPartitionReconcilerTest {
                         Arrays.asList(
                                 split("head", ByteStringRange.create("a", "m")),
                                 split("tail", ByteStringRange.create("t", "z"))),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.singletonList(old),
                         NOW,
@@ -237,6 +310,7 @@ class ChangeStreamPartitionReconcilerTest {
                                 split("head", ByteStringRange.create("a", "m"))),
                         Collections.emptyList(),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         NOW,
                         NOW.minusSeconds(60));
 
@@ -251,6 +325,7 @@ class ChangeStreamPartitionReconcilerTest {
         ChangeStreamPartitionReconciler.Result result =
                 reconciler.reconcile(
                         Collections.singletonList(WHOLE),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
@@ -377,6 +452,7 @@ class ChangeStreamPartitionReconcilerTest {
                 reconciler.reconcile(
                         Collections.singletonList(WHOLE),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         Arrays.asList(left, right),
                         Collections.singletonList(
                                 new MissingPartition(
@@ -407,6 +483,7 @@ class ChangeStreamPartitionReconcilerTest {
         ChangeStreamPartitionReconciler.Result result =
                 reconciler.reconcile(
                         Collections.singletonList(runsToTheEnd),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.singletonList(
@@ -471,11 +548,13 @@ class ChangeStreamPartitionReconcilerTest {
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
+                        Collections.emptyList(),
                         NOW,
                         NOW.minusSeconds(60));
         Instant later = NOW.plus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE).plusSeconds(60);
         return scanner.reconcile(
                         service,
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         first.missing,
@@ -488,6 +567,7 @@ class ChangeStreamPartitionReconcilerTest {
         return new ChangeStreamPartitionReconciler()
                 .reconcile(
                         Collections.singletonList(partition),
+                        Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
                         Collections.emptyList(),
