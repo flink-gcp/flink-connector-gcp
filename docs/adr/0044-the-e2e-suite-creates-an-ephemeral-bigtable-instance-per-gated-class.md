@@ -42,7 +42,8 @@ tracks per class.
   reach a live run. The cluster id is built from the run id rather than the instance id, which
   at 28 characters leaves no room under a cluster id's own 30-character limit. Measured
   2026-08-02: the two classes together, provisioning included, take about 7½ minutes.
-  ([#246]'s scheduled `sweep-e2e` bounds what a run whose teardown never executed can cost.)
+  ([#246]'s scheduled `sweep-e2e` bounds what a run whose teardown never executed can cost, and
+  [#959]'s fork ceiling keeps a run from outliving the staleness threshold that sweep uses.)
 - **Every deletion disables Change Streams on the instance's tables first.** Bigtable rejects an
   instance deletion with `FAILED_PRECONDITION` while any table retains change-stream data. The
   per-class teardown, its startup sweep and the scheduled sweep all apply that prerequisite, so a
@@ -98,4 +99,5 @@ made deletion succeed; that measured recovery sequence is now the order every cl
 [#243]: https://github.com/laughingman7743/flink-connector-gcp/issues/243
 [#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
 [#246]: https://github.com/laughingman7743/flink-connector-gcp/issues/246
+[#959]: https://github.com/flink-gcp/flink-connector-gcp/issues/959
 [#533]: https://github.com/laughingman7743/flink-connector-gcp/issues/533

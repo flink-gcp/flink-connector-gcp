@@ -44,7 +44,12 @@ The Bigtable, Spanner and App Engine fixtures in the shared sweep have two clean
 The harness or lifecycle wrapper restores the idle state after an ordinary run, and a scheduled GitHub Actions workflow invokes `just sweep-e2e` after hard cancellation prevents that cleanup.
 The interval is a priced parameter rather than a fixed property of the design: it moved from weekly to daily when the sweep was introduced, and to three hours once the repository became public and its Actions minutes free.
 The staleness threshold, not the timetable, is what keeps a sweep from deleting a running instance, so shortening the interval is the safe direction and lowering the threshold is not.
-That safety rests on every run finishing inside the threshold, which `e2e.yaml`'s 60-minute ceiling guarantees and a local gated run does not: one left running past two hours can have its instance swept from under it, and a shorter interval makes that pre-existing hazard likelier to be hit.
+That safety rests on every run finishing inside the threshold.
+`e2e.yaml`'s 60-minute job ceiling guarantees it in CI, and issue #959 gave every run the same guarantee: the `integration-tests` surefire execution kills a fork after `it.fork.timeout.seconds`, 90 minutes by default.
+**That ceiling is coupled to this threshold rather than merely generous** — while it stays below two hours a gated run cannot outlive the staleness window, so a sweep cannot delete an instance from under a run that is still using it.
+Raising either the ceiling past the threshold or `e2e.yaml`'s `timeout-minutes` past it removes that guarantee, which is why both carry a note saying what depends on them.
+The value is deliberately not the tightest one that fits: `forkCount` is 2, so one fork carries about half of the 33 gated classes the E2E suite selects, and only Bigtable's 7 have been measured — 20.6 minutes of work, which extrapolates past a 45-minute ceiling.
+Tightness would buy nothing regardless, because the per-class `@Timeout` already fires at 5 or 10 minutes and this ceiling exists only for the fork that will not die.
 It is not a service-side expiry and cannot bound a delayed or disabled workflow run.
 
 One shell script owns the shared sweep.
@@ -87,6 +92,10 @@ An interrupted gated run created an instance at 13:04 UTC; the killed run's own 
 The then-daily workflow would have reclaimed it 17 hours later, and it was deleted by hand instead.
 All three cleanup layers behaved as specified, which is why this is an interval change rather than a defect fix.
 
+Issue #959's two-layer ceiling was measured rather than reasoned.
+Against an interruptible wait both `@Timeout` modes end at the deadline, so the default mode is not useless; against a retry loop that swallows the interrupt — the shape of `CollectResultIterator.hasNext()`, where #951 hung — the default mode never ends, while `SEPARATE_THREAD` ended a 3-second deadline in 3.0 seconds and abandoned the body still running.
+Abandoning is all JUnit can do to a thread, which is why the surefire fork ceiling exists beneath it: #951's fork outlived its reported timeout by more than 40 minutes, so something in the abandoned work kept that JVM alive.
+
 The first script piped the resource listing into a loop.
 A failed process substitution did not trip `set -e`, so an authentication or API failure produced an empty list and a false successful result.
 Capturing and checking the listing before iteration made that failure loud.
@@ -104,6 +113,7 @@ The verified idle state is `STOPPED` with zero instances, and runtime instance-c
 - **Drive the scheduled cleanup through Maven and the Java harness**: it would install a JDK and build the reactor to perform resource administration that `gcloud` can finish directly.
 - **Copy prefixes and thresholds into workflow configuration**: either copy could drift and make a broken sweep report an honest-looking empty result.
 - **Put each service in a separate justfile line**: the first failure would prevent later cleanup from running.
+- **Leave the run side unbounded and rely on the threshold alone**: the threshold cannot tell a leaked instance from one a still-running local job is using, so without a ceiling on the run the two are only distinguishable by luck.
 - **Manage a billing budget in the OpenTofu root**: budgets live on the billing account and would require the first grant outside the project's IAM boundary plus an account identifier in configuration and state.
 - **Use a Bigtable node quota as the leak control**: a count quota can stop runaway creation but cannot shorten the billed life of one allowed leaked instance.
 

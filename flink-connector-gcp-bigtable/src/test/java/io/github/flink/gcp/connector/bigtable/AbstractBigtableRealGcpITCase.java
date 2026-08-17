@@ -39,6 +39,7 @@ import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,8 +84,12 @@ import java.util.function.Function;
  * {@code gated} tag beside it (issue #245) has to stay on the concrete classes for the same reason,
  * even though JUnit would inherit it from here: {@code --check-tags} greps both literals per file,
  * so hoisting one leaves the other unpaired.
+ *
+ * <p>The timeout runs in a separate thread because the default mode cannot end a wait that ignores
+ * interruption, which is how #951 outlived its own deadline. ADR-0119 records the measurement and
+ * the fork-level ceiling that covers what abandoning a thread cannot.
  */
-@Timeout(600)
+@Timeout(value = 600, threadMode = ThreadMode.SEPARATE_THREAD)
 public abstract class AbstractBigtableRealGcpITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractBigtableRealGcpITCase.class);

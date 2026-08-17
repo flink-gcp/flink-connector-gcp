@@ -160,9 +160,12 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                             return null;
                         });
         // A bounded run that fails to notice it is over blocks here forever: hasNext() waits on the
-        // job, and JUnit's @Timeout interrupt does not break that wait, so the fork outlives its
-        // own
-        // deadline and keeps a paid instance alive (#951 ran for over 40 minutes this way).
+        // job, and JUnit's interrupt does not break that wait, so before #959 the fork outlived
+        // its own deadline and kept a paid instance alive (#951 ran for over 40 minutes this
+        // way). Two other ceilings now cover that too — the class @Timeout runs in a separate
+        // thread, and surefire kills the fork at it.fork.timeout.seconds — and this one still
+        // earns its place: it fires in five minutes rather than ten or forty-five, and it says
+        // which invariant broke instead of reporting a generic timeout.
         // Cancelling the job is what ends the wait — CollectResultFetcher.close() cancels through
         // the job client, and the fetch loop leaves by its terminated-job branch. That branch can
         // also surface as an IOException instead of an orderly end, which is why the catch below

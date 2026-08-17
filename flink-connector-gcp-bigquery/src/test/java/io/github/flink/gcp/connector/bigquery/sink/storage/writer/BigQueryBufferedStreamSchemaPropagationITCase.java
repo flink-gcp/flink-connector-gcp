@@ -42,7 +42,18 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Manual real-service probe for connector-driven buffered-stream schema propagation. */
+/**
+ * Manual real-service probe for connector-driven buffered-stream schema propagation.
+ *
+ * <p>This class outlives the default integration-test fork ceiling (issue #959), which is 90
+ * minutes against the three hours declared below. Run it with the ceiling raised, or surefire kills
+ * the fork mid-probe and reports a timeout that says nothing about the measurement:
+ *
+ * <pre>{@code
+ * mvn -pl flink-connector-gcp-bigquery surefire:test@integration-tests \
+ *     -Dtest.excluded.groups= -Dit.fork.timeout.seconds=14400 -Dtest=BigQueryBufferedStreamSchemaPropagationITCase
+ * }</pre>
+ */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_BUFFERED_SCHEMA_EVOLUTION", matches = ".+")
 @Timeout(10800)
