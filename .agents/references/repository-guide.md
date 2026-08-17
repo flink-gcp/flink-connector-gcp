@@ -521,8 +521,24 @@ facts); the rules a session needs:
   for latency. Rows carry a **role** (`floor` / `ceiling` / `next` / `lts`) resolved from the
   `FLINK_*` envs at the top of the file, and every matrix job checks out `github.sha`; the
   whys, including why the `floor` row passes no `-Dflink.version`, are in ADR-0053
-- JUnit stays on 5.x and testcontainers on 1.x for now; their major-version dependabot PRs are
-  intentionally left open/deferred
+- **The test frameworks follow Flink across a major.** The root POM imports `junit-bom` and
+  `testcontainers-bom` in `dependencyManagement`, so those imports set the version of artifacts
+  **Flink's own test utilities declare** — `flink-test-utils-junit` 2.2.1 declares
+  `junit-vintage-engine` 5.11.4 and `testcontainers` 1.21.4 at explicit versions, and
+  `dependency:tree` on `flink-connector-gcp-base` resolves the vintage engine at *our* 5.13.3
+  rather than Flink's 5.11.4. Running ahead *inside* a major, as that shows, is fine and is what
+  happens today; crossing one moves Flink's declared test dependencies to a major Flink does not
+  build against. Measured 2026-08-17: `flink-parent` 2.2.1 pins junit5 5.11.4 (1.20.4 pins
+  5.10.1) and testcontainers 1.21.4, against this repository's 5.13.3 and 1.21.4. Both majors are
+  deferred as `version-update:semver-major` `ignore` rules plus a tracking issue (#906 JUnit,
+  #905 testcontainers), **not as a dependabot PR left open** — a deferral has to name the check
+  that ends it, here whether `flink-parent` for the floor has moved to the next major, and the
+  moment to run that check is when the supported Flink range moves. The rule covers assertj too —
+  `flink-test-utils` declares it as well — but only those two carry `ignore` rules, because only
+  their next major has a final release: assertj's 4.x is still at `4.0.0-M1` and 4.0.0 itself is
+  not on Central
+- `zstd-jni` follows what `avro-parent ${avro.version}` pins and nothing else, so its `ignore` rule
+  covers every update type; the reason sits on the property in the root POM
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
   google-cloud artifact versions
 

@@ -32,6 +32,27 @@ updates:
         update-types:
           - version-update:semver-minor
           - version-update:semver-major
+      # The test frameworks follow Flink across a major: the root POM imports
+      # both BOMs in dependencyManagement, so they set the version of artifacts
+      # Flink's own test utilities declare — flink-test-utils-junit 2.2.1
+      # declares junit-vintage-engine 5.11.4 and testcontainers 1.21.4, and
+      # dependency:tree resolves the vintage engine at our 5.13.3 instead.
+      # Ahead inside a major is fine; crossing one moves Flink's declared test
+      # dependencies to a major Flink does not build against. Minor and patch
+      # bumps still arrive, which is where the value is; the majors are deferred
+      # against issues #906 (JUnit) and #905 (testcontainers), each of which
+      # names the check that would end the deferral.
+      - dependency-name: org.junit:junit-bom
+        update-types:
+          - version-update:semver-major
+      - dependency-name: org.testcontainers:testcontainers-bom
+        update-types:
+          - version-update:semver-major
+      # zstd-jni is pinned to what avro-parent ${avro.version} pins, so the codec
+      # and the library it drives are the pair Avro itself tests — the reason is
+      # on the property in the root POM. Every update type, because the version
+      # should move when avro.version moves and at no other time.
+      - dependency-name: com.github.luben:zstd-jni
   - package-ecosystem: github-actions
     directory: /
     schedule:
