@@ -217,7 +217,13 @@ class RetryingTableAdminTest {
         try {
             assertThatThrownBy(() -> ensureCdc(new RetryingTableAdmin(delegate, fast(3))))
                     .isExactlyInstanceOf(TableAdminException.class)
-                    .hasMessageContaining("Interrupted while waiting")
+                    // The operation and the target, not just the prefix. The message is
+                    // interpolated per operation, and asserting only the shared prefix let a
+                    // mutant reverting that interpolation to a fixed "table creation" literal
+                    // survive the whole suite. Independent substrings rather than the assembled
+                    // sentence, so a reworded message that still names both keeps passing.
+                    .hasMessageContainingAll(
+                            "Interrupted", "provision", "CDC", DESTINATION.toString())
                     .satisfies(
                             failure ->
                                     assertThat(

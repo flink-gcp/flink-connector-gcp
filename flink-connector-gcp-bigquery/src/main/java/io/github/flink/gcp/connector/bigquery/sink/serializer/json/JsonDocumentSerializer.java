@@ -141,11 +141,15 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
     @Override
     public ByteString serialize(String element) throws IOException {
         Preconditions.checkNotNull(element, "element must not be null");
-        // Derived outside the try below, so that a schema this descriptor cannot express is not
-        // reported as a bad record. On a task manager the constructor never runs — it is the
-        // deserialized instance that serves records — so the first build happens either in a
-        // writer's own set-up (the buffered writer resolves a descriptor per restored destination)
-        // or here. Both are outside a per-row catch, which is the property this placement keeps.
+        // Derived outside the try below, so that a schema no wire descriptor can be derived from
+        // fails as itself rather than being relabelled "Failed to convert a JSON record" — it is a
+        // configuration error, and the record is not what is wrong with it. On a task manager the
+        // constructor never runs (the deserialized instance serves records), so the first build
+        // happens here unless a writer resolved it earlier. Two writer paths do, and both are
+        // outside per-row handling: the buffered writer resolves a descriptor per restored
+        // destination while it is being constructed, and BigQuerySinkConfig#prepareWriteSchema
+        // resolves one ahead of every record whenever additional fields or CDC put an augmenting
+        // serializer in front of this one.
         Descriptors.Descriptor descriptor = descriptor();
         JSONObject json = parse(element);
         if (json.isEmpty()) {

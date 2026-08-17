@@ -70,9 +70,9 @@ import java.util.Objects;
  * for the Storage Write API, while {@code WRITE_TRUNCATE} stays reachable as {@code
  * sink.file-loads.write-disposition}.
  *
- * <p>{@code SupportsWritingMetadata} <b>is</b> implemented, but only bears fruit when CDC is
- * enabled: the planner appends one selected sequence source after the physical row, while the
- * physical DDL row remains the BigQuery table schema.
+ * <p>{@code SupportsWritingMetadata} <b>is</b> implemented, and selecting a metadata column without
+ * CDC is rejected rather than ignored. With CDC enabled the planner appends one selected sequence
+ * source after the physical row, while the physical DDL row remains the BigQuery table schema.
  *
  * <p>Built through {@link #builder()} rather than a constructor: the resolved option families,
  * physical-key model and planner-selected metadata would otherwise form a positional list repeated

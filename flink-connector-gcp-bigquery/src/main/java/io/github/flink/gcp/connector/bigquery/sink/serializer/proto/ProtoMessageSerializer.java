@@ -67,11 +67,11 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
         // Derived here so an unmappable descriptor or a bad marker configuration fails while the
         // job graph is built, as it already did on the Avro side. Left to the lazy path it would
         // first be derived from serialize(), whose exceptions the writers route to the
-        // FailureHandler: one
-        // misconfiguration would look like a poison record, and a log-and-drop or DLQ policy would
-        // swallow it once per record for the life of the job, leaving the table empty and the job
-        // green. The state is transient, so a task manager rebuilds it after deserialization
-        // regardless — but by then the same configuration has already been proven to derive.
+        // FailureHandler: one misconfiguration would look like a poison record, and a log-and-drop
+        // or DLQ policy would swallow it once per record for the life of the job, leaving the table
+        // empty and the job green. The state is transient, so a task manager rebuilds it after
+        // deserialization regardless — but by then the same configuration has already been proven
+        // to derive.
         state();
     }
 

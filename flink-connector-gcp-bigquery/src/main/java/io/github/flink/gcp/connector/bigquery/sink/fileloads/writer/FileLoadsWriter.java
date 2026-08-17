@@ -61,12 +61,12 @@ import java.util.UUID;
  * <p>Rows never accumulate on the heap: a record the serializer converts is appended to a file
  * writer that streams into a GCS resumable upload, so memory use is proportional to the number of
  * concurrently open destinations rather than to the data volume or job length. What one open
- * destination costs depends on the format: Avro holds one upload chunk plus one block, while
- * Parquet buffers a whole row group sized from {@link FileLoadsOptions#getMaxStagingFileBytes()},
- * so a task manager is sized for the format in use. In streaming execution the inter-checkpoint
- * buffer therefore <em>is</em> GCS. Files are rolled at {@link
- * FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load throughput and bounded by the
- * per-load-job URI cap — see that option's default for both.
+ * destination costs depends on the format: Avro holds one upload chunk plus one unflushed block,
+ * while Parquet buffers a whole row group, sized from {@code maxStagingFileBytes} for the
+ * correctness reason {@code ParquetStagedFileWriter} records — so a task manager is sized for the
+ * format in use. In streaming execution the inter-checkpoint buffer therefore <em>is</em> GCS.
+ * Files are rolled at {@link FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load
+ * throughput and bounded by the per-load-job URI cap — see that option's default for both.
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
@@ -221,7 +221,8 @@ public final class FileLoadsWriter<T>
         }
         state.file.append(record);
         // The staging file is this write path's hand-off, so the record counts here — the bytes
-        // cannot, since an Avro block's encoded size is only known once the file is finished.
+        // cannot, since a record has no encoded size of its own: it is compressed into an Avro
+        // block or a Parquet row group, and only the finished file has a size to count.
         metrics.recordStaged(metrics.forTable(destination));
         if (state.file.bytesWritten() >= maxStagingFileBytes) {
             finishFile(state);
