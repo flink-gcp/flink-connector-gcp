@@ -174,7 +174,8 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
      *
      * <p>{@link PositionOutputStream} needs only a running byte position, never a seek, so a Cloud
      * Storage resumable upload satisfies it directly — no Hadoop {@code FileSystem} and no local
-     * spill file, which is what keeps this path's memory profile the same as the Avro one's.
+     * spill file. That is what keeps the <em>streaming</em> shape the same as the Avro path's; the
+     * buffered row group above is where the two paths' memory genuinely differs.
      */
     private static final class StreamOutputFile implements OutputFile {
 

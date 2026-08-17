@@ -31,11 +31,13 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
  * <p>This writer has no per-record RPC — a record is encoded into a staging file on Cloud Storage,
  * and the load job that turns those files into rows runs in the committer. Two consequences.
  * <b>There is no error-class dimension here</b>: a record either reaches the staging file or is
- * routed to the failure handler by the serializer or the staging-format conversion, and neither
- * carries a service status. And <b>{@code numRecordsSend} and {@code numBytesSend} are counted at
- * different moments</b>: a record is counted when the file writer accepts it, while its bytes are
- * only known when the file is finished, so the byte counter advances in file-sized steps and lags
- * the record counter by the currently open files.
+ * routed to the failure handler by the serializer or by the proto-to-Avro row conversion that both
+ * staging formats share, and neither carries a service status. Encoding into the staging format
+ * itself sits below that boundary — it is staging I/O and fails the job, so it reaches no counter
+ * here. And <b>{@code numRecordsSend} and {@code numBytesSend} are counted at different
+ * moments</b>: a record is counted when the file writer accepts it, while its bytes are only known
+ * when the file is finished, so the byte counter advances in file-sized steps and lags the record
+ * counter by the currently open files.
  *
  * <p>{@code numBytesSend} is therefore the <em>staged</em> size — encoded in the configured staging
  * format and compressed with whatever codec {@code StagedFileWriter} uses — rather than the payload
@@ -113,7 +115,7 @@ final class FileLoadsWriterMetrics {
 
     /**
      * Counts one record routed to the failure handler — one the serializer rejected, or one the
-     * Avro conversion could not encode.
+     * proto-to-Avro row conversion could not encode, which both staging formats go through.
      *
      * @param table the destination's counters, from {@link #forTable}
      */
