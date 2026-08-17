@@ -82,20 +82,23 @@ final class SpannerChangeStreamJsonRecordMapper {
                             optionalJson(mod, "old_values")));
         }
         try {
-            return new DataChangeRecord(
-                    instant(value, "commit_timestamp"),
-                    string(value, "record_sequence"),
-                    string(value, "server_transaction_id"),
-                    bool(value, "is_last_record_in_transaction_in_partition"),
-                    string(value, "table_name"),
-                    columns,
-                    mods,
-                    ModType.valueOf(string(value, "mod_type")),
-                    ValueCaptureType.valueOf(string(value, "value_capture_type")),
-                    number(value, "number_of_records_in_transaction"),
-                    number(value, "number_of_partitions_in_transaction"),
-                    string(value, "transaction_tag"),
-                    bool(value, "is_system_transaction"));
+            return DataChangeRecord.builder()
+                    .commitTimestamp(instant(value, "commit_timestamp"))
+                    .recordSequence(string(value, "record_sequence"))
+                    .serverTransactionId(string(value, "server_transaction_id"))
+                    .lastRecordInTransactionInPartition(
+                            bool(value, "is_last_record_in_transaction_in_partition"))
+                    .tableName(string(value, "table_name"))
+                    .columnTypes(columns)
+                    .mods(mods)
+                    .modType(ModType.valueOf(string(value, "mod_type")))
+                    .valueCaptureType(ValueCaptureType.valueOf(string(value, "value_capture_type")))
+                    .numberOfRecordsInTransaction(number(value, "number_of_records_in_transaction"))
+                    .numberOfPartitionsInTransaction(
+                            number(value, "number_of_partitions_in_transaction"))
+                    .transactionTag(string(value, "transaction_tag"))
+                    .systemTransaction(bool(value, "is_system_transaction"))
+                    .build();
         } catch (IllegalArgumentException e) {
             throw new IOException("Spanner returned an unsupported data-change enum value.", e);
         }

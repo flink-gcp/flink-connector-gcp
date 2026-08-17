@@ -209,20 +209,9 @@ public final class SpannerChangeStreamRecordFilter implements Serializable {
             DataChangeRecord record,
             List<DataChangeRecord.ColumnType> columnTypes,
             List<Mod> mods) {
-        return new DataChangeRecord(
-                record.getCommitTimestamp(),
-                record.getRecordSequence(),
-                record.getServerTransactionId(),
-                record.isLastRecordInTransactionInPartition(),
-                record.getTableName(),
-                columnTypes,
-                mods,
-                record.getModType(),
-                record.getValueCaptureType(),
-                record.getNumberOfRecordsInTransaction(),
-                record.getNumberOfPartitionsInTransaction(),
-                record.getTransactionTag(),
-                record.isSystemTransaction());
+        // Only the projected columns and mods differ; toBuilder carries the other eleven values,
+        // so a field added to the record cannot be dropped here by omission.
+        return record.toBuilder().columnTypes(columnTypes).mods(mods).build();
     }
 
     private static List<Pattern> immutableCopy(List<Pattern> patterns, String name) {

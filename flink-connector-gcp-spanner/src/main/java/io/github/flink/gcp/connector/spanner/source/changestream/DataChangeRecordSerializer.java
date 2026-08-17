@@ -140,20 +140,21 @@ public final class DataChangeRecordSerializer extends TypeSerializer<DataChangeR
         String transactionTag = readString(source);
         boolean systemTransaction = source.readBoolean();
 
-        return new DataChangeRecord(
-                commitTimestamp,
-                recordSequence,
-                serverTransactionId,
-                lastRecordInTransactionInPartition,
-                tableName,
-                columnTypes,
-                mods,
-                modType,
-                valueCaptureType,
-                numberOfRecordsInTransaction,
-                numberOfPartitionsInTransaction,
-                transactionTag,
-                systemTransaction);
+        return DataChangeRecord.builder()
+                .commitTimestamp(commitTimestamp)
+                .recordSequence(recordSequence)
+                .serverTransactionId(serverTransactionId)
+                .lastRecordInTransactionInPartition(lastRecordInTransactionInPartition)
+                .tableName(tableName)
+                .columnTypes(columnTypes)
+                .mods(mods)
+                .modType(modType)
+                .valueCaptureType(valueCaptureType)
+                .numberOfRecordsInTransaction(numberOfRecordsInTransaction)
+                .numberOfPartitionsInTransaction(numberOfPartitionsInTransaction)
+                .transactionTag(transactionTag)
+                .systemTransaction(systemTransaction)
+                .build();
     }
 
     @Override

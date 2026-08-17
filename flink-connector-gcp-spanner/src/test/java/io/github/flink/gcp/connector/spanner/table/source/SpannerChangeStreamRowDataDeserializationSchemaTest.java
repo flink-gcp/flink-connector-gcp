@@ -794,20 +794,21 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
             ModType type,
             ValueCaptureType capture,
             List<Mod> mods) {
-        return new DataChangeRecord(
-                Instant.parse("2026-08-13T00:00:00.123456789Z"),
-                "0001",
-                "tx-1",
-                true,
-                table,
-                columns,
-                mods,
-                type,
-                capture,
-                1,
-                1,
-                "",
-                false);
+        return DataChangeRecord.builder()
+                .commitTimestamp(Instant.parse("2026-08-13T00:00:00.123456789Z"))
+                .recordSequence("0001")
+                .serverTransactionId("tx-1")
+                .lastRecordInTransactionInPartition(true)
+                .tableName(table)
+                .columnTypes(columns)
+                .mods(mods)
+                .modType(type)
+                .valueCaptureType(capture)
+                .numberOfRecordsInTransaction(1)
+                .numberOfPartitionsInTransaction(1)
+                .transactionTag("")
+                .systemTransaction(false)
+                .build();
     }
 
     private static void assertRow(RowData row, long id, String name) {

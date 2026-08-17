@@ -750,41 +750,49 @@ class SpannerChangeStreamReaderTest {
     }
 
     private static DataChangeRecord data(String sequence, Instant timestamp) {
-        return new DataChangeRecord(
-                timestamp,
-                sequence,
-                "tx",
-                true,
-                "table",
-                Collections.singletonList(
-                        new DataChangeRecord.ColumnType("id", "{\"code\":\"INT64\"}", true, 1)),
-                Collections.singletonList(new Mod("{\"id\":1}", "{}", null)),
-                ModType.UPDATE,
-                ValueCaptureType.NEW_VALUES,
-                1,
-                1,
-                "",
-                false);
+        return DataChangeRecord.builder()
+                .commitTimestamp(timestamp)
+                .recordSequence(sequence)
+                .serverTransactionId("tx")
+                .lastRecordInTransactionInPartition(true)
+                .tableName("table")
+                .columnTypes(
+                        Collections.singletonList(
+                                new DataChangeRecord.ColumnType(
+                                        "id", "{\"code\":\"INT64\"}", true, 1)))
+                .mods(Collections.singletonList(new Mod("{\"id\":1}", "{}", null)))
+                .modType(ModType.UPDATE)
+                .valueCaptureType(ValueCaptureType.NEW_VALUES)
+                .numberOfRecordsInTransaction(1)
+                .numberOfPartitionsInTransaction(1)
+                .transactionTag("")
+                .systemTransaction(false)
+                .build();
     }
 
     private static DataChangeRecord dataWithSecret(String sequence, Instant timestamp) {
-        return new DataChangeRecord(
-                timestamp,
-                sequence,
-                "tx",
-                true,
-                "table",
-                java.util.Arrays.asList(
-                        new DataChangeRecord.ColumnType("id", "{\"code\":\"INT64\"}", true, 1),
-                        new DataChangeRecord.ColumnType(
-                                "secret", "{\"code\":\"STRING\"}", false, 2)),
-                Collections.singletonList(new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)),
-                ModType.UPDATE,
-                ValueCaptureType.NEW_VALUES,
-                1,
-                1,
-                "",
-                false);
+        return DataChangeRecord.builder()
+                .commitTimestamp(timestamp)
+                .recordSequence(sequence)
+                .serverTransactionId("tx")
+                .lastRecordInTransactionInPartition(true)
+                .tableName("table")
+                .columnTypes(
+                        java.util.Arrays.asList(
+                                new DataChangeRecord.ColumnType(
+                                        "id", "{\"code\":\"INT64\"}", true, 1),
+                                new DataChangeRecord.ColumnType(
+                                        "secret", "{\"code\":\"STRING\"}", false, 2)))
+                .mods(
+                        Collections.singletonList(
+                                new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)))
+                .modType(ModType.UPDATE)
+                .valueCaptureType(ValueCaptureType.NEW_VALUES)
+                .numberOfRecordsInTransaction(1)
+                .numberOfPartitionsInTransaction(1)
+                .transactionTag("")
+                .systemTransaction(false)
+                .build();
     }
 
     private static SpannerChangeStreamRecordFilter filter(

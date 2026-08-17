@@ -69,7 +69,9 @@ def write_page(root, name, body):
     return f"docs/{name}"
 
 
-def write_config(root, builders=(), config_options=(), exempt=(), extra=()):
+def write_config(
+    root, builders=(), config_options=(), exempt=(), extra=(), value_builders=()
+):
     """The config. A `[[builders]]` entry is `(module, page)`, or `(module, page,
     sources)` when it also names classes the globs cannot see."""
     lines = []
@@ -82,6 +84,11 @@ def write_config(root, builders=(), config_options=(), exempt=(), extra=()):
         lines += ["[[config_options]]", f'source = "{source}"', f'page = "{page}"', ""]
     lines += ["[exempt]", *(f'"{key}" = "because."' for key in exempt), ""]
     lines += ["[extra]", *(f'"{key}" = "because."' for key in extra), ""]
+    lines += [
+        "[value_builders]",
+        *(f'"{key}" = "because."' for key in value_builders),
+        "",
+    ]
     (root / "option-docs.toml").write_text("\n".join(lines))
 
 
@@ -547,6 +554,81 @@ def test_an_internal_elsewhere_in_the_file_does_not_exempt(
     assert (
         "Queue.java declares public builder setters (knob)" in capsys.readouterr().err
     )
+
+
+def test_a_value_builder_entry_exempts_an_unmapped_public_builder(
+    root, check_option_docs
+):
+    # The third answer to the unmapped-public-builder guard. `Record` is public
+    # on purpose — it is what a deserializer receives — and its builder sets
+    # record fields, so neither "write a reference row" nor "@Internal" is
+    # true of it.
+    write_source(root, "conn", "AOptions.java", options_class("AOptions", "topic"))
+    record = write_source(
+        root,
+        "conn",
+        "Record.java",
+        "package io.github.x;\n\n"
+        "@Public\n"
+        "public final class Record {\n"
+        "  public static final class Builder {\n"
+        "    public Builder field(int value) { return this; }\n"
+        "  }\n"
+        "}\n",
+    )
+    page = write_page(root, "conn.md", option_page("`topic`"))
+    write_config(root, builders=[("conn", page)], value_builders=[record])
+    assert exit_code(check_option_docs) == 0
+
+
+def test_a_value_builder_entry_that_never_fires_is_reported(
+    root, check_option_docs, capsys
+):
+    # The same rule the other two allowlists carry: an entry that forgives
+    # nothing is a claim nobody can check. Here the class is @Internal, so the
+    # guard would have passed it anyway.
+    write_source(root, "conn", "AOptions.java", options_class("AOptions", "topic"))
+    record = write_source(
+        root,
+        "conn",
+        "Record.java",
+        "package io.github.x;\n\n"
+        "@Internal\n"
+        "public final class Record {\n"
+        "  public static final class Builder {\n"
+        "    public Builder field(int value) { return this; }\n"
+        "  }\n"
+        "}\n",
+    )
+    page = write_page(root, "conn.md", option_page("`topic`"))
+    write_config(root, builders=[("conn", page)], value_builders=[record])
+    assert exit_code(check_option_docs) == 1
+    assert "never fires" in capsys.readouterr().err
+
+
+def test_the_guard_names_the_value_builder_answer(root, check_option_docs, capsys):
+    # The message has to name all three answers, or the next person meeting it
+    # reaches for @Internal on a published type — which is what this entry
+    # exists to avoid.
+    write_source(root, "conn", "AOptions.java", options_class("AOptions", "topic"))
+    write_source(
+        root,
+        "conn",
+        "Record.java",
+        "package io.github.x;\n\n"
+        "@Public\n"
+        "public final class Record {\n"
+        "  public static final class Builder {\n"
+        "    public Builder field(int value) { return this; }\n"
+        "  }\n"
+        "}\n",
+    )
+    page = write_page(root, "conn.md", option_page("`topic`"))
+    write_config(root, builders=[("conn", page)])
+    assert exit_code(check_option_docs) == 1
+    err = capsys.readouterr().err
+    assert "[value_builders]" in err
+    assert "@Internal" in err
 
 
 def test_two_sources_entries_sharing_a_class_name_are_merged(
