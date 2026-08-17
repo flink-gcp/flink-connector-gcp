@@ -56,8 +56,11 @@ import java.util.Map;
  * <p>Every option is declared without a default, and the factory applies it with {@code
  * getOptional(...).ifPresent(...)}. "Absent from the DDL" then means "left at the connector's or
  * the SDK's default", with no third state to invent. No default value is restated in a description
- * either: the options object it feeds is the one place a default is written, and a copy here is a
- * copy nothing checks.
+ * either — including one derived from another option rather than declared: {@code
+ * reference/pubsub.md} carries the derivation and the resolved value, and the option table's "Maps
+ * to" column is the pointer there. A test holds both halves of that rule, the second by matching
+ * the phrases a restatement uses, because three descriptions had drifted into one before anything
+ * looked.
  *
  * <p>Byte-valued options are {@link MemorySize}, so they can be written as {@code 64mb}. The value
  * is converted to a {@code long} where it is applied and never reaches the connector's public API.

@@ -181,6 +181,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption`
   per setter, `getOptional(...).ifPresent(...)`, no default restated, enums carry their DDL
   spelling in `toString()`, and the reflective completeness test holds the two sets equal.
+  "No default restated" covers the *description* as well as `defaultValue()`, and covers a
+  derived default too — `reference/pubsub.md` carries the derivation and the resolved value.
+  `PubSubConnectorOptionsTest` fails on both halves, the description one by phrase match, so a
+  failure there is the rule speaking (#866). Correct the description, not the test.
 - No `properties.*` passthrough; metadata is not forwarded to formats;
   `applyReadableMetadata` is guarded on the format *declaring* metadata. When writable
   `ordering-key` metadata is selected, the table sink inserts keyed routing before the writer;
