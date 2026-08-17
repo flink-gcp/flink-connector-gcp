@@ -53,8 +53,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** MiniCluster observers used by the real-GCP Change Streams acceptance in this gated class. */
-final class SpannerChangeStreamRealGcpSupport {
+/**
+ * The MiniCluster observers the gated real-GCP Change Streams acceptance runs its job with, and the
+ * run state they record for it to assert on.
+ */
+final class SpannerChangeStreamRealGcpObservers {
 
     private static final String REAL_PREFIX = "real:";
 
@@ -64,7 +67,7 @@ final class SpannerChangeStreamRealGcpSupport {
     private static final Set<String> FAILED = ConcurrentHashMap.newKeySet();
     private static final Map<String, RunMetrics> METRICS = new ConcurrentHashMap<>();
 
-    private SpannerChangeStreamRealGcpSupport() {}
+    private SpannerChangeStreamRealGcpObservers() {}
 
     static JobClient start(
             SpannerChangeStreamSource<String> source,

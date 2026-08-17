@@ -457,9 +457,9 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     void changeStreamRecoversFromCheckpointAndSavepoint(Dialect dialect) throws Exception {
         SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
         String runId = "recovery-" + dialect + "-" + UUID.randomUUID();
-        SpannerChangeStreamRealGcpSupport.reset(runId);
+        SpannerChangeStreamRealGcpObservers.reset(runId);
         JobClient first =
-                SpannerChangeStreamRealGcpSupport.start(
+                SpannerChangeStreamRealGcpObservers.start(
                         changeStreamSource(changeStreamDatabase, StartPosition.latest(), null),
                         runId,
                         null,
@@ -470,7 +470,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                     "the initial Spanner query to start",
                     first,
                     () ->
-                            SpannerChangeStreamRealGcpSupport.counter(
+                            SpannerChangeStreamRealGcpObservers.counter(
                                             runId, "changeStreamQueriesStarted")
                                     > 0,
                     runId);
@@ -479,30 +479,31 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                     "the first half of the mutations",
                     first,
                     () ->
-                            SpannerChangeStreamRealGcpSupport.uniqueIds(runId)
+                            SpannerChangeStreamRealGcpObservers.uniqueIds(runId)
                                     >= CHANGE_STREAM_ROWS / 2,
                     runId);
             awaitChangeStream(
                     "a completed checkpoint",
                     first,
-                    () -> SpannerChangeStreamRealGcpSupport.completedCheckpoint(runId) >= 0,
+                    () -> SpannerChangeStreamRealGcpObservers.completedCheckpoint(runId) >= 0,
                     runId);
 
             long queriesBeforeFailure =
-                    SpannerChangeStreamRealGcpSupport.counter(runId, "changeStreamQueriesStarted");
-            SpannerChangeStreamRealGcpSupport.armFailure(runId);
+                    SpannerChangeStreamRealGcpObservers.counter(
+                            runId, "changeStreamQueriesStarted");
+            SpannerChangeStreamRealGcpObservers.armFailure(runId);
             writeChangeRows(
                     changeStreamDatabase, CHANGE_STREAM_ROWS / 2, CHANGE_STREAM_ROWS / 2 + 1);
             awaitChangeStream(
                     "the deliberate post-checkpoint failure",
                     first,
-                    () -> SpannerChangeStreamRealGcpSupport.failed(runId),
+                    () -> SpannerChangeStreamRealGcpObservers.failed(runId),
                     runId);
             awaitChangeStream(
                     "a query to reopen after restart",
                     first,
                     () ->
-                            SpannerChangeStreamRealGcpSupport.counter(
+                            SpannerChangeStreamRealGcpObservers.counter(
                                             runId, "changeStreamQueriesStarted")
                                     > queriesBeforeFailure,
                     runId);
@@ -511,24 +512,26 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             awaitChangeStream(
                     "all change-stream mutations after restart",
                     first,
-                    () -> SpannerChangeStreamRealGcpSupport.uniqueIds(runId) >= CHANGE_STREAM_ROWS,
+                    () ->
+                            SpannerChangeStreamRealGcpObservers.uniqueIds(runId)
+                                    >= CHANGE_STREAM_ROWS,
                     runId);
             awaitChangeStream(
                     "the service heartbeat watermark",
                     first,
-                    () -> SpannerChangeStreamRealGcpSupport.watermarkAdvanced(runId),
+                    () -> SpannerChangeStreamRealGcpObservers.watermarkAdvanced(runId),
                     runId);
 
             assertChangeStreamMetrics(runId);
-            assertThat(SpannerChangeStreamRealGcpSupport.timestampMismatches(runId)).isZero();
+            assertThat(SpannerChangeStreamRealGcpObservers.timestampMismatches(runId)).isZero();
             LOG.info(
                     "Cloud Spanner Change Streams {} checkpoint evidence: records={}, unique={},"
                             + " duplicates={}, metrics={}",
                     dialect,
-                    SpannerChangeStreamRealGcpSupport.realRecordCount(runId),
-                    SpannerChangeStreamRealGcpSupport.uniqueIds(runId),
-                    SpannerChangeStreamRealGcpSupport.duplicateCount(runId),
-                    SpannerChangeStreamRealGcpSupport.metricSummary(runId));
+                    SpannerChangeStreamRealGcpObservers.realRecordCount(runId),
+                    SpannerChangeStreamRealGcpObservers.uniqueIds(runId),
+                    SpannerChangeStreamRealGcpObservers.duplicateCount(runId),
+                    SpannerChangeStreamRealGcpObservers.metricSummary(runId));
 
             String savepoint =
                     first.stopWithSavepoint(
@@ -542,7 +545,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             long afterRestore = CHANGE_STREAM_ROWS + 1L;
             writeChangeRows(changeStreamDatabase, stoppedGap, stoppedGap + 1);
             JobClient restored =
-                    SpannerChangeStreamRealGcpSupport.start(
+                    SpannerChangeStreamRealGcpObservers.start(
                             changeStreamSource(changeStreamDatabase, StartPosition.latest(), null),
                             runId,
                             savepoint,
@@ -553,11 +556,11 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         "the mutation written while stopped and the mutation after restore",
                         restored,
                         () -> {
-                            Set<Long> ids = SpannerChangeStreamRealGcpSupport.ids(runId);
+                            Set<Long> ids = SpannerChangeStreamRealGcpObservers.ids(runId);
                             return ids.contains(stoppedGap) && ids.contains(afterRestore);
                         },
                         runId);
-                assertThat(SpannerChangeStreamRealGcpSupport.timestampMismatches(runId)).isZero();
+                assertThat(SpannerChangeStreamRealGcpObservers.timestampMismatches(runId)).isZero();
             } finally {
                 cancelQuietly(restored);
             }
@@ -573,9 +576,9 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     void startBeforeChangeStreamCreationGetsConnectorGuidance(Dialect dialect) throws Exception {
         SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
         String runId = "precreation-" + dialect + "-" + UUID.randomUUID();
-        SpannerChangeStreamRealGcpSupport.reset(runId);
+        SpannerChangeStreamRealGcpObservers.reset(runId);
         JobClient job =
-                SpannerChangeStreamRealGcpSupport.start(
+                SpannerChangeStreamRealGcpObservers.start(
                         changeStreamSource(
                                 changeStreamDatabase,
                                 StartPosition.at(beforeChangeStreamCreation.get(dialect)),
@@ -598,9 +601,9 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
         Instant stale = Instant.now().minus(Duration.ofDays(2));
         String staleRun = "stale-savepoint-" + dialect + "-" + UUID.randomUUID();
-        SpannerChangeStreamRealGcpSupport.reset(staleRun);
+        SpannerChangeStreamRealGcpObservers.reset(staleRun);
         JobClient scripted =
-                SpannerChangeStreamRealGcpSupport.start(
+                SpannerChangeStreamRealGcpObservers.start(
                         SpannerChangeStreamTestSourceFactory.staleSource(stale, 2),
                         staleRun,
                         null,
@@ -611,7 +614,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             awaitChangeStream(
                     "the scripted stale partitions",
                     scripted,
-                    () -> SpannerChangeStreamRealGcpSupport.allRecords(staleRun) >= 2,
+                    () -> SpannerChangeStreamRealGcpObservers.allRecords(staleRun) >= 2,
                     staleRun);
             staleSavepoint =
                     scripted.stopWithSavepoint(
@@ -627,9 +630,9 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         }
 
         String failedRun = "expired-default-" + dialect + "-" + UUID.randomUUID();
-        SpannerChangeStreamRealGcpSupport.reset(failedRun);
+        SpannerChangeStreamRealGcpObservers.reset(failedRun);
         JobClient failedRestore =
-                SpannerChangeStreamRealGcpSupport.start(
+                SpannerChangeStreamRealGcpObservers.start(
                         changeStreamSource(changeStreamDatabase, StartPosition.latest(), null),
                         failedRun,
                         staleSavepoint,
@@ -639,14 +642,14 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 .contains("unavailable range")
                 .contains("No restore fallback was configured");
         assertThat(
-                        SpannerChangeStreamRealGcpSupport.counter(
+                        SpannerChangeStreamRealGcpObservers.counter(
                                 failedRun, "changeStreamQueriesStarted"))
                 .isZero();
 
         String fallbackRun = "expired-fallback-" + dialect + "-" + UUID.randomUUID();
-        SpannerChangeStreamRealGcpSupport.reset(fallbackRun);
+        SpannerChangeStreamRealGcpObservers.reset(fallbackRun);
         JobClient fallbackRestore =
-                SpannerChangeStreamRealGcpSupport.start(
+                SpannerChangeStreamRealGcpObservers.start(
                         changeStreamSource(
                                 changeStreamDatabase,
                                 StartPosition.latest(),
@@ -659,7 +662,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                     "the fallback query",
                     fallbackRestore,
                     () ->
-                            SpannerChangeStreamRealGcpSupport.counter(
+                            SpannerChangeStreamRealGcpObservers.counter(
                                             fallbackRun, "changeStreamQueriesStarted")
                                     > 0,
                     fallbackRun);
@@ -668,10 +671,10 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             awaitChangeStream(
                     "the mutation after the explicit fallback",
                     fallbackRestore,
-                    () -> SpannerChangeStreamRealGcpSupport.ids(fallbackRun).contains(id),
+                    () -> SpannerChangeStreamRealGcpObservers.ids(fallbackRun).contains(id),
                     fallbackRun);
-            assertThat(SpannerChangeStreamRealGcpSupport.allRecords(fallbackRun))
-                    .isEqualTo(SpannerChangeStreamRealGcpSupport.realRecordCount(fallbackRun));
+            assertThat(SpannerChangeStreamRealGcpObservers.allRecords(fallbackRun))
+                    .isEqualTo(SpannerChangeStreamRealGcpObservers.realRecordCount(fallbackRun));
         } finally {
             cancelQuietly(fallbackRestore);
         }
@@ -832,7 +835,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 SpannerChangeStreamSource.<String>builder()
                         .database(changeStreamDatabase)
                         .changeStreamName(ALL_CHANGES)
-                        .deserializer(SpannerChangeStreamRealGcpSupport.realDeserializer())
+                        .deserializer(SpannerChangeStreamRealGcpObservers.realDeserializer())
                         .startPosition(start)
                         .heartbeatInterval(Duration.ofSeconds(1))
                         .maxConcurrentQueriesPerSubtask(2);
@@ -870,7 +873,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 description,
                 CHANGE_STREAM_WAIT,
                 () -> {
-                    SpannerChangeStreamRealGcpSupport.sampleActiveQueries(runId);
+                    SpannerChangeStreamRealGcpObservers.sampleActiveQueries(runId);
                     if (condition.getAsBoolean()) {
                         return true;
                     }
@@ -878,15 +881,15 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 },
                 () ->
                         "job="
-                                + SpannerChangeStreamRealGcpSupport.jobStatus(job)
+                                + SpannerChangeStreamRealGcpObservers.jobStatus(job)
                                 + "; records="
-                                + SpannerChangeStreamRealGcpSupport.realRecordCount(runId)
+                                + SpannerChangeStreamRealGcpObservers.realRecordCount(runId)
                                 + "; unique="
-                                + SpannerChangeStreamRealGcpSupport.uniqueIds(runId)
+                                + SpannerChangeStreamRealGcpObservers.uniqueIds(runId)
                                 + "; checkpoints="
-                                + SpannerChangeStreamRealGcpSupport.completedCheckpoint(runId)
+                                + SpannerChangeStreamRealGcpObservers.completedCheckpoint(runId)
                                 + "; metrics="
-                                + SpannerChangeStreamRealGcpSupport.metricSummary(runId));
+                                + SpannerChangeStreamRealGcpObservers.metricSummary(runId));
     }
 
     private static boolean runningOrThrow(JobClient job, String description) {
@@ -907,12 +910,12 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
 
     private static void assertChangeStreamMetrics(String runId) {
         long discovered =
-                SpannerChangeStreamRealGcpSupport.counter(
+                SpannerChangeStreamRealGcpObservers.counter(
                         runId, "changeStreamPartitionsDiscovered");
         Map<String, Long> queries =
-                SpannerChangeStreamRealGcpSupport.counterBySubtask(
+                SpannerChangeStreamRealGcpObservers.counterBySubtask(
                         runId, "changeStreamQueriesStarted");
-        Map<String, Long> peaks = SpannerChangeStreamRealGcpSupport.peakActiveQueries(runId);
+        Map<String, Long> peaks = SpannerChangeStreamRealGcpObservers.peakActiveQueries(runId);
         assertThat(discovered).isPositive();
         assertThat(queries.values()).anyMatch(value -> value > 0);
         assertThat(peaks).isNotEmpty();
