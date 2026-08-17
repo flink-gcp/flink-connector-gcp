@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -139,14 +140,19 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     @Override
     public List<ByteStringRange> generateInitialPartitions() throws Exception {
-        List<ByteStringRange> partitions = new ArrayList<>();
+        List<ByteStringRange> discovered = new ArrayList<>();
         if (testOperations == null) {
             dataClient()
                     .generateInitialChangeStreamPartitions(table.getTable())
-                    .forEach(partitions::add);
+                    .forEach(discovered::add);
         } else {
-            partitions.addAll(testOperations.generateInitialPartitions());
+            discovered.addAll(testOperations.generateInitialPartitions());
         }
+        // One fold, covering both branches. The client builds every partition with
+        // ByteStringRange.create, which spells an absent bound as an empty key rather than as
+        // UNBOUNDED; RowRanges.copyOf rebuilds through the setters, which is what folds it, and its
+        // javadoc carries the why. This is the only place that can do it for a service partition.
+        List<ByteStringRange> partitions = RowRanges.copyAll(discovered);
         Preconditions.checkState(
                 !partitions.isEmpty(),
                 "Bigtable returned no initial Change Streams partitions for %s.",

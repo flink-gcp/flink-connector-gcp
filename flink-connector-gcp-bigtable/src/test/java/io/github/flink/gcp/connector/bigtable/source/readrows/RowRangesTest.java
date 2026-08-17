@@ -365,4 +365,128 @@ class RowRangesTest {
         assertThat(RowRanges.format(ByteStringRange.unbounded().startClosed(bytes(0x00, 0xFF))))
                 .isEqualTo("[\\x00\\xff, *)");
     }
+
+    @Test
+    void rendersTheUnboundedSentinelAndARowKeyStarAlike() {
+        // The renderer is not injective, deliberately: escape() keeps printable ASCII readable and
+        // 0x2A is both printable and the sentinel. Pinned so that nobody reaches for format() as an
+        // identity again — ByteStringRange is the identity, and it separates these.
+        ByteStringRange unboundedEnd = ByteStringRange.unbounded().startClosed("a");
+        ByteStringRange endsAtStar = ByteStringRange.unbounded().startClosed("a").endOpen("*");
+        assertThat(RowRanges.format(unboundedEnd)).isEqualTo(RowRanges.format(endsAtStar));
+        assertThat(unboundedEnd).isNotEqualTo(endsAtStar);
+
+        ByteStringRange unboundedStart = ByteStringRange.unbounded().endOpen("z");
+        ByteStringRange startsAfterStar = ByteStringRange.unbounded().startOpen("*").endOpen("z");
+        assertThat(RowRanges.format(unboundedStart)).isEqualTo(RowRanges.format(startsAfterStar));
+        assertThat(unboundedStart).isNotEqualTo(startsAfterStar);
+    }
+
+    @Test
+    void copyOfFoldsTheEmptyKeySpellingTheServiceUsesIntoAnUnboundedBound() {
+        // ByteStringRange.create is how every Change Streams partition and continuation token
+        // reaches this connector, and unlike the setters it does not fold an empty key. copyOf
+        // rebuilds through the setters, which is the connector's one normalisation point, and the
+        // reconciler's correctness rests on it.
+        ByteStringRange serviceFirst = ByteStringRange.create(ByteString.EMPTY, key("m"));
+        ByteStringRange serviceLast = ByteStringRange.create(key("m"), ByteString.EMPTY);
+        assertThat(serviceFirst.getStartBound()).isEqualTo(BoundType.CLOSED);
+        assertThat(serviceLast.getEndBound()).isEqualTo(BoundType.OPEN);
+        assertThat(serviceFirst).isNotEqualTo(ByteStringRange.unbounded().endOpen("m"));
+
+        assertThat(RowRanges.copyOf(serviceFirst))
+                .isEqualTo(ByteStringRange.unbounded().endOpen("m"));
+        assertThat(RowRanges.copyOf(serviceLast))
+                .isEqualTo(ByteStringRange.unbounded().startClosed("m"));
+        assertThat(RowRanges.copyOf(ByteStringRange.create(ByteString.EMPTY, ByteString.EMPTY)))
+                .isEqualTo(ByteStringRange.unbounded());
+    }
+
+    @Test
+    void reportsWhetherABoundIsAbsent() {
+        assertThat(RowRanges.isUnboundedStart(ByteStringRange.unbounded().endOpen("m"))).isTrue();
+        assertThat(RowRanges.isUnboundedStart(range("a", "m"))).isFalse();
+        assertThat(RowRanges.isUnboundedEnd(ByteStringRange.unbounded().startClosed("m"))).isTrue();
+        assertThat(RowRanges.isUnboundedEnd(range("a", "m"))).isFalse();
+    }
+
+    @Test
+    void sameStartAndSameEndSeparateBoundTypeAsWellAsKey() {
+        assertThat(RowRanges.sameStart(range("a", "m"), range("a", "z"))).isTrue();
+        assertThat(RowRanges.sameStart(range("a", "m"), range("b", "m"))).isFalse();
+        assertThat(
+                        RowRanges.sameStart(
+                                ByteStringRange.unbounded().startClosed("a"),
+                                ByteStringRange.unbounded().startOpen("a")))
+                .isFalse();
+        assertThat(
+                        RowRanges.sameStart(
+                                ByteStringRange.unbounded(),
+                                ByteStringRange.unbounded().endOpen("m")))
+                .isTrue();
+        assertThat(RowRanges.sameStart(ByteStringRange.unbounded(), range("a", "m"))).isFalse();
+
+        assertThat(RowRanges.sameEnd(range("a", "m"), range("b", "m"))).isTrue();
+        assertThat(
+                        RowRanges.sameEnd(
+                                ByteStringRange.unbounded().endOpen("m"),
+                                ByteStringRange.unbounded().endClosed("m")))
+                .isFalse();
+        assertThat(
+                        RowRanges.sameEnd(
+                                ByteStringRange.unbounded(),
+                                ByteStringRange.unbounded().startClosed("a")))
+                .isTrue();
+        assertThat(RowRanges.sameEnd(ByteStringRange.unbounded(), range("a", "m"))).isFalse();
+    }
+
+    @Test
+    void sameStartAndSameEndAgreeWithTheComparatorsOverEveryBoundShape() {
+        // sameStart's javadoc claims it is the equality compareStarts induces. Measured over every
+        // pair of bound shapes rather than asserted.
+        List<ByteStringRange> shapes =
+                Arrays.asList(
+                        ByteStringRange.unbounded(),
+                        ByteStringRange.unbounded().startClosed("m"),
+                        ByteStringRange.unbounded().startOpen("m"),
+                        ByteStringRange.unbounded().startClosed("z"),
+                        ByteStringRange.unbounded().startOpen("z"),
+                        ByteStringRange.unbounded().endOpen("m"),
+                        ByteStringRange.unbounded().endClosed("m"),
+                        range("a", "m"),
+                        range("a", "z"));
+
+        for (ByteStringRange left : shapes) {
+            for (ByteStringRange right : shapes) {
+                assertThat(RowRanges.sameStart(left, right))
+                        .as("sameStart %s %s", RowRanges.format(left), RowRanges.format(right))
+                        .isEqualTo(RowRanges.compareStarts(left, right) == 0);
+                assertThat(RowRanges.sameEnd(left, right))
+                        .as("sameEnd %s %s", RowRanges.format(left), RowRanges.format(right))
+                        .isEqualTo(RowRanges.compareEnds(left, right) == 0);
+            }
+        }
+    }
+
+    @Test
+    void ordersEqualKeysByWhichBoundReachesFurther() {
+        ByteStringRange closedStart = ByteStringRange.unbounded().startClosed("m");
+        ByteStringRange openStart = ByteStringRange.unbounded().startOpen("m");
+        // An inclusive start begins first — the opposite of BoundType's own declaration order
+        // (OPEN, CLOSED, UNBOUNDED), so a comparator keyed on the enum's ordinal sorts these the
+        // other way round. That is what the enumerator's deleted copy used to do.
+        assertThat(RowRanges.compareStarts(closedStart, openStart)).isNegative();
+        assertThat(RowRanges.compareStarts(openStart, closedStart)).isPositive();
+        assertThat(BoundType.OPEN.compareTo(BoundType.CLOSED)).isNegative();
+
+        // An inclusive end reaches further.
+        ByteStringRange openEnd = ByteStringRange.unbounded().endOpen("m");
+        ByteStringRange closedEnd = ByteStringRange.unbounded().endClosed("m");
+        assertThat(RowRanges.compareEnds(openEnd, closedEnd)).isNegative();
+        assertThat(RowRanges.compareEnds(closedEnd, openEnd)).isPositive();
+
+        // An unbounded start sorts first; an unbounded end sorts last.
+        assertThat(RowRanges.compareStarts(ByteStringRange.unbounded(), closedStart)).isNegative();
+        assertThat(RowRanges.compareEnds(ByteStringRange.unbounded(), closedEnd)).isPositive();
+    }
 }

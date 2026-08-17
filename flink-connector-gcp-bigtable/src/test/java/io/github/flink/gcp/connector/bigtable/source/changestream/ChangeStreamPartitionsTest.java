@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
+package io.github.flink.gcp.connector.bigtable.source.changestream;
 
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;

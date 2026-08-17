@@ -51,12 +51,16 @@ import java.util.List;
  *   <li><b>{@code clone()} is not public API.</b> It is {@code protected} on the package-private
  *       superclass, so a copy has to be rebuilt from the four accessors — which is what {@link
  *       #copyOf} does.
- *   <li><b>An empty key on any bound is normalised to {@code UNBOUNDED} by the SDK itself.</b>
- *       {@code startClosed(EMPTY)}, {@code startOpen(EMPTY)}, {@code endOpen(EMPTY)} and {@code
- *       endClosed(EMPTY)} all produce an unbounded side. That is why this class never has to
- *       special-case the empty key on input — and why {@link #truncateStartOpen} has to
- *       special-case it on <em>output</em>, where silently widening a range to the whole table
- *       would make a restored split re-read everything it had already emitted.
+ *   <li><b>An empty key on any bound is normalised to {@code UNBOUNDED} by the four setters, and
+ *       <em>not</em> by {@code ByteStringRange.create}.</b> {@code startClosed(EMPTY)}, {@code
+ *       startOpen(EMPTY)}, {@code endOpen(EMPTY)} and {@code endClosed(EMPTY)} all produce an
+ *       unbounded side, but {@code create(EMPTY, k)} produces a <em>closed</em> start at the empty
+ *       key. The two spellings are not {@link Object#equals(Object) equal} and do not render alike,
+ *       so a range that arrives in the second spelling has to be converted before anything here
+ *       compares it — which is what {@link #copyOf} does, and why the change-stream code copies
+ *       every range the service hands it. It is also why {@link #truncateStartOpen} has to
+ *       special-case the empty key on <em>output</em>, where silently widening a range to the whole
+ *       table would make a restored split re-read everything it had already emitted.
  * </ul>
  */
 @Internal
@@ -90,14 +94,19 @@ public final class RowRanges {
     }
 
     /**
-     * Returns an independent copy of a range.
+     * Returns an independent, normalised copy of a range.
      *
      * <p>Every range that crosses into this connector — from a builder setter, from the planner,
-     * from a deserialised split — goes through here, because a {@link ByteStringRange} is mutable
-     * and shared references would let a caller change a plan after it was made.
+     * from a deserialised split, from the Change Streams service — goes through here, for two
+     * reasons. A {@link ByteStringRange} is mutable, so shared references would let a caller change
+     * a plan after it was made. And it is the connector's one <b>normalisation</b> point:
+     * rebuilding through the four setters folds an empty key on a bounded side into {@code
+     * UNBOUNDED}, which is the spelling everything else here assumes. A range built by {@code
+     * ByteStringRange.create} — every partition and continuation token the service returns — uses
+     * the other spelling, and the two are not equal to one another.
      *
      * @param range the range to copy
-     * @return a range equal to it, sharing no mutable state with it
+     * @return a normalised range denoting the same rows, sharing no mutable state with it
      */
     public static ByteStringRange copyOf(ByteStringRange range) {
         Preconditions.checkNotNull(range, "range must not be null");
@@ -449,8 +458,19 @@ public final class RowRanges {
         return text.toString();
     }
 
-    /** Orders two ranges by where they begin; an unbounded start comes first. */
-    private static int compareStarts(ByteStringRange left, ByteStringRange right) {
+    /**
+     * Orders two ranges by where they begin; an unbounded start comes first.
+     *
+     * <p>Like {@link #compareKeys(ByteString, ByteString)}, and unlike the range predicates above,
+     * this does not null-check. It is called once per comparison inside a sort or a {@code
+     * TreeSet}, over ranges the caller has already accepted.
+     *
+     * @param left the first range
+     * @param right the second range
+     * @return a negative number, zero or a positive number as {@code left} begins before, at or
+     *     after {@code right}
+     */
+    public static int compareStarts(ByteStringRange left, ByteStringRange right) {
         if (left.getStartBound() == BoundType.UNBOUNDED
                 || right.getStartBound() == BoundType.UNBOUNDED) {
             return Boolean.compare(
@@ -466,8 +486,15 @@ public final class RowRanges {
                 left.getStartBound() == BoundType.OPEN, right.getStartBound() == BoundType.OPEN);
     }
 
-    /** Orders two ranges by where they end; an unbounded end comes last. */
-    private static int compareEnds(ByteStringRange left, ByteStringRange right) {
+    /**
+     * Orders two ranges by where they end; an unbounded end comes last.
+     *
+     * @param left the first range
+     * @param right the second range
+     * @return a negative number, zero or a positive number as {@code left} ends before, at or after
+     *     {@code right}
+     */
+    public static int compareEnds(ByteStringRange left, ByteStringRange right) {
         if (left.getEndBound() == BoundType.UNBOUNDED
                 || right.getEndBound() == BoundType.UNBOUNDED) {
             return Boolean.compare(
@@ -481,6 +508,69 @@ public final class RowRanges {
         // At the same key an inclusive end reaches further.
         return Boolean.compare(
                 left.getEndBound() == BoundType.CLOSED, right.getEndBound() == BoundType.CLOSED);
+    }
+
+    /**
+     * Returns whether two ranges begin at exactly the same point.
+     *
+     * <p>Two unbounded starts are the same start. Otherwise the bound type has to match as well as
+     * the key, because {@code startClosed(k)} and {@code startOpen(k)} disagree about the one row
+     * {@code k}. This is the equality {@link #compareStarts(ByteStringRange, ByteStringRange)}
+     * induces, written out directly so that a caller asking "is this the same edge?" does not have
+     * to read a comparator's result against zero.
+     *
+     * @param left the first range
+     * @param right the second range
+     * @return true when both begin at the same key with the same bound type, or both are unbounded
+     */
+    public static boolean sameStart(ByteStringRange left, ByteStringRange right) {
+        // getStart() throws on an unbounded bound, so the bound types have to settle it first.
+        if (left.getStartBound() != right.getStartBound()) {
+            return false;
+        }
+        return left.getStartBound() == BoundType.UNBOUNDED
+                || left.getStart().equals(right.getStart());
+    }
+
+    /**
+     * Returns whether two ranges end at exactly the same point.
+     *
+     * @param left the first range
+     * @param right the second range
+     * @return true when both end at the same key with the same bound type, or both are unbounded
+     */
+    public static boolean sameEnd(ByteStringRange left, ByteStringRange right) {
+        if (left.getEndBound() != right.getEndBound()) {
+            return false;
+        }
+        return left.getEndBound() == BoundType.UNBOUNDED || left.getEnd().equals(right.getEnd());
+    }
+
+    /**
+     * Returns whether a range begins before every row key.
+     *
+     * <p>The bound type alone answers this, which is correct only for a <em>normalised</em> range.
+     * Copies of this helper elsewhere in the module used to add {@code ||
+     * range.getStart().isEmpty()}, and that disjunct was not decoration: it absorbed the spelling
+     * {@code ByteStringRange.create} produces, in which an absent bound is a bounded one at the
+     * empty key. The copies are gone and the disjunct with them, so every caller owes a range that
+     * has been through {@link #copyOf(ByteStringRange)} — see the third measured fact above.
+     *
+     * @param range the range to test
+     * @return true when the range has no lower bound
+     */
+    public static boolean isUnboundedStart(ByteStringRange range) {
+        return range.getStartBound() == BoundType.UNBOUNDED;
+    }
+
+    /**
+     * Returns whether a range continues past every row key.
+     *
+     * @param range the range to test
+     * @return true when the range has no upper bound
+     */
+    public static boolean isUnboundedEnd(ByteStringRange range) {
+        return range.getEndBound() == BoundType.UNBOUNDED;
     }
 
     /** Returns whether {@code next} starts before {@code first} ends, or immediately after it. */

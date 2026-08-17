@@ -139,6 +139,40 @@ class BigtableDynamicSourceTest {
                         });
     }
 
+    @Test
+    void separatesPushedRangesThatRenderIdenticallyBecauseOfTheStarRowKey() {
+        // "*" is 0x2A: printable, so RowRanges.format prints it as itself, and also the sentinel
+        // format prints for an unbounded bound. A pushed-down predicate reaches both spellings, so
+        // the two sources below carry different row-key ranges that render the same way. The
+        // pushdown state compares them as ranges, not as those renderings.
+        BigtableDynamicSource unboundedEnd = minimal().build();
+        unboundedEnd.applyFilters(
+                java.util.Collections.singletonList(
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("!"))));
+
+        BigtableDynamicSource endsAtStar = minimal().build();
+        endsAtStar.applyFilters(
+                Arrays.asList(
+                        call(
+                                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                                rowKey(),
+                                literal("!")),
+                        call(BuiltInFunctionDefinitions.LESS_THAN, rowKey(), literal("*"))));
+
+        // Deliberately not asserting that the two sources compare unequal. They do, but through
+        // their accepted filter lists, which differ here — so that assertion would hold without the
+        // ranges being compared at all, and would pass for the wrong reason. What the pushdown
+        // state's equality has to get right is the pair below: one rendering, two ranges.
+        assertThat(rangesOf(configOf(unboundedEnd)))
+                .isEqualTo(rangesOf(configOf(endsAtStar)))
+                .containsExactly("[!, *)");
+        assertThat(configOf(unboundedEnd).getRanges())
+                .isNotEqualTo(configOf(endsAtStar).getRanges());
+    }
+
     private static BigtableSourceConfig<?> configOf(BigtableDynamicSource source) {
         SourceProvider provider =
                 (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
