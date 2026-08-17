@@ -21,6 +21,7 @@ import com.google.api.client.testing.http.MockHttpTransport;
 import com.google.api.client.testing.http.MockLowLevelHttpRequest;
 import com.google.api.client.testing.http.MockLowLevelHttpResponse;
 import com.google.cloud.NoCredentials;
+import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryError;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
@@ -145,7 +146,7 @@ class BigQueryTableAdminTest {
     @Test
     void buildsMaximumStalenessDdlAtMicrosecondPrecision() {
         QueryJobConfiguration query =
-                BigQueryTableAdmin.alterMaxStalenessQuery(
+                BigQueryCdcTableService.alterMaxStalenessQuery(
                         TableDestination.of("my-project", "analytics", "orders"),
                         Duration.ofNanos(600_000_001_000L));
 
@@ -158,7 +159,8 @@ class BigQueryTableAdminTest {
 
     @Test
     void clearsMaximumStalenessWithNull() {
-        QueryJobConfiguration query = BigQueryTableAdmin.alterMaxStalenessQuery(DESTINATION, null);
+        QueryJobConfiguration query =
+                BigQueryCdcTableService.alterMaxStalenessQuery(DESTINATION, null);
 
         assertThat(query.getQuery())
                 .isEqualTo("ALTER TABLE `p.d.t` SET OPTIONS (max_staleness = NULL)");
@@ -167,7 +169,7 @@ class BigQueryTableAdminTest {
     @Test
     void informationSchemaCheckBindsTheTableName() {
         QueryJobConfiguration query =
-                BigQueryTableAdmin.maxStalenessCheckQuery(
+                BigQueryCdcTableService.maxStalenessCheckQuery(
                         TableDestination.of("my-project", "analytics", "orders' OR TRUE"),
                         Duration.ofMinutes(10));
 
@@ -182,7 +184,8 @@ class BigQueryTableAdminTest {
 
     @Test
     void informationSchemaTreatsAbsenceOrTheZeroIntervalAsCleared() {
-        QueryJobConfiguration query = BigQueryTableAdmin.maxStalenessCheckQuery(DESTINATION, null);
+        QueryJobConfiguration query =
+                BigQueryCdcTableService.maxStalenessCheckQuery(DESTINATION, null);
 
         assertThat(query.getQuery())
                 .contains(
@@ -339,7 +342,7 @@ class BigQueryTableAdminTest {
                 StubBigQuery.TableAnswer.failing(
                         new BigQueryException(503, "temporarily unavailable")));
 
-        assertThatThrownBy(() -> new BigQueryTableAdmin(client).read(DESTINATION))
+        assertThatThrownBy(() -> cdcService(client).read(DESTINATION))
                 .isExactlyInstanceOf(RetriableTableAdminException.class)
                 .hasMessageContaining("Failed to read BigQuery table")
                 .hasCauseInstanceOf(BigQueryException.class);
@@ -359,7 +362,7 @@ class BigQueryTableAdminTest {
                         Map.of("flink_gcp_cdc", "complete_spec", "owner", "ops"),
                         Arrays.asList("id", "tenant")));
 
-        CdcTableProvisioner.TableState state = new BigQueryTableAdmin(client).read(DESTINATION);
+        CdcTableProvisioner.TableState state = cdcService(client).read(DESTINATION);
 
         assertThat(state).isNotNull();
         assertThat(state.primaryKeyColumns()).containsExactly("id", "tenant");
@@ -374,7 +377,7 @@ class BigQueryTableAdminTest {
         StubBigQuery client = new StubBigQuery();
         client.tablesAnswering(StubBigQuery.TableAnswer.existing(NO_COLUMNS, "etag-1", null, null));
 
-        CdcTableProvisioner.TableState state = new BigQueryTableAdmin(client).read(DESTINATION);
+        CdcTableProvisioner.TableState state = cdcService(client).read(DESTINATION);
 
         assertThat(state).isNotNull();
         assertThat(state.primaryKeyColumns()).isEmpty();
@@ -386,7 +389,7 @@ class BigQueryTableAdminTest {
         StubBigQuery client = new StubBigQuery();
         client.tablesAnswering(StubBigQuery.TableAnswer.absent());
 
-        assertThat(new BigQueryTableAdmin(client).read(DESTINATION)).isNull();
+        assertThat(cdcService(client).read(DESTINATION)).isNull();
     }
 
     @Test
@@ -484,7 +487,7 @@ class BigQueryTableAdminTest {
         MockLowLevelHttpRequest request =
                 new MockLowLevelHttpRequest()
                         .setResponse(new MockLowLevelHttpResponse().setStatusCode(200));
-        BigQueryTableAdmin admin = completionAdmin(request);
+        BigQueryCdcTableService admin = completionAdmin(request);
 
         assertThat(
                         admin.updateProvisioningLabel(
@@ -609,6 +612,16 @@ class BigQueryTableAdminTest {
                 .isNotInstanceOf(RetriableTableAdminException.class);
     }
 
+    /**
+     * The CDC half over one client, wired the way {@link BigQueryTableAdmin} wires it.
+     *
+     * <p>These cases still live in this class because splitting the file mechanically is unsafe —
+     * several of them embed JSON in string literals — so the move is left to its own change.
+     */
+    private static BigQueryCdcTableService cdcService(BigQuery client) {
+        return new BigQueryCdcTableService(destination -> client, null);
+    }
+
     private static void assertCompletionFailureIsRetriable(MockLowLevelHttpResponse response) {
         MockLowLevelHttpRequest request = new MockLowLevelHttpRequest().setResponse(response);
         assertThatThrownBy(
@@ -622,7 +635,7 @@ class BigQueryTableAdminTest {
                 .isExactlyInstanceOf(RetriableTableAdminException.class);
     }
 
-    private static BigQueryTableAdmin completionAdmin(MockLowLevelHttpRequest request) {
+    private static BigQueryCdcTableService completionAdmin(MockLowLevelHttpRequest request) {
         MockHttpTransport transport =
                 new MockHttpTransport() {
                     @Override
@@ -645,7 +658,7 @@ class BigQueryTableAdminTest {
         client.tablesAnswering(
                 StubBigQuery.TableAnswer.existing(
                         "current-etag", Map.of("flink_gcp_cdc", "pending_spec", "owner", "ops")));
-        return new BigQueryTableAdmin(client);
+        return cdcService(client);
     }
 
     @Test
@@ -659,16 +672,16 @@ class BigQueryTableAdminTest {
                                         "jobBackendError",
                                         "jobInternalError")
                                 .stream()
-                                .allMatch(BigQueryTableAdmin::isRetriableJobReason))
+                                .allMatch(BigQueryCdcTableService::isRetriableJobReason))
                 .isTrue();
-        assertThat(BigQueryTableAdmin.isRetriableJobReason("invalidQuery")).isFalse();
-        assertThat(BigQueryTableAdmin.isRetriableJobReason("accessDenied")).isFalse();
+        assertThat(BigQueryCdcTableService.isRetriableJobReason("invalidQuery")).isFalse();
+        assertThat(BigQueryCdcTableService.isRetriableJobReason("accessDenied")).isFalse();
     }
 
     @Test
     void directQueryFailuresUseTheSameTransientReasonsAsPolledJobs() {
         assertThat(
-                        BigQueryTableAdmin.isRetriableQueryFailure(
+                        BigQueryCdcTableService.isRetriableQueryFailure(
                                 new BigQueryException(
                                         Arrays.asList(
                                                 new BigQueryError(
@@ -677,14 +690,14 @@ class BigQueryTableAdminTest {
                                                         "transient query failure")))))
                 .isTrue();
         assertThat(
-                        BigQueryTableAdmin.isRetriableQueryFailure(
+                        BigQueryCdcTableService.isRetriableQueryFailure(
                                 new BigQueryException(
                                         Arrays.asList(
                                                 new BigQueryError(
                                                         "accessDenied", null, "terminal")))))
                 .isFalse();
         assertThat(
-                        BigQueryTableAdmin.isRetriableQueryFailure(
+                        BigQueryCdcTableService.isRetriableQueryFailure(
                                 new BigQueryException(400, "terminal without structured errors")))
                 .isFalse();
     }
@@ -700,7 +713,7 @@ class BigQueryTableAdminTest {
 
         assertThatThrownBy(
                         () ->
-                                new BigQueryTableAdmin(client)
+                                cdcService(client)
                                         .maxStalenessMatches(DESTINATION, Duration.ofMinutes(10)))
                 .isExactlyInstanceOf(RetriableTableAdminException.class)
                 .hasCause(client.queryFailure);
@@ -814,7 +827,7 @@ class BigQueryTableAdminTest {
     void cdcTryCreateReportsALostRaceRatherThanSucceeding() throws Exception {
         StubBigQuery client = new StubBigQuery();
         client.createTableFailure = new BigQueryException(409, "Already Exists");
-        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+        BigQueryCdcTableService admin = cdcService(client);
 
         assertThat(
                         admin.tryCreate(
