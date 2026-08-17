@@ -82,25 +82,28 @@ class DataChangeRecordTest {
     @Test
     void projectedRecordRoundTripsWithoutRestoringFilteredColumns() throws Exception {
         DataChangeRecord source =
-                new DataChangeRecord(
-                        Instant.parse("2026-08-12T00:00:00Z"),
-                        "1",
-                        "tx",
-                        true,
-                        "singers",
-                        Arrays.asList(
-                                new DataChangeRecord.ColumnType(
-                                        "id", "{\"code\":\"INT64\"}", true, 1),
-                                new DataChangeRecord.ColumnType(
-                                        "secret", "{\"code\":\"FUTURE_TYPE\"}", false, 2)),
-                        Collections.singletonList(
-                                new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)),
-                        ModType.UPDATE,
-                        ValueCaptureType.NEW_VALUES,
-                        1,
-                        1,
-                        "",
-                        false);
+                DataChangeRecord.builder()
+                        .commitTimestamp(Instant.parse("2026-08-12T00:00:00Z"))
+                        .recordSequence("1")
+                        .serverTransactionId("tx")
+                        .lastRecordInTransactionInPartition(true)
+                        .tableName("singers")
+                        .columnTypes(
+                                Arrays.asList(
+                                        new DataChangeRecord.ColumnType(
+                                                "id", "{\"code\":\"INT64\"}", true, 1),
+                                        new DataChangeRecord.ColumnType(
+                                                "secret", "{\"code\":\"FUTURE_TYPE\"}", false, 2)))
+                        .mods(
+                                Collections.singletonList(
+                                        new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)))
+                        .modType(ModType.UPDATE)
+                        .valueCaptureType(ValueCaptureType.NEW_VALUES)
+                        .numberOfRecordsInTransaction(1)
+                        .numberOfPartitionsInTransaction(1)
+                        .transactionTag("")
+                        .systemTransaction(false)
+                        .build();
         SpannerChangeStreamRecordFilter filter =
                 new SpannerChangeStreamRecordFilter(
                         Collections.emptyList(),
@@ -210,6 +213,87 @@ class DataChangeRecordTest {
                 .hasMessage("Unknown ModType: REPLACE");
     }
 
+    @Test
+    void buildNamesEveryValueThatWasNotSupplied() {
+        assertThatThrownBy(() -> DataChangeRecord.builder().build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContainingAll(
+                        "commitTimestamp",
+                        "recordSequence",
+                        "serverTransactionId",
+                        "tableName",
+                        "columnTypes",
+                        "mods",
+                        "modType",
+                        "valueCaptureType",
+                        "transactionTag",
+                        "lastRecordInTransactionInPartition",
+                        "systemTransaction",
+                        "numberOfRecordsInTransaction",
+                        "numberOfPartitionsInTransaction");
+    }
+
+    @Test
+    void aPrimitiveLeftUnsetIsNotSilentlyDefaulted() {
+        // The point of tracking set-ness: `false` and `0` are values Spanner reports, so a builder
+        // that defaulted them would hand back a record claiming a transaction produced no records.
+        // Zero explicitly supplied is accepted; zero never supplied is refused.
+        DataChangeRecord zeroCount = record().toBuilder().numberOfRecordsInTransaction(0).build();
+
+        assertThat(zeroCount.getNumberOfRecordsInTransaction()).isZero();
+        assertThatThrownBy(
+                        () ->
+                                DataChangeRecord.builder()
+                                        .commitTimestamp(Instant.EPOCH)
+                                        .recordSequence("1")
+                                        .serverTransactionId("tx")
+                                        .lastRecordInTransactionInPartition(false)
+                                        .tableName("singers")
+                                        .columnTypes(Collections.emptyList())
+                                        .mods(Collections.emptyList())
+                                        .modType(ModType.INSERT)
+                                        .valueCaptureType(ValueCaptureType.NEW_VALUES)
+                                        .numberOfPartitionsInTransaction(1)
+                                        .transactionTag("")
+                                        .systemTransaction(false)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("numberOfRecordsInTransaction")
+                .hasMessageNotContainingAny("numberOfPartitionsInTransaction", "modType");
+    }
+
+    @Test
+    void toBuilderCarriesEveryValue() {
+        DataChangeRecord record = record();
+
+        assertThat(record.toBuilder().build()).isEqualTo(record).hasSameHashCodeAs(record);
+    }
+
+    @Test
+    void equalityCoversEveryValue() {
+        DataChangeRecord record = record();
+        List<DataChangeRecord> mutated =
+                Arrays.asList(
+                        record.toBuilder().commitTimestamp(Instant.EPOCH).build(),
+                        record.toBuilder().recordSequence("00000002").build(),
+                        record.toBuilder().serverTransactionId("tx-2").build(),
+                        record.toBuilder().lastRecordInTransactionInPartition(true).build(),
+                        record.toBuilder().tableName("albums").build(),
+                        record.toBuilder().columnTypes(Collections.emptyList()).build(),
+                        record.toBuilder().mods(Collections.emptyList()).build(),
+                        record.toBuilder().modType(ModType.DELETE).build(),
+                        record.toBuilder().valueCaptureType(ValueCaptureType.NEW_VALUES).build(),
+                        record.toBuilder().numberOfRecordsInTransaction(99).build(),
+                        record.toBuilder().numberOfPartitionsInTransaction(99).build(),
+                        record.toBuilder().transactionTag("export").build(),
+                        record.toBuilder().systemTransaction(false).build());
+
+        // One case per field: an equals that dropped any one of the thirteen would let its
+        // mutation compare equal here.
+        assertThat(mutated).hasSize(13).doesNotContain(record);
+        assertThat(record).isEqualTo(record).isNotEqualTo(null).isNotEqualTo("not a record");
+    }
+
     private static TypeSerializer<DataChangeRecord> serializer() {
         return TypeInformation.of(DataChangeRecord.class)
                 .createSerializer(new SerializerConfigImpl());
@@ -256,40 +340,32 @@ class DataChangeRecordTest {
     }
 
     private static DataChangeRecord copyWithMods(DataChangeRecord record, List<Mod> mods) {
-        return new DataChangeRecord(
-                record.getCommitTimestamp(),
-                record.getRecordSequence(),
-                record.getServerTransactionId(),
-                record.isLastRecordInTransactionInPartition(),
-                record.getTableName(),
-                record.getColumnTypes(),
-                mods,
-                record.getModType(),
-                record.getValueCaptureType(),
-                record.getNumberOfRecordsInTransaction(),
-                record.getNumberOfPartitionsInTransaction(),
-                record.getTransactionTag(),
-                record.isSystemTransaction());
+        return record.toBuilder().mods(mods).build();
     }
 
     private static DataChangeRecord record() {
-        return new DataChangeRecord(
-                Instant.parse("2026-08-12T00:00:00.123456789Z"),
-                "00000001",
-                "tx-1",
-                false,
-                "singers",
-                Arrays.asList(
-                        new DataChangeRecord.ColumnType("id", "{\"code\":\"INT64\"}", true, 1),
-                        new DataChangeRecord.ColumnType("name", "{\"code\":\"STRING\"}", false, 2)),
-                Arrays.asList(
-                        new Mod("{\"id\":1}", "{\"name\":\"Ada\"}", "null"),
-                        new Mod("{\"id\":2}", null, "{\"name\":\"Grace\"}")),
-                ModType.UPDATE,
-                ValueCaptureType.NEW_ROW_AND_OLD_VALUES,
-                2,
-                3,
-                "import",
-                true);
+        return DataChangeRecord.builder()
+                .commitTimestamp(Instant.parse("2026-08-12T00:00:00.123456789Z"))
+                .recordSequence("00000001")
+                .serverTransactionId("tx-1")
+                .lastRecordInTransactionInPartition(false)
+                .tableName("singers")
+                .columnTypes(
+                        Arrays.asList(
+                                new DataChangeRecord.ColumnType(
+                                        "id", "{\"code\":\"INT64\"}", true, 1),
+                                new DataChangeRecord.ColumnType(
+                                        "name", "{\"code\":\"STRING\"}", false, 2)))
+                .mods(
+                        Arrays.asList(
+                                new Mod("{\"id\":1}", "{\"name\":\"Ada\"}", "null"),
+                                new Mod("{\"id\":2}", null, "{\"name\":\"Grace\"}")))
+                .modType(ModType.UPDATE)
+                .valueCaptureType(ValueCaptureType.NEW_ROW_AND_OLD_VALUES)
+                .numberOfRecordsInTransaction(2)
+                .numberOfPartitionsInTransaction(3)
+                .transactionTag("import")
+                .systemTransaction(true)
+                .build();
     }
 }

@@ -284,23 +284,28 @@ class SpannerChangeStreamSourceBuilderTest {
     }
 
     private static DataChangeRecord record(String table) {
-        return new DataChangeRecord(
-                Instant.parse("2026-08-12T00:00:00Z"),
-                "1",
-                "tx",
-                true,
-                table,
-                Arrays.asList(
-                        new DataChangeRecord.ColumnType("id", "{\"code\":\"INT64\"}", true, 1),
-                        new DataChangeRecord.ColumnType(
-                                "secret", "{\"code\":\"STRING\"}", false, 2)),
-                Collections.singletonList(new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)),
-                ModType.UPDATE,
-                ValueCaptureType.NEW_VALUES,
-                1,
-                1,
-                "",
-                false);
+        return DataChangeRecord.builder()
+                .commitTimestamp(Instant.parse("2026-08-12T00:00:00Z"))
+                .recordSequence("1")
+                .serverTransactionId("tx")
+                .lastRecordInTransactionInPartition(true)
+                .tableName(table)
+                .columnTypes(
+                        Arrays.asList(
+                                new DataChangeRecord.ColumnType(
+                                        "id", "{\"code\":\"INT64\"}", true, 1),
+                                new DataChangeRecord.ColumnType(
+                                        "secret", "{\"code\":\"STRING\"}", false, 2)))
+                .mods(
+                        Collections.singletonList(
+                                new Mod("{\"id\":1}", "{\"secret\":\"hidden\"}", null)))
+                .modType(ModType.UPDATE)
+                .valueCaptureType(ValueCaptureType.NEW_VALUES)
+                .numberOfRecordsInTransaction(1)
+                .numberOfPartitionsInTransaction(1)
+                .transactionTag("")
+                .systemTransaction(false)
+                .build();
     }
 
     private static final class CommitSecondDeserializer

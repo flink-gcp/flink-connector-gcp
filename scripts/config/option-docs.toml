@@ -144,3 +144,16 @@ page = "docs/content/docs/connectors/table/spanner.md"
 "lookup.full-cache.periodic-reload.schedule-mode" = "As lookup.cache above."
 "lookup.full-cache.timed-reload.iso-time" = "As lookup.cache above."
 "lookup.full-cache.timed-reload.interval-in-days" = "As lookup.cache above."
+
+# NEITHER SIDE. Public builders that build a *value* rather than a
+# configuration, keyed by repo-relative path. The third answer to the
+# unmapped-public-builder guard, and the narrowest: the other two are "map it to
+# a reference page" and "mark the class @Internal", and a published record whose
+# builder sets record fields is neither.
+#
+# A reference row could not exist for these — the reference documents what a job
+# configures, and nothing here is configured. Marking them @Internal to satisfy
+# the guard would demote a type users receive, which is a stability decision and
+# not a documentation one.
+[value_builders]
+"flink-connector-gcp-spanner/src/main/java/io/github/flink/gcp/connector/spanner/source/changestream/DataChangeRecord.java" = "A @Public Change Streams record. Its builder sets the thirteen fields Spanner reports for one data change; none of them is a job option, and the record is what a deserializer receives rather than something a job configures."

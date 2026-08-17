@@ -127,20 +127,21 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
 
             Instant timestamp = split.getCurrentPosition().plusMillis(1);
             DataChangeRecord record =
-                    new DataChangeRecord(
-                            timestamp,
-                            split.splitId() + "|" + timestamp.toEpochMilli(),
-                            "scripted-transaction",
-                            true,
-                            "scripted_table",
-                            Collections.emptyList(),
-                            Collections.emptyList(),
-                            ModType.UPDATE,
-                            ValueCaptureType.NEW_VALUES,
-                            1,
-                            1,
-                            "",
-                            false);
+                    DataChangeRecord.builder()
+                            .commitTimestamp(timestamp)
+                            .recordSequence(split.splitId() + "|" + timestamp.toEpochMilli())
+                            .serverTransactionId("scripted-transaction")
+                            .lastRecordInTransactionInPartition(true)
+                            .tableName("scripted_table")
+                            .columnTypes(Collections.emptyList())
+                            .mods(Collections.emptyList())
+                            .modType(ModType.UPDATE)
+                            .valueCaptureType(ValueCaptureType.NEW_VALUES)
+                            .numberOfRecordsInTransaction(1)
+                            .numberOfPartitionsInTransaction(1)
+                            .transactionTag("")
+                            .systemTransaction(false)
+                            .build();
             listener.record(new SpannerChangeStreamRecord.Data(record));
         }
 

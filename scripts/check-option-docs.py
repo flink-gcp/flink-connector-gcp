@@ -334,7 +334,9 @@ def builder_setters(
     return found
 
 
-def unmapped_public_builders(seen: set[str]) -> list[str]:
+def unmapped_public_builders(
+    seen: set[str], value_builders: dict[str, str], used: set[str]
+) -> list[str]:
     """Public builders that no mapping in the config reaches.
 
     The gap #328 closed. `PubSubDeadLetterQueue.Builder`'s five knobs matched no
@@ -343,8 +345,15 @@ def unmapped_public_builders(seen: set[str]) -> list[str]:
     go stale, with nothing failing either way. A `sources` entry reaches one
     class; this is what keeps the next one from being invisible for as long.
 
-    It is the stray-module guard one level down. `@Internal` is the only
-    exemption; see TOP_LEVEL_TYPE for what is read to decide it.
+    It is the stray-module guard one level down. Two things exempt a class, and
+    they answer different questions. `@Internal` says the builder is not a user
+    surface at all; see TOP_LEVEL_TYPE for what is read to decide it. A
+    `[value_builders]` entry says the opposite — it *is* public, and it builds a
+    value rather than a configuration, so no reference row could exist for it.
+    `DataChangeRecord` is the case that forced the distinction: a `@Public`
+    record a deserializer receives, whose builder sets thirteen record fields
+    and not one option. Marking it `@Internal` to quieten this would have
+    demoted a published type to satisfy a check.
     """
     problems: list[str] = []
     for tree in main_source_trees():
@@ -359,12 +368,17 @@ def unmapped_public_builders(seen: set[str]) -> list[str]:
             declaration = TOP_LEVEL_TYPE.search(blanked)
             if declaration and INTERNAL.search(declaration.group(1)):
                 continue
+            if name in value_builders:
+                used.add(name)
+                continue
             problems.append(
                 f"{name} declares public builder setters ({', '.join(setters)}) "
                 f"but nothing maps it: it matches no SOURCE_GLOBS pattern and no "
                 f"[[builders]] sources entry names it, so both directions of this "
-                f"check skip the whole class. Map it in {CONFIG.name}, or mark the "
-                f"class @Internal if it is not a user-facing option surface."
+                f"check skip the whole class. Map it in {CONFIG.name}; or mark the "
+                f"class @Internal if it is not a user-facing surface; or add a "
+                f'[value_builders] entry "{name}" if it is public but builds a '
+                f"value rather than a configuration."
             )
     return problems
 
@@ -406,6 +420,7 @@ def main() -> int:
     config = load_config()
     exempt = config.get("exempt", {})
     extra = config.get("extra", {})
+    value_builders = config.get("value_builders", {})
     problems: list[str] = []
     counts: list[tuple[str, int]] = []
     # Which allowlist entries actually did something. An entry that never fires
@@ -446,7 +461,7 @@ def main() -> int:
                 f"checks them. Add the module and its reference page."
             )
 
-    problems += unmapped_public_builders(seen)
+    problems += unmapped_public_builders(seen, value_builders, used)
 
     for entry in config["builders"]:
         module, page = entry["module"], ROOT / entry["page"]
@@ -504,7 +519,11 @@ def main() -> int:
             )
         counts.append((entry["page"], len(keys)))
 
-    for table, entries in (("exempt", exempt), ("extra", extra)):
+    for table, entries in (
+        ("exempt", exempt),
+        ("extra", extra),
+        ("value_builders", value_builders),
+    ):
         for key in sorted(set(entries) - used):
             problems.append(
                 f'[{table}] entry "{key}" in {CONFIG.name} never fires: the check '
@@ -521,10 +540,11 @@ def main() -> int:
     print(f"{total} options documented:")
     for page, n in counts:
         print(f"  {n:>3}  {page}")
-    if exempt or extra:
+    if exempt or extra or value_builders:
         print(
-            f"  {len(exempt)} exempt, {len(extra)} declared elsewhere "
-            f"(see {CONFIG.name}); every one of them fires, or this would have failed"
+            f"  {len(exempt)} exempt, {len(extra)} declared elsewhere, "
+            f"{len(value_builders)} value builder(s) (see {CONFIG.name}); every one "
+            f"of them fires, or this would have failed"
         )
     return 0
 

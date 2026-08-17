@@ -264,19 +264,20 @@ class SpannerChangeStreamRecordFilterTest {
 
     private static DataChangeRecord record(
             String table, List<DataChangeRecord.ColumnType> columns, List<Mod> mods) {
-        return new DataChangeRecord(
-                Instant.parse("2026-08-12T00:00:00Z"),
-                "1",
-                "tx",
-                true,
-                table,
-                columns,
-                mods,
-                ModType.UPDATE,
-                ValueCaptureType.NEW_ROW_AND_OLD_VALUES,
-                1,
-                1,
-                "tag",
-                false);
+        return DataChangeRecord.builder()
+                .commitTimestamp(Instant.parse("2026-08-12T00:00:00Z"))
+                .recordSequence("1")
+                .serverTransactionId("tx")
+                .lastRecordInTransactionInPartition(true)
+                .tableName(table)
+                .columnTypes(columns)
+                .mods(mods)
+                .modType(ModType.UPDATE)
+                .valueCaptureType(ValueCaptureType.NEW_ROW_AND_OLD_VALUES)
+                .numberOfRecordsInTransaction(1)
+                .numberOfPartitionsInTransaction(1)
+                .transactionTag("tag")
+                .systemTransaction(false)
+                .build();
     }
 }
