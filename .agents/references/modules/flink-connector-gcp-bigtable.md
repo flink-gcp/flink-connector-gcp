@@ -253,11 +253,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   is silent: a table's last partition reads as a range ending at the empty key, so no gap is ever
   reported for it, and its first never matches the `MissingPartition` remembered from the previous
   scan, so neither grace period elapses and the partition is never restarted.
-- **`RowRanges.format` is a renderer and never an identity** (#910). It prints `*` for an unbounded
-  bound and, because `escape` keeps printable ASCII readable, also for a bound at the row key `*`
-  (`0x2A`). Range identity is `ByteStringRange.equals`; the rendering call sites are correct as they
-  are, and the four `StartPositionResolver.resolveRestored` arguments are labels for a log line and
-  a message, which that resolver never compares.
+- **`RowRanges.format` is a renderer and never an identity** (#910). Range identity is
+  `ByteStringRange.equals`; the rendering call sites are correct as they are, and the four
+  `StartPositionResolver.resolveRestored` arguments are labels for a log line and a message, which
+  that resolver never compares.
+- **`escape` spends `*` on the sentinel, so it escapes `0x2A` like an unprintable byte** (#947).
+  `format` prints `*` for an absent bound, and `*` is printable, so a bound *at* that key used to
+  render identically to no bound — one string for two ranges, in exactly the warning an operator
+  reads to tell two partitions apart. The renderer is injective over every reachable bound shape and
+  a test asserts that as a property; correctness does not rest on it, and must not be made to.
 - **The connector-owned mutation supplies its own tagged serializer.** It preserves all mutation
   metadata and the ordered typed entries and values in the pinned 2.80.0 input model. Its `@TypeInfo`
   annotation keeps later `TypeInformation.of(ChangeStreamMutation.class)` calls on that serializer

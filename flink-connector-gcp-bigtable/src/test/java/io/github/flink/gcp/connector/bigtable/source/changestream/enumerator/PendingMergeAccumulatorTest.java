@@ -135,7 +135,13 @@ class PendingMergeAccumulatorTest {
         PendingMergeAccumulator first = new PendingMergeAccumulator(commaInStart, WATERMARK);
         PendingMergeAccumulator second = new PendingMergeAccumulator(commaInEnd, WATERMARK);
 
-        assertThat(RowRanges.format(commaInStart)).isEqualTo(RowRanges.format(commaInEnd));
+        // The point of this test is the second assertion: a partition key is a range, never a
+        // rendering. It used to open by asserting that these two *did* alias — both rendered
+        // "[a, b, c)", because the comma separating the bounds also occurs inside the keys. The
+        // renderer now escapes it, so they no longer alias, but the reason the key must not be a
+        // string is unchanged and is what this guards.
+        assertThat(RowRanges.format(commaInStart)).isEqualTo("[a\\x2c b, c)");
+        assertThat(RowRanges.format(commaInEnd)).isEqualTo("[a, b\\x2c c)");
         assertThat(first.partitionKey()).isNotEqualTo(second.partitionKey());
     }
 

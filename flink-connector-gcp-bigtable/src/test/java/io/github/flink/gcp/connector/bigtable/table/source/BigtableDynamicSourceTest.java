@@ -140,11 +140,11 @@ class BigtableDynamicSourceTest {
     }
 
     @Test
-    void separatesPushedRangesThatRenderIdenticallyBecauseOfTheStarRowKey() {
-        // "*" is 0x2A: printable, so RowRanges.format prints it as itself, and also the sentinel
-        // format prints for an unbounded bound. A pushed-down predicate reaches both spellings, so
-        // the two sources below carry different row-key ranges that render the same way. The
-        // pushdown state compares them as ranges, not as those renderings.
+    void rendersPushedRangesBoundedByTheStarRowKeyDistinctlyFromUnboundedOnes() {
+        // A pushed-down predicate is how the row key "*" reaches a rendered range: "< '*'" makes a
+        // bound at 0x2A, which is also the sentinel an absent bound prints. The two sources below
+        // are the pair that would collide if it were not escaped, so this is the table layer's
+        // guard on it — the pushdown state compares ranges rather than renderings either way.
         BigtableDynamicSource unboundedEnd = minimal().build();
         unboundedEnd.applyFilters(
                 java.util.Collections.singletonList(
@@ -164,11 +164,9 @@ class BigtableDynamicSourceTest {
 
         // Deliberately not asserting that the two sources compare unequal. They do, but through
         // their accepted filter lists, which differ here — so that assertion would hold without the
-        // ranges being compared at all, and would pass for the wrong reason. What the pushdown
-        // state's equality has to get right is the pair below: one rendering, two ranges.
-        assertThat(rangesOf(configOf(unboundedEnd)))
-                .isEqualTo(rangesOf(configOf(endsAtStar)))
-                .containsExactly("[!, *)");
+        // ranges being compared at all, and would pass for the wrong reason.
+        assertThat(rangesOf(configOf(unboundedEnd))).containsExactly("[!, *)");
+        assertThat(rangesOf(configOf(endsAtStar))).containsExactly("[!, \\x2a)");
         assertThat(configOf(unboundedEnd).getRanges())
                 .isNotEqualTo(configOf(endsAtStar).getRanges());
     }

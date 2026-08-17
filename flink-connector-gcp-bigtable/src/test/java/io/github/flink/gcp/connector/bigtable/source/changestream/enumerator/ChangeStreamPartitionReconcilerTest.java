@@ -393,13 +393,15 @@ class ChangeStreamPartitionReconcilerTest {
 
     @Test
     void keepsTwoPartitionsApartWhenOneEndsAtTheRowKeyTheRendererUsesAsItsSentinel() {
-        // RowRanges.format renders an unbounded end and an end at the row key "*" (0x2A) the same
-        // way, so matching a service partition to a remembered one by its rendering confuses these
-        // two. The one remembered here ends at "*"; the one being scanned runs to the end of the
-        // table. Matching them would hand the second the first's grace timer and low watermark.
+        // A partition ending at the row key "*" and one running to the end of the table are
+        // different partitions, and matching a scanned partition to a remembered one must keep them
+        // apart — otherwise the second inherits the first's grace timer and low watermark. This
+        // used to open by asserting the two rendered alike, which is how a rendering-based match
+        // confused them; the renderer escapes 0x2A now, so the two are told apart twice over. The
+        // match is on the range regardless, which is what this still guards.
         ByteStringRange endsAtStar = ByteStringRange.unbounded().startClosed("a").endOpen("*");
         ByteStringRange runsToTheEnd = ByteStringRange.unbounded().startClosed("a");
-        assertThat(RowRanges.format(endsAtStar)).isEqualTo(RowRanges.format(runsToTheEnd));
+        assertThat(endsAtStar).isNotEqualTo(runsToTheEnd);
 
         Instant longAgo = NOW.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE);
         ChangeStreamPartitionReconciler.Result result =
