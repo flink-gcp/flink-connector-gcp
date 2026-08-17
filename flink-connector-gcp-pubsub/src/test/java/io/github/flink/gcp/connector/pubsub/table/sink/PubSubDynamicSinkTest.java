@@ -125,7 +125,7 @@ class PubSubDynamicSinkTest {
 
     private static PubSubDynamicSink sink(PubSubPublisherOptions publisherOptions) {
         return new PubSubDynamicSink(
-                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, null, publisherOptions, null, null);
+                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, null, publisherOptions, null, null, null);
     }
 
     private static PubSubDynamicSink orderedSink() {
@@ -386,6 +386,7 @@ class PubSubDynamicSinkTest {
                                 null,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
@@ -395,6 +396,7 @@ class PubSubDynamicSinkTest {
                                 null,
                                 null,
                                 defaults,
+                                null,
                                 null,
                                 null))
                 .isNotEqualTo(
@@ -406,6 +408,7 @@ class PubSubDynamicSinkTest {
                                 null,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
@@ -416,11 +419,11 @@ class PubSubDynamicSinkTest {
                                 null,
                                 defaults,
                                 null,
+                                null,
                                 null))
                 // The two fields this test left null on both sides until #786: a mutant dropping
                 // either one from equals passed the whole module suite. A field outside a table
-                // sink's identity is one the planner may reuse a plan across. serviceAccountKeyFile
-                // needs the nine-argument constructor, which the eight-argument one omits it from.
+                // sink's identity is one the planner may reuse a plan across.
                 .isNotEqualTo(
                         new PubSubDynamicSink(
                                 PHYSICAL_DATA_TYPE,
@@ -431,6 +434,7 @@ class PubSubDynamicSinkTest {
                                         .messageRetention(Duration.ofDays(3))
                                         .build(),
                                 defaults,
+                                null,
                                 null,
                                 null))
                 .isNotEqualTo(sink(other))
@@ -453,11 +457,20 @@ class PubSubDynamicSinkTest {
                                 null,
                                 null,
                                 defaults,
+                                null,
                                 "localhost:8085",
                                 null))
                 .isNotEqualTo(
                         new PubSubDynamicSink(
-                                PHYSICAL_DATA_TYPE, FORMAT, TOPIC, null, null, defaults, null, 4));
+                                PHYSICAL_DATA_TYPE,
+                                FORMAT,
+                                TOPIC,
+                                null,
+                                null,
+                                defaults,
+                                null,
+                                null,
+                                4));
     }
 
     @Test

@@ -97,35 +97,11 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
      * @param deserializationFailurePolicy what to do with an undecodable message, or {@code null}
      *     for the source's own default
      * @param subscriberOptions the subscriber tuning
+     * @param serviceAccountKeyFile the service-account JSON key path each reader and the enumerator
+     *     load, or {@code null} for application-default credentials
      * @param emulatorEndpoint the emulator to use instead of the service, or {@code null}
      * @param parallelism the source operator's parallelism, or {@code null} for the job's
      */
-    public PubSubDynamicSource(
-            DataType physicalDataType,
-            DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
-            List<SubscriptionDestination> subscriptions,
-            Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions,
-            @Nullable StartPosition startPosition,
-            @Nullable OrderingMode orderingMode,
-            @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
-            PubSubSubscriberOptions subscriberOptions,
-            @Nullable String emulatorEndpoint,
-            @Nullable Integer parallelism) {
-        this(
-                physicalDataType,
-                decodingFormat,
-                subscriptions,
-                createOptions,
-                startPosition,
-                orderingMode,
-                deserializationFailurePolicy,
-                subscriberOptions,
-                null,
-                emulatorEndpoint,
-                parallelism);
-    }
-
-    /** Builds a source with an optional service-account key-file path. */
     public PubSubDynamicSource(
             DataType physicalDataType,
             DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
