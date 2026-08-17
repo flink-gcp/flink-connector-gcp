@@ -54,7 +54,7 @@ public class BigQuerySinkBuilder<T> {
     private AdditionalFields<? super T> additionalFields;
     private CdcOptions<? super T> cdcOptions;
     private CdcTableOptionsProvider cdcTableOptionsProvider =
-            destination -> CdcTableOptions.defaults();
+            new FixedCdcTableOptionsProvider(CdcTableOptions.defaults());
     @Nullable private CdcTableOptions fixedCdcTableOptions = CdcTableOptions.defaults();
     private boolean cdcTableOptionsConfigured;
     private CdcTableReconciliationPolicy cdcTableReconciliationPolicy =
@@ -62,7 +62,7 @@ public class BigQuerySinkBuilder<T> {
     private boolean cdcTableReconciliationPolicyConfigured;
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
-            destination -> TableCreateOptions.defaults();
+            new FixedTableCreateOptionsProvider(TableCreateOptions.defaults());
     private SchemaUpdateOptions schemaUpdateOptions = SchemaUpdateOptions.defaults();
     private FailureHandler<? super BigQueryFailure> failureHandler = FailureHandler.failJob();
     private String location;
@@ -178,7 +178,7 @@ public class BigQuerySinkBuilder<T> {
      */
     public BigQuerySinkBuilder<T> cdcTableOptions(CdcTableOptions cdcTableOptions) {
         Preconditions.checkNotNull(cdcTableOptions, "cdcTableOptions must not be null");
-        this.cdcTableOptionsProvider = destination -> cdcTableOptions;
+        this.cdcTableOptionsProvider = new FixedCdcTableOptionsProvider(cdcTableOptions);
         this.fixedCdcTableOptions = cdcTableOptions;
         this.cdcTableOptionsConfigured = true;
         return this;
@@ -241,7 +241,7 @@ public class BigQuerySinkBuilder<T> {
      */
     public BigQuerySinkBuilder<T> tableCreateOptions(TableCreateOptions tableCreateOptions) {
         Preconditions.checkNotNull(tableCreateOptions, "tableCreateOptions must not be null");
-        this.tableCreateOptionsProvider = destination -> tableCreateOptions;
+        this.tableCreateOptionsProvider = new FixedTableCreateOptionsProvider(tableCreateOptions);
         return this;
     }
 

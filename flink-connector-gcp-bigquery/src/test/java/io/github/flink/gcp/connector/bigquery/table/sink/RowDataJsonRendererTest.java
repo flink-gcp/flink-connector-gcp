@@ -21,13 +21,16 @@ import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericArrayData;
 import org.apache.flink.table.data.GenericMapData;
 import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.util.InstantiationUtil;
 
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -43,6 +46,42 @@ class RowDataJsonRendererTest {
 
     private static String render(DataType type, Object value) {
         return new RowDataJsonRenderer(type.getLogicalType(), "doc").render(value);
+    }
+
+    @Test
+    void crossesTheJobGraphAsItsTypeRatherThanAsItsRendererTree() throws Exception {
+        // Each node of the tree is a lambda, and lambdas that share an enclosing declaration and
+        // a descriptor share one SerializedLambda name hash — measured, eleven of build()'s do —
+        // leaving a trailing index as the only thing telling them apart. Supporting one more type
+        // root would rebind a restored node to a different type's renderer, silently. The tree is
+        // therefore rebuilt from the type on the far side rather than carried in the bytes.
+        DataType type =
+                DataTypes.ROW(
+                        DataTypes.FIELD("s", DataTypes.STRING()),
+                        DataTypes.FIELD("i", DataTypes.INT()),
+                        DataTypes.FIELD("l", DataTypes.BIGINT()),
+                        DataTypes.FIELD("d", DataTypes.DOUBLE()),
+                        DataTypes.FIELD("dec", DataTypes.DECIMAL(5, 2)),
+                        DataTypes.FIELD("day", DataTypes.DATE()),
+                        DataTypes.FIELD("items", DataTypes.ARRAY(DataTypes.INT())));
+        RowDataJsonRenderer renderer = new RowDataJsonRenderer(type.getLogicalType(), "doc");
+        RowData value =
+                GenericRowData.of(
+                        StringData.fromString("x"),
+                        1,
+                        2L,
+                        3.5d,
+                        DecimalData.fromBigDecimal(new BigDecimal("1.25"), 5, 2),
+                        (int) LocalDate.of(2026, 8, 6).toEpochDay(),
+                        new GenericArrayData(new int[] {7, 8}));
+
+        byte[] serialized = InstantiationUtil.serializeObject(renderer);
+
+        assertThat(new String(serialized, StandardCharsets.ISO_8859_1))
+                .doesNotContain("SerializedLambda");
+        RowDataJsonRenderer restored =
+                InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
+        assertThat(restored.render(value)).isEqualTo(renderer.render(value));
     }
 
     @Test

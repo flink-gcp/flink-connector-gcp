@@ -128,10 +128,36 @@ public final class ProtoRowAugmentationField<T> implements Serializable {
                 tableField,
                 SchemaOwnership.PHYSICAL,
                 field.getNullPolicy(),
-                element ->
-                        encode(field.getType(), field.getValueProvider().getValue(element), name),
+                new EncodedFieldValue<>(field, name),
                 "The provider for additional field " + name + " failed",
                 "The provider for required additional field " + name + " returned null");
+    }
+
+    /**
+     * Encodes a public additional field's value for the wire.
+     *
+     * <p>A named type rather than a lambda because it travels in the job graph inside the sink's
+     * serializer, where a lambda would be restored by its {@code SerializedLambda} synthetic-method
+     * name — a compiler detail rather than anything a connector release pins. The value provider it
+     * delegates to is the user's, and remains whatever they passed.
+     */
+    private static final class EncodedFieldValue<T> implements ValueProvider<T> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final AdditionalField<? super T> field;
+
+        private final String name;
+
+        EncodedFieldValue(AdditionalField<? super T> field, String name) {
+            this.field = field;
+            this.name = name;
+        }
+
+        @Override
+        public Object getValue(T element) throws IOException {
+            return encode(field.getType(), field.getValueProvider().getValue(element), name);
+        }
     }
 
     /** Creates one of BigQuery's explicitly supported write-only fields. */

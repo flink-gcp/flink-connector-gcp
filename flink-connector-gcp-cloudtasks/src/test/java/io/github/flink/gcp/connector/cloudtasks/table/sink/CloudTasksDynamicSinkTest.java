@@ -30,6 +30,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
@@ -75,7 +76,9 @@ class CloudTasksDynamicSinkTest {
         @Override
         public SerializationSchema<RowData> createRuntimeEncoder(
                 DynamicTableSink.Context context, DataType consumedDataType) {
-            return element -> "encoded".getBytes(StandardCharsets.UTF_8);
+            // A named type rather than a lambda so that a test asserting the sink carries no
+            // SerializedLambda into the job graph measures the connector, not this double.
+            return new ConstantSerializationSchema();
         }
 
         @Override
@@ -92,6 +95,17 @@ class CloudTasksDynamicSinkTest {
         @Override
         public int hashCode() {
             return name.hashCode();
+        }
+    }
+
+    /** The encoder {@link ConstantEncodingFormat} hands the runtime sink. */
+    private static final class ConstantSerializationSchema implements SerializationSchema<RowData> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public byte[] serialize(RowData element) {
+            return "encoded".getBytes(StandardCharsets.UTF_8);
         }
     }
 
@@ -362,6 +376,32 @@ class CloudTasksDynamicSinkTest {
         assertThat(runtime.getConfig().getTaskIdExtractor().extractTaskId(row))
                 .isEqualTo("event-17");
         assertThat(task.getName()).isEmpty();
+    }
+
+    @Test
+    void theTaskIdExtractorCrossesTheJobGraphAsANamedType() throws Exception {
+        // The table layer mints this extractor on the user's behalf and it travels in the job
+        // graph, so it must not be a lambda: a lambda is restored by a synthetic-method name the
+        // compiler picks, which no connector release pins.
+        CloudTasksDynamicSink sink = sink("https://example.com");
+        sink.applyWritableMetadata(
+                java.util.Collections.singletonList("task-id"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("payload", DataTypes.STRING()),
+                        DataTypes.FIELD("dedupe", DataTypes.STRING())));
+        GenericRowData row =
+                GenericRowData.of(
+                        StringData.fromString("payload"), StringData.fromString("event-17"));
+        CloudTasksCreateTaskSink<RowData> runtime = runtimeOf(sink);
+
+        byte[] serialized = InstantiationUtil.serializeObject(runtime);
+
+        assertThat(new String(serialized, StandardCharsets.ISO_8859_1))
+                .doesNotContain("SerializedLambda");
+        CloudTasksCreateTaskSink<RowData> restored =
+                InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
+        assertThat(restored.getConfig().getTaskIdExtractor().extractTaskId(row))
+                .isEqualTo("event-17");
     }
 
     @Test

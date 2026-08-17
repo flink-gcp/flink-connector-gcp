@@ -51,11 +51,7 @@ public final class CdcProtoRowFields {
                 ProtoRowAugmentationField.writeOnly(
                         WriteOnlyField.CDC_CHANGE_TYPE,
                         AdditionalFieldNullPolicy.REQUIRED,
-                        element -> {
-                            CdcChangeType changeType =
-                                    options.getChangeTypeProvider().getChangeType(element);
-                            return changeType == null ? null : changeType.name();
-                        },
+                        new ChangeTypeValue<>(options),
                         "The CDC change type provider failed",
                         "The CDC change type provider returned null"));
         CdcSequenceNumberProvider<? super T> sequenceProvider = options.getSequenceNumberProvider();
@@ -64,12 +60,54 @@ public final class CdcProtoRowFields {
                     ProtoRowAugmentationField.writeOnly(
                             WriteOnlyField.CDC_SEQUENCE_NUMBER,
                             AdditionalFieldNullPolicy.REQUIRED,
-                            element ->
-                                    normalizeSequence(sequenceProvider.getSequenceNumber(element)),
+                            new SequenceNumberValue<>(sequenceProvider),
                             "The CDC sequence number provider failed",
                             "The CDC sequence number provider returned null"));
         }
         return Collections.unmodifiableList(fields);
+    }
+
+    /*
+     * Named types rather than lambdas because these travel in the job graph inside the sink's
+     * serializer: a lambda would be restored by its SerializedLambda synthetic-method name, which
+     * the compiler picks and no connector release pins.
+     */
+
+    /** Reads a record's change type through the user's provider. */
+    private static final class ChangeTypeValue<T>
+            implements ProtoRowAugmentationField.ValueProvider<T> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final CdcOptions<? super T> options;
+
+        ChangeTypeValue(CdcOptions<? super T> options) {
+            this.options = options;
+        }
+
+        @Override
+        public Object getValue(T element) {
+            CdcChangeType changeType = options.getChangeTypeProvider().getChangeType(element);
+            return changeType == null ? null : changeType.name();
+        }
+    }
+
+    /** Reads a record's sequence number through the user's provider, normalizing it. */
+    private static final class SequenceNumberValue<T>
+            implements ProtoRowAugmentationField.ValueProvider<T> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final CdcSequenceNumberProvider<? super T> provider;
+
+        SequenceNumberValue(CdcSequenceNumberProvider<? super T> provider) {
+            this.provider = provider;
+        }
+
+        @Override
+        public Object getValue(T element) throws IOException {
+            return normalizeSequence(provider.getSequenceNumber(element));
+        }
     }
 
     private static String normalizeSequence(String sequenceNumber) throws IOException {

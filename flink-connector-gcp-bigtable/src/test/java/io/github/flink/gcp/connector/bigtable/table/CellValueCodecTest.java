@@ -26,6 +26,7 @@ import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.util.InstantiationUtil;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -577,6 +578,110 @@ class CellValueCodecTest {
             CellValueCodec.checkSupported("cf.t", DataTypes.TIME(3).getLogicalType());
             CellValueCodec.checkSupported("cf.ts", DataTypes.TIMESTAMP(3).getLogicalType());
             CellValueCodec.checkSupported("cf.ts", DataTypes.TIMESTAMP_LTZ(0).getLogicalType());
+        }
+    }
+
+    /**
+     * A codec is held by the schemas that are serialized into the job graph, so it is restored on a
+     * task manager — possibly by a build other than the one that wrote it.
+     *
+     * <p>A lambda is restored by its {@code SerializedLambda} synthetic-method name, and the
+     * lambdas sharing an enclosing declaration and a descriptor share one name hash, leaving a
+     * trailing index as the only thing telling them apart. Both switches here are ordered the way
+     * {@link LogicalTypeRoot} declares its constants, so supporting one more root inserts a case in
+     * the middle and renumbers the rest: measured, a BIGINT encoder restored against such a build
+     * <em>was</em> the INTEGER encoder and wrote four bytes instead of eight, with no error
+     * anywhere. What crosses is therefore the declared type.
+     */
+    @Nested
+    class SerializedForm {
+
+        @Test
+        void noCodecCarriesALambdaIntoTheJobGraph() throws Exception {
+            for (Map.Entry<LogicalTypeRoot, LogicalType> sample : SAMPLES.entrySet()) {
+                LogicalType type = sample.getValue();
+                if (!isSupported(type)) {
+                    continue;
+                }
+                for (Object codec :
+                        Arrays.asList(
+                                CellValueCodec.encoder(type),
+                                CellValueCodec.decoder(type),
+                                CellValueCodec.nullableEncoder(type.copy(true), NULL_STRING),
+                                CellValueCodec.nullableDecoder(type.copy(true), NULL_STRING))) {
+                    assertThat(
+                                    new String(
+                                            InstantiationUtil.serializeObject(codec),
+                                            StandardCharsets.ISO_8859_1))
+                            .as("serialized form for root %s", sample.getKey())
+                            .doesNotContain("SerializedLambda");
+                }
+            }
+        }
+
+        @Test
+        void aRestoredCodecStillReadsAndWritesItsOwnTypesLayout() throws Exception {
+            // BIGINT and INT are the pair the failure mode confuses — both no-capture lambdas of
+            // one method, so only the index tells them apart, and their widths differ.
+            assertRoundTrip(DataTypes.BIGINT(), 4_294_967_297L, "0000000100000001");
+            assertRoundTrip(DataTypes.INT(), 7, "00000007");
+            // Two that capture their precision, so restoring them rebuilds more than a choice.
+            assertRoundTrip(
+                    DataTypes.DECIMAL(5, 2),
+                    DecimalData.fromBigDecimal(new BigDecimal("1.25"), 5, 2),
+                    "000000027d");
+            assertRoundTrip(
+                    DataTypes.TIMESTAMP(3),
+                    TimestampData.fromEpochMillis(1_000L),
+                    "00000000000003e8");
+        }
+
+        @Test
+        void aRestoredNullableCodecStillRecognisesANull() throws Exception {
+            for (Map.Entry<LogicalTypeRoot, LogicalType> sample : SAMPLES.entrySet()) {
+                LogicalType nullable = sample.getValue().copy(true);
+                if (!isSupported(nullable)) {
+                    continue;
+                }
+                CellValueCodec.FieldEncoder encoder =
+                        clone(CellValueCodec.nullableEncoder(nullable, NULL_STRING));
+                CellValueCodec.FieldDecoder decoder =
+                        clone(CellValueCodec.nullableDecoder(nullable, NULL_STRING));
+
+                byte[] encoded = encoder.encode(GenericRowData.of((Object) null), 0);
+
+                assertThat(decoder.decode(encoded))
+                        .as("null round trip for root %s", sample.getKey())
+                        .isNull();
+            }
+        }
+
+        private void assertRoundTrip(DataType type, Object value, String expectedHex)
+                throws Exception {
+            LogicalType logicalType = type.getLogicalType();
+            CellValueCodec.FieldEncoder encoder = clone(CellValueCodec.encoder(logicalType));
+            CellValueCodec.FieldDecoder decoder = clone(CellValueCodec.decoder(logicalType));
+
+            byte[] encoded = encoder.encode(GenericRowData.of(value), 0);
+
+            assertThat(hex(encoded)).as("restored encoder for %s", type).isEqualTo(expectedHex);
+            assertThat(decoder.decode(fromHex(expectedHex)))
+                    .as("restored decoder for %s", type)
+                    .isEqualTo(value);
+        }
+
+        private <T> T clone(T codec) throws Exception {
+            byte[] serialized = InstantiationUtil.serializeObject(codec);
+            return InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
+        }
+
+        private boolean isSupported(LogicalType type) {
+            try {
+                CellValueCodec.checkSupported("cf.c", type);
+                return true;
+            } catch (ValidationException e) {
+                return false;
+            }
         }
     }
 }

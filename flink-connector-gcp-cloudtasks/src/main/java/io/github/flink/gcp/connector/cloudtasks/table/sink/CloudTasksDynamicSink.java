@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkBuilder;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
+import io.github.flink.gcp.connector.cloudtasks.sink.TaskIdExtractor;
 
 import javax.annotation.Nullable;
 
@@ -144,8 +145,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         int taskIdPosition = metadataKeys.indexOf(WritableMetadata.TASK_ID.getKey());
         if (taskIdPosition >= 0) {
             int rowIndex = DataType.getFieldCount(physicalDataType) + taskIdPosition;
-            builder.taskIdExtractor(
-                    row -> row.isNullAt(rowIndex) ? null : row.getString(rowIndex).toString());
+            builder.taskIdExtractor(new MetadataColumnTaskId(rowIndex));
         }
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
@@ -155,6 +155,29 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         }
         Sink<RowData> sink = builder.build();
         return SinkV2Provider.of(sink, parallelism);
+    }
+
+    /**
+     * Reads the deduplication key from the row's {@code task-id} metadata column.
+     *
+     * <p>A named type rather than a lambda because it travels in the job graph inside the sink: a
+     * lambda would be restored by its {@code SerializedLambda} synthetic-method name, which the
+     * compiler picks and no connector release pins.
+     */
+    private static final class MetadataColumnTaskId implements TaskIdExtractor<RowData> {
+
+        private static final long serialVersionUID = 1L;
+
+        private final int rowIndex;
+
+        MetadataColumnTaskId(int rowIndex) {
+            this.rowIndex = rowIndex;
+        }
+
+        @Override
+        public String extractTaskId(RowData row) {
+            return row.isNullAt(rowIndex) ? null : row.getString(rowIndex).toString();
+        }
     }
 
     private ValidationException missingAddress() {
