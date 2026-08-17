@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0073: Bigtable auto-creation parks `NOT_FOUND` and repairs through an ensure
 
 - Status: Accepted
-- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11)
-- Issues: [#233], [#414], [#432]
+- Date: 2026-08-09 (emulator behaviour measured 2026-08-08; reconciliation bound refined by [#414]; unrepairable-family detection refined by [#432] on 2026-08-11, and its description match corrected against the service by [#948] on 2026-08-17)
+- Issues: [#233], [#414], [#432], [#948]
 - Modules: bigtable (`sink`, `sink.tables`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Table auto-creation
 
@@ -41,7 +41,12 @@ Measured before the design was committed (2026-08-08, `google-cloud-cli:441.0.0-
   `BigtableAutoCreationRealGcpITCase`, whose run also exercised the repair against real metadata
   propagation and the add-only reconcile; the sink classifies by status alone, so the wording
   difference costs nothing. The missing-family `NOT_FOUND` was already pinned against the
-  service ("Requested column family not found").
+  service ("Requested column family not found") — as a *phrase*, which is the correction [#948]
+  made on 2026-08-17: the service ends a longer description with it, "Error while mutating the row
+  'row-1' (projects/…/tables/unrepairable-family) : Requested column family not found.", so the
+  detector below matches by containment. Nothing but the service produces that shape — the emulator
+  never answers `NOT_FOUND` here at all — which is why the detector spent the six days between the
+  two dates comparing the phrase against whole descriptions that never equalled it.
 - **That missing-family description carries no family id.** In `google-cloud-bigtable` 2.80.0,
   `MutateRowsAttemptCallable.createEntryError` builds the per-entry `ApiException` from the
   response status's code and message and does not carry its details forward. The cheaper #432
@@ -91,12 +96,16 @@ creation-only, per family, the `TopicCreateOptions` semantics carried down one l
 **A family that creation cannot repair fails after one post-ensure verdict, not after the recovery
 budget.** `EnsureResult` returns the families known to exist when the ensure completes: the
 declared set for a newly created table, or the live set plus this call's additions for an existing
-one. When a re-applied entry receives the service's specific "Requested column family not found"
-description, the writer compares its family-bearing mutations with that snapshot. Any absent
+one. When a re-applied entry receives a `NOT_FOUND` whose description **carries** the service's
+specific "Requested column family not found" phrase, the writer compares its family-bearing
+mutations with that snapshot. Any absent
 referenced family is undeclared by construction — every declared family was ensured and is in the
 snapshot — so the job fails immediately with the destination and family ids. A declared family
 whose metadata is still propagating, an undeclared family that already exists, a missing table,
-and any `NOT_FOUND` without that exact service description retain the bounded retry. This avoids a
+and any `NOT_FOUND` whose description does not carry that phrase retain the bounded retry. What
+keeps the phrase from being read out of an unrelated failure is the status of the node carrying it
+— checked on the raw gRPC cause and on the `ApiException` above it — not how much of that node's
+description it accounts for; matching it against the whole description was [#948]. This avoids a
 new metadata RPC and avoids guessing a family from a generic status message; per-table budgets stay
 declined because they do nothing for the single-table delay and are unnecessary for the detectable
 configuration error ([#432]).
@@ -188,10 +197,13 @@ same way.
 - `FakeMutationBatcher` gained `tableMissing` (request-level `NOT_FOUND` fan-out, the measured
   shape) and a send-count trigger for the mid-flush table-vanished case; `FakeTableAdmin`'s
   `onEnsure` hook clears the fake's missing state so repair convergence emerges from the ensure
-  rather than being scripted turn by turn.
+  rather than being scripted turn by turn. Its missing-*family* failure carries the service's whole
+  description, not the phrase alone ([#948]): a fake that speaks a shape the service never sends
+  leaves the only tier that can exercise this path — the gated suite — to find the defect.
 
 [#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
 [#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#414]: https://github.com/laughingman7743/flink-connector-gcp/issues/414
 [#432]: https://github.com/laughingman7743/flink-connector-gcp/issues/432
+[#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948

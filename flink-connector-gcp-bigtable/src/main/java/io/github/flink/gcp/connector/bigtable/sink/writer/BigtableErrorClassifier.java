@@ -77,8 +77,24 @@ import java.util.Set;
 @Internal
 final class BigtableErrorClassifier {
 
-    /** The real service's description for a mutation naming a family the table lacks. */
-    static final String MISSING_COLUMN_FAMILY_DESCRIPTION = "Requested column family not found";
+    /**
+     * The phrase the real service's description <em>ends with</em> when a mutation names a family
+     * the table lacks. It is a fragment, not the whole description: the service names the row and
+     * the table resource ahead of it, so a mutation of {@code row-1} answers
+     *
+     * <pre>
+     * NOT_FOUND: Error while mutating the row 'row-1'
+     *     (projects/…/instances/…/tables/unrepairable-family) : Requested column family not found.
+     * </pre>
+     *
+     * <p>Measured 2026-08-17 against the service by {@code BigtableAutoCreationRealGcpITCase} and,
+     * on another table and row, {@code BigtableRejectionRealGcpITCase} (google-cloud-bigtable
+     * 2.81.0); the source's own {@code NOT_FOUND} ends the same way, under "Error while reading
+     * table …". Matching the whole description instead is what #948 was: the comparison never held
+     * against the service, so the writer spent its whole recovery budget on a family it could never
+     * create and failed with a message naming no family.
+     */
+    static final String MISSING_COLUMN_FAMILY_PHRASE = "Requested column family not found";
 
     /** The classes a failed mutation falls into. */
     enum Kind {
@@ -144,12 +160,27 @@ final class BigtableErrorClassifier {
                 .isPresent();
     }
 
-    /** Reads the raw gRPC cause the pinned client's per-entry exception carries. */
+    /**
+     * Reads the raw gRPC cause the pinned client's per-entry exception carries.
+     *
+     * <p>The phrase is looked for <em>within</em> the message rather than as the whole of it,
+     * because the service wraps it in a sentence naming the row and the table (see {@code
+     * MISSING_COLUMN_FAMILY_PHRASE}). What narrows that is the status of the node the phrase is
+     * read from — it must itself report {@code NOT_FOUND}, as must the {@code ApiException} above
+     * it — so a {@code NOT_FOUND} over an {@code INTERNAL} naming a missing family does not match,
+     * and neither does a missing-table {@code NOT_FOUND}, whose wording shares nothing with the
+     * phrase. It is not a proof that the phrase originated at this status: a gax {@code
+     * ApiException} built from a cause alone takes {@code cause.toString()} as its message, so one
+     * whose status disagreed with its cause's would carry the cause's wording. The pinned client
+     * derives both from one status — {@code MutateRowsAttemptCallable.createEntryError}, and the
+     * synthetic per-entry error copies the request exception's own code — so no such chain reaches
+     * here.
+     */
     private static boolean carriesMissingFamilyDescription(@Nullable Throwable throwable) {
         return throwable != null
                 && StatusCodes.codeOf(throwable) == StatusCode.Code.NOT_FOUND
-                && ("NOT_FOUND: " + MISSING_COLUMN_FAMILY_DESCRIPTION)
-                        .equals(throwable.getMessage());
+                && throwable.getMessage() != null
+                && throwable.getMessage().contains(MISSING_COLUMN_FAMILY_PHRASE);
     }
 
     /**
