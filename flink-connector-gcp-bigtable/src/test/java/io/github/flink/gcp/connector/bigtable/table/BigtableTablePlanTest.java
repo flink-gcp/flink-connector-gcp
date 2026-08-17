@@ -435,7 +435,9 @@ class BigtableTablePlanTest {
         String plan = tEnv.explainSql("SELECT cf1 FROM bt WHERE rowkey >= 'b' AND rowkey < 'm'");
 
         assertThat(plan)
-                .contains("filter=[and(>=(rowkey")
+                // Flink renders AND in lower case through 2.3 and in upper case on 2.4-SNAPSHOT.
+                // Which spelling it picks is not what this test is about, so both are matched.
+                .containsIgnoringCase("filter=[and(>=(rowkey")
                 .contains("<(rowkey")
                 .doesNotContain("Calc(select=[cf1]");
 
