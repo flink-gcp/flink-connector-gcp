@@ -177,7 +177,11 @@ failure. Batch execution is covered by the end-of-input flush.
 **Backpressure.** Unacknowledged publishes per writer subtask are capped along both dimensions
 that bound memory: their number (`maxInFlightMessages`, default 1,000) and their serialized size
 (`maxInFlightBytes`, default 64 MiB, measured as `PubsubMessage.getSerializedSize()`). Publish
-completions are re-dispatched onto the task mailbox, so all writer state is single-threaded; a
+completions are re-dispatched onto the task mailbox, so every write to the writer's state happens
+on the task thread — your `DestinationResolver`, serializer and `FailureHandler` are called from
+there and need no synchronization of their own. Reads are not all on it: the metric reporter runs
+on a thread of its own, which is why the gauges below read plain counters rather than walking the
+writer's per-destination maps. A
 write at either cap yields to the mailbox until completions bring the counters back down. This is
 the mailbox model of the Apache `flink-connector-gcp-pubsub` writer (a design reference — no code
 is copied from it); that writer's infinite republish of non-fatally failed messages under
