@@ -164,7 +164,12 @@ public final class ChangeStreamPartitionSplitSerializer
         return count;
     }
 
-    private static void writeBytes(DataOutputSerializer out, ByteString bytes) throws IOException {
+    /**
+     * Writes a length-prefixed byte string. Package-private, and matched with {@link #readBytes},
+     * so that the enumerator state's serializer embeds the same bytes through the same pair rather
+     * than hand-rolling the write half of it.
+     */
+    static void writeBytes(DataOutputSerializer out, ByteString bytes) throws IOException {
         out.writeInt(bytes.size());
         out.write(bytes.toByteArray());
     }

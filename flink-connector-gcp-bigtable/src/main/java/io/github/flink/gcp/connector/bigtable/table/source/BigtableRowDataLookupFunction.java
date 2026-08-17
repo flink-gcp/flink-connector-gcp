@@ -24,11 +24,9 @@ import org.apache.flink.table.functions.LookupFunction;
 
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
-import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 
 import javax.annotation.Nullable;
 
@@ -43,10 +41,8 @@ public final class BigtableRowDataLookupFunction extends LookupFunction {
 
     private static final long serialVersionUID = 1L;
 
-    private final CellValueCodec.FieldEncoder rowKeyEncoder;
-    private final RowToRowDataConverter converter;
+    private final BigtableRowDataLookup lookup;
     private final int maxRetries;
-    private final BigtableRowLookup lookup;
 
     BigtableRowDataLookupFunction(
             TableDestination destination,
@@ -59,18 +55,18 @@ public final class BigtableRowDataLookupFunction extends LookupFunction {
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             int maxRetries) {
-        this(
-                schema,
-                projectedFields,
-                nullStringLiteral,
-                maxRetries,
-                new BigtableDataClientRowLookup(
+        this.lookup =
+                new BigtableRowDataLookup(
                         destination,
+                        schema,
+                        projectedFields,
+                        nullStringLiteral,
                         filter,
                         ranges,
                         appProfileId,
                         serviceAccountKeyFile,
-                        emulatorEndpoint));
+                        emulatorEndpoint);
+        this.maxRetries = maxRetries;
     }
 
     @VisibleForTesting
@@ -80,10 +76,8 @@ public final class BigtableRowDataLookupFunction extends LookupFunction {
             String nullStringLiteral,
             int maxRetries,
             BigtableRowLookup lookup) {
-        this.rowKeyEncoder = CellValueCodec.encoder(schema.getRowKeyType());
-        this.converter = new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
+        this.lookup = new BigtableRowDataLookup(schema, projectedFields, nullStringLiteral, lookup);
         this.maxRetries = maxRetries;
-        this.lookup = lookup;
     }
 
     @Override
@@ -96,22 +90,16 @@ public final class BigtableRowDataLookupFunction extends LookupFunction {
         if (keyRow.isNullAt(0)) {
             return Collections.emptyList();
         }
-        ByteString rowKey = ByteString.copyFrom(rowKeyEncoder.encode(keyRow, 0));
+        ByteString rowKey = lookup.rowKey(keyRow);
         for (int retry = 0; ; retry++) {
             try {
-                return convert(lookup.read(rowKey));
+                return lookup.convert(lookup.read(rowKey));
             } catch (RuntimeException failure) {
                 if (retry >= maxRetries || !BigtableLookupErrorClassifier.isTransient(failure)) {
                     throw failure;
                 }
             }
         }
-    }
-
-    private Collection<RowData> convert(@Nullable Row row) {
-        return row == null
-                ? Collections.emptyList()
-                : Collections.singletonList(converter.convert(row));
     }
 
     @Override

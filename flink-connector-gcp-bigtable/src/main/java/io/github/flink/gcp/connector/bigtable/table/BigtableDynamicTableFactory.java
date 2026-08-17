@@ -240,12 +240,7 @@ public class BigtableDynamicTableFactory
                                                                 .key(),
                                                         BigtableConnectorOptions.SCAN_MODE.key(),
                                                         ScanMode.CHANGE_STREAM)));
-        if (appProfileId.isBlank()) {
-            throw new ValidationException(
-                    String.format(
-                            "Option '%s' must not be blank.",
-                            BigtableConnectorOptions.SCAN_APP_PROFILE_ID.key()));
-        }
+        checkNotBlank(appProfileId, BigtableConnectorOptions.SCAN_APP_PROFILE_ID);
         Integer maxConcurrentStreams =
                 config.getOptional(BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK)
                         .orElse(null);
@@ -359,13 +354,7 @@ public class BigtableDynamicTableFactory
         if (changelogMode == ChangeStreamChangelogMode.SELECTED_CELL) {
             return;
         }
-        Set<String> configured = context.getCatalogTable().getOptions().keySet();
-        List<String> present = new ArrayList<>();
-        for (ConfigOption<?> option : selectedCellOptions()) {
-            if (configured.contains(option.key())) {
-                present.add("'" + option.key() + "'");
-            }
-        }
+        List<String> present = presentOptionKeys(context, selectedCellOptions());
         if (!present.isEmpty()) {
             throw new ValidationException(
                     String.format(
@@ -374,6 +363,22 @@ public class BigtableDynamicTableFactory
                             BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE.key(),
                             ChangeStreamChangelogMode.SELECTED_CELL));
         }
+    }
+
+    /**
+     * Returns the quoted keys of the given options that the {@code CREATE TABLE} statement set, in
+     * the order the options are listed. Each caller keeps its own sentence: the two validators
+     * reject a different set for a different reason, and only the scan they share lives here.
+     */
+    private static List<String> presentOptionKeys(Context context, List<ConfigOption<?>> options) {
+        Set<String> configured = context.getCatalogTable().getOptions().keySet();
+        List<String> present = new ArrayList<>();
+        for (ConfigOption<?> option : options) {
+            if (configured.contains(option.key())) {
+                present.add("'" + option.key() + "'");
+            }
+        }
+        return present;
     }
 
     private static List<ConfigOption<?>> selectedCellOptions() {
@@ -397,25 +402,29 @@ public class BigtableDynamicTableFactory
 
     private static String requireNonBlank(ReadableConfig config, ConfigOption<String> option) {
         String value = requireConfigured(config, option);
+        checkNotBlank(value, option);
+        return value;
+    }
+
+    /**
+     * Rejects a blank value for an option that was set. Separate from the presence check above
+     * because the three options this guards state their required-ness differently — one is required
+     * by its own message, one by the selected-cell message, and one is optional altogether — while
+     * the blankness rejection is the same sentence for all three.
+     */
+    private static void checkNotBlank(String value, ConfigOption<String> option) {
         if (value.isBlank()) {
             throw new ValidationException(
                     String.format("Option '%s' must not be blank.", option.key()));
         }
-        return value;
     }
 
     private static void validateSourceModeOptions(Context context, ScanMode scanMode) {
-        Set<String> configured = context.getCatalogTable().getOptions().keySet();
         List<ConfigOption<?>> incompatible =
                 scanMode == ScanMode.CHANGE_STREAM
                         ? boundedSourceOptions()
                         : changeStreamSourceOptions();
-        List<String> present = new ArrayList<>();
-        for (ConfigOption<?> option : incompatible) {
-            if (configured.contains(option.key())) {
-                present.add("'" + option.key() + "'");
-            }
-        }
+        List<String> present = presentOptionKeys(context, incompatible);
         if (!present.isEmpty()) {
             throw new ValidationException(
                     String.format(
@@ -552,15 +561,9 @@ public class BigtableDynamicTableFactory
     private static void validateCredentialsMode(ReadableConfig config) {
         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                 .ifPresent(
-                        path -> {
-                            if (path.isBlank()) {
-                                throw new ValidationException(
-                                        String.format(
-                                                "Option '%s' must not be blank.",
-                                                BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE
-                                                        .key()));
-                            }
-                        });
+                        path ->
+                                checkNotBlank(
+                                        path, BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE));
         if (config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).isPresent()
                 && config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).isPresent()) {
             throw new ValidationException(

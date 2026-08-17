@@ -29,8 +29,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
-import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import javax.annotation.Nullable;
@@ -64,23 +63,12 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
 
     private static final long serialVersionUID = 1L;
 
-    @Nullable private final String appProfileId;
-    @Nullable private final EmulatorEndpoint emulatorEndpoint;
-    @Nullable private final String serviceAccountKeyFile;
-
     /**
-     * The client, built on first use.
-     *
-     * <p>Transient because this opener is serialized into the job graph. Built under the monitor
-     * because a reader's split fetchers open streams from their own threads while {@link #close()}
-     * runs on the task thread once those fetchers are down, and a fetcher generation can start
-     * while the previous one is still finishing.
+     * The client this opener reads through, and everything around building it: a fetcher thread
+     * opens a stream through it while {@link #close()} runs on the task thread once the fetchers
+     * are down, and a fetcher generation can start while the previous one is still finishing.
      */
-    @Nullable private transient volatile BigtableDataClient client;
-
-    @Nullable private transient CredentialsProvider credentialsOverride;
-
-    private transient volatile boolean closed;
+    private final LazyBigtableDataClient client;
 
     /**
      * Creates the opener.
@@ -99,9 +87,9 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
             @Nullable String appProfileId,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable String serviceAccountKeyFile) {
-        this.appProfileId = appProfileId;
-        this.emulatorEndpoint = emulatorEndpoint;
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.client =
+                new LazyBigtableDataClient(
+                        "row stream opener", appProfileId, emulatorEndpoint, serviceAccountKeyFile);
     }
 
     @Override
@@ -112,45 +100,12 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
         if (filter != null) {
             query = query.filter(filter);
         }
-        return new ServerRowStream(client(table).readRows(query));
+        return new ServerRowStream(client.get(table).readRows(query));
     }
 
     @Override
     public void close() throws IOException {
-        BigtableDataClient toClose;
-        synchronized (this) {
-            closed = true;
-            toClose = client;
-            client = null;
-        }
-        if (toClose != null) {
-            toClose.close();
-        }
-    }
-
-    /**
-     * Returns the client, building it on first use.
-     *
-     * <p>The monitor is this object rather than a lock field, because a lock field would have to
-     * travel in the job graph.
-     */
-    private BigtableDataClient client(TableDestination table) throws IOException {
-        BigtableDataClient existing = client;
-        if (existing != null) {
-            return existing;
-        }
-        synchronized (this) {
-            if (closed) {
-                throw new IOException(
-                        "The Bigtable row stream opener for "
-                                + table
-                                + " was closed before it was used.");
-            }
-            if (client == null) {
-                client = BigtableDataClient.create(settings(table));
-            }
-            return client;
-        }
+        client.close();
     }
 
     /**
@@ -160,27 +115,18 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
      */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination table) throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials())
-                .build();
+        return client.settings(table);
     }
 
     /** Loads credentials when a TaskManager creates the source reader. */
     public void loadCredentials() throws IOException {
-        credentials();
+        client.loadCredentials();
     }
 
     /** Supplies a runtime provider directly for settings-level tests. */
     @VisibleForTesting
     void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        this.credentialsOverride = credentialsOverride;
-    }
-
-    @Nullable
-    private CredentialsProvider credentials() throws IOException {
-        if (credentialsOverride == null && serviceAccountKeyFile != null) {
-            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
-        }
-        return credentialsOverride;
+        client.setCredentialsOverride(credentialsOverride);
     }
 
     /**

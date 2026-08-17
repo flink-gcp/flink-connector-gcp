@@ -1,0 +1,150 @@
+/*
+ * Copyright 2026 The flink-gcp authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigtable;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
+
+import com.google.api.gax.core.CredentialsProvider;
+import com.google.cloud.bigtable.data.v2.BigtableDataClient;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+
+import javax.annotation.Nullable;
+
+import java.io.IOException;
+import java.io.Serializable;
+
+/**
+ * A {@link BigtableDataClient} built on first use and closed once, held by a seam implementation
+ * that travels in the job graph.
+ *
+ * <p>The seams that read through the data client — the scan source's row-stream opener and its
+ * row-key sampler — differ in the one call they make and share everything around it: the settings
+ * they build, the credentials they load, the lazy construction and the close. That shared half
+ * lives here so that neither seam owns a private copy of client lifecycle code.
+ *
+ * <p>The client is {@code transient} because the holder is serialized into the job graph, {@code
+ * volatile} because the thread that builds it is not the thread that closes it, and built under
+ * this object's monitor rather than a lock field, because a lock field would have to travel in the
+ * job graph too. Which threads those are depends on the seam: a reader's split fetchers open
+ * streams from their own threads while {@code close()} runs on the task thread once the fetchers
+ * are down, and an enumerator samples from the executor {@code SplitEnumeratorContext#callAsync}
+ * hands the work to while {@code close()} runs on the coordinator thread.
+ */
+@Internal
+public final class LazyBigtableDataClient implements Serializable {
+
+    private static final long serialVersionUID = 1L;
+
+    private final String owner;
+    @Nullable private final String appProfileId;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final String serviceAccountKeyFile;
+
+    @Nullable private transient volatile BigtableDataClient client;
+
+    @Nullable private transient CredentialsProvider credentialsOverride;
+
+    private transient volatile boolean closed;
+
+    /**
+     * Creates the holder.
+     *
+     * @param owner how the holder names its seam in the closed-before-use failure, for example
+     *     {@code "row stream opener"}
+     * @param appProfileId the application profile to route through, or {@code null} for the
+     *     instance's default
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Bigtable
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} to use ADC
+     */
+    public LazyBigtableDataClient(
+            String owner,
+            @Nullable String appProfileId,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile) {
+        this.owner = Preconditions.checkNotNull(owner, "owner must not be null");
+        this.appProfileId = appProfileId;
+        this.emulatorEndpoint = emulatorEndpoint;
+        this.serviceAccountKeyFile = serviceAccountKeyFile;
+    }
+
+    /** Returns the client, building it on first use. */
+    public BigtableDataClient get(TableDestination table) throws IOException {
+        BigtableDataClient existing = client;
+        if (existing != null) {
+            return existing;
+        }
+        synchronized (this) {
+            if (closed) {
+                throw new IOException(
+                        "The Bigtable "
+                                + owner
+                                + " for "
+                                + table
+                                + " was closed before it was"
+                                + " used.");
+            }
+            if (client == null) {
+                client = BigtableDataClient.create(settings(table));
+            }
+            return client;
+        }
+    }
+
+    /**
+     * Builds the client settings. Visible to the module's tests through each seam, because the
+     * mapping is otherwise observable only through the client's behaviour: an application profile
+     * that never reaches the client looks exactly like one that does.
+     */
+    public BigtableDataSettings settings(TableDestination table) throws IOException {
+        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials())
+                .build();
+    }
+
+    /** Loads credentials before the seam's first call, when the process that owns it starts. */
+    public void loadCredentials() throws IOException {
+        credentials();
+    }
+
+    /** Supplies a runtime provider directly for settings-level tests. */
+    public void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
+        this.credentialsOverride = credentialsOverride;
+    }
+
+    /** Closes the client if one was built, and refuses to build another. */
+    public void close() throws IOException {
+        BigtableDataClient toClose;
+        synchronized (this) {
+            closed = true;
+            toClose = client;
+            client = null;
+        }
+        if (toClose != null) {
+            toClose.close();
+        }
+    }
+
+    @Nullable
+    private CredentialsProvider credentials() throws IOException {
+        if (credentialsOverride == null && serviceAccountKeyFile != null) {
+            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
+        }
+        return credentialsOverride;
+    }
+}

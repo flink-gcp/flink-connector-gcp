@@ -111,6 +111,7 @@ class DataClientRowKeySamplerTest {
 
         assertThatThrownBy(() -> sampler.sample(TABLE))
                 .isInstanceOf(IOException.class)
+                .hasMessageContaining("Bigtable row key sampler")
                 .hasMessageContaining("was closed before it was used");
     }
 }
