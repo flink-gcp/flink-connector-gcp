@@ -111,6 +111,7 @@ class DataClientRowStreamOpenerTest {
 
         assertThatThrownBy(() -> opener.open(TABLE, ByteStringRange.unbounded(), null))
                 .isInstanceOf(IOException.class)
+                .hasMessageContaining("Bigtable row stream opener")
                 .hasMessageContaining("was closed before it was used");
     }
 }

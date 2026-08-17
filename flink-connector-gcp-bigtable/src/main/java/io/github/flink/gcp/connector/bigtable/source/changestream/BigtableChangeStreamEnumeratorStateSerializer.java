@@ -55,9 +55,7 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
             ChangeStreamPartitionSplitSerializer.writePartition(out, merge.getPartition());
             out.writeInt(merge.getContinuationTokens().size());
             for (ChangeStreamContinuationToken token : merge.getContinuationTokens()) {
-                byte[] bytes = token.toByteString().toByteArray();
-                out.writeInt(bytes.length);
-                out.write(bytes);
+                ChangeStreamPartitionSplitSerializer.writeBytes(out, token.toByteString());
             }
             ChangeStreamPartitionSplitSerializer.writeInstant(out, merge.getLowWatermark());
         }

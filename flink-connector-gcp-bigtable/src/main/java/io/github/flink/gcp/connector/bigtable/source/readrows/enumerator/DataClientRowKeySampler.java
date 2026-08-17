@@ -25,8 +25,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
-import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import javax.annotation.Nullable;
@@ -59,23 +58,12 @@ public final class DataClientRowKeySampler implements RowKeySampler {
 
     private static final long serialVersionUID = 1L;
 
-    @Nullable private final String appProfileId;
-    @Nullable private final EmulatorEndpoint emulatorEndpoint;
-    @Nullable private final String serviceAccountKeyFile;
-
     /**
-     * The client, built on first use.
-     *
-     * <p>Transient because this sampler is serialized into the job graph; {@code volatile} and
-     * guarded by the monitor below because {@link #sample} runs on the executor {@code
-     * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} runs on the
-     * coordinator thread.
+     * The client this sampler reads through, and everything around building it: {@link #sample}
+     * runs on the executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link
+     * #close()} runs on the coordinator thread.
      */
-    @Nullable private transient volatile BigtableDataClient client;
-
-    @Nullable private transient CredentialsProvider credentialsOverride;
-
-    private transient volatile boolean closed;
+    private final LazyBigtableDataClient client;
 
     /**
      * Creates the sampler.
@@ -94,16 +82,16 @@ public final class DataClientRowKeySampler implements RowKeySampler {
             @Nullable String appProfileId,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable String serviceAccountKeyFile) {
-        this.appProfileId = appProfileId;
-        this.emulatorEndpoint = emulatorEndpoint;
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.client =
+                new LazyBigtableDataClient(
+                        "row key sampler", appProfileId, emulatorEndpoint, serviceAccountKeyFile);
     }
 
     @Override
     public List<RowKeySample> sample(TableDestination table) throws IOException {
         // The TargetId overload, not the String one: that one is deprecated. TableId is the
         // TargetId a table has; authorized views are the other one and are out of scope here.
-        List<KeyOffset> keyOffsets = client(table).sampleRowKeys(TableId.of(table.getTable()));
+        List<KeyOffset> keyOffsets = client.get(table).sampleRowKeys(TableId.of(table.getTable()));
         List<RowKeySample> samples = new ArrayList<>(keyOffsets.size());
         for (KeyOffset keyOffset : keyOffsets) {
             samples.add(RowKeySample.of(keyOffset.getKey(), keyOffset.getOffsetBytes()));
@@ -113,40 +101,7 @@ public final class DataClientRowKeySampler implements RowKeySampler {
 
     @Override
     public void close() throws IOException {
-        BigtableDataClient toClose;
-        synchronized (this) {
-            closed = true;
-            toClose = client;
-            client = null;
-        }
-        if (toClose != null) {
-            toClose.close();
-        }
-    }
-
-    /**
-     * Returns the client, building it on first use.
-     *
-     * <p>The monitor is this object rather than a lock field, because a lock field would have to
-     * travel in the job graph.
-     */
-    private BigtableDataClient client(TableDestination table) throws IOException {
-        BigtableDataClient existing = client;
-        if (existing != null) {
-            return existing;
-        }
-        synchronized (this) {
-            if (closed) {
-                throw new IOException(
-                        "The Bigtable row key sampler for "
-                                + table
-                                + " was closed before it was used.");
-            }
-            if (client == null) {
-                client = BigtableDataClient.create(settings(table));
-            }
-            return client;
-        }
+        client.close();
     }
 
     /**
@@ -156,26 +111,17 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination table) throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials())
-                .build();
+        return client.settings(table);
     }
 
     /** Loads credentials when the JobManager creates or restores the enumerator. */
     public void loadCredentials() throws IOException {
-        credentials();
+        client.loadCredentials();
     }
 
     /** Supplies a runtime provider directly for settings-level tests. */
     @VisibleForTesting
     void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        this.credentialsOverride = credentialsOverride;
-    }
-
-    @Nullable
-    private CredentialsProvider credentials() throws IOException {
-        if (credentialsOverride == null && serviceAccountKeyFile != null) {
-            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
-        }
-        return credentialsOverride;
+        client.setCredentialsOverride(credentialsOverride);
     }
 }

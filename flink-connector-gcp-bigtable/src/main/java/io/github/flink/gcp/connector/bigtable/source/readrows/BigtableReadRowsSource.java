@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigtable.source.readrows;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
@@ -29,11 +28,10 @@ import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
-import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.cloud.bigtable.data.v2.models.Row;
+import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
@@ -146,31 +144,5 @@ public class BigtableReadRowsSource<T>
     @Override
     public TypeInformation<T> getProducedType() {
         return config.getDeserializer().getProducedType();
-    }
-
-    /**
-     * Adapts a {@link SourceReaderContext} to the context a {@link DeserializationSchema} expects.
-     *
-     * <p>Flink offers no adapter of its own, and every FLIP-27 source that opens a deserialization
-     * schema writes this one.
-     */
-    private static final class ReaderInitializationContext
-            implements DeserializationSchema.InitializationContext {
-
-        private final SourceReaderContext context;
-
-        private ReaderInitializationContext(SourceReaderContext context) {
-            this.context = context;
-        }
-
-        @Override
-        public MetricGroup getMetricGroup() {
-            return context.metricGroup();
-        }
-
-        @Override
-        public UserCodeClassLoader getUserCodeClassLoader() {
-            return context.getUserCodeClassLoader();
-        }
     }
 }
