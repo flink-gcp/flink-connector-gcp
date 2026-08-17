@@ -28,6 +28,9 @@ import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
+import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -82,7 +85,32 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         try (DefaultChangeStreamCoordinatorClient coordinator =
                 new DefaultChangeStreamCoordinatorClient(table, APP_PROFILE)) {
             coordinator.loadCredentials();
-            assertThat(coordinator.generateInitialPartitions()).hasSizeGreaterThanOrEqualTo(4);
+            List<ByteStringRange> partitions = coordinator.generateInitialPartitions();
+            assertThat(partitions).hasSizeGreaterThanOrEqualTo(4);
+
+            // The production service's own spelling, which no emulator or fake reproduces: the
+            // client builds each partition with ByteStringRange.create(start_key_closed,
+            // end_key_open), so the keyspace ends arrive as bounded bounds at the empty key rather
+            // than as UNBOUNDED (#943). Everything downstream reads bound types, so this is the
+            // fold that has to have happened by here. Asserting the fold and the reason for it: no
+            // returned range may carry an empty key on a bounded side, and the two keyspace ends
+            // must be unbounded.
+            assertThat(partitions)
+                    .allSatisfy(
+                            partition -> {
+                                if (partition.getStartBound() != BoundType.UNBOUNDED) {
+                                    assertThat(partition.getStart()).isNotEqualTo(ByteString.EMPTY);
+                                }
+                                if (partition.getEndBound() != BoundType.UNBOUNDED) {
+                                    assertThat(partition.getEnd()).isNotEqualTo(ByteString.EMPTY);
+                                }
+                            });
+            assertThat(partitions)
+                    .filteredOn(partition -> partition.getStartBound() == BoundType.UNBOUNDED)
+                    .hasSize(1);
+            assertThat(partitions)
+                    .filteredOn(partition -> partition.getEndBound() == BoundType.UNBOUNDED)
+                    .hasSize(1);
         }
         Instant start = Instant.now();
         String[] expected =

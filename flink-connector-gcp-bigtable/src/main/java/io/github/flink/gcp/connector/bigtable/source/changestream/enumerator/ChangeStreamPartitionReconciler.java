@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
-import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -92,7 +91,10 @@ final class ChangeStreamPartitionReconciler {
     private static MissingPartition find(
             ByteStringRange partition, List<MissingPartition> missingPartitions) {
         for (MissingPartition missing : missingPartitions) {
-            if (RowRanges.format(partition).equals(RowRanges.format(missing.getPartition()))) {
+            // Exact range equality, not RowRanges.format(): that renderer prints "*" both for an
+            // unbounded bound and for a bound at the row key "*" (0x2A), so comparing renderings
+            // could hand a partition another one's grace timer and low watermark.
+            if (partition.equals(missing.getPartition())) {
                 return missing;
             }
         }
@@ -104,7 +106,11 @@ final class ChangeStreamPartitionReconciler {
         List<ChangeStreamContinuationToken> tokens = new ArrayList<>();
         for (PendingMerge merge : merges) {
             for (ChangeStreamContinuationToken token : merge.getContinuationTokens()) {
-                if (containedBy(token.getPartition(), target) && !tokens.contains(token)) {
+                // copyOf, because a token's partition comes straight from the proto through
+                // ByteStringRange.create and spells an absent bound as an empty key rather than as
+                // UNBOUNDED. See RowRanges.copyOf.
+                if (containedBy(RowRanges.copyOf(token.getPartition()), target)
+                        && !tokens.contains(token)) {
                     tokens.add(token);
                 }
             }
@@ -130,13 +136,13 @@ final class ChangeStreamPartitionReconciler {
     private static List<ByteStringRange> uncovered(
             ByteStringRange target, List<ByteStringRange> ledgerRanges) {
         List<ByteStringRange> sorted = new ArrayList<>(ledgerRanges);
-        sorted.sort(ChangeStreamPartitionReconciler::compareStarts);
-        ByteString cursor = isUnboundedStart(target) ? null : target.getStart();
-        ByteString targetEnd = isUnboundedEnd(target) ? null : target.getEnd();
+        sorted.sort(RowRanges::compareStarts);
+        ByteString cursor = RowRanges.isUnboundedStart(target) ? null : target.getStart();
+        ByteString targetEnd = RowRanges.isUnboundedEnd(target) ? null : target.getEnd();
         List<ByteStringRange> gaps = new ArrayList<>();
         for (ByteStringRange ledger : sorted) {
-            ByteString ledgerStart = isUnboundedStart(ledger) ? null : ledger.getStart();
-            ByteString ledgerEnd = isUnboundedEnd(ledger) ? null : ledger.getEnd();
+            ByteString ledgerStart = RowRanges.isUnboundedStart(ledger) ? null : ledger.getStart();
+            ByteString ledgerEnd = RowRanges.isUnboundedEnd(ledger) ? null : ledger.getEnd();
             if (ledgerEnd != null
                     && cursor != null
                     && RowRanges.compareKeys(ledgerEnd, cursor) <= 0) {
@@ -182,20 +188,10 @@ final class ChangeStreamPartitionReconciler {
         return range;
     }
 
-    private static int compareStarts(ByteStringRange left, ByteStringRange right) {
-        if (isUnboundedStart(left)) {
-            return isUnboundedStart(right) ? 0 : -1;
-        }
-        if (isUnboundedStart(right)) {
-            return 1;
-        }
-        return RowRanges.compareKeys(left.getStart(), right.getStart());
-    }
-
     static boolean tokensCover(ByteStringRange target, List<ChangeStreamContinuationToken> tokens) {
         List<ByteStringRange> ranges = new ArrayList<>();
         for (ChangeStreamContinuationToken token : tokens) {
-            ranges.add(token.getPartition());
+            ranges.add(RowRanges.copyOf(token.getPartition()));
         }
         return rangesCover(target, ranges);
     }
@@ -204,17 +200,8 @@ final class ChangeStreamPartitionReconciler {
         if (ranges.isEmpty()) {
             return false;
         }
-        ranges.sort(
-                (left, right) -> {
-                    if (isUnboundedStart(left)) {
-                        return isUnboundedStart(right) ? 0 : -1;
-                    }
-                    if (isUnboundedStart(right)) {
-                        return 1;
-                    }
-                    return RowRanges.compareKeys(left.getStart(), right.getStart());
-                });
-        if (!sameStart(ranges.get(0), target)) {
+        ranges.sort(RowRanges::compareStarts);
+        if (!RowRanges.sameStart(ranges.get(0), target)) {
             return false;
         }
         for (int i = 1; i < ranges.size(); i++) {
@@ -224,39 +211,19 @@ final class ChangeStreamPartitionReconciler {
                 return false;
             }
         }
-        return sameEnd(ranges.get(ranges.size() - 1), target);
+        return RowRanges.sameEnd(ranges.get(ranges.size() - 1), target);
     }
 
     private static boolean containedBy(ByteStringRange inner, ByteStringRange outer) {
         boolean startsInside =
-                isUnboundedStart(outer)
-                        || (!isUnboundedStart(inner)
+                RowRanges.isUnboundedStart(outer)
+                        || (!RowRanges.isUnboundedStart(inner)
                                 && RowRanges.compareKeys(inner.getStart(), outer.getStart()) >= 0);
         boolean endsInside =
-                isUnboundedEnd(outer)
-                        || (!isUnboundedEnd(inner)
+                RowRanges.isUnboundedEnd(outer)
+                        || (!RowRanges.isUnboundedEnd(inner)
                                 && RowRanges.compareKeys(inner.getEnd(), outer.getEnd()) <= 0);
         return startsInside && endsInside;
-    }
-
-    private static boolean sameStart(ByteStringRange left, ByteStringRange right) {
-        return (isUnboundedStart(left) && isUnboundedStart(right))
-                || (left.getStartBound() == right.getStartBound()
-                        && left.getStart().equals(right.getStart()));
-    }
-
-    private static boolean sameEnd(ByteStringRange left, ByteStringRange right) {
-        return (isUnboundedEnd(left) && isUnboundedEnd(right))
-                || (left.getEndBound() == right.getEndBound()
-                        && left.getEnd().equals(right.getEnd()));
-    }
-
-    private static boolean isUnboundedStart(ByteStringRange range) {
-        return range.getStartBound() == BoundType.UNBOUNDED || range.getStart().isEmpty();
-    }
-
-    private static boolean isUnboundedEnd(ByteStringRange range) {
-        return range.getEndBound() == BoundType.UNBOUNDED || range.getEnd().isEmpty();
     }
 
     static final class Result {

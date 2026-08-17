@@ -244,6 +244,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   requires the protobuf boundary oneof to be set. `RowRanges.copyOf` intentionally normalizes the
   empty key for internal algebra, so the reader reconstructs the explicit boundary pair before
   building either a `ReadChangeStream` request or an SDK continuation token (#533).
+- **That normalization is owed on the way *in*, not only on the way out** (#943). Every range the
+  service hands back — `generateInitialPartitions`, and every `ChangeStreamContinuationToken`
+  partition — is built by `ByteStringRange.create`, which unlike the four setters leaves an empty
+  key as a *bounded* bound. So `ChangeStreamCoordinatorClient.generateInitialPartitions` declares
+  normalized output, `DefaultChangeStreamCoordinatorClient` folds both its branches through
+  `RowRanges.copyAll`, and the reconciler folds the token partitions it reads directly. Skipping it
+  is silent: a table's last partition reads as a range ending at the empty key, so no gap is ever
+  reported for it, and its first never matches the `MissingPartition` remembered from the previous
+  scan, so neither grace period elapses and the partition is never restarted.
+- **`RowRanges.format` is a renderer and never an identity** (#910). It prints `*` for an unbounded
+  bound and, because `escape` keeps printable ASCII readable, also for a bound at the row key `*`
+  (`0x2A`). Range identity is `ByteStringRange.equals`; the rendering call sites are correct as they
+  are, and the four `StartPositionResolver.resolveRestored` arguments are labels for a log line and
+  a message, which that resolver never compares.
 - **The connector-owned mutation supplies its own tagged serializer.** It preserves all mutation
   metadata and the ordered typed entries and values in the pinned 2.80.0 input model. Its `@TypeInfo`
   annotation keeps later `TypeInformation.of(ChangeStreamMutation.class)` calls on that serializer

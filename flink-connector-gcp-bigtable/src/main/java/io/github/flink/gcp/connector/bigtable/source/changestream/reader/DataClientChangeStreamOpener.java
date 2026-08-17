@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitions;
 
 import javax.annotation.Nullable;
 

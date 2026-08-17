@@ -23,12 +23,14 @@ import com.google.bigtable.admin.v2.ChangeStreamConfig;
 import com.google.cloud.bigtable.admin.v2.models.AppProfile;
 import com.google.cloud.bigtable.admin.v2.models.Table;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -103,6 +105,27 @@ class DefaultChangeStreamCoordinatorClientTest {
         assertThatThrownBy(() -> client(operations).generateInitialPartitions())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("no initial Change Streams partitions");
+    }
+
+    @Test
+    void foldsTheEmptyKeyBoundsTheServiceUsesIntoUnboundedOnes() throws Exception {
+        // GenerateInitialChangeStreamPartitionsUserCallable hands every partition to
+        // ByteStringRange.create(start_key_closed, end_key_open), and create — unlike the
+        // startClosed/endOpen setters — leaves an empty key as a bounded one. So a table's first
+        // partition arrives closed at the empty key and its last open at it. Everything downstream
+        // reads bound types, and the value types it flows into normalise on construction, so an
+        // unfolded partition compares unequal to its own remembered copy and reads as a range that
+        // begins or ends at the smallest key there is. This is the only place that can fold it.
+        FakeOperations operations = new FakeOperations();
+        operations.partitions =
+                Arrays.asList(
+                        ByteStringRange.create(ByteString.EMPTY, ByteString.copyFromUtf8("m")),
+                        ByteStringRange.create(ByteString.copyFromUtf8("m"), ByteString.EMPTY));
+
+        assertThat(client(operations).generateInitialPartitions())
+                .containsExactly(
+                        ByteStringRange.unbounded().endOpen("m"),
+                        ByteStringRange.unbounded().startClosed("m"));
     }
 
     @Test

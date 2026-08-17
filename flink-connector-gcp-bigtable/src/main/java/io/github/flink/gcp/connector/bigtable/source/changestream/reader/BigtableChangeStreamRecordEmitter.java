@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.base.source.SynchronousDeserializationColle
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitions;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;

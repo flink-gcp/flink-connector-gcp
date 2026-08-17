@@ -560,32 +560,23 @@ final class BigtableFilterPushDown {
                 return false;
             }
             State state = (State) o;
+            // The ranges are compared as ranges rather than as RowRanges.format() renderings. That
+            // renderer prints "*" both for an unbounded bound and for a bound at the row key "*"
+            // (0x2A), and a SQL predicate reaches both spellings, so comparing renderings is lossy
+            // — though not, today, decisive: translate derives the ranges from the accepted filters
+            // and the schema, which the enclosing BigtableDynamicSource.equals already compares, so
+            // no pair of states can differ here alone. This keeps the comparison exact anyway, at
+            // no cost, so that a future range not derived from the filters cannot slip through.
+            // List.equals settles null against empty too, so no separate nullness guard is needed.
             return accepted.equals(state.accepted)
                     && remaining.equals(state.remaining)
-                    && (rowKeyRanges == null) == (state.rowKeyRanges == null)
-                    && rangeStrings(rowKeyRanges).equals(rangeStrings(state.rowKeyRanges))
+                    && Objects.equals(rowKeyRanges, state.rowKeyRanges)
                     && Objects.equals(proto(cellPredicate), proto(state.cellPredicate));
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(
-                    accepted,
-                    remaining,
-                    rowKeyRanges != null,
-                    rangeStrings(rowKeyRanges),
-                    proto(cellPredicate));
-        }
-
-        private static List<String> rangeStrings(@Nullable List<ByteStringRange> ranges) {
-            if (ranges == null) {
-                return Collections.emptyList();
-            }
-            List<String> result = new ArrayList<>(ranges.size());
-            for (ByteStringRange range : ranges) {
-                result.add(RowRanges.format(range));
-            }
-            return result;
+            return Objects.hash(accepted, remaining, rowKeyRanges, proto(cellPredicate));
         }
 
         @Nullable

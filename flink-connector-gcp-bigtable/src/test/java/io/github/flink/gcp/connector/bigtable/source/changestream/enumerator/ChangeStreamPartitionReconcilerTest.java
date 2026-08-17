@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -387,6 +389,113 @@ class ChangeStreamPartitionReconcilerTest {
         assertThat(result.recoveries)
                 .singleElement()
                 .satisfies(recovery -> assertThat(recovery.lowWatermark).isEqualTo(earliest));
+    }
+
+    @Test
+    void keepsTwoPartitionsApartWhenOneEndsAtTheRowKeyTheRendererUsesAsItsSentinel() {
+        // RowRanges.format renders an unbounded end and an end at the row key "*" (0x2A) the same
+        // way, so matching a service partition to a remembered one by its rendering confuses these
+        // two. The one remembered here ends at "*"; the one being scanned runs to the end of the
+        // table. Matching them would hand the second the first's grace timer and low watermark.
+        ByteStringRange endsAtStar = ByteStringRange.unbounded().startClosed("a").endOpen("*");
+        ByteStringRange runsToTheEnd = ByteStringRange.unbounded().startClosed("a");
+        assertThat(RowRanges.format(endsAtStar)).isEqualTo(RowRanges.format(runsToTheEnd));
+
+        Instant longAgo = NOW.minus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE);
+        ChangeStreamPartitionReconciler.Result result =
+                reconciler.reconcile(
+                        Collections.singletonList(runsToTheEnd),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.singletonList(
+                                new MissingPartition(endsAtStar, longAgo, NOW.minusSeconds(30))),
+                        NOW,
+                        NOW);
+
+        // Not recognised, so it is observed for the first time now and no grace has elapsed.
+        assertThat(result.recoveries).isEmpty();
+        assertThat(result.missing)
+                .singleElement()
+                .satisfies(
+                        missing -> {
+                            assertThat(missing.getPartition()).isEqualTo(runsToTheEnd);
+                            assertThat(missing.getFirstObserved()).isEqualTo(NOW);
+                        });
+    }
+
+    @Test
+    void requiresNormalisedPartitionsToRecogniseOneAcrossScans() {
+        // GenerateInitialChangeStreamPartitionsUserCallable builds every partition with
+        // ByteStringRange.create(start_key_closed, end_key_open), so the first partition of a table
+        // arrives as a CLOSED bound at the empty key rather than as UNBOUNDED. This reconciler
+        // reads bound types, so it requires that spelling to be folded first — which is
+        // DefaultChangeStreamCoordinatorClient's job, pinned by its own test. Both halves are
+        // asserted here because the failure is silent: the partition is simply never recovered.
+        ByteStringRange asTheServiceSendsIt = ByteStringRange.create(ByteString.EMPTY, key("m"));
+
+        assertThat(recoveriesAfterTwoScansSeparatedByTheTokenlessGrace(asTheServiceSendsIt))
+                .as("raw service spelling: firstObserved resets, so no grace can elapse")
+                .isEmpty();
+        assertThat(
+                        recoveriesAfterTwoScansSeparatedByTheTokenlessGrace(
+                                RowRanges.copyOf(asTheServiceSendsIt)))
+                .as("normalised: recognised across scans, so the grace elapses")
+                .singleElement()
+                .satisfies(recovery -> assertThat(recovery.tokenless).isTrue());
+    }
+
+    @Test
+    void requiresNormalisedPartitionsToSeeTheLastPartitionOfATableAtAll() {
+        // The mirror case: the last partition arrives with an empty end_key_open. Read literally
+        // that is a range ending at the empty key — the smallest key there is — so it contains
+        // nothing and the reconciler reports no gap however long the ledger has been missing it.
+        ByteStringRange asTheServiceSendsIt = ByteStringRange.create(key("m"), ByteString.EMPTY);
+
+        assertThat(missingAfterOneScanOfAnEmptyLedger(asTheServiceSendsIt))
+                .as("raw service spelling: the partition looks empty, so nothing is missing")
+                .isEmpty();
+        assertThat(missingAfterOneScanOfAnEmptyLedger(RowRanges.copyOf(asTheServiceSendsIt)))
+                .as("normalised: the whole partition is uncovered")
+                .hasSize(1);
+    }
+
+    private List<ChangeStreamPartitionReconciler.Recovery>
+            recoveriesAfterTwoScansSeparatedByTheTokenlessGrace(ByteStringRange partition) {
+        ChangeStreamPartitionReconciler scanner = new ChangeStreamPartitionReconciler();
+        List<ByteStringRange> service = Collections.singletonList(partition);
+        ChangeStreamPartitionReconciler.Result first =
+                scanner.reconcile(
+                        service,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        NOW,
+                        NOW.minusSeconds(60));
+        Instant later = NOW.plus(ChangeStreamPartitionReconciler.TOKENLESS_GRACE).plusSeconds(60);
+        return scanner.reconcile(
+                        service,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        first.missing,
+                        later,
+                        later.minusSeconds(60))
+                .recoveries;
+    }
+
+    private List<MissingPartition> missingAfterOneScanOfAnEmptyLedger(ByteStringRange partition) {
+        return new ChangeStreamPartitionReconciler()
+                .reconcile(
+                        Collections.singletonList(partition),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        NOW,
+                        NOW.minusSeconds(60))
+                .missing;
+    }
+
+    private static ByteString key(String text) {
+        return ByteString.copyFromUtf8(text);
     }
 
     private static ChangeStreamPartitionSplit split(String id, ByteStringRange partition) {

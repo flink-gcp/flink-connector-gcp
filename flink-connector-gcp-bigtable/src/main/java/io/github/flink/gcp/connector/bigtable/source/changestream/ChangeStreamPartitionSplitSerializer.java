@@ -90,24 +90,27 @@ public final class ChangeStreamPartitionSplitSerializer
 
     static void writePartition(DataOutputSerializer out, ByteStringRange partition)
             throws IOException {
-        BoundType start = partition.getStartBound();
-        if (start == BoundType.UNBOUNDED) {
-            out.writeBoolean(false);
-        } else if (start == BoundType.CLOSED) {
-            out.writeBoolean(true);
-            writeBytes(out, partition.getStart());
-        } else {
-            throw new IOException("A change-stream partition must have a closed start: " + start);
+        // The rule and its wording live in ChangeStreamPartitions; only the currency is ours, since
+        // SimpleVersionedSerializer answers in IOException. Checked before the first write rather
+        // than between the two, which is unobservable — every caller builds a local buffer and
+        // returns it only on the success path — and leaves nothing half-written to reason about.
+        String violation = ChangeStreamPartitions.partitionShapeViolation(partition);
+        if (violation != null) {
+            throw new IOException(violation);
         }
 
-        BoundType end = partition.getEndBound();
-        if (end == BoundType.UNBOUNDED) {
+        if (partition.getStartBound() == BoundType.UNBOUNDED) {
             out.writeBoolean(false);
-        } else if (end == BoundType.OPEN) {
+        } else {
+            out.writeBoolean(true);
+            writeBytes(out, partition.getStart());
+        }
+
+        if (partition.getEndBound() == BoundType.UNBOUNDED) {
+            out.writeBoolean(false);
+        } else {
             out.writeBoolean(true);
             writeBytes(out, partition.getEnd());
-        } else {
-            throw new IOException("A change-stream partition must have an open end: " + end);
         }
     }
 

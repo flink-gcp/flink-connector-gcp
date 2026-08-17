@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
-import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
@@ -88,8 +87,8 @@ final class PendingMergeAccumulator {
     boolean isComplete() {
         return !tokens.isEmpty()
                 && disconnectedPairs == 0
-                && sameStart(tokens.first().partition, partition)
-                && sameEnd(tokens.last().partition, partition);
+                && RowRanges.sameStart(tokens.first().partition, partition)
+                && RowRanges.sameEnd(tokens.last().partition, partition);
     }
 
     ByteStringRange partitionKey() {
@@ -131,64 +130,22 @@ final class PendingMergeAccumulator {
 
     private boolean connected(ByteStringRange left, ByteStringRange right) {
         adjacencyEvaluations++;
-        return !isUnboundedEnd(left)
-                && !isUnboundedStart(right)
+        return !RowRanges.isUnboundedEnd(left)
+                && !RowRanges.isUnboundedStart(right)
                 && left.getEnd().equals(right.getStart())
                 && left.getEndBound() != right.getStartBound();
     }
 
     private static int compareEntries(TokenEntry left, TokenEntry right) {
-        int result = compareStarts(left.partition, right.partition);
+        int result = RowRanges.compareStarts(left.partition, right.partition);
         if (result != 0) {
             return result;
         }
-        result = compareEnds(left.partition, right.partition);
+        result = RowRanges.compareEnds(left.partition, right.partition);
         if (result != 0) {
             return result;
         }
         return left.token.getToken().compareTo(right.token.getToken());
-    }
-
-    private static int compareStarts(ByteStringRange left, ByteStringRange right) {
-        if (isUnboundedStart(left) || isUnboundedStart(right)) {
-            return Boolean.compare(!isUnboundedStart(left), !isUnboundedStart(right));
-        }
-        int result = RowRanges.compareKeys(left.getStart(), right.getStart());
-        if (result != 0) {
-            return result;
-        }
-        return left.getStartBound().compareTo(right.getStartBound());
-    }
-
-    private static int compareEnds(ByteStringRange left, ByteStringRange right) {
-        if (isUnboundedEnd(left) || isUnboundedEnd(right)) {
-            return Boolean.compare(isUnboundedEnd(left), isUnboundedEnd(right));
-        }
-        int result = RowRanges.compareKeys(left.getEnd(), right.getEnd());
-        if (result != 0) {
-            return result;
-        }
-        return left.getEndBound().compareTo(right.getEndBound());
-    }
-
-    private static boolean sameStart(ByteStringRange left, ByteStringRange right) {
-        return (isUnboundedStart(left) && isUnboundedStart(right))
-                || (left.getStartBound() == right.getStartBound()
-                        && left.getStart().equals(right.getStart()));
-    }
-
-    private static boolean sameEnd(ByteStringRange left, ByteStringRange right) {
-        return (isUnboundedEnd(left) && isUnboundedEnd(right))
-                || (left.getEndBound() == right.getEndBound()
-                        && left.getEnd().equals(right.getEnd()));
-    }
-
-    private static boolean isUnboundedStart(ByteStringRange range) {
-        return range.getStartBound() == BoundType.UNBOUNDED || range.getStart().isEmpty();
-    }
-
-    private static boolean isUnboundedEnd(ByteStringRange range) {
-        return range.getEndBound() == BoundType.UNBOUNDED || range.getEnd().isEmpty();
     }
 
     private static final class TokenEntry {
