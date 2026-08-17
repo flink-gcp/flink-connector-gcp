@@ -49,10 +49,9 @@ class FileLoadsOptionsMapperTest {
     /**
      * Every {@code FileLoadsOptions.Builder} setter and the option that feeds it.
      *
-     * <p>Keyed by <b>setter</b> rather than by getter, and that matters here more than anywhere
-     * else: three of these are {@code schemaReconcile*} on the way in and {@code getSchemaUpdate*}
-     * on the way out. The keys follow the setters, which also keeps them clear of the unrelated
-     * {@code sink.schema-update.*} family.
+     * <p>Keyed by <b>setter</b>, which is what a mapper calls. The keys are spelled after the
+     * {@code schemaReconcile*} vocabulary, which keeps them clear of the unrelated {@code
+     * sink.schema-update.*} family.
      */
     private static final Map<String, ConfigOption<?>> SETTER_TO_OPTION = new LinkedHashMap<>();
 
@@ -187,10 +186,9 @@ class FileLoadsOptionsMapperTest {
         assertThat(mapped.getParquetCompression()).isEqualTo(ParquetCompression.NONE);
         assertThat(mapped.getLoadJobPollInitialBackoff()).isEqualTo(Duration.ofSeconds(2));
         assertThat(mapped.getLoadJobPollMaxBackoff()).isEqualTo(Duration.ofSeconds(40));
-        // The setters say schemaReconcile*, the getters say schemaUpdate*.
-        assertThat(mapped.getSchemaUpdateInitialBackoff()).isEqualTo(Duration.ofSeconds(1));
-        assertThat(mapped.getSchemaUpdateMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
-        assertThat(mapped.getSchemaUpdateMaxAttempts()).isEqualTo(3);
+        assertThat(mapped.getSchemaReconcileInitialBackoff()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(mapped.getSchemaReconcileMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
+        assertThat(mapped.getSchemaReconcileMaxAttempts()).isEqualTo(3);
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
     }
 

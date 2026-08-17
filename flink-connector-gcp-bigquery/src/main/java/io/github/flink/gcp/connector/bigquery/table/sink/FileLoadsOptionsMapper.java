@@ -127,9 +127,8 @@ public final class FileLoadsOptionsMapper {
         config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_MAX_BACKOFF)
                 .ifPresent(builder::loadJobPollMaxBackoff);
 
-        // The setters are schemaReconcile*, the getters getSchemaUpdate*; the keys follow the
-        // setters, which is also what keeps them clear of the unrelated sink.schema-update.*
-        // family.
+        // The keys are spelled after the schemaReconcile* setters and getters, which is what
+        // keeps them clear of the unrelated sink.schema-update.* family.
         config.getOptional(
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF)
                 .ifPresent(builder::schemaReconcileInitialBackoff);

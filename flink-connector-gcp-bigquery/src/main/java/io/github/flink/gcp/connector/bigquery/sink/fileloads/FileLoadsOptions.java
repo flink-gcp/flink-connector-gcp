@@ -223,17 +223,17 @@ public final class FileLoadsOptions implements Serializable {
     }
 
     /** Returns the first backoff of the schema-reconcile budget. */
-    public Duration getSchemaUpdateInitialBackoff() {
+    public Duration getSchemaReconcileInitialBackoff() {
         return schemaReconcileInitialBackoff;
     }
 
     /** Returns the backoff cap of the schema-reconcile budget. */
-    public Duration getSchemaUpdateMaxBackoff() {
+    public Duration getSchemaReconcileMaxBackoff() {
         return schemaReconcileMaxBackoff;
     }
 
     /** Returns the maximum number of attempts of the schema-reconcile budget. */
-    public int getSchemaUpdateMaxAttempts() {
+    public int getSchemaReconcileMaxAttempts() {
         return schemaReconcileMaxAttempts;
     }
 
