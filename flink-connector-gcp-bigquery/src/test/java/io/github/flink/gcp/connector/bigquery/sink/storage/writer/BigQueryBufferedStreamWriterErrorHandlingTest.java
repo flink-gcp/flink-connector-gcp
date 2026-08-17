@@ -300,7 +300,43 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
                             writer.flush(false);
                         })
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("Replaying an append");
+                .hasMessageContaining("Replaying an append to BigQuery stream ")
+                // Shifted offsets are terminal, so the budget was never the reason this stopped.
+                // The exhaustion clause is conditional, and this is the arm that must not carry it.
+                .hasMessageNotContaining("the retry budget is exhausted");
+    }
+
+    @Test
+    void exhaustedRetryBudgetDuringAReplayIsTerminal() {
+        // A row-level rejection hands the survivors to the replay loop, whose own budget then runs
+        // out against transient failures. The replay loop reports exhaustion in the same words the
+        // same-offset loop does, and both reach them through one helper.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appendResults.add(
+                FakeBufferedStreamService.failure(rowLevelError(Map.of(0, "bad row"))));
+        for (int i = 0; i < 3; i++) {
+            service.appendResults.add(
+                    FakeBufferedStreamService.failure(
+                            new StatusRuntimeException(Status.UNAVAILABLE)));
+        }
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(new StringSerializer(), handler, null),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        assertThatThrownBy(
+                        () -> {
+                            writer.write("a0", CONTEXT);
+                            writer.write("a1", CONTEXT);
+                            writer.flush(false);
+                        })
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Replaying an append to BigQuery stream ")
+                .hasMessageContaining("the retry budget is exhausted")
+                .hasMessageContaining("(3 attempt(s))");
     }
 
     @Test
@@ -391,6 +427,36 @@ class BigQueryBufferedStreamWriterErrorHandlingTest {
         assertThat(service.openedAppenders).hasSize(2);
         assertThat(service.appends).hasSize(2);
         assertThat(service.appends.get(1).offset).isEqualTo(0);
+        assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
+    }
+
+    @Test
+    void aWriterThatClosesAgainMidResendIsReopenedAgain() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        // The reopened appender dies too. The retry loop has to repair it a second time from
+        // inside its own budget, not just once on the way in: every remaining attempt would
+        // otherwise append through a writer the SDK has already poisoned.
+        service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
+        service.appendResults.add(FakeBufferedStreamService.failure(writerClosed()));
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(),
+                        fastOptions(3),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+
+        writer.write("a", CONTEXT);
+        writer.flush(false);
+
+        // Only these two assertions are sensitive to the repair: the fake's appenders all share one
+        // response queue, so a stale one records appends indistinguishably from a fresh one. Two
+        // closes and three opens is as close as this fake gets to "reopened twice".
+        assertThat(service.closedAppenders)
+                .as("one close per reopen: once from recover, once from inside the retry budget")
+                .hasSize(2);
+        assertThat(service.openedAppenders).as("the initial open plus both reopens").hasSize(3);
+        assertThat(service.appends).hasSize(3);
+        assertThat(service.appends.get(2).offset).isEqualTo(0);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isEqualTo(0);
     }
 

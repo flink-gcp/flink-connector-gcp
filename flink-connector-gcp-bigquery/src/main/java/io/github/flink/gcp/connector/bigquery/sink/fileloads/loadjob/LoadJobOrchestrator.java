@@ -693,66 +693,57 @@ public final class LoadJobOrchestrator {
             StagingFormat format,
             boolean multipleFormats,
             int partitionIndex) {
-        String dataset =
-                options.getTempDataset() != null
-                        ? options.getTempDataset()
-                        : destination.getDataset();
         String hashMaterial = destination.toTablePath();
         if (checkpointId != null || multipleFormats) {
             // A format transition can put two independently partitioned loads for one destination
             // in the same checkpoint. Both need distinct temp tables and copy-job source lists.
+            // Streaming folds the format in unconditionally, not only where a transition is
+            // visible in this commit, so a destination's name is unchanged by the checkpoint on
+            // which a second format appears. Do not narrow this to multipleFormats alone: it
+            // renames every streaming single-format temp table, no test fails, and the first thing
+            // to notice is a retried commit that no longer re-attaches to the temp tables its
+            // predecessor left behind. Measured on #818.
             hashMaterial += "\n" + format;
         }
+        return tempTableNamed(destination, hashMaterial, "_p" + partitionIndex);
+    }
+
+    private TableDestination intermediateTable(
+            TableDestination destination, List<TableDestination> sources, int level, int group) {
+        return tempTableNamed(
+                destination, hashMaterialOf(destination, sources), "_l" + level + "_g" + group);
+    }
+
+    private TableDestination aggregateTable(
+            TableDestination destination, List<TableDestination> sources) {
+        return tempTableNamed(destination, hashMaterialOf(destination, sources), "_aggregate");
+    }
+
+    /**
+     * The temporary table one step of a commit writes into. The name is deterministic in {@code
+     * hashMaterial}, so a retried commit re-attaches to the tables its predecessor created instead
+     * of stranding them; callers vary only that material and the suffix.
+     */
+    private TableDestination tempTableNamed(
+            TableDestination destination, String hashMaterial, String suffix) {
+        String dataset =
+                options.getTempDataset() != null
+                        ? options.getTempDataset()
+                        : destination.getDataset();
         String name =
                 "tmp_"
                         + flinkJobId
                         + "_"
                         + sha256Hex(hashMaterial).substring(0, 12)
                         + (checkpointId != null ? "_c" + checkpointId : "")
-                        + "_p"
-                        + partitionIndex;
+                        + suffix;
         return TableDestination.of(destination.getProject(), dataset, name);
     }
 
-    private TableDestination intermediateTable(
-            TableDestination destination, List<TableDestination> sources, int level, int group) {
-        String dataset =
-                options.getTempDataset() != null
-                        ? options.getTempDataset()
-                        : destination.getDataset();
-        String hash =
-                sha256Hex(destination.toTablePath() + "\n" + String.join("\n", tablePaths(sources)))
-                        .substring(0, 12);
-        String name =
-                "tmp_"
-                        + flinkJobId
-                        + "_"
-                        + hash
-                        + (checkpointId != null ? "_c" + checkpointId : "")
-                        + "_l"
-                        + level
-                        + "_g"
-                        + group;
-        return TableDestination.of(destination.getProject(), dataset, name);
-    }
-
-    private TableDestination aggregateTable(
+    /** What a copy target hashes: its final destination and the sources feeding that step. */
+    private static String hashMaterialOf(
             TableDestination destination, List<TableDestination> sources) {
-        String dataset =
-                options.getTempDataset() != null
-                        ? options.getTempDataset()
-                        : destination.getDataset();
-        String hash =
-                sha256Hex(destination.toTablePath() + "\n" + String.join("\n", tablePaths(sources)))
-                        .substring(0, 12);
-        String name =
-                "tmp_"
-                        + flinkJobId
-                        + "_"
-                        + hash
-                        + (checkpointId != null ? "_c" + checkpointId : "")
-                        + "_aggregate";
-        return TableDestination.of(destination.getProject(), dataset, name);
+        return destination.toTablePath() + "\n" + String.join("\n", tablePaths(sources));
     }
 
     /**
