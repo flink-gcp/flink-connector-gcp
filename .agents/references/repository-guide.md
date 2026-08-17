@@ -30,7 +30,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   on a test-utils class added by #323, met on #324) and a newer one passing a broken reactor
   change. Nothing in CI is affected either way, since CI builds the reactor. That is a different
   problem from the one `binary-compat` and `e2e` solve by installing first: theirs is that a
-  goal-only or repeated-`-pl` invocation cannot span one reactor at all
+  goal-only or repeated-`-pl` invocation cannot span one reactor at all. **`binary-compat` derives
+  which modules that requires** (`scripts/ci-maven-args.py --install-modules`: every module another
+  module depends on), because the enumeration it used to carry went stale under a fifth uber-jar and
+  took the weekly job down (#932). `e2e` still names its two explicitly, and can: its own `-pl`
+  builds already name every connector, so it needs only the base and test-utils modules installed
 - **Scope local runs to the change, and let the CI lanes carry the rest.** A full
   `verify-module` with its emulator ITs runs ~8-10 minutes locally, while a per-connector CI lane
   verifies the same module in ~4 minutes from a clean state — so for a single-module change the
@@ -54,7 +58,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `CrossVersionSink`, and the compile error reads exactly like a real 1.x incompatibility
 - `just binary-compat 2.3.0` — the floor-build/install/fingerprint/ceiling-rerun/diff sequence
   behind the one-artifact claim (ADR-0053 records why its order and its install step are
-  load-bearing). Reproducing a red weekly `binary_compat` is what it is for, and run by hand it
+  load-bearing, and that the install set is derived from the poms rather than named in the recipe).
+  Reproducing a red weekly `binary_compat` is what it is for, and run by hand it
   primes `~/.m2` with `io.github.flink-gcp` SNAPSHOTs (the recipe comment has the cleanup line)
 - `just e2e` — the ITCases gated on the `BQ_IT_*` / `PUBSUB_IT_PROJECT` / `BIGTABLE_IT_PROJECT` /
   `SPANNER_IT_PROJECT`

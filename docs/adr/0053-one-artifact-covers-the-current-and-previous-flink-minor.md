@@ -79,7 +79,11 @@ step (root pom + each connector a SQL uber-jar bundles + the base module every c
 compiles against + the test-utils module every module's tests depend on) exists because the
 goal-only rerun cannot resolve inter-module dependencies from the reactor — the same mechanism
 the licence-goal-through-a-phase rule (root `AGENTS.md` § Build) guards against, and the one
-that bit this very ceiling rerun through the SQL uber-jar ([#181]). Run by hand it primes
+that bit this very ceiling rerun through the SQL uber-jar ([#181]). That set is derived from the
+poms by `scripts/ci-maven-args.py --install-modules`, which returns every module another module
+depends on. The recipe used to write it out, and the rule above stayed correct while the copy of it
+did not: the fifth uber-jar landed without an edit there, and the weekly `binary_compat` of
+2026-08-16 died resolving `flink-connector-gcp-spanner` ([#932]). Run by hand it primes
 `~/.m2` with `io.github.flink-gcp` SNAPSHOTs; the recipe comment carries the cleanup line.
 Reproducing a red weekly `binary_compat` locally with this recipe is the first move when the
 row goes red.
@@ -95,3 +99,4 @@ row goes red.
 [#39]: https://github.com/laughingman7743/flink-connector-gcp/issues/39
 [#102]: https://github.com/laughingman7743/flink-connector-gcp/issues/102
 [#181]: https://github.com/laughingman7743/flink-connector-gcp/issues/181
+[#932]: https://github.com/flink-gcp/flink-connector-gcp/issues/932

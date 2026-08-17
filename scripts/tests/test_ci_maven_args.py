@@ -221,6 +221,60 @@ def test_shaded_modules_come_out_in_reactor_order(fake_repo, ci_maven_args):
     assert ci_maven_args.shaded_modules(modules) == ["shaded", "also-shaded"]
 
 
+# --- the binary-compat install set, on the synthetic repo ---
+
+
+def dependency_modules(mod):
+    modules = mod.pom_modules()
+    return mod.reactor_dependency_modules(modules, mod.module_dependencies(modules))
+
+
+def test_the_install_set_is_what_something_else_depends_on(fake_repo, ci_maven_args):
+    # base (a and b depend on it) and b (shaded depends on it) — and nothing else.
+    # `a` is depended on by nothing, and `shaded` stands for an uber-jar: the goal-only
+    # rerun builds those, it does not resolve them, so installing them would be work
+    # for nothing. Reactor order, not sorted: "b" sorts *before* "base", so an
+    # alphabetical implementation fails here.
+    assert dependency_modules(ci_maven_args) == ["base", "b"]
+
+
+def test_the_install_set_leaves_the_root_module_to_its_caller(fake_repo, ci_maven_args):
+    # The root pom has to be installed too — every installed pom names it as parent —
+    # but it is nothing's <dependency>, so it cannot come from the graph. Asserted so
+    # that a later "just add the root here" does not double it up in the -pl list.
+    assert "." not in dependency_modules(ci_maven_args)
+    assert "root" not in dependency_modules(ci_maven_args)
+
+
+def test_a_new_connector_and_uber_jar_pair_needs_no_script_change(
+    fake_repo, ci_maven_args
+):
+    # The regression test for issue #932 itself: adding the pair is all it took to
+    # break the weekly job, because the recipe named the modules by hand. Here the
+    # connector joins the install set from the poms alone, and its uber-jar does not.
+    write_pom(
+        fake_repo, "root", modules=["base", "a", "b", "shaded", "gizmo", "sql-gizmo"]
+    )
+    write_pom(fake_repo, "gizmo", deps=["base"])
+    write_pom(fake_repo, "sql-gizmo", deps=["gizmo"])
+    assert dependency_modules(ci_maven_args) == ["base", "b", "gizmo"]
+
+
+def test_the_install_set_does_not_wait_on_the_notice_guard(
+    fake_repo, ci_maven_args, monkeypatch, capsys
+):
+    # The paired control to test_a_stale_notice_input_stops_the_run below: fake_repo
+    # has no scripts/, so NOTICE_INPUTS is stale there and the classification modes
+    # refuse to run. --install-modules must not, because it feeds a build recipe and
+    # a licence-source path has nothing to say about a module list. Moving that guard
+    # ahead of this mode would make `just binary-compat` fail for an unrelated reason.
+    monkeypatch.setattr("sys.argv", ["ci-maven-args.py", "--install-modules"])
+    ci_maven_args.main()
+    captured = capsys.readouterr()
+    assert captured.out == ".,base,b\n"
+    assert captured.err == ""
+
+
 # --- the two-phase closure, on the synthetic repo ---
 
 
@@ -409,6 +463,30 @@ def test_spanner_pulls_the_sql_uber_jar_and_its_notice(ci_maven_args):
     assert notices_anywhere(out)
 
 
+def test_install_modules_names_every_module_a_sibling_resolves(ci_maven_args):
+    # What `just binary-compat` hands to `-pl`, against the real poms. Rule-shaped
+    # rather than a pinned string, so a sixth connector needs no edit here either:
+    # every module something depends on, the root module named first, and no uber-jar
+    # (the rerun builds those). flink-connector-gcp-spanner is called out because its
+    # absence from the hand-written list is issue #932 — the weekly binary_compat job
+    # died resolving it for flink-sql-connector-gcp-spanner.
+    result = run_cli("--install-modules")
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    lines = result.stdout.splitlines()
+    assert len(lines) == 1, lines
+    named = lines[0].split(",")
+    assert named[0] == "."
+    assert "flink-connector-gcp-spanner" in named
+    assert not [m for m in named if m.startswith("flink-sql-connector-gcp-")]
+    for module in ["flink-connector-gcp-base", "flink-connector-gcp-test-utils"]:
+        assert module in named
+    # Every uber-jar's connector, derived from the module list rather than repeated.
+    for module in MODULES:
+        if module.startswith("flink-sql-connector-gcp-"):
+            assert module.replace("flink-sql-", "flink-", 1) in named
+
+
 def test_base_change_collapses_to_the_full_reactor(ci_maven_args):
     out = outputs(
         run_cli("--files", json.dumps(["flink-connector-gcp-base/src/X.java"]))
@@ -525,6 +603,10 @@ def test_malformed_json_is_an_infrastructure_error():
 
 def test_modes_are_mutually_exclusive():
     assert run_cli("--files", "[]", "--full").returncode == 2
+    # --install-modules belongs to the same group deliberately: it is another output
+    # mode, and combining it with a classification would have to mean something.
+    assert run_cli("--full", "--install-modules").returncode == 2
+    assert run_cli("--files", "[]", "--install-modules").returncode == 2
 
 
 def test_a_skill_edit_builds_nothing(tmp_path):

@@ -75,9 +75,9 @@ Each changed file is classified by the first matching rule:
    new top-level directory. Unknown means everything; that is the safe
    direction.
 
-Modes (verify.yaml's changes job passes the last two; no third-party
-changed-files action is involved — a pull_request checkout is the
-base-into-head merge commit, so its own git history already carries the
+The three classification modes (verify.yaml's changes job passes the last two;
+no third-party changed-files action is involved — a pull_request checkout is
+the base-into-head merge commit, so its own git history already carries the
 changed-file list, decided on PR #247 after weighing the supply-chain
 surface such actions add):
 
@@ -93,7 +93,18 @@ surface such actions add):
                           what a pull request with the current branch's
                           committed diff would build.
 
-Output, one `$GITHUB_OUTPUT`-style line each:
+And one mode that answers a different question from the same pom graph,
+classifying nothing (issue #932):
+
+  --install-modules       the modules `just binary-compat` must install before
+                          its goal-only rerun — every module another module
+                          depends on, root first, as one comma-separated `-pl`
+                          value on stdout and nothing else. ADR-0053 states the
+                          rule; the recipe used to restate it and went stale.
+                          This mode skips the NOTICE_INPUTS guard below, which
+                          has nothing to say about a module list.
+
+Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
 
   run_build=true|false    false when nothing Maven-relevant changed; the gate
                           job turns that into an explicit green.
@@ -386,7 +397,28 @@ def main() -> None:
     mode.add_argument(
         "--diff", metavar="BASE_REF", help="classify git diff BASE...HEAD"
     )
+    mode.add_argument(
+        "--install-modules",
+        action="store_true",
+        help="the comma-separated -pl *value* `just binary-compat` installs (ADR-0053)",
+    )
     args = parser.parse_args()
+
+    # Before check_notice_inputs_exist(), and on purpose: that guard protects the
+    # classification path, where a stale licence-source path silently skips the NOTICE
+    # check. It has nothing to say about a module list, and running it here would fail a
+    # build recipe for an unrelated reason. Nothing but the value goes to stdout — the
+    # recipe reads it into a shell variable — and it is the value alone rather than the
+    # `-pl `-prefixed form pl() returns, so the recipe can quote it as one word.
+    if args.install_modules:
+        modules = pom_modules()
+        print(
+            ",".join(
+                ["."]
+                + reactor_dependency_modules(modules, module_dependencies(modules))
+            )
+        )
+        return
 
     check_notice_inputs_exist()
     modules = pom_modules()
@@ -460,6 +492,31 @@ def shaded_modules(modules: list[str]) -> list[str]:
     selection, and would re-check a module the change never touched.
     """
     return [m for m in modules if (ROOT / m / "NOTICE.template").is_file()]
+
+
+def reactor_dependency_modules(
+    modules: list[str], edges: dict[str, set[str]]
+) -> list[str]:
+    """The modules that some other module depends on, in reactor order.
+
+    This is the set `just binary-compat` installs between its two runs. The second run is
+    goal-only, so it resolves every `io.github.flink-gcp` sibling from `~/.m2` instead of from
+    the reactor, and ADR-0053 states which modules that requires as a rule: the root pom, each
+    connector a SQL uber-jar bundles, the base module every connector compiles against, and the
+    test-utils module every module's tests depend on. Being depended upon *is* that rule — an
+    uber-jar is absent because nothing depends on it, which is right: the rerun builds it rather
+    than resolving it.
+
+    Derived rather than enumerated in the recipe, because the recipe's hand-written copy of this
+    same rule went stale when the fifth uber-jar landed, and the weekly `binary_compat` job died
+    resolving the connector it bundles (issue #932). A sixth connector is now covered from the
+    commit that adds it.
+
+    The root module is not among them: it is every module's `<parent>`, never a `<dependency>`,
+    so nothing here reports it and the caller names it.
+    """
+    depended_on = {dep for deps in edges.values() for dep in deps}
+    return [m for m in modules if m in depended_on]
 
 
 def pl(built: list[str]) -> str:
