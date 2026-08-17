@@ -41,8 +41,8 @@ public interface FailedElement {
 
     /**
      * Returns the connector that produced the failure, as a lower-case identifier ({@code
-     * "bigquery"}, {@code "pubsub"}, {@code "cloudtasks"}) — stable, so dead-letter consumers can
-     * key on it.
+     * "bigquery"}, {@code "bigtable"}, {@code "cloudtasks"}, {@code "pubsub"}, {@code "spanner"}) —
+     * stable, so dead-letter consumers can key on it.
      */
     String getConnector();
 

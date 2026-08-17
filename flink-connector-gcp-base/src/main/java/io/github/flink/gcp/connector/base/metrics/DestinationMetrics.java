@@ -33,8 +33,8 @@ import java.util.Map;
  * <p><b>Opt-in, and off by default, because Flink cannot unregister a metric.</b> A sink writing to
  * per-record destinations has an unbounded destination set — a topic per tenant, a table per day —
  * so registering a subgroup per destination would grow the metric registry for the lifetime of the
- * task and undo the eviction hygiene the writers themselves practise. Each connector exposes the
- * switch as {@code perDestinationMetrics} on its own options object.
+ * task and undo the eviction hygiene the writers themselves practise. Each connector that registers
+ * these counters exposes the switch as {@code perDestinationMetrics} on its own options object.
  *
  * <p>Entries are never removed, which is the deliberate consequence: a destination whose writer
  * state was evicted and later rebuilt reuses the counters it had, so its totals stay continuous

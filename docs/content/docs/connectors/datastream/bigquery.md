@@ -1798,7 +1798,7 @@ note covers Kubernetes Secret mounts, session clusters and rotation.
 
 | Attribute | Value |
 |---|---|
-| `dlq-connector` | `bigquery`, `bigtable`, `pubsub` or `cloudtasks` |
+| `dlq-connector` | `bigquery`, `bigtable`, `cloudtasks`, `pubsub` or `spanner` |
 | `dlq-destination` | the resource the element was bound for, or `unresolved` for an explicit BigQuery routing failure |
 | `dlq-error` | the failure description, truncated to Pub/Sub's 1024-byte attribute-value limit and marked with `...` |
 | `dlq-timestamp` | when the element was offered, ISO-8601 |

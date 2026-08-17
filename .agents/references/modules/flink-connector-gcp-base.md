@@ -102,11 +102,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
 ## `base.options` (`docs/adr/0068`)
 
 - `OptionChecks` holds `checkPositive`, `checkAtLeastOneMilli`, `checkAtLeastOneMilliOrZero` and
-  `checkExpressibleInNanos`; each clears the multiple-consumer bar on its own (nine ceiling sites
-  across three modules, thirty-one positivity sites across two, thirty-one millisecond-floor sites
-  across four — eleven of them zero-tolerant, across two). **A new check owes an argument of that
-  shape** — "it is a precondition too" is not one, and this is not a general-purpose precondition
-  library.
+  `checkExpressibleInNanos`; each clears the multiple-consumer bar on its own — `docs/adr/0068`
+  carries the dated call-site survey. **A new check owes an argument of that shape** — "it is a
+  precondition too" is not one, and this is not a general-purpose precondition library.
 - **Every `Duration` positivity message carries the offending value**, which is what settled the
   three shapes the tree had grown for one check. A rejection that names only the knob leaves a
   builder chain setting several durations ambiguous.
@@ -138,7 +136,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   is the message — a floor that would promise millisecond granularity where none applies does not
   belong there.
 - Numeric (`int`/`long`) positivity checks stay inline in their builders — the helper is
-  `Duration`-typed, and Bigtable and Cloud Tasks have no `Duration` positivity check at all.
+  `Duration`-typed.
 
 ## `base.lifecycle` (`docs/adr/0040`, `docs/adr/0007`, `docs/adr/0068`)
 

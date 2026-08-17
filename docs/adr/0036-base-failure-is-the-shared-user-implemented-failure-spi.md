@@ -52,8 +52,10 @@ Decisions not to re-litigate:
   built-ins' unchecked casts are safe because handlers only consume elements, and the connector
   builders' setters take `FailureHandler<? super X>` so a cross-connector
   `FailureHandler<FailedElement>` is accepted without a cast.
-- `getConnector()` values are lower-case module words (`bigquery`, `pubsub`, `cloudtasks`) and
-  are API — dead-letter consumers key on them. `describeDestination()` is not `getDestination()`
+- `getConnector()` values are lower-case module words and are API — dead-letter consumers key on
+  them. [#205] shipped `bigquery`, `pubsub` and `cloudtasks`; each later sink adds its own module
+  word, and the current list lives in `FailedElement.getConnector()`'s javadoc rather than here.
+  `describeDestination()` is not `getDestination()`
   because a connector's concrete type keeps a typed `getDestination()`, and a same-signature
   `String` override would be an irreconcilable clash.
 - **Which failures are row-level stays per-connector** (only data-shaped failures reach a
