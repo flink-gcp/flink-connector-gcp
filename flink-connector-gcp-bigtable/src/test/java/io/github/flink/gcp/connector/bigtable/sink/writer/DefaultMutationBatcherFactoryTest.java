@@ -461,6 +461,8 @@ class DefaultMutationBatcherFactoryTest {
     private static DefaultMutationBatcherFactory factory(
             String appProfileId, BigtableWriterOptions options, String emulatorEndpoint) {
         return new DefaultMutationBatcherFactory(
-                appProfileId, options, EmulatorEndpoint.parse(emulatorEndpoint));
+                appProfileId,
+                options,
+                EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint"));
     }
 }

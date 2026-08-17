@@ -189,7 +189,7 @@ class SpannerDynamicTableFactoryTest {
                 .isEqualTo(Duration.ofSeconds(8));
         assertThat(sink.getConfig().getWriterOptions().getRetryMaxAttempts()).isEqualTo(4);
         assertThat(sink.getConfig().getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:9010"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:9010", "emulatorEndpoint"));
     }
 
     @Test

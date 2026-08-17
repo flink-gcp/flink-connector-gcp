@@ -160,7 +160,9 @@ class DefaultSubscriberFactoryTest {
 
         Subscriber subscriber =
                 new DefaultSubscriberFactory(
-                                options, OrderingMode.NONE, EmulatorEndpoint.parse("localhost:1"))
+                                options,
+                                OrderingMode.NONE,
+                                EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
                         .create(SUBSCRIPTION, NO_OP_CONSUMER);
 
         assertThat(subscriber.getFlowControlSettings().getMaxOutstandingElementCount())
@@ -188,7 +190,7 @@ class DefaultSubscriberFactoryTest {
                 new DefaultSubscriberFactory(
                                 PubSubSubscriberOptions.defaults(),
                                 OrderingMode.NONE,
-                                EmulatorEndpoint.parse("localhost:1"))
+                                EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
                         .create(SUBSCRIPTION, NO_OP_CONSUMER);
         Subscriber confirming =
                 new DefaultSubscriberFactory(
@@ -196,7 +198,7 @@ class DefaultSubscriberFactoryTest {
                                         .awaitAckConfirmation(Duration.ofSeconds(30))
                                         .build(),
                                 OrderingMode.NONE,
-                                EmulatorEndpoint.parse("localhost:1"))
+                                EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
                         .create(SUBSCRIPTION, NO_OP_CONSUMER);
 
         assertThat(field(fireAndForget, "receiver")).isNotNull();

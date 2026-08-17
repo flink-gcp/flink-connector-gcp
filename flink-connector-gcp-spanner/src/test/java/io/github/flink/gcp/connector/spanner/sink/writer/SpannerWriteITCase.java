@@ -171,7 +171,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                 new DefaultSpannerDatabaseAccessFactory(
                                 database,
                                 SpannerWriterOptions.defaults(),
-                                EmulatorEndpoint.parse(emulatorEndpoint()))
+                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
                         .create()) {
             weights = access.readCellWeights();
         }

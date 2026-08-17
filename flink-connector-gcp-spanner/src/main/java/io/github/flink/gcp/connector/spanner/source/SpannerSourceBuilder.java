@@ -245,7 +245,7 @@ public class SpannerSourceBuilder<T> {
      *     1..65535
      */
     public SpannerSourceBuilder<T> emulatorEndpoint(String emulatorEndpoint) {
-        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint);
+        this.emulatorEndpoint = EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint");
         return this;
     }
 

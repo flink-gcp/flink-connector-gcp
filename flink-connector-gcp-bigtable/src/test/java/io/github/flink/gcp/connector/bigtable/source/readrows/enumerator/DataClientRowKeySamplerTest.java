@@ -49,7 +49,8 @@ class DataClientRowKeySamplerTest {
     void carriesTheApplicationProfileAndTheEmulatorEndpointToTheClient() throws Exception {
         BigtableDataSettings settings =
                 new DataClientRowKeySampler(
-                                "boost-profile", EmulatorEndpoint.parse("bigtable.example:9035"))
+                                "boost-profile",
+                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"))
                         .settings(TABLE);
 
         assertThat(settings.getProjectId()).isEqualTo("p");
@@ -62,7 +63,8 @@ class DataClientRowKeySamplerTest {
     void travelsInTheJobGraph() throws Exception {
         DataClientRowKeySampler sampler =
                 new DataClientRowKeySampler(
-                        "boost-profile", EmulatorEndpoint.parse("bigtable.example:9035"));
+                        "boost-profile",
+                        EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"));
 
         DataClientRowKeySampler back =
                 InstantiationUtil.deserializeObject(
@@ -103,7 +105,8 @@ class DataClientRowKeySamplerTest {
     @Test
     void refusesToBuildAClientAfterItHasBeenClosed() throws IOException {
         DataClientRowKeySampler sampler =
-                new DataClientRowKeySampler(null, EmulatorEndpoint.parse("localhost:1"));
+                new DataClientRowKeySampler(
+                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
         sampler.close();
 
         assertThatThrownBy(() -> sampler.sample(TABLE))

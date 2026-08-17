@@ -79,7 +79,8 @@ public abstract class AbstractBigQueryEmulatorITCase {
      */
     public static RowAppenderFactory emulatorAppenderFactory() {
         return new StreamWriterRowAppenderFactory(
-                DefaultStreamOptions.builder().build(), EmulatorEndpoint.parse(grpcEndpoint()));
+                DefaultStreamOptions.builder().build(),
+                EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"));
     }
 
     /** Creates a table in the emulator dataset with the given Storage-form schema. */

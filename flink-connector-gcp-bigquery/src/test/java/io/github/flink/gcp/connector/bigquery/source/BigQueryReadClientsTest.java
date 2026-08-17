@@ -62,7 +62,8 @@ class BigQueryReadClientsTest {
         // InstantiatingGrpcChannelProvider.newBuilder() drops back to gRPC's 4 MiB default, which
         // fails only on the emulator and only once a batch grows past it.
         BigQueryReadSettings settings =
-                BigQueryReadClients.emulatorSettings(EmulatorEndpoint.parse("localhost:9060"));
+                BigQueryReadClients.emulatorSettings(
+                        EmulatorEndpoint.parse("localhost:9060", "emulatorEndpoint"));
 
         assertThat(provider(settings).toBuilder().getMaxInboundMessageSize())
                 .isEqualTo(Integer.MAX_VALUE);
@@ -71,7 +72,8 @@ class BigQueryReadClientsTest {
     @Test
     void theEmulatorSettingsDialTheEmulatorWithoutCredentials() throws IOException {
         BigQueryReadSettings settings =
-                BigQueryReadClients.emulatorSettings(EmulatorEndpoint.parse("localhost:9060"));
+                BigQueryReadClients.emulatorSettings(
+                        EmulatorEndpoint.parse("localhost:9060", "emulatorEndpoint"));
 
         assertThat(provider(settings).getEndpoint()).isEqualTo("localhost:9060");
         assertThat(provider(settings).toBuilder().getChannelConfigurator()).isNotNull();

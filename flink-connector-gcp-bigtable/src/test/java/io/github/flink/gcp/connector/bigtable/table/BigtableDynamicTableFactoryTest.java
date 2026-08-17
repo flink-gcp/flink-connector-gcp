@@ -223,7 +223,7 @@ class BigtableDynamicTableFactoryTest {
         // caught here in half a second, where the emulator ITCase would only notice it after three
         // minutes of retrying against the wrong host and would blame a hung job.
         assertThat(sink.getConfig().getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8086"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint"));
     }
 
     @Test

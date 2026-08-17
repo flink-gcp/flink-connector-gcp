@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 
 import javax.annotation.Nullable;
 
@@ -96,7 +97,10 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     @VisibleForTesting
     SpannerOptions settings() throws Exception {
         EmulatorEndpoint endpoint =
-                emulatorEndpoint == null ? null : EmulatorEndpoint.parse(emulatorEndpoint);
+                emulatorEndpoint == null
+                        ? null
+                        : EmulatorEndpoint.parse(
+                                emulatorEndpoint, SpannerConnectorOptions.EMULATOR_ENDPOINT.key());
         if (credentialsOverride == null && serviceAccountKeyFile != null) {
             credentialsOverride = SpannerCredentials.load(serviceAccountKeyFile);
         }

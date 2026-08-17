@@ -30,7 +30,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link EmulatorChannels}. */
 class EmulatorChannelsTest {
 
-    private static final EmulatorEndpoint ENDPOINT = EmulatorEndpoint.parse("localhost:8086");
+    private static final EmulatorEndpoint ENDPOINT =
+            EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint");
 
     @Test
     void theProviderDialsTheEndpointOverPlaintext() {

@@ -151,11 +151,14 @@ class BigtableAutoCreationITCase extends AbstractBigtableEmulatorITCase {
                         .build();
         MutationBatcherFactory factory =
                 new DefaultMutationBatcherFactory(
-                        null, options, EmulatorEndpoint.parse(emulatorEndpoint()));
+                        null,
+                        options,
+                        EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"));
         return ((BigtableMutateRowsSink<String>) sink)
                 .createWriter(
                         factory,
-                        new BigtableTableAdmin(EmulatorEndpoint.parse(emulatorEndpoint())),
+                        new BigtableTableAdmin(
+                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint")),
                         new FakeMailboxExecutor(),
                         TestSinkWriterMetricGroup.create());
     }

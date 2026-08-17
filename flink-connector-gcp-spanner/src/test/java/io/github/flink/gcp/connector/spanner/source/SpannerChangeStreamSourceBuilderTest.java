@@ -267,6 +267,15 @@ class SpannerChangeStreamSourceBuilderTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    @Test
+    void rejectsAMalformedEmulatorEndpointWhereItIsTyped() {
+        // The only setter on this builder that had no rejection test: the parse is shared, but a
+        // caller reaches it through this class's own setter, and the message names that setter.
+        assertThatThrownBy(() -> builderWithoutEndpoint().emulatorEndpoint("localhost"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was 'localhost'");
+    }
+
     private static SpannerChangeStreamSourceBuilder<Long> builder() {
         return builderWithoutEndpoint().emulatorEndpoint("localhost:1");
     }

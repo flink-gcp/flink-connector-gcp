@@ -291,10 +291,18 @@ class BigQuerySourceBuilderTest {
 
     @Test
     void rejectsAMalformedEmulatorEndpointWhereItIsTyped() {
+        // The message names the setter that was called rather than a fixed one: BigQuery is the
+        // connector with two endpoint setters, and a user who mistypes the REST one must not be
+        // sent to the gRPC one (#895).
         assertThatThrownBy(() -> builder().emulatorEndpoint("not-a-host-port"))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was 'not-a-host-port'");
         assertThatThrownBy(() -> builder().emulatorRestEndpoint("not-a-host-port"))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorRestEndpoint must be host:port, was 'not-a-host-port'");
+        assertThatThrownBy(() -> builder().emulatorRestEndpoint(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("emulatorRestEndpoint must not be null");
     }
 
     @Test

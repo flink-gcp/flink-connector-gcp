@@ -309,7 +309,7 @@ class PubSubSourceBuilderTest {
         assertThat(restoredConfig.getCreateOptions()).containsExactly(entry(SUB_A, createOptions));
         assertThat(restoredConfig.getStartPosition()).isEqualTo(startPosition);
         assertThat(restoredConfig.getEmulatorEndpoint())
-                .isEqualTo(EmulatorEndpoint.parse("localhost:8085"));
+                .isEqualTo(EmulatorEndpoint.parse("localhost:8085", "emulatorEndpoint"));
     }
 
     @Test

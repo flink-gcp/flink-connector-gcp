@@ -610,7 +610,7 @@ builder.
 | `instance` | String | The instance part of `table(...)` |
 | `table` | String | The table part of `table(...)`. One SQL table writes to one Bigtable table: per-record routing has no SQL surface and stays on the DataStream API |
 | `service-account-key-file` | String | Shared credential path mapped to `serviceAccountKeyFile(...)` for the sink, scan and every lookup cache mode. Unset keeps ADC. Every eligible TaskManager must see the path; a scan also needs it on the JobManager. The option is rejected beside `emulator-endpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port` — parsed when the planner builds the sink, so a malformed value fails there |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. The sink and the scan parse it when the planner builds them, so a malformed value fails there and the rejection names the `emulatorEndpoint(...)` setter it went through; a lookup holds it and parses when the function opens on a TaskManager, where the rejection names `emulator-endpoint` |
 | `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies, in both directions. Every other type writes a null as an empty cell |
 
 ### Scan

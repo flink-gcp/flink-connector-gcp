@@ -246,7 +246,8 @@ class DefaultPublisherFactoryTest {
         // publish through this factory's emulator mode.
         DefaultPublisherFactory factory =
                 new DefaultPublisherFactory(
-                        PubSubPublisherOptions.defaults(), EmulatorEndpoint.parse("localhost:1"));
+                        PubSubPublisherOptions.defaults(),
+                        EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
         TopicPublisher publisher = factory.create(TopicDestination.of("test-project", "t"));
         publisher.close();
     }
@@ -269,7 +270,7 @@ class DefaultPublisherFactoryTest {
                         PubSubPublisherOptions.builder()
                                 .shutdownTimeout(Duration.ofSeconds(7))
                                 .build(),
-                        EmulatorEndpoint.parse("localhost:1"));
+                        EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
 
         TopicPublisher publisher = factory.create(TOPIC);
         try {
@@ -320,7 +321,8 @@ class DefaultPublisherFactoryTest {
     void theTeardownIsHandedTheConnectorsResidueCounter() throws Exception {
         DefaultPublisherFactory factory =
                 new DefaultPublisherFactory(
-                        PubSubPublisherOptions.defaults(), EmulatorEndpoint.parse("localhost:1"));
+                        PubSubPublisherOptions.defaults(),
+                        EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
 
         TopicPublisher publisher = factory.create(TOPIC);
         try {

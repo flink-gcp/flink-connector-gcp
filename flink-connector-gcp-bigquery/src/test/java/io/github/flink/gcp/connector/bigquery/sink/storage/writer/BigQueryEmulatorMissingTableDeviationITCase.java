@@ -60,7 +60,7 @@ class BigQueryEmulatorMissingTableDeviationITCase extends AbstractBigQueryEmulat
                 new WriteClientBufferedStreamService(
                         null,
                         BufferedStreamOptions.builder().build(),
-                        EmulatorEndpoint.parse(grpcEndpoint()))) {
+                        EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
             Throwable failure = catchThrowable(() -> service.createBufferedStream(MISSING));
 
             assertThat(failure).isNotNull();
@@ -83,7 +83,8 @@ class BigQueryEmulatorMissingTableDeviationITCase extends AbstractBigQueryEmulat
     @Test
     void getWriteStreamOnAMissingTablesDefaultStreamAnswersUnknown() throws Exception {
         try (BigQueryWriteClient client =
-                BigQueryWriteClients.forEmulator(EmulatorEndpoint.parse(grpcEndpoint()))) {
+                BigQueryWriteClients.forEmulator(
+                        EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
             Throwable failure =
                     catchThrowable(
                             () ->
@@ -125,7 +126,7 @@ class BigQueryEmulatorMissingTableDeviationITCase extends AbstractBigQueryEmulat
                 new WriteClientBufferedStreamService(
                         null,
                         BufferedStreamOptions.builder().build(),
-                        EmulatorEndpoint.parse(grpcEndpoint()))) {
+                        EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
             Throwable failure = catchThrowable(() -> service.createBufferedStream(MISSING));
 
             assertThat(failure).isNotNull();
@@ -133,7 +134,8 @@ class BigQueryEmulatorMissingTableDeviationITCase extends AbstractBigQueryEmulat
             assertThat(AppendErrorClassifier.isMissingTable(failure)).isTrue();
         }
         try (BigQueryWriteClient client =
-                BigQueryWriteClients.forEmulator(EmulatorEndpoint.parse(grpcEndpoint()))) {
+                BigQueryWriteClients.forEmulator(
+                        EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
             Throwable failure =
                     catchThrowable(
                             () ->

@@ -100,7 +100,7 @@ abstract class AbstractPubSubEmulatorITCase {
      * emulator-endpoint mode, so the integration tests exercise its client construction.
      */
     static TopicAdmin newTopicAdmin() {
-        return new PubSubTopicAdmin(EmulatorEndpoint.parse(emulatorEndpoint()));
+        return new PubSubTopicAdmin(EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"));
     }
 
     /**
@@ -112,7 +112,8 @@ abstract class AbstractPubSubEmulatorITCase {
         return new PubSubWriter<>(
                 config,
                 new DefaultPublisherFactory(
-                        config.getPublisherOptions(), EmulatorEndpoint.parse(emulatorEndpoint())),
+                        config.getPublisherOptions(),
+                        EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint")),
                 newTopicAdmin(),
                 mailbox,
                 TestSinkWriterMetricGroup.create(),

@@ -51,7 +51,7 @@ class BigQueryBufferedStreamSmokeITCase extends AbstractBigQueryEmulatorITCase {
                 new WriteClientBufferedStreamService(
                         null,
                         BufferedStreamOptions.builder().build(),
-                        EmulatorEndpoint.parse(grpcEndpoint()))) {
+                        EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
             String streamName = service.createBufferedStream(destination);
             assertThat(streamName).contains("buffered_smoke");
 
@@ -89,7 +89,7 @@ class BigQueryBufferedStreamSmokeITCase extends AbstractBigQueryEmulatorITCase {
                 new WriteClientBufferedStreamService(
                         null,
                         BufferedStreamOptions.builder().build(),
-                        EmulatorEndpoint.parse(grpcEndpoint()))) {
+                        EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
             String firstStream = service.createBufferedStream(first);
             String secondStream = service.createBufferedStream(second);
             assertThat(firstStream).contains("buffered_dynamic_first");

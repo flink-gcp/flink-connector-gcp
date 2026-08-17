@@ -80,7 +80,10 @@ class BigtableDataClientsTest {
     void pointsAtTheEmulatorOverAPlaintextChannelWithNoCredentials() {
         BigtableDataSettings settings =
                 BigtableDataClients.settings(
-                                TABLE, null, EmulatorEndpoint.parse("bigtable.example:9035"), null)
+                                TABLE,
+                                null,
+                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"),
+                                null)
                         .build();
 
         assertThat(settings.getStubSettings().getEndpoint()).isEqualTo("bigtable.example:9035");
@@ -94,7 +97,7 @@ class BigtableDataClientsTest {
                 BigtableDataClients.settings(
                                 TABLE,
                                 "batch-profile",
-                                EmulatorEndpoint.parse("bigtable.example:9035"),
+                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"),
                                 null)
                         .build();
 
@@ -118,7 +121,8 @@ class BigtableDataClientsTest {
                                 BigtableDataClients.settings(
                                         TABLE,
                                         null,
-                                        EmulatorEndpoint.parse("localhost:9035"),
+                                        EmulatorEndpoint.parse(
+                                                "localhost:9035", "emulatorEndpoint"),
                                         NoCredentialsProvider.create()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("credentialsOverride cannot be combined with an emulator endpoint");

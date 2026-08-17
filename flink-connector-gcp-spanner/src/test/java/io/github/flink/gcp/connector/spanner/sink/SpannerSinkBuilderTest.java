@@ -161,7 +161,8 @@ class SpannerSinkBuilderTest {
         // Parsed at the setter rather than at writer creation, so a typo fails on submission
         // instead of on a task manager.
         assertThatThrownBy(() -> SpannerSink.<String>builder().emulatorEndpoint(endpoint))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("emulatorEndpoint must be host:port, was '" + endpoint + "'");
     }
 
     @Test

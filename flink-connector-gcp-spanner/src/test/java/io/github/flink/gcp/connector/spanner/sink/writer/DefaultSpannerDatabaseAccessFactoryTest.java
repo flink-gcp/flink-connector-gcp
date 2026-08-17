@@ -117,6 +117,6 @@ class DefaultSpannerDatabaseAccessFactoryTest {
         return new DefaultSpannerDatabaseAccessFactory(
                 DATABASE,
                 SpannerWriterOptions.defaults(),
-                EmulatorEndpoint.parse(emulatorEndpoint));
+                EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint"));
     }
 }

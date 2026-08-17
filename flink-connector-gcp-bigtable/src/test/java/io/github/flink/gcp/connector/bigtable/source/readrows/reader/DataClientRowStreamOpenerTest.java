@@ -49,7 +49,8 @@ class DataClientRowStreamOpenerTest {
     void carriesTheApplicationProfileAndTheEmulatorEndpointToTheClient() throws Exception {
         BigtableDataSettings settings =
                 new DataClientRowStreamOpener(
-                                "boost-profile", EmulatorEndpoint.parse("bigtable.example:9035"))
+                                "boost-profile",
+                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"))
                         .settings(TABLE);
 
         assertThat(settings.getProjectId()).isEqualTo("p");
@@ -62,7 +63,8 @@ class DataClientRowStreamOpenerTest {
     void travelsInTheJobGraph() throws Exception {
         DataClientRowStreamOpener opener =
                 new DataClientRowStreamOpener(
-                        "boost-profile", EmulatorEndpoint.parse("bigtable.example:9035"));
+                        "boost-profile",
+                        EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"));
 
         DataClientRowStreamOpener back =
                 InstantiationUtil.deserializeObject(
@@ -103,7 +105,8 @@ class DataClientRowStreamOpenerTest {
     @Test
     void refusesToBuildAClientAfterItHasBeenClosed() throws IOException {
         DataClientRowStreamOpener opener =
-                new DataClientRowStreamOpener(null, EmulatorEndpoint.parse("localhost:1"));
+                new DataClientRowStreamOpener(
+                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
         opener.close();
 
         assertThatThrownBy(() -> opener.open(TABLE, ByteStringRange.unbounded(), null))
