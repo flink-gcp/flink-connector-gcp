@@ -787,12 +787,17 @@ can: how to redeploy an exactly-once job without losing the rows a discarded che
 and why a FILE_LOADS staging bucket wants to be a dedicated one with a lifecycle rule sized above
 the longest outage the job must recover from.
 
-### Inserts only
+### Inserts only, unless CDC is enabled
 
-The changelog mode is insert-only. An updating query — an aggregation without a window, a
-non-windowed join — is rejected when the plan is built, because BigQuery's append-only write paths
-cannot express a retraction and appending the `-U` and `-D` rows as ordinary ones would corrupt the
-table silently. Upserts are [#65]({{< param BookRepo >}}/issues/65).
+Without `sink.cdc.enabled`, the changelog mode is insert-only. An updating query — an aggregation
+without a window, a non-windowed join — is rejected when the plan is built, because BigQuery's
+append-only write paths cannot express a retraction and appending the `-U` and `-D` rows as ordinary
+ones would corrupt the table silently.
+
+Setting `sink.cdc.enabled` to `true` makes the sink consume an upsert changelog instead, so the same
+query plans. That path writes through BigQuery's CDC pseudocolumns rather than as ordinary appends,
+and it carries its own restrictions — the default stream is the only write method it runs on. See
+[Change data capture](#change-data-capture).
 
 ## Design decisions
 

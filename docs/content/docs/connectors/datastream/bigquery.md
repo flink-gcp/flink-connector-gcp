@@ -1469,8 +1469,9 @@ streaming calculation:
 Intervals below `minCheckpointInterval` (default 2 minutes) are rejected; intervals below 5
 minutes log a warning. Lowering `minCheckpointInterval(...)` is the explicit opt-in for
 short-lived jobs whose daily modification count stays safe (the integration tests do this). A runtime
-warning also fires when observed checkpoint cadence stays under 2 minutes, catching interval
-configuration the client-side guard cannot see. Streaming pipelines that need second-level
+warning also fires when observed checkpoint cadence stays under the configured
+`minCheckpointInterval`, catching interval configuration the client-side guard cannot see — so
+lowering that option silences this backstop as well. Streaming pipelines that need second-level
 latency belong on the Storage Write API methods; checkpoint-triggered file loads trade minutes of
 latency for free ingestion.
 
@@ -1836,10 +1837,9 @@ many records reached the dead-letter policy in the first place is
 Retries preserve the at-least-once contract: a batch whose append outcome was lost may be
 re-appended in full, so duplicates are possible (as with any retry in this write method). Worst
 case, a single repair can take about a minute of SDK retries plus a minute of writer re-appends
-before surfacing as terminal (with the default schedules). On the default-stream path both
-schedules are configurable via `DefaultStreamOptions` (see [Tuning](#tuning)); on the
-buffered-stream path the SDK schedule stays fixed and only the writer's own re-append budget is
-configurable, via `BufferedStreamOptions`.
+before surfacing as terminal (with the default schedules). Both schedules are configurable on
+both Storage Write API paths — via `DefaultStreamOptions` and via `BufferedStreamOptions` (see
+[Tuning](#tuning)); only the connection-pool group is absent from the buffered-stream options.
 
 ## Source
 
