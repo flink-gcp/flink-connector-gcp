@@ -307,7 +307,7 @@ class SpannerDynamicTableFactoryTest {
         assertThat(provider.getParallelism()).contains(3);
         assertThat(config.getStartPosition()).isEqualTo(StartPosition.earliest());
         assertThat(config.getResumeFallback())
-                .contains(StartPosition.at(Instant.ofEpochMilli(1000)));
+                .isEqualTo(StartPosition.at(Instant.ofEpochMilli(1000)));
         assertThat(config.getAbsentRetentionFallback()).isEqualTo(Duration.ofDays(3));
         assertThat(config.getHeartbeatMillis()).isEqualTo(1500L);
         assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
