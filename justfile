@@ -182,12 +182,23 @@ format:
 # io.github.flink-gcp SNAPSHOTs land in ~/.m2 — the primed-local-repo hazard —
 # `rm -rf ~/.m2/repository/io/github/flink-gcp` undoes it.
 #
+# Which modules those are is derived from the poms rather than named here, and
+# that is the fix for issue #932: the list used to be written out, the rule it
+# copied (ADR-0053 — everything some other module depends on) stayed correct, and
+# the copy went stale the moment a fifth uber-jar landed, so the weekly
+# binary_compat job died resolving flink-connector-gcp-spanner. The assignment is
+# load-bearing too: `-pl "$(…)"` inline discards the script's exit status even
+# under `set -euo pipefail`, and Maven reads the empty `-pl` it is then handed as
+# the whole reactor (measured: 13 of 13 modules) — so a broken script would
+# install more than asked and leave this recipe green, hiding itself. Assigning
+# first fails the line instead.
+#
 # Check that a floor-built jar still runs on Flink <ceiling>, uncompiled.
 binary-compat ceiling:
     @echo '==> Build against the floor (the Flink version pinned in pom.xml)'
     {{ mvn }} verify
     @echo '==> Install what the goal-only rerun cannot resolve from the reactor'
-    {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-test-utils -DskipTests install
+    modules="$(scripts/ci-maven-args.py --install-modules)" && {{ mvn }} -pl "$modules" -DskipTests install
     @echo '==> Record which tests the floor build ran'
     @mkdir -p target
     scripts/surefire-fingerprint.sh > target/floor-tests.txt
