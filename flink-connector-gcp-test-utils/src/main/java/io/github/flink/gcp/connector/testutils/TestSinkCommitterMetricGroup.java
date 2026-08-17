@@ -19,13 +19,9 @@ package io.github.flink.gcp.connector.testutils;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
-import org.apache.flink.metrics.Metric;
-import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.OperatorIOMetricGroup;
 import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
-import org.apache.flink.metrics.testutils.MetricListener;
-import org.apache.flink.runtime.metrics.groups.ProxyMetricGroup;
 
 import javax.annotation.Nullable;
 
@@ -39,10 +35,12 @@ import javax.annotation.Nullable;
  * <p>The framework's own committer counters are registered here under the names a reporter sees
  * ({@value #TOTAL_COMMITTABLES} and friends, which are <em>not</em> the accessor names on the
  * interface), so a test asserting a connector's custom counter cannot accidentally collide with one
- * of them.
+ * of them. The registered metrics are read back through the inherited {@link
+ * #counterValue(String...)}, {@link #gaugeValue(String...)} and {@link #hasMetric(String...)}
+ * accessors.
  */
 @Internal
-public final class TestSinkCommitterMetricGroup extends ProxyMetricGroup<MetricGroup>
+public final class TestSinkCommitterMetricGroup extends ListenerReadableMetricGroup
         implements SinkCommitterMetricGroup {
 
     /** Name of the framework's arrived-committables counter, as a reporter sees it. */
@@ -60,7 +58,6 @@ public final class TestSinkCommitterMetricGroup extends ProxyMetricGroup<MetricG
     /** Name of the framework's retried-committables counter. */
     public static final String RETRIED_COMMITTABLES = "retriedCommittables";
 
-    private final MetricListener listener;
     private final Counter totalCommittables;
     private final Counter successfulCommittables;
     private final Counter alreadyCommittedCommittables;
@@ -69,9 +66,7 @@ public final class TestSinkCommitterMetricGroup extends ProxyMetricGroup<MetricG
 
     @Nullable private Gauge<Integer> currentPendingCommittablesGauge;
 
-    private TestSinkCommitterMetricGroup(MetricListener listener) {
-        super(listener.getMetricGroup());
-        this.listener = listener;
+    private TestSinkCommitterMetricGroup() {
         this.totalCommittables = counter(TOTAL_COMMITTABLES);
         this.successfulCommittables = counter(SUCCESSFUL_COMMITTABLES);
         this.alreadyCommittedCommittables = counter(ALREADY_COMMITTED_COMMITTABLES);
@@ -81,53 +76,13 @@ public final class TestSinkCommitterMetricGroup extends ProxyMetricGroup<MetricG
 
     /** Creates a group over a fresh listener. */
     public static TestSinkCommitterMetricGroup create() {
-        return new TestSinkCommitterMetricGroup(new MetricListener());
-    }
-
-    /**
-     * Returns the counter registered under {@code identifier}, relative to the group.
-     *
-     * @param identifier the name path, one element per group level
-     * @return the counter's value
-     * @throws AssertionError if nothing was registered under that name
-     */
-    public long counterValue(String... identifier) {
-        return listener.getCounter(identifier)
-                .orElseThrow(() -> new AssertionError(noMetric(identifier)))
-                .getCount();
-    }
-
-    /**
-     * Whether any metric is registered under {@code identifier} — the assertion a metric that may
-     * legitimately be absent needs, since "not registered" is not "registered at zero".
-     */
-    public boolean hasMetric(String... identifier) {
-        return listener.getMetric(Metric.class, identifier).isPresent();
-    }
-
-    /**
-     * Returns the value of the gauge registered under {@code identifier}.
-     *
-     * @param identifier the name path, one element per group level
-     * @param <T> the gauge's value type
-     * @return the gauge's current value
-     * @throws AssertionError if nothing was registered under that name
-     */
-    public <T> T gaugeValue(String... identifier) {
-        Gauge<T> gauge =
-                listener.<T>getGauge(identifier)
-                        .orElseThrow(() -> new AssertionError(noMetric(identifier)));
-        return gauge.getValue();
+        return new TestSinkCommitterMetricGroup();
     }
 
     /** The gauge a committer passed to {@link #setCurrentPendingCommittablesGauge}, or null. */
     @Nullable
     public Gauge<Integer> getCurrentPendingCommittablesGauge() {
         return currentPendingCommittablesGauge;
-    }
-
-    private static String noMetric(String... identifier) {
-        return "No metric registered under " + String.join(".", identifier) + ".";
     }
 
     @Override

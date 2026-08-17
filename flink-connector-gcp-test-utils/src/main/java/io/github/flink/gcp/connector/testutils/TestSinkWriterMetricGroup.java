@@ -19,13 +19,10 @@ package io.github.flink.gcp.connector.testutils;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
-import org.apache.flink.metrics.Metric;
-import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.OperatorIOMetricGroup;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
-import org.apache.flink.runtime.metrics.groups.ProxyMetricGroup;
 
 import javax.annotation.Nullable;
 
@@ -35,19 +32,21 @@ import javax.annotation.Nullable;
  *
  * <p>Everything a writer registers — including the FLIP-33 standard counters, which are registered
  * here under their documented names rather than merely held — goes through one {@link
- * MetricListener}, so {@link #counter} and {@link #gauge} reach all of them and a renamed or
- * unregistered metric fails its test. That is what the alternatives cannot do: {@code
- * UnregisteredMetricsGroup.createSinkWriterMetricGroup()} hands out a fresh {@code SimpleCounter}
- * on every call, so the counter the writer captured is unreachable afterwards, and {@code
- * InternalSinkWriterMetricGroup} has no {@code mock(...)} factory in either supported Flink line
- * (1.20 and 2.x offer a package-private constructor and {@code wrap(OperatorMetricGroup)}, which a
- * listener group cannot satisfy).
+ * MetricListener}, so {@link #counterValue(String...)} and {@link #gaugeValue(String...)} reach all
+ * of them and a renamed or unregistered metric fails its test. That is what the alternatives cannot
+ * do: {@code UnregisteredMetricsGroup.createSinkWriterMetricGroup()} hands out a fresh {@code
+ * SimpleCounter} on every call, so the counter the writer captured is unreachable afterwards, and
+ * {@code InternalSinkWriterMetricGroup} has no {@code mock(...)} factory in either supported Flink
+ * line (1.20 and 2.x offer a package-private constructor and {@code wrap(OperatorMetricGroup)},
+ * which a listener group cannot satisfy).
  *
- * <p>{@link ProxyMetricGroup} supplies the delegation to the listener's group, which is why the
- * registration methods are not overridden here.
+ * <p>{@code ProxyMetricGroup}, through the package-private {@code ListenerReadableMetricGroup} base
+ * holding the listener and the inherited {@link #counterValue(String...)}, {@link
+ * #gaugeValue(String...)} and {@link #hasMetric(String...)} accessors, supplies the delegation to
+ * the listener's group, which is why the registration methods are not overridden here.
  */
 @Internal
-public final class TestSinkWriterMetricGroup extends ProxyMetricGroup<MetricGroup>
+public final class TestSinkWriterMetricGroup extends ListenerReadableMetricGroup
         implements SinkWriterMetricGroup {
 
     /** FLIP-33 name of the records counter, as a reporter sees it. */
@@ -59,16 +58,13 @@ public final class TestSinkWriterMetricGroup extends ProxyMetricGroup<MetricGrou
     /** FLIP-33 name of the send-error counter. */
     public static final String NUM_RECORDS_SEND_ERRORS = "numRecordsSendErrors";
 
-    private final MetricListener listener;
     private final Counter numRecordsSend;
     private final Counter numBytesSend;
     private final Counter numRecordsSendErrors;
 
     @Nullable private Gauge<Long> currentSendTimeGauge;
 
-    private TestSinkWriterMetricGroup(MetricListener listener) {
-        super(listener.getMetricGroup());
-        this.listener = listener;
+    private TestSinkWriterMetricGroup() {
         this.numRecordsSend = counter(NUM_RECORDS_SEND);
         this.numBytesSend = counter(NUM_BYTES_SEND);
         this.numRecordsSendErrors = counter(NUM_RECORDS_SEND_ERRORS);
@@ -76,54 +72,13 @@ public final class TestSinkWriterMetricGroup extends ProxyMetricGroup<MetricGrou
 
     /** Creates a group over a fresh listener. */
     public static TestSinkWriterMetricGroup create() {
-        return new TestSinkWriterMetricGroup(new MetricListener());
-    }
-
-    /**
-     * Returns the counter registered under {@code identifier}, relative to the group.
-     *
-     * @param identifier the name path, one element per group level (for example {@code
-     *     "errorClass", "UNAVAILABLE", "errors"})
-     * @return the counter's value
-     * @throws AssertionError if nothing was registered under that name
-     */
-    public long counterValue(String... identifier) {
-        return listener.getCounter(identifier)
-                .orElseThrow(() -> new AssertionError(noMetric(identifier)))
-                .getCount();
-    }
-
-    /**
-     * Whether any metric is registered under {@code identifier} — the assertion an opt-in metric
-     * needs, since "switched off" means nothing was registered rather than a counter left at zero.
-     */
-    public boolean hasMetric(String... identifier) {
-        return listener.getMetric(Metric.class, identifier).isPresent();
-    }
-
-    /**
-     * Returns the value of the gauge registered under {@code identifier}.
-     *
-     * @param identifier the name path, one element per group level
-     * @param <T> the gauge's value type
-     * @return the gauge's current value
-     * @throws AssertionError if nothing was registered under that name
-     */
-    public <T> T gaugeValue(String... identifier) {
-        Gauge<T> gauge =
-                listener.<T>getGauge(identifier)
-                        .orElseThrow(() -> new AssertionError(noMetric(identifier)));
-        return gauge.getValue();
+        return new TestSinkWriterMetricGroup();
     }
 
     /** The gauge a writer passed to {@link #setCurrentSendTimeGauge}, or {@code null}. */
     @Nullable
     public Gauge<Long> getCurrentSendTimeGauge() {
         return currentSendTimeGauge;
-    }
-
-    private static String noMetric(String... identifier) {
-        return "No metric registered under " + String.join(".", identifier) + ".";
     }
 
     @Override
