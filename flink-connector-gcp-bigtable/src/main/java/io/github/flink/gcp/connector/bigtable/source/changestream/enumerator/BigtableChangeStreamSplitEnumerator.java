@@ -290,8 +290,8 @@ public final class BigtableChangeStreamSplitEnumerator
             context.callAsync(
                     this::reconciliationScan,
                     this::onReconciled,
-                    java.time.Duration.ofSeconds(10).toMillis(),
-                    java.time.Duration.ofSeconds(10).toMillis());
+                    Duration.ofSeconds(10).toMillis(),
+                    Duration.ofSeconds(10).toMillis());
         }
     }
 
@@ -395,12 +395,12 @@ public final class BigtableChangeStreamSplitEnumerator
 
     @Override
     public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
+        // A reader that asks for work has capacity for at least one split, whether or not it has
+        // advertised a figure yet; the assignment waits for initialization, the floor does not.
+        readerCapacities.put(subtaskId, Math.max(1, readerCapacities.getOrDefault(subtaskId, 0)));
         if (!initialized) {
-            readerCapacities.put(
-                    subtaskId, Math.max(1, readerCapacities.getOrDefault(subtaskId, 0)));
             return;
         }
-        readerCapacities.put(subtaskId, Math.max(1, readerCapacities.getOrDefault(subtaskId, 0)));
         assignAvailable(subtaskId);
     }
 
@@ -411,9 +411,9 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         int capacity = readerCapacities.getOrDefault(subtaskId, 0);
         if (capacity <= 0 || unassigned.isEmpty()) {
-            if (signalBoundedCompletionIfDrained()) {
-                return;
-            }
+            // Called for its effect, not its verdict: a bounded run with nothing left anywhere
+            // signals no-more-splits here, and there is nothing to assign either way.
+            signalBoundedCompletionIfDrained();
             return;
         }
         List<ChangeStreamPartitionSplit> splits = new ArrayList<>(capacity);

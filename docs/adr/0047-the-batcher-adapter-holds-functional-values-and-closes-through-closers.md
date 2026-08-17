@@ -17,10 +17,20 @@ limitations under the License.
 # ADR-0047: The batcher adapter holds functional values, and its teardown closes through `Closers`
 
 - Status: Accepted
-- Date: 2026-08-06
+- Date: 2026-08-06 (a fourth functional value added the same day by the teardown seam; the
+  client half reversed by [#232] / ADR-0074 on 2026-08-09)
 - Issues: [#324]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` (teardown)
+
+> **Refinement.** Two counts below describe the adapter as it stood when this was written, and the
+> shape has moved twice since. `shutdown()` was added as a fourth functional value, so the adapter
+> binds `add`, `sendOutstanding`, `closeAsync` and `close` rather than three method references. And
+> it holds **no client**: ADR-0074 reversed that half when the writer gained per-record
+> destinations, because an adapter closing the client it was built over would tear down every
+> sibling batcher of the same instance. What this ADR decided — the batcher's operations as
+> functional values, and a teardown through `Closers` — is unchanged, and ADR-0074 says so. The
+> prose is left as written, per the pointer-rather-than-rewrite convention ADR-0073 records.
 
 ## Decision
 
@@ -68,6 +78,7 @@ never-checked "`final`" claims.)
   shutdown is where gax's own code runs), and it is the bound `Closers.closeAll`'s own javadoc
   names.
 
+[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
 [#276]: https://github.com/laughingman7743/flink-connector-gcp/issues/276
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#324]: https://github.com/laughingman7743/flink-connector-gcp/issues/324

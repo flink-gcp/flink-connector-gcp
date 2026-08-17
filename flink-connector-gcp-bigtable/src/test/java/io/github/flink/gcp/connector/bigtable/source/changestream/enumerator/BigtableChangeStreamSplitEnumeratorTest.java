@@ -739,6 +739,32 @@ class BigtableChangeStreamSplitEnumeratorTest {
     }
 
     @Test
+    void aBoundedSourceWithNoPartitionsTellsAReaderThatAsksThatNothingIsComing() throws Exception {
+        // The completion signal above is reached through a partition transition. This is the path
+        // that has no transition to ride on: a bounded run whose partition set is empty is drained
+        // the moment it starts, and the only thing that ever happens is a reader asking for work.
+        // Without the signal on that path the reader waits for a split that cannot arrive.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(),
+                        StartPosition.latest(),
+                        Optional.empty(),
+                        null,
+                        true);
+        enumerator.start();
+        context.runAsyncCalls();
+        assertThat(context.readersToldNoMoreSplits()).isEmpty();
+
+        enumerator.handleSplitRequest(0, "localhost");
+
+        assertThat(context.readersToldNoMoreSplits()).containsExactly(0);
+        assertThat(context.assignedSplits(0)).isEmpty();
+        enumerator.close();
+    }
+
+    @Test
     void aProgressEventOlderThanTheAssignedPositionDoesNotRewindIt() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         BigtableChangeStreamSplitEnumerator enumerator =

@@ -152,8 +152,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `MutationBatcher.close()` (`docs/adr/0046`; the cross-connector rule is `docs/adr/0003`).
   **No `SinkWriter.close()` may `yield()`** — Flink quiesces the mailbox before closing
   operators, so a teardown drain parks forever.
-- `BigtableBatcherAdapter` holds three functional values + an `AutoCloseable` client, and its
-  teardown closes through `Closers.closeAll`, not `try`/`finally` (`docs/adr/0047`). A
+- `BigtableBatcherAdapter` holds **four** functional values — `add`, `sendOutstanding`,
+  `closeAsync`, `close` — and **no client**: the factory owns and closes those (`docs/adr/0074`
+  reversed that half of `docs/adr/0047`, whose prose still describes the original three-plus-client
+  shape). Its teardown closes through `Closers.closeAll`, not `try`/`finally` (`docs/adr/0047`). A
   row-count assertion is not evidence that a flush flushed — gax's 1 s delay-threshold timer
   hides a broken `sendOutstanding()` from every emulator IT.
 
