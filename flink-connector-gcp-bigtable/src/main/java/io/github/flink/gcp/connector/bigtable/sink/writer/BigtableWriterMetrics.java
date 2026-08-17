@@ -42,7 +42,7 @@ import javax.annotation.Nullable;
  * retried inside the SDK and comes back once — and the same fact bounds what {@link #applyFailure}
  * can report: only failures the client gave up on are visible here, so the sum over the transient
  * codes is <em>not</em> this connector's retry volume, which is the one place a dashboard reading
- * all four connectors alike would be misled.
+ * every connector of this repository alike would be misled.
  *
  * <p>Per-destination counters exist since the sink gained per-record tables (#232), behind {@code
  * BigtableWriterOptions.perDestinationMetrics} and off by default — {@link DestinationMetrics}
@@ -158,10 +158,10 @@ final class BigtableWriterMetrics {
      * reports it — without this counter a serializer skipping every record is indistinguishable
      * from a stream that carried none, which is the one way the skip contract can hide a bug.
      *
-     * <p>Takes no per-table handle, unlike the two above and for the reason both sibling sinks
-     * give: the serializer is handed the record alone, so its decision cannot depend on the
-     * destination, and attributing a skip to the table the record would have gone to would read as
-     * a property of that table.
+     * <p>Takes no per-table handle, unlike the two above and for the reason the sibling sinks give:
+     * the serializer is handed the record alone, so its decision cannot depend on the destination,
+     * and attributing a skip to the table the record would have gone to would read as a property of
+     * that table.
      */
     void recordSkipped() {
         recordsSkipped.inc();
@@ -209,8 +209,8 @@ final class BigtableWriterMetrics {
      *
      * <p>Records the serializer rejected are <em>not</em> counted here. They carry no status, so
      * they would all land under {@code UNCLASSIFIED} and bury the RPC failures that genuinely carry
-     * none; {@code numRecordsSendErrors} is where they are visible. Both sibling sinks draw the
-     * line in the same place.
+     * none; {@code numRecordsSendErrors} is where they are visible. The sibling sinks draw the line
+     * in the same place.
      *
      * @param code the status code, or {@code null} for a failure carrying none
      */

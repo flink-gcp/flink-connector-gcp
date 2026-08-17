@@ -49,8 +49,8 @@ import java.util.function.Function;
 
 /**
  * Creates {@link MutationBatcher}s backed by {@code google-cloud-bigtable} {@link
- * BigtableDataClient}s, connecting either to production Bigtable with application-default
- * credentials or to an emulator over a plaintext channel with no credentials.
+ * BigtableDataClient}s, connected the way {@link BigtableDataClients} connects every data client of
+ * this connector — that class owns the credential and emulator modes.
  *
  * <p>The client's own retry configuration is left alone: it retries {@code MutateRows} per entry
  * for the transient codes already, which is why this sink owns no retry loop.
@@ -197,9 +197,9 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      * threshold that never reaches the client looks exactly like one that does. The same reasoning
      * put every other connector's options mapping under a unit test of its own.
      *
-     * <p>Everything both directions of this connector share — the emulator-versus-credentials
-     * branch, the project and instance, the application profile — comes from {@link
-     * BigtableDataClients}. Only the batch thresholds are the sink's own.
+     * <p>Everything the connector's data clients share — the emulator-versus-credentials branch,
+     * the project and instance, the application profile — comes from {@link BigtableDataClients}.
+     * Only the batch thresholds are the sink's own.
      */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination destination) {

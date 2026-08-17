@@ -27,20 +27,26 @@ import javax.annotation.Nullable;
 
 /**
  * How this connector points a {@code BigtableDataClient} at an instance: production over
- * application-default credentials, or an emulator over a plaintext channel with no credentials.
+ * application-default credentials, production over a runtime-loaded service-account provider, or an
+ * emulator over a plaintext channel with no credentials.
  *
- * <p>At the module root rather than beside either direction, because both take it. The sink's
- * batcher factory and the source's sampler and stream opener build the same settings from the same
- * three inputs, and a second copy of this branch is exactly the thing that reads green on a machine
+ * <p>At the module root rather than beside either direction, because every data-client boundary of
+ * this connector takes it — the sink, both sources and the table layer all build the same settings
+ * from the same inputs. The admin clients do not come through here: {@code BigtableTableAdmin} and
+ * the Change Streams coordinator build their own settings, and each carries its own copy of the
+ * emulator branch. A second copy of this branch is exactly the thing that reads green on a machine
  * with credentials and red in CI — the failure ADR-0064 exists to describe.
  *
- * <p>Only what both directions share lives here. Per-direction tuning — the sink's batch
- * thresholds, and whatever the source may one day need — is applied by the caller on top of the
- * builder this hands back, which is why the return type is the builder rather than the settings.
+ * <p>Only what every path shares lives here. Per-caller tuning — the sink's batch thresholds, and
+ * whatever a source may one day need — is applied by the caller on top of the builder this hands
+ * back, which is why the return type is the builder rather than the settings.
  *
- * <p>Retry settings are deliberately untouched, in both directions. The client retries {@code
- * MutateRows} per entry and resumes a broken {@code ReadRows} stream from the last key it saw, so
- * neither direction owns a retry loop and neither has a retry knob to map.
+ * <p>Retry settings are deliberately untouched, on every path. The client retries {@code
+ * MutateRows} per entry, resumes a broken {@code ReadRows} stream from the last key it saw, and
+ * resumes a broken {@code ReadChangeStream} from its last continuation token. Only a failure that
+ * outlives the client's own retry budget reaches the connector, and on the Change Streams path the
+ * reader turns that into a terminal failure so Flink restarts from the checkpointed token. So
+ * nothing here owns a retry loop, and nothing has a retry knob to map.
  */
 @Internal
 public final class BigtableDataClients {
