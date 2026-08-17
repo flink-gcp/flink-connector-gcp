@@ -230,13 +230,13 @@ final class SubscriberRoster {
      * fail the job rather than be quietly stopped. Failing first covers every split; the one that
      * could fail in between is covered by the {@code checkFailure} at the head of the list below.
      *
-     * <p>The release goes through <b>one {@link Closers#closeAll} list holding every parked split's
-     * steps, every shutdown before any close</b> — the shape and the reason of {@link #closeAll()}
-     * (#297). Alignment pauses a subtask's splits as a group and they cross the bound in the same
-     * wave, so parking them one at a time would spend {@code shutdownTimeout} per split on the
-     * fetcher thread, serially, exactly the {@code splits × timeout} cost that method exists to
-     * avoid. Starting every shutdown first overlaps the waits into one, and the single list keeps
-     * every nack running when an earlier step throws.
+     * <p>The release goes through <b>one {@link Closers#closeAll(Iterable)} list holding every
+     * parked split's steps, every shutdown before any close</b> — the shape and the reason of
+     * {@link #closeAll()} (#297). Alignment pauses a subtask's splits as a group and they cross the
+     * bound in the same wave, so parking them one at a time would spend {@code shutdownTimeout} per
+     * split on the fetcher thread, serially, exactly the {@code splits × timeout} cost that method
+     * exists to avoid. Starting every shutdown first overlaps the waits into one, and the single
+     * list keeps every nack running when an earlier step throws.
      */
     void parkOverfullPausedSplits() throws IOException {
         // Two lists so the closes can be appended after every shutdown, as closeAll() orders them.

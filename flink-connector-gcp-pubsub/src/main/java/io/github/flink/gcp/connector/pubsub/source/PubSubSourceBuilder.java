@@ -63,7 +63,7 @@ public class PubSubSourceBuilder<T> {
 
     /**
      * Adds a subscription to consume. Calling this several times, or combining it with {@link
-     * #subscriptions}, consumes every added subscription in one source.
+     * #subscriptions(SubscriptionDestination...)}, consumes every added subscription in one source.
      *
      * <p>The subscription must already exist. Use {@link #subscription(SubscriptionDestination,
      * SubscriptionCreateOptions)} to have the source create it when it does not.

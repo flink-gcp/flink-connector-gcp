@@ -496,7 +496,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
     /**
      * The wait budget, so a test can read which one reached the tasks. Unlike {@link
-     * #shutdownTimeout}, which is only observable through the teardown {@link
+     * Builder#shutdownTimeout(Duration)}, which is only observable through the teardown {@link
      * #open(FailureHandlerContext)} builds, this needs no publisher.
      */
     @VisibleForTesting
