@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.pubsub.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.description.HtmlFormatter;
 
 import org.junit.jupiter.api.Test;
 
@@ -107,5 +108,37 @@ class PubSubConnectorOptionsTest {
         // setter. A default here would be a second copy that nothing keeps in step.
         assertThat(declaredOptions())
                 .allSatisfy(option -> assertThat(option.hasDefaultValue()).isFalse());
+    }
+
+    @Test
+    void noDescriptionRestatesADefault() {
+        // The other half of the rule above, and the half a ConfigOption cannot express: a default
+        // written into prose is the same second copy, just out of reach of hasDefaultValue(). Three
+        // of these had accumulated by the time #778 read the file, all three deleted by #838, and
+        // every check stayed green throughout — which is how they arrived.
+        //
+        // The two phrases are the ones those three used ("Off by default:", "Defaults to twice the
+        // effective flow-control message limit", "Defaults to twice the effective flow-control byte
+        // limit"), not the bare word: 'service-account-key-file' says "application-default
+        // credentials" and must keep passing.
+        //
+        // When this fires, the description is what changes. reference/pubsub.md is where a default
+        // is written — a derived one included, carrying both its derivation and its resolved
+        // value — and the table page's "Maps to" column is the pointer a DDL author follows there.
+        HtmlFormatter formatter = new HtmlFormatter();
+        // allSatisfy passes vacuously on an empty list, and declaredOptions() is reflective, so a
+        // rename of the field shape it looks for would leave this test green rather than fire.
+        assertThat(declaredOptions()).isNotEmpty();
+        assertThat(declaredOptions())
+                .allSatisfy(
+                        option ->
+                                assertThat(formatter.format(option.description()))
+                                        .as(
+                                                "option '%s' restates a default;"
+                                                        + " reference/pubsub.md is where a default"
+                                                        + " is written",
+                                                option.key())
+                                        .doesNotContainIgnoringCase("by default")
+                                        .doesNotContainIgnoringCase("defaults to"));
     }
 }
