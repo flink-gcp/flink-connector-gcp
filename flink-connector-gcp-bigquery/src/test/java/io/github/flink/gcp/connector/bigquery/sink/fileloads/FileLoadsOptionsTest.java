@@ -47,11 +47,11 @@ class FileLoadsOptionsTest {
                 .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF);
         assertThat(options.getLoadJobPollMaxBackoff())
                 .isEqualTo(FileLoadsOptions.DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF);
-        assertThat(options.getSchemaUpdateInitialBackoff())
+        assertThat(options.getSchemaReconcileInitialBackoff())
                 .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF);
-        assertThat(options.getSchemaUpdateMaxBackoff())
+        assertThat(options.getSchemaReconcileMaxBackoff())
                 .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_MAX_BACKOFF);
-        assertThat(options.getSchemaUpdateMaxAttempts())
+        assertThat(options.getSchemaReconcileMaxAttempts())
                 .isEqualTo(FileLoadsOptions.DEFAULT_SCHEMA_RECONCILE_MAX_ATTEMPTS);
     }
 
@@ -73,7 +73,7 @@ class FileLoadsOptionsTest {
     }
 
     @Test
-    void theSchemaUpdateScheduleIsDerivedFromTheKnobs() {
+    void theSchemaReconcileScheduleIsDerivedFromTheKnobs() {
         RetrySchedule schedule =
                 FileLoadsOptions.builder()
                         .stagingPath("gs://bucket")

@@ -590,8 +590,7 @@ class BigQueryDynamicTableFactoryTest {
         FileLoadsOptions built = ((BigQueryFileLoadsSink<?>) built(options)).getOptions();
         assertThat(built.getStagingPath()).isEqualTo("gs://bucket/prefix");
         assertThat(built.getTempDataset()).isEqualTo("staging_dataset");
-        // The keys follow the setters (schema-reconcile.*), the getters say schemaUpdate.
-        assertThat(built.getSchemaUpdateMaxAttempts()).isEqualTo(3);
+        assertThat(built.getSchemaReconcileMaxAttempts()).isEqualTo(3);
     }
 
     @Test

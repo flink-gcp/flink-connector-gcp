@@ -74,9 +74,10 @@ that message names `WriteDisposition.WRITE_APPEND` &c. in prose, so the value be
     The interval rule has no such reachability: `FactoryMocks` has no sink overload carrying a
     session `Configuration`, so both rules and the batch acceptance are pinned against a real
     `TableEnvironment` in `BigQueryTableWriteMethodsPlanTest`.
-- **The FILE_LOADS keys are spelled after the setters** (`sink.file-loads.schema-reconcile.*`),
-  not after the `getSchemaUpdate*` getters, which the reflective tests key off too — and which
-  keeps them clear of the unrelated `sink.schema-update.*` family. Both new mappers carry
+- **The FILE_LOADS keys are spelled `schema-reconcile`** (`sink.file-loads.schema-reconcile.*`),
+  as are the setters and the getters, which keeps them clear of the unrelated
+  `sink.schema-update.*` family. The reflective guard keys off the builder's setters. Both new
+  mappers carry
   **both** reflective halves; the `everyOptionOfTheFamilyFeedsAKnob` prefix scan turned out to
   be the half `DefaultStreamOptionsMapperTest` had never had, so the scan moved to
   `OptionFamilies.declaredKeysUnder` and that test gained the guard.
