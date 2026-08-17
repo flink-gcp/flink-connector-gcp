@@ -211,8 +211,10 @@ Primary-key drift is always rejected.
 ## `SchemaUpdateOptions`
 
 Both flags are off by default, which is what makes connector-driven schema updates opt-in — see
-[Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) for why,
-and note `STORAGE_API_EXACTLY_ONCE` rejects an enabled options object outright.
+[Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) for why.
+All three write methods accept an enabled options object. On `STORAGE_API_EXACTLY_ONCE` the
+reconciliation happens at a stream boundary: the writer drains its in-flight appends, reconciles
+the table schema, and reopens at the same offset.
 
 | Option | Default | What it does |
 |---|---|---|
@@ -288,5 +290,5 @@ does with the two stream-count knobs, is under
 | `maxRecordsPerFetch` | 10000 | The most rows one fetch hands to the task thread, so a checkpoint can be taken part-way through a response block |
 | `retryMaxAttempts` | 25 | How many consecutive attempts at a read stream the client library may make **without progress** before the read fails. An attempt that delivered rows resets the count; without a bound the client retries for twenty-four hours |
 | `serviceAccountKeyFile` | *unset → ADC* | Uses the service account in this JSON key file for the read-session, stream-reading, query, and view-materialization clients. Loaded at runtime; the same key file must exist at this path on the JobManager and every TaskManager. Rejected with either emulator endpoint |
-| `emulatorEndpoint` | — | Sends the source's read traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. The whole of it for a `table` source, which makes no REST call |
+| `emulatorEndpoint` | — | Sends the source's read traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. The whole of it for a `table` source that does not ask for `materializeViews` |
 | `emulatorRestEndpoint` | — | The REST half of `emulatorEndpoint`, for the query job and the view lookup. `query` or `materializeViews` only |

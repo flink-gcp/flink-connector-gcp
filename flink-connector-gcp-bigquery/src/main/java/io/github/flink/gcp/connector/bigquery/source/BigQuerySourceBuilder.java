@@ -492,9 +492,11 @@ public class BigQuerySourceBuilder<T> {
      * without credentials.
      *
      * <p>For testing against a local emulator and nothing else. This is the whole of it for a
-     * source reading a {@link #table(TableDestination)}: the read session carries the schema, so
-     * nothing on that path makes a REST call. A source reading a {@link #query(String)} does — the
-     * query job is a REST call — and needs {@link #emulatorRestEndpoint(String)} as well.
+     * source reading a {@link #table(TableDestination)} that does not ask for {@link
+     * #materializeViews()}: the read session carries the schema, so nothing on that path makes a
+     * REST call. A source that runs a query job does — whether through {@link #query(String)} or
+     * through {@link #materializeViews()}, whose view lookup is a REST call too — and needs {@link
+     * #emulatorRestEndpoint(String)} as well.
      *
      * <p>The value is parsed here, so a malformed {@code host:port} is rejected on the client
      * instead of surfacing as a connection failure once the job has been deployed.
@@ -511,9 +513,10 @@ public class BigQuerySourceBuilder<T> {
      * Sends the source's query job to a BigQuery emulator at {@code host:port}, over plain HTTP and
      * without credentials.
      *
-     * <p>This is the REST half of {@link #emulatorEndpoint(String)}, and only a {@link
-     * #query(String)} source reaches it. The two are separate because they are separate transports
-     * on separate ports, as they are on the sink side.
+     * <p>This is the REST half of {@link #emulatorEndpoint(String)}, and a source that runs a query
+     * job reaches it: {@link #query(String)}, or {@link #table(TableDestination)} with {@link
+     * #materializeViews()}. The two are separate because they are separate transports on separate
+     * ports, as they are on the sink side.
      *
      * @param emulatorRestEndpoint the emulator's REST endpoint as {@code host:port}
      * @return this builder

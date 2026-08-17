@@ -664,21 +664,26 @@ means a routing bug.
 Creation is also the **only** moment a `REQUIRED` column can appear — BigQuery cannot add one to an
 existing table — so whichever column modes the serializer derives are decided here, durably.
 
-## No emulator path
+## Pointing the sink at an emulator
 
-**There is no `emulatorEndpoint(...)` on the BigQuery sink**, and that is a decision rather than a
-gap waiting to be filled. The module's own tests reach
-[goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator) through a test-only appender
-factory handed to a `@VisibleForTesting` overload, so the production factory never needed an
-endpoint seam; adding one to the public API was considered under
-[#54]({{< param BookRepo >}}/issues/54) and left unbuilt for want of a consumer. It would slot into
-the production factory's constructor state cheaply — open an issue if you want it.
+The sink takes **two** emulator endpoints, one per transport, because
+[goccy/bigquery-emulator](https://github.com/goccy/bigquery-emulator) speaks gRPC and REST on
+separate ports — a deviation from the sibling connectors, whose emulators speak one protocol on one
+port. `emulatorEndpoint(...)` points the Storage Write API traffic at it; `emulatorRestEndpoint(...)`
+points the table metadata traffic at it, which means table creation under `CREATE_IF_NEEDED` and
+connector-driven schema updates. A sink that only appends to a table that already exists needs the
+first alone.
 
-Develop against a real dataset meanwhile; a sandbox project with a short default table expiration
-keeps it cheap. That is also less of a loss than it sounds, because of how much such a run could
-never prove: the emulator supports neither `gs://` load jobs nor a Cloud Storage endpoint, so
-`FILE_LOADS` could not run against it at all, and it reads `TIME`, `DATETIME`, `NUMERIC` and
-`BIGNUMERIC` columns back as unrelated values.
+Both are rejected under `FILE_LOADS`, which stages files to Cloud Storage that no emulator here
+stands in for: an endpoint could only be honored by the metadata half of that write method and
+silently ignored by the half that moves the rows. Neither can be combined with
+`serviceAccountKeyFile(...)`, because emulator connections are deliberately credential-free.
+
+What such a run proves is bounded, and worth knowing before leaning on it. The emulator reads
+`TIME`, `DATETIME`, `NUMERIC` and `BIGNUMERIC` columns back as unrelated values, and it keeps no
+flush cursor — so the exactly-once guarantee is not observable there, which is why this module's
+exactly-once integration tests run against a real dataset. A sandbox project with a short default
+table expiration keeps that cheap.
 
 ## Reading one column of a large table
 
