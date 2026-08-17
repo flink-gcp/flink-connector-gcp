@@ -40,9 +40,9 @@ import java.util.List;
  *       getOptional(...).ifPresent(...)}, so "absent from the DDL" and "left at the connector's
  *       default" are the same state. Options the <em>table layer itself</em> owns have no connector
  *       default to copy: some define a Table API default, while {@link
- *       #SCAN_CHANGE_STREAM_CHANGELOG_MODE} is deliberately required so selecting the generic
- *       mutation envelope is explicit. The parity test records that separate partition rather than
- *       treating any of its options as builder setters.
+ *       #SCAN_CHANGE_STREAM_CHANGELOG_MODE} is deliberately required so selecting either Change
+ *       Streams interpretation stays explicit. The parity test records that separate partition
+ *       rather than treating any of its options as builder setters.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>A bounded row has no {@code format} option.</b> Its rowkey, family, and qualifier schema

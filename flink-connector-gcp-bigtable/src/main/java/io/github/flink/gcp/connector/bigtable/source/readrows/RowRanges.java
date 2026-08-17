@@ -28,15 +28,17 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * The row-key range algebra the scan source is built on: one definition of "empty", one of "these
- * two ranges can be merged", one of "this key cuts this range".
+ * The module's row-key range algebra: emptiness, containment, cutting, coalescing, intersection,
+ * truncation and the unsigned key comparison they all rest on, each defined once here.
  *
- * <p>Collected here rather than spread over the builder, the planner, the split state and the split
- * reader, because the four would otherwise each have to get the bound types right and would each
- * get them wrong differently. Row keys are compared as <em>unsigned</em> bytes, which is the order
- * Bigtable stores them in; the natural ordering of {@link ByteString} is not that order, and a
- * signed comparison sorts every key whose first byte is above {@code 0x7F} before every key whose
- * first byte is below it.
+ * <p>It began as the bounded scan source's and now serves the whole module — the scan source's
+ * builder, planner, split state and split reader, the Change Streams partition model, and the table
+ * layer's range parsing, filter pushdown and point lookups. It lives in one place because every one
+ * of those would otherwise have to get the bound types right, and would each get them wrong
+ * differently. Row keys are compared as <em>unsigned</em> bytes, which is the order Bigtable stores
+ * them in; the natural ordering of {@link ByteString} is not that order, and a signed comparison
+ * sorts every key whose first byte is above {@code 0x7F} before every key whose first byte is below
+ * it.
  *
  * <p>Three facts about the vendor's {@link ByteStringRange}, measured against google-cloud-bigtable
  * 2.80.0 on 2026-08-09 and relied on below:

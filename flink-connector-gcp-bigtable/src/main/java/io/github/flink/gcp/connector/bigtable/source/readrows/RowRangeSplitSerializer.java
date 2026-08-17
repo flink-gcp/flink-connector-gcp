@@ -30,11 +30,12 @@ import java.io.IOException;
 /**
  * Serializer for {@link RowRangeSplit}.
  *
- * <p>Hand-written, as every split serializer in this repository is, and for a reason that is
- * sharper here than usual: this format is checkpointed state, so it has to be one this connector
- * controls rather than one a client-library upgrade can move. The vendor's {@code ByteStringRange}
- * is {@code Serializable} and its {@code Query} carries a {@code ReadRowsRequest} wire form, but
- * delegating to either would pin their formats into every checkpoint.
+ * <p>The byte format is this connector's own, which is this repository's rule for a checkpointed
+ * split: it has to be a format this connector controls rather than one a client-library upgrade can
+ * move. (The Spanner batch source's {@code PartitionSplitSerializer} is the one recorded exception,
+ * and states its reason there.) The vendor's {@code ByteStringRange} is {@code Serializable} and
+ * its {@code Query} carries a {@code ReadRowsRequest} wire form, but delegating to either would pin
+ * their formats into every checkpoint.
  *
  * <p>Two details are load-bearing.
  *
