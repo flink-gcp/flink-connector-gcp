@@ -24,6 +24,8 @@ import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 
+import java.time.Instant;
+
 /** Builds the two dialect-specific Change Streams TVF statements. */
 @Internal
 final class SpannerChangeStreamStatements {
@@ -85,7 +87,7 @@ final class SpannerChangeStreamStatements {
         return builder.build();
     }
 
-    private static Value timestamp(java.time.Instant value) {
+    private static Value timestamp(Instant value) {
         return Value.timestamp(
                 value == null
                         ? null

@@ -42,6 +42,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /** Converts one Spanner result row to Flink's internal row representation. */
 @Internal
@@ -204,7 +205,7 @@ final class StructToRowDataConverter implements Serializable {
             case PG_JSONB:
                 return StringData.fromString((String) item);
             case UUID:
-                return StringData.fromString(((java.util.UUID) item).toString());
+                return StringData.fromString(((UUID) item).toString());
             case BYTES:
             case PROTO:
                 return ((ByteArray) item).toByteArray();

@@ -27,6 +27,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 
@@ -175,8 +176,7 @@ final class SpannerChangeStreamGoogleSqlRecordDecoder implements SpannerChangeSt
     }
 
     private static String instant(Timestamp timestamp) {
-        return java.time.Instant.ofEpochSecond(timestamp.getSeconds(), timestamp.getNanos())
-                .toString();
+        return Instant.ofEpochSecond(timestamp.getSeconds(), timestamp.getNanos()).toString();
     }
 
     @FunctionalInterface

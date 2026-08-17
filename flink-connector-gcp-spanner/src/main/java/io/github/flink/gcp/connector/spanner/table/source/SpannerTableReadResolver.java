@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -139,7 +140,7 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
 
         List<String> columns = projectedColumns;
         if (index != null) {
-            Set<String> readableColumns = new java.util.LinkedHashSet<>(metadata.readableColumns);
+            Set<String> readableColumns = new LinkedHashSet<>(metadata.readableColumns);
             for (int primaryKeyIndex : schema.getPrimaryKeyIndexes()) {
                 readableColumns.add(schema.getColumns().get(primaryKeyIndex).getName());
             }
@@ -333,7 +334,7 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
             this.nullFiltered = nullFiltered;
             this.keyColumns = Collections.unmodifiableList(new ArrayList<>(keyColumns));
             this.readableColumns =
-                    Collections.unmodifiableSet(new java.util.LinkedHashSet<>(readableColumns));
+                    Collections.unmodifiableSet(new LinkedHashSet<>(readableColumns));
         }
 
         static IndexMetadata read(ResultSet rows, Dialect dialect) {
@@ -341,7 +342,7 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
             @Nullable String state = null;
             boolean nullFiltered = false;
             List<IndexColumn> keys = new ArrayList<>();
-            Set<String> readable = new java.util.LinkedHashSet<>();
+            Set<String> readable = new LinkedHashSet<>();
             while (rows.next()) {
                 schemaExists = !rows.isNull(0);
                 if (!rows.isNull(1)) {
