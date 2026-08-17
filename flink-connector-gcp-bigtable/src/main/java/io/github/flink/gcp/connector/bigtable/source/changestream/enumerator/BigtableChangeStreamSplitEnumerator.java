@@ -86,6 +86,7 @@ public final class BigtableChangeStreamSplitEnumerator
     private final Map<ByteStringRange, PendingMergeAccumulator> pendingMerges =
             new LinkedHashMap<>();
     private final List<MissingPartition> missingPartitions = new ArrayList<>();
+    private final List<ByteStringRange> completedPartitions = new ArrayList<>();
     private final ChangeStreamPartitionReconciler reconciler =
             new ChangeStreamPartitionReconciler();
     private final Map<Integer, Integer> readerCapacities = new LinkedHashMap<>();
@@ -230,7 +231,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 restoredUnassigned,
                 restoredAssigned,
                 restoredMerges,
-                restoredMissing);
+                restoredMissing,
+                restoredState.getCompletedPartitions());
     }
 
     private List<ChangeStreamPartitionSplit> resolveRestored(
@@ -270,6 +272,7 @@ public final class BigtableChangeStreamSplitEnumerator
             pendingMerges.put(restored.partitionKey(), restored);
         }
         missingPartitions.addAll(initialization.missingPartitions);
+        completedPartitions.addAll(initialization.completedPartitions);
         if (initialization.fresh) {
             partitionsDiscovered.inc(initialization.unassigned.size());
         }
@@ -327,12 +330,16 @@ public final class BigtableChangeStreamSplitEnumerator
                         Preconditions.checkNotNull(scan, "reconciliation scan must not be null")
                                 .partitions,
                         ledger,
+                        completedPartitions,
                         pendingMergeSnapshot(),
                         missingPartitions,
                         Instant.now(clock),
                         ledgerLowWatermark());
         missingPartitions.clear();
         missingPartitions.addAll(result.missing);
+        // Rendered before the loop, because the loop adds the restarts themselves to the ledger:
+        // what a reader of the warning needs is what the scan saw, not what it left behind.
+        String ledgerDescription = tokenlessAmong(result.recoveries) ? describeLedger() : "";
         for (ChangeStreamPartitionReconciler.Recovery recovery : result.recoveries) {
             pendingMerges
                     .values()
@@ -358,19 +365,76 @@ public final class BigtableChangeStreamSplitEnumerator
                 tokenlessRestarts.inc();
                 LOG.warn(
                         "Restarting missing Bigtable Change Streams partition {} without a"
-                                + " continuation token at low watermark {} after {}.",
+                                + " continuation token at low watermark {} after {}. The scan"
+                                + " found it uncovered by {}.",
                         RowRanges.format(recovery.partition),
                         recoveryLowWatermark,
-                        ChangeStreamPartitionReconciler.TOKENLESS_GRACE);
+                        ChangeStreamPartitionReconciler.TOKENLESS_GRACE,
+                        ledgerDescription);
             }
         }
         refreshUnassignedMetrics();
         serveAvailableReaders();
+        // A scan that recovered the last missing partition of an otherwise drained bounded run is
+        // the moment that run became complete, and no reader event is owed afterwards to notice it.
+        signalBoundedCompletionIfDrained();
     }
 
     private static Instant clampToRetention(Instant lowWatermark, Duration retention, Instant now) {
         Instant earliest = now.minus(retention).plusSeconds(60);
         return lowWatermark.isBefore(earliest) ? earliest : lowWatermark;
+    }
+
+    private static boolean tokenlessAmong(
+            List<ChangeStreamPartitionReconciler.Recovery> recoveries) {
+        for (ChangeStreamPartitionReconciler.Recovery recovery : recoveries) {
+            if (recovery.tokenless) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Renders the four collections a gap is computed against.
+     *
+     * <p>A tokenless restart says a range was uncovered; only this says by what. The three
+     * explanations it separates are an incomplete merge still waiting for a parent token, a bounded
+     * range already read to the end time, and a ledger that genuinely holds nothing (#951).
+     *
+     * @return the ledger, split by the collection each range sits in
+     */
+    private String describeLedger() {
+        List<ByteStringRange> unassignedRanges = new ArrayList<>(unassigned.size());
+        for (ChangeStreamPartitionSplit split : unassigned) {
+            unassignedRanges.add(split.getPartition());
+        }
+        List<ByteStringRange> assignedRanges = new ArrayList<>(assigned.size());
+        for (ChangeStreamPartitionSplit split : assigned.values()) {
+            assignedRanges.add(split.getPartition());
+        }
+        return "unassigned "
+                + describeRanges(unassignedRanges)
+                + ", assigned "
+                + describeRanges(assignedRanges)
+                + ", pending merges "
+                + describeRanges(new ArrayList<>(pendingMerges.keySet()))
+                + ", completed "
+                + describeRanges(completedPartitions);
+    }
+
+    private static String describeRanges(List<ByteStringRange> ranges) {
+        if (ranges.isEmpty()) {
+            return "none";
+        }
+        StringBuilder rendered = new StringBuilder();
+        for (ByteStringRange range : ranges) {
+            if (rendered.length() > 0) {
+                rendered.append(' ');
+            }
+            rendered.append(RowRanges.format(range));
+        }
+        return rendered.toString();
     }
 
     private Instant ledgerLowWatermark() {
@@ -497,6 +561,13 @@ public final class BigtableChangeStreamSplitEnumerator
                     subtaskId);
             return;
         }
+        if (bounded && transition.getSuccessors().isEmpty()) {
+            // No successor means an OK CloseStream, which java-bigtable's own precondition proves
+            // carries no continuation token: the service ended the stream at the end time rather
+            // than at a split or a merge, so this range is the run's finished business.
+            // getPartition() already hands back an independent normalised copy.
+            completedPartitions.add(finished.getPartition());
+        }
         for (PartitionTransitionEvent.Successor successor : transition.getSuccessors()) {
             acceptSuccessor(
                     successor.getPartition(),
@@ -575,7 +646,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 new ArrayList<>(unassigned),
                 new ArrayList<>(assigned.values()),
                 pendingMergeSnapshot(),
-                missingPartitions);
+                missingPartitions,
+                completedPartitions);
     }
 
     private List<PendingMerge> pendingMergeSnapshot() {
@@ -669,6 +741,7 @@ public final class BigtableChangeStreamSplitEnumerator
         private final List<ChangeStreamPartitionSplit> assigned;
         private final List<PendingMerge> pendingMerges;
         private final List<MissingPartition> missingPartitions;
+        private final List<ByteStringRange> completedPartitions;
         private final boolean fresh;
 
         private Initialization(
@@ -678,6 +751,7 @@ public final class BigtableChangeStreamSplitEnumerator
                 List<ChangeStreamPartitionSplit> assigned,
                 List<PendingMerge> pendingMerges,
                 List<MissingPartition> missingPartitions,
+                List<ByteStringRange> completedPartitions,
                 boolean fresh) {
             this.startTime = startTime;
             this.nextSplitId = nextSplitId;
@@ -685,6 +759,7 @@ public final class BigtableChangeStreamSplitEnumerator
             this.assigned = assigned;
             this.pendingMerges = pendingMerges;
             this.missingPartitions = missingPartitions;
+            this.completedPartitions = completedPartitions;
             this.fresh = fresh;
         }
 
@@ -697,6 +772,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     Collections.emptyList(),
                     Collections.emptyList(),
                     Collections.emptyList(),
+                    Collections.emptyList(),
                     true);
         }
 
@@ -706,7 +782,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 List<ChangeStreamPartitionSplit> unassigned,
                 List<ChangeStreamPartitionSplit> assigned,
                 List<PendingMerge> pendingMerges,
-                List<MissingPartition> missingPartitions) {
+                List<MissingPartition> missingPartitions,
+                List<ByteStringRange> completedPartitions) {
             return new Initialization(
                     startTime,
                     nextSplitId,
@@ -714,6 +791,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     assigned,
                     pendingMerges,
                     missingPartitions,
+                    completedPartitions,
                     false);
         }
     }

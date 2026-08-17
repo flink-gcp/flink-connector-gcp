@@ -17,12 +17,13 @@ limitations under the License.
 # ADR-0097: The Bigtable Change Streams coordinator checkpoints the partition ledger
 
 - Status: Accepted
-- Date: 2026-08-11 (revised 2026-08-14)
+- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17)
 - Issues: [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
   [#510](https://github.com/laughingman7743/flink-connector-gcp/issues/510),
   [#532](https://github.com/laughingman7743/flink-connector-gcp/issues/532),
   [#533](https://github.com/laughingman7743/flink-connector-gcp/issues/533),
-  [#586](https://github.com/laughingman7743/flink-connector-gcp/issues/586)
+  [#586](https://github.com/laughingman7743/flink-connector-gcp/issues/586),
+  [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -48,7 +49,8 @@ surface are checked facts, reread on a client upgrade, rather than an accidental
 ## Decision
 
 The `SplitEnumerator` owns the partition topology. Its checkpoint contains unassigned and assigned
-splits, pending merge targets, the resolved fresh-start time and the next split id. The reader added
+splits, pending merge targets, the reconciler's missing-partition timers, a bounded run's completed
+ranges, the resolved fresh-start time and the next split id. The reader added
 by #511 will checkpoint the matching exact continuation tokens and low watermark. No external metadata
 table or change-stream name exists; cross-job handoff is a Flink savepoint.
 
@@ -60,6 +62,14 @@ and reusing its old id would confuse a late completion with the new split.
 Pending merge tokens accumulate in a coordinator-thread range index.
 Each arrival reevaluates at most three affected adjacency relationships; it does not copy or sort every token already received.
 The index freezes to the immutable `PendingMerge` model in range order at completion, checkpoint, and reconciliation boundaries, preserving the connector-owned checkpoint format and deterministic restore behavior.
+
+The keyspace a reconciliation scan is measured against is what the run still owes, not what it
+still holds. A bounded run ends a partition by closing it without a successor at the end time,
+which retires that range from the live ledger while the service goes on reporting it for as long as
+the table exists. The coordinator therefore records those completed ranges and counts them as
+covered, and checkpoints them with the rest of the ledger so a restore keeps the same account. A
+continuous run records nothing: with no end time to close a stream at, a partition that disappears
+without successors is a loss rather than a completion, and must still be restarted.
 
 Initial partitions are generated only for a fresh start. A restored enumerator validates every
 checkpointed low watermark through ADR-0094 and never calls the initial-partition RPC. The source
@@ -121,6 +131,17 @@ materializing the public mutation or any public entry/value/range object.
   `flink-it-1786493698-968f3051`, observed all 100 seeded rows, completed a checkpoint, triggered the
   one controlled failure, recovered without loss, and completed at the bounded end time in 132.3
   seconds. The instance returned `NOT_FOUND` immediately after teardown.
+- `CloseStream.create` in java-bigtable 2.81.0 enforces the biconditional the completed-range
+  record depends on: an OK status must carry no continuation tokens, and a non-OK status must
+  carry at least one. A transition with no successors is therefore an OK close rather than a split
+  or a merge, checked by the client library rather than inferred from the protocol description.
+- The gated bounded run on 2026-08-17 never completed, restarting all four partitions on every
+  20-minute cycle for over 40 minutes. Its first observation of them as missing was 21:17:28,
+  which is the run's own end time, and the gaps rendered as the four whole service partitions —
+  only possible against an empty ledger, that is, after every split had finished. A non-empty
+  missing ledger blocks the bounded completion signal, and that signal is the only thing that stops
+  the scans, so the two guards deadlocked and each cycle re-emitted the mutations it had already
+  delivered.
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
   prove restore does not generate new initial partitions, prove many parents require only bounded neighboring coverage checks, and prove expired coordinator-held state fails unless fallback was opted in.
 - Deterministic tests cover all 2.80.0 entry and value kinds, full-match family and qualified-column
@@ -144,6 +165,12 @@ materializing the public mutation or any public entry/value/range object.
   deserializer choice.
 - **Push the filters into the service request.** `ReadChangeStream` returns complete logical
   mutations and exposes no equivalent family or qualifier predicate in the pinned client.
+- **Stop reconciling once a bounded run passes its end time**, or never reconcile a bounded run at
+  all. Either removes the loop without a checkpoint field, and both give up the recovery the
+  reconciler exists for at exactly the point a bounded run cannot afford it: a merge close lost
+  near the end time would leave a pending merge that nothing completes, and a pending merge blocks
+  the completion signal too. That trades a hang that restarts partitions for one that does
+  nothing.
 
 ## Consequences
 
@@ -155,3 +182,10 @@ protocol proof runs against gated real Bigtable.
 Output filters do not alter the partition ledger or checkpoint format.
 Operators can distinguish removed entries from explicitly skipped empty projections through the
 two Change Streams reader counters.
+The completed-range list grows only under an end time and only by the partitions that run reads,
+so it is bounded by the run's own topology rather than by its duration; a continuous job never
+adds to it. Reading it costs a checkpoint format version, and a bounded run restored from an
+older checkpoint comes back without it, which puts that run back where the loop found it for one
+grace period rather than corrupting it.
+A tokenless restart's WARN names the four collections its gap was measured against, because the
+counter says a range was uncovered and only the ledger says by what.

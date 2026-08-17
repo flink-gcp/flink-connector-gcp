@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -65,7 +66,10 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
                                 new MissingPartition(
                                         ByteStringRange.create("c", "d"),
                                         watermark.minusSeconds(120),
-                                        watermark.minusSeconds(10))));
+                                        watermark.minusSeconds(10))),
+                        Arrays.asList(
+                                ByteStringRange.unbounded().endOpen("c"),
+                                ByteStringRange.create("d", "m")));
         BigtableChangeStreamEnumeratorStateSerializer serializer =
                 new BigtableChangeStreamEnumeratorStateSerializer();
 
@@ -73,6 +77,39 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(state));
 
         assertThat(restored).isEqualTo(state);
+        assertThat(restored.getCompletedPartitions())
+                .containsExactly(
+                        ByteStringRange.unbounded().endOpen("c"), ByteStringRange.create("d", "m"));
+    }
+
+    /**
+     * A bounded run that was checkpointed before version 3 has no record of what it already
+     * finished. Reading its state as an empty completed list is the only honest answer, and it puts
+     * the restored run back where #951 found it for one grace period rather than corrupting it.
+     */
+    @Test
+    void restoresVersionTwoStateWithNoCompletedPartitions() throws IOException {
+        Instant start = Instant.parse("2026-08-11T00:00:00Z");
+        MissingPartition missing =
+                new MissingPartition(
+                        ByteStringRange.create("a", "m"), start.minusSeconds(60), start);
+        BigtableChangeStreamEnumeratorState legacy =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        start,
+                        2,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.singletonList(missing));
+        BigtableChangeStreamEnumeratorStateSerializer serializer =
+                new BigtableChangeStreamEnumeratorStateSerializer();
+
+        BigtableChangeStreamEnumeratorState restored =
+                serializer.deserialize(2, serializeVersionTwo(legacy));
+
+        assertThat(restored.getMissingPartitions()).containsExactly(missing);
+        assertThat(restored.getCompletedPartitions()).isEmpty();
     }
 
     @Test
@@ -137,6 +174,19 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
                 out.write(bytes);
             }
             ChangeStreamPartitionSplitSerializer.writeInstant(out, merge.getLowWatermark());
+        }
+        return out.getCopyOfBuffer();
+    }
+
+    private static byte[] serializeVersionTwo(BigtableChangeStreamEnumeratorState state)
+            throws IOException {
+        DataOutputSerializer out = new DataOutputSerializer(1024);
+        out.write(serializeVersionOne(state));
+        out.writeInt(state.getMissingPartitions().size());
+        for (MissingPartition missing : state.getMissingPartitions()) {
+            ChangeStreamPartitionSplitSerializer.writePartition(out, missing.getPartition());
+            ChangeStreamPartitionSplitSerializer.writeInstant(out, missing.getFirstObserved());
+            ChangeStreamPartitionSplitSerializer.writeInstant(out, missing.getLowWatermark());
         }
         return out.getCopyOfBuffer();
     }
