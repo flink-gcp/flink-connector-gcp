@@ -102,7 +102,7 @@ See [Credential file deployment](#credential-file-deployment) before deploying a
 `emulatorEndpoint("host:port")` points the sink at a Bigtable emulator over a plaintext channel with
 no credentials, so it must only ever be used against an emulator — never against production
 Bigtable. The setter parses it into the host and port the client's emulator settings take, so a
-malformed value is rejected at `build()` on the client rather than when the writer builds its client
+malformed value is rejected by that call on the client rather than when the writer builds its client
 on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
 
 ## Credential file deployment

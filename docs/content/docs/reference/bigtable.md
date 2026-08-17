@@ -50,7 +50,7 @@ resumes a broken `ReadRows` stream from the last key it saw.
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when each writer starts and shares it with that writer's data and table-admin clients. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
-| `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
+| `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
 | `createDisposition` | `CREATE_NEVER` | Whether a missing table or column family is created (`CREATE_IF_NEEDED`) or fails the job. `CREATE_IF_NEEDED` requires `tableCreateOptions` |
 | `tableCreateOptions` | — | The [column families and rules](#tablecreateoptions) for the table the sink creates. Required with `CREATE_IF_NEEDED`, rejected with `CREATE_NEVER` |
 
@@ -150,7 +150,7 @@ Bigtable, whose rejection names what it refused.
 | `filter` | — | One server-side `Filters.Filter`, applied to every split. What it excludes never leaves the server. Last writer wins; a filter too large for the service is rejected at `build()` |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through. A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost) profile is named here like any other |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's enumerator or a TaskManager's reader starts. Every eligible process must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
-| `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at `build()` if it is not |
+| `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
 
 **There is no row limit, and no read-ahead or paging knobs.** A `Query.limit()` is global to a
 query, so it cannot be partitioned across splits without coordination — the client library refuses
