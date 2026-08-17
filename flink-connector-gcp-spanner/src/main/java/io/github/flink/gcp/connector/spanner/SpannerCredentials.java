@@ -29,7 +29,11 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-/** Loads credentials shared by the Spanner sink, bounded source, and table lookup paths. */
+/**
+ * Loads credentials shared by every direction of this connector: the sink writer, the bounded
+ * source's planner and readers, the Change Streams coordinator and query clients, and the table
+ * lookup path.
+ */
 @Internal
 public final class SpannerCredentials {
 
