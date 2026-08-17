@@ -348,8 +348,9 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                     .setCredentialsProvider(credentialsOverride)
                     .build();
         }
-        // The instantiating provider is auto-closed by the client, so the try-with-resources in
-        // each call closes the emulator channel together with the client.
+        // The instantiating provider is auto-closed by the client, so each call's finally-block
+        // closeQuietly closes the emulator channel together with the client. Deliberately not
+        // try-with-resources, for the reason closeQuietly's own javadoc gives.
         return SubscriptionAdminSettings.newBuilder()
                 .setCredentialsProvider(NoCredentialsProvider.create())
                 .setTransportChannelProvider(

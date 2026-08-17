@@ -52,8 +52,6 @@ public final class PubSubMetricNames {
     public static final String PARKED_MESSAGES = "parkedMessages";
     public static final String TOPICS_CREATED = "topicsCreated";
 
-    public static final String RECORDS_SKIPPED = "recordsSkipped";
-
     /**
      * Counts an <em>event</em> — a publisher teardown the close gave up on — so it takes the
      * counter shape the naming convention prescribes, even though its value comes from a
@@ -63,6 +61,15 @@ public final class PubSubMetricNames {
      * The count itself is {@link PubSubShutdownResidue}.
      */
     public static final String PUBLISHER_SHUTDOWNS_ABANDONED = "publisherShutdownsAbandoned";
+
+    // Registered by both directions, each on its own group.
+    /**
+     * The sink writer counts a record its serializer skipped; the source reader counts a message
+     * its deserialization schema collected nothing for (ADR-0001). Separate groups, so the two
+     * series never collide, and separate counter implementations — the reader's is thread-safe and
+     * the writer's is not, for the reason each metrics class gives.
+     */
+    public static final String RECORDS_SKIPPED = "recordsSkipped";
 
     // Registered by the source reader (PubSubSourceReaderMetrics).
     public static final String MESSAGES_RECEIVED = "messagesReceived";

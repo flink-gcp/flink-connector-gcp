@@ -57,9 +57,13 @@ ordering), with the costs stated both ways.
   unstarted detector is **not armed**, so a reader assigned no split parks indefinitely; and it
   retires at the **first checkpoint barrier** — `SourceOperator.snapshotState` is called
   unconditionally, so a barrier carrying no data counts, which bounds the guard to measuring one
-  interval, once. The detector's fields are deliberately plain, not volatile: `AddSplitsTask`
-  runs on the fetcher thread, the same thread as `fetch()`, and the reasoning lives in the class
-  javadoc. The config-derived ack-extension check is a best-effort warning only.
+  interval, once. The detector's two budget fields are deliberately plain, not volatile:
+  `AddSplitsTask` runs on the fetcher thread, the same thread as `fetch()`, so both are confined to
+  it. **Its third field is volatile and has to be**, which this record first stated the other way
+  round: `checkpointTaken()` is called from the reader's *task* thread while the budget is read on
+  the fetcher's, so the "a checkpoint was taken" latch crosses threads where the budget does not.
+  The reasoning for the split lives in the class javadoc. The config-derived ack-extension check is
+  a best-effort warning only.
 - `parallelPullCount > 1` is rejected with `orderingMode(PER_KEY)` rather than silently forced
   to 1 (the factory still force-sets 1 so the guarantee does not rest on the SDK default).
 - **The startup check** ([#81]) verifies every subscription (`GetSubscription`) before any split
@@ -92,8 +96,10 @@ on the docs page and deliberately not in opentofu, keeping personal identifiers 
 Gating is `@EnabledIfEnvironmentVariable` on `PUBSUB_IT_PROJECT` **on every concrete class,
 never the abstract base** — `scripts/e2e-gated-its.sh` greps the annotation literal and then
 expects a surefire report per matching file. `PubSubSubscriptionAdmin` carries a
-`@VisibleForTesting` `CredentialsProvider` constructor for exactly the impersonation tests; no
-production path uses it.
+`CredentialsProvider` constructor that the impersonation tests drive. It was `@VisibleForTesting`
+and test-only when this was written; [#139] and [#546] gave it a production caller — the source's
+own `serviceAccountKeyFile` reaches the admin through it — so it is an ordinary public constructor
+now, and this paragraph no longer claims otherwise.
 
 [#47]: https://github.com/laughingman7743/flink-connector-gcp/issues/47
 [#79]: https://github.com/laughingman7743/flink-connector-gcp/issues/79
@@ -102,3 +108,5 @@ production path uses it.
 [#82]: https://github.com/laughingman7743/flink-connector-gcp/issues/82
 [#101]: https://github.com/laughingman7743/flink-connector-gcp/issues/101
 [#118]: https://github.com/laughingman7743/flink-connector-gcp/issues/118
+[#139]: https://github.com/flink-gcp/flink-connector-gcp/issues/139
+[#546]: https://github.com/flink-gcp/flink-connector-gcp/issues/546
