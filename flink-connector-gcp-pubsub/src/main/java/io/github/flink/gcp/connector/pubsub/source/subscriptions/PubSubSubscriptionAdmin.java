@@ -93,12 +93,31 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
         this.credentialsOverride = credentialsOverride;
     }
 
+    /**
+     * One {@code GetSubscription} call, as a functional value so a test can drive the failure
+     * mappings below without a client.
+     *
+     * <p>{@link SubscriptionAdminClient} is a generated final-in-practice type — the seam the rest
+     * of this module already uses for {@code Publisher} and {@code Subscriber} (ADR-0007,
+     * ADR-0012), for the same reason.
+     */
+    @FunctionalInterface
+    interface SubscriptionLookup {
+        Subscription get(String subscriptionPath);
+    }
+
+    /** One {@code CreateSubscription} call; see {@link SubscriptionLookup}. */
+    @FunctionalInterface
+    interface SubscriptionCreator {
+        Subscription create(Subscription subscription);
+    }
+
     @Override
     @Nullable
     public SubscriptionInfo describe(SubscriptionDestination subscription) throws IOException {
         SubscriptionAdminClient client = newClient();
         try {
-            return describeWith(client, subscription);
+            return describeWith(client::getSubscription, subscription);
         } catch (NotFoundException e) {
             return null;
         } finally {
@@ -107,15 +126,15 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     }
 
     /**
-     * Reads a subscription's settings through an already-open client, wrapping every failure but
-     * {@link NotFoundException} — which only {@link #describe} treats as an answer rather than an
-     * error.
+     * Reads a subscription's settings, wrapping every failure but {@link NotFoundException} — which
+     * {@link #describe} treats as an answer rather than an error. Its other caller, {@link
+     * #createWith}, wraps it.
      */
-    private static SubscriptionInfo describeWith(
-            SubscriptionAdminClient client, SubscriptionDestination subscription)
-            throws IOException {
+    @VisibleForTesting
+    static SubscriptionInfo describeWith(
+            SubscriptionLookup lookup, SubscriptionDestination subscription) throws IOException {
         try {
-            return toInfo(client.getSubscription(subscription.toSubscriptionPath()));
+            return toInfo(lookup.get(subscription.toSubscriptionPath()));
         } catch (NotFoundException e) {
             throw e;
         } catch (PermissionDeniedException e) {
@@ -138,8 +157,36 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
             throws IOException {
         SubscriptionAdminClient client = newClient();
         try {
+            return createWith(
+                    client::createSubscription, client::getSubscription, subscription, options);
+        } finally {
+            closeQuietly(client);
+        }
+    }
+
+    /**
+     * The body of {@link #create}, over the two calls it makes rather than over a client, so that
+     * the branch below is reachable from a test: it needs a deletion to land in the window between
+     * the two calls, and that window is inside this method, so no test driving a real client — an
+     * emulator's included — can force it rather than race for it.
+     *
+     * <p>A {@link NotFoundException} from the read-back means the winner deleted the subscription
+     * between the two calls. That is an answer for {@link #describe} and a failed creation here, so
+     * it cannot travel as the raw vendor type — and the wrap has to be <em>inside</em> the {@code
+     * catch} rather than beside it, because a sibling {@code catch} does not see what another one
+     * throws. Unwrapped it would leave this method violating its own {@code throws IOException}
+     * contract and replace the startup check's named message with a bare gax stack trace.
+     */
+    @VisibleForTesting
+    static SubscriptionInfo createWith(
+            SubscriptionCreator creator,
+            SubscriptionLookup lookup,
+            SubscriptionDestination subscription,
+            SubscriptionCreateOptions options)
+            throws IOException {
+        try {
             SubscriptionInfo created =
-                    toInfo(client.createSubscription(toSubscription(subscription, options)));
+                    toInfo(creator.create(toSubscription(subscription, options)));
             LOG.info("Created Pub/Sub subscription {} with options {}", subscription, options);
             return created;
         } catch (AlreadyExistsException e) {
@@ -148,14 +195,20 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                             + " apply.",
                     subscription);
             // Whoever won the race decided the settings, so read them back rather than assume the
-            // requested options took effect. Through the helper, because a failure here is in a
-            // sibling catch block and so would escape the wrap below unwrapped — plausible, since
-            // creating and describing are different permissions.
-            return describeWith(client, subscription);
+            // requested options took effect.
+            try {
+                return describeWith(lookup, subscription);
+            } catch (NotFoundException gone) {
+                throw new IOException(
+                        "Pub/Sub subscription "
+                                + subscription
+                                + " already existed, but was gone when its settings were read back:"
+                                + " whoever created it deleted it again between the two calls."
+                                + " Retry, or create the subscription before starting the job.",
+                        gone);
+            }
         } catch (RuntimeException e) {
             throw new IOException("Failed to create Pub/Sub subscription " + subscription, e);
-        } finally {
-            closeQuietly(client);
         }
     }
 

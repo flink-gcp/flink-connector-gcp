@@ -17,17 +17,29 @@
 package io.github.flink.gcp.connector.pubsub.source.subscriptions;
 
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.rpc.AlreadyExistsException;
+import com.google.api.gax.rpc.NotFoundException;
+import com.google.api.gax.rpc.PermissionDeniedException;
 import com.google.pubsub.v1.Subscription;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests the option-to-protobuf translation in {@link PubSubSubscriptionAdmin}. */
+/**
+ * Tests {@link PubSubSubscriptionAdmin}'s option-to-protobuf translation and the failure mappings
+ * of the two calls {@link PubSubSubscriptionAdmin#create} makes.
+ */
 class PubSubSubscriptionAdminTest {
 
     private static final SubscriptionDestination SUBSCRIPTION =
@@ -137,5 +149,124 @@ class PubSubSubscriptionAdminTest {
         SubscriptionInfo info = PubSubSubscriptionAdmin.toInfo(Subscription.getDefaultInstance());
 
         assertThat(info).isEqualTo(SubscriptionInfo.builder().build());
+    }
+
+    /** The create call that reports the subscription already exists, so the read-back runs. */
+    private static PubSubSubscriptionAdmin.SubscriptionCreator loser() {
+        return requested -> {
+            throw new AlreadyExistsException(
+                    new IllegalStateException("exists"),
+                    GrpcStatusCode.of(Status.Code.ALREADY_EXISTS),
+                    false);
+        };
+    }
+
+    private static <T extends RuntimeException> PubSubSubscriptionAdmin.SubscriptionLookup throwing(
+            T failure) {
+        return path -> {
+            throw failure;
+        };
+    }
+
+    @Test
+    void winningTheCreateReturnsWhatTheServiceCreated() throws Exception {
+        List<Subscription> requested = new ArrayList<>();
+
+        SubscriptionInfo info =
+                PubSubSubscriptionAdmin.createWith(
+                        subscription -> {
+                            requested.add(subscription);
+                            return subscription;
+                        },
+                        throwing(new IllegalStateException("the read-back must not run")),
+                        SUBSCRIPTION,
+                        SubscriptionCreateOptions.builder()
+                                .topic(TOPIC)
+                                .enableMessageOrdering(true)
+                                .build());
+
+        assertThat(requested)
+                .singleElement()
+                .extracting(Subscription::getName)
+                .isEqualTo("projects/project/subscriptions/orders");
+        assertThat(info.isMessageOrderingEnabled()).isTrue();
+    }
+
+    @Test
+    void losingTheCreateReturnsTheSettingsTheWinnerCreatedTheSubscriptionWith() throws Exception {
+        List<String> lookedUp = new ArrayList<>();
+
+        SubscriptionInfo info =
+                PubSubSubscriptionAdmin.createWith(
+                        loser(),
+                        path -> {
+                            lookedUp.add(path);
+                            // The winner's settings, not the ones this call asked for.
+                            return Subscription.newBuilder()
+                                    .setName(path)
+                                    .setEnableMessageOrdering(true)
+                                    .build();
+                        },
+                        SUBSCRIPTION,
+                        SubscriptionCreateOptions.builder().topic(TOPIC).build());
+
+        assertThat(lookedUp).containsExactly("projects/project/subscriptions/orders");
+        assertThat(info.isMessageOrderingEnabled()).isTrue();
+    }
+
+    @Test
+    void aSubscriptionDeletedBetweenTheCreateAndTheReadBackFailsAsIoException() {
+        NotFoundException gone =
+                new NotFoundException(
+                        new IllegalStateException("gone"),
+                        GrpcStatusCode.of(Status.Code.NOT_FOUND),
+                        false);
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubSubscriptionAdmin.createWith(
+                                        loser(),
+                                        throwing(gone),
+                                        SUBSCRIPTION,
+                                        SubscriptionCreateOptions.builder().topic(TOPIC).build()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("project/orders")
+                .hasMessageContaining("was gone when its settings were read back")
+                .hasCause(gone);
+    }
+
+    @Test
+    void aReadBackForbiddenByIamNamesThePermissionItNeeds() {
+        PermissionDeniedException denied =
+                new PermissionDeniedException(
+                        new IllegalStateException("denied"),
+                        GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
+                        false);
+
+        assertThatThrownBy(
+                        () ->
+                                PubSubSubscriptionAdmin.createWith(
+                                        loser(),
+                                        throwing(denied),
+                                        SUBSCRIPTION,
+                                        SubscriptionCreateOptions.builder().topic(TOPIC).build()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("pubsub.subscriptions.get")
+                .hasCause(denied);
+    }
+
+    @Test
+    void aMissingSubscriptionStaysAnAnswerForDescribeRatherThanAnError() {
+        NotFoundException absent =
+                new NotFoundException(
+                        new IllegalStateException("absent"),
+                        GrpcStatusCode.of(Status.Code.NOT_FOUND),
+                        false);
+
+        // describe() turns this into null. The exemption lives in describeWith rather than in
+        // describe, so this is what keeps a missing subscription from failing the startup check.
+        assertThatThrownBy(
+                        () -> PubSubSubscriptionAdmin.describeWith(throwing(absent), SUBSCRIPTION))
+                .isSameAs(absent);
     }
 }
