@@ -62,15 +62,17 @@ import java.util.Objects;
  * place, {@link io.github.flink.gcp.connector.bigquery.table.BigQueryDynamicTableFactory the
  * factory}, so this class has no configuration vocabulary at all.
  *
- * <p>Three abilities are <b>not</b> implemented, each for its own reason. {@code
+ * <p>Two abilities are <b>not</b> implemented, each for its own reason. {@code
  * SupportsPartitioning}: Flink's {@code PARTITIONED BY} models Hive-style value partitioning, which
  * BigQuery time partitioning is not, and ingestion-time partitioning has no column to name — so a
  * partition spec fails at plan time rather than being silently ignored, and everything goes through
  * {@code sink.table-create.*}. {@code SupportsOverwrite}: {@code INSERT OVERWRITE} has no meaning
  * for the Storage Write API, while {@code WRITE_TRUNCATE} stays reachable as {@code
- * sink.file-loads.write-disposition}. Writable metadata exists only when CDC is enabled: the
- * planner appends one selected sequence source after the physical row, while the physical DDL row
- * remains the BigQuery table schema.
+ * sink.file-loads.write-disposition}.
+ *
+ * <p>{@code SupportsWritingMetadata} <b>is</b> implemented, but only bears fruit when CDC is
+ * enabled: the planner appends one selected sequence source after the physical row, while the
+ * physical DDL row remains the BigQuery table schema.
  *
  * <p>Built through {@link #builder()} rather than a constructor: the resolved option families,
  * physical-key model and planner-selected metadata would otherwise form a positional list repeated

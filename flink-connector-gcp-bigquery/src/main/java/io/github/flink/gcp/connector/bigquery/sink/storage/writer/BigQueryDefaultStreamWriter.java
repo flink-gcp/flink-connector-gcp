@@ -170,12 +170,6 @@ public class BigQueryDefaultStreamWriter<T>
      */
     static final int MAX_ROW_BYTES = 9 * 1024 * 1024;
 
-    /**
-     * Retry schedule for re-appends after a table schema update, while the update propagates to the
-     * Storage Write API backend — which takes minutes, considerably longer than table-creation
-     * propagation. Flat 30 s waits, jittered (de-synchronizing parallel subtasks), 30 attempts: a
-     * ceiling of roughly fifteen minutes.
-     */
     private final BigQuerySinkConfig<T> config;
 
     private final RowAppenderFactory appenderFactory;

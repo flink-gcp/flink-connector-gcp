@@ -143,8 +143,9 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
         Preconditions.checkNotNull(element, "element must not be null");
         // Derived outside the try below, so that a schema this descriptor cannot express is not
         // reported as a bad record. On a task manager the constructor never runs — it is the
-        // deserialized instance that serves records — and every writer calls serialize() before
-        // getDescriptor(), so this is where the first build actually happens there.
+        // deserialized instance that serves records — so the first build happens either in a
+        // writer's own set-up (the buffered writer resolves a descriptor per restored destination)
+        // or here. Both are outside a per-row catch, which is the property this placement keeps.
         Descriptors.Descriptor descriptor = descriptor();
         JSONObject json = parse(element);
         if (json.isEmpty()) {

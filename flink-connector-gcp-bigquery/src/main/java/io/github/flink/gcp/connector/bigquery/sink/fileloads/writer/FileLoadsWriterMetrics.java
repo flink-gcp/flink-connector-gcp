@@ -31,15 +31,15 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
  * <p>This writer has no per-record RPC — a record is encoded into a staging file on Cloud Storage,
  * and the load job that turns those files into rows runs in the committer. Two consequences.
  * <b>There is no error-class dimension here</b>: a record either reaches the staging file or is
- * routed to the failure handler by the serializer or the Avro conversion, and neither carries a
- * service status. And <b>{@code numRecordsSend} and {@code numBytesSend} are counted at different
- * moments</b>: a record is counted when the Avro writer accepts it, while its bytes are only known
- * when the file is finished, so the byte counter advances in file-sized steps and lags the record
- * counter by the currently open files.
+ * routed to the failure handler by the serializer or the staging-format conversion, and neither
+ * carries a service status. And <b>{@code numRecordsSend} and {@code numBytesSend} are counted at
+ * different moments</b>: a record is counted when the file writer accepts it, while its bytes are
+ * only known when the file is finished, so the byte counter advances in file-sized steps and lags
+ * the record counter by the currently open files.
  *
- * <p>{@code numBytesSend} is therefore the <em>staged</em> size — Avro-encoded and compressed with
- * whatever codec {@code StagedFileWriter} uses — rather than the payload the records carried. It is
- * the number that predicts what the load job reads.
+ * <p>{@code numBytesSend} is therefore the <em>staged</em> size — encoded in the configured staging
+ * format and compressed with whatever codec {@code StagedFileWriter} uses — rather than the payload
+ * the records carried. It is the number that predicts what the load job reads.
  *
  * <p>{@code currentSendTime} is deliberately left unset: nothing here corresponds to a request the
  * service answers.
