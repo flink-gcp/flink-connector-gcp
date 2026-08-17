@@ -141,7 +141,7 @@ public class BigQueryBufferedStreamWriter<T>
     private final int subtaskId;
     private final long maxAppendRequestBytes;
     private final long destinationIdleTimeoutNanos;
-    private final RetrySchedule retrySchedule;
+    private final RetrySchedule recoverySchedule;
     private final RetrySchedule schemaWaitSchedule;
     private final BufferedStreamOptions options;
     private final BufferedStreamWriterMetrics metrics;
@@ -229,7 +229,7 @@ public class BigQueryBufferedStreamWriter<T>
         this.subtaskId = subtaskId;
         this.maxAppendRequestBytes = options.getMaxAppendRequestBytes();
         this.destinationIdleTimeoutNanos = options.getDestinationIdleTimeout().toNanos();
-        this.retrySchedule = options.toRecoverySchedule();
+        this.recoverySchedule = options.toRecoverySchedule();
         this.schemaWaitSchedule =
                 Preconditions.checkNotNull(
                         schemaWaitSchedule, "schemaWaitSchedule must not be null");
@@ -618,7 +618,7 @@ public class BigQueryBufferedStreamWriter<T>
     private void recover(DestinationState state, InFlightAppend failed, Throwable failure)
             throws IOException {
         boolean schemaUpdated = false;
-        RetrySchedule schedule = retrySchedule;
+        RetrySchedule schedule = recoverySchedule;
         if (AppendErrorClassifier.isSchemaMismatch(failure)
                 && config.getSchemaUpdateOptions().isEnabled()) {
             LOG.info(
@@ -791,7 +791,7 @@ public class BigQueryBufferedStreamWriter<T>
             throws IOException {
         int attempt = 0;
         boolean schemaUpdated = false;
-        RetrySchedule schedule = retrySchedule;
+        RetrySchedule schedule = recoverySchedule;
         while (!replay.isEmpty()) {
             ProtoRows batch = replay.peekFirst();
             if (batch.getSerializedRowsCount() == 0) {
@@ -955,7 +955,7 @@ public class BigQueryBufferedStreamWriter<T>
      */
     private void probeRestoredStream(DestinationState state, ProtoRows batch) throws IOException {
         ensureService();
-        RetrySchedule schedule = retrySchedule;
+        RetrySchedule schedule = recoverySchedule;
         boolean schemaUpdated = false;
         for (int attempt = 1; attempt <= schedule.maxAttempts(); attempt++) {
             if (state.appender == null) {
@@ -1112,18 +1112,18 @@ public class BigQueryBufferedStreamWriter<T>
      */
     private String createStream(DestinationState state) throws IOException {
         boolean tableCreated = false;
-        for (int attempt = 1; attempt <= retrySchedule.maxAttempts(); attempt++) {
+        for (int attempt = 1; attempt <= recoverySchedule.maxAttempts(); attempt++) {
             Throwable failure;
             try {
                 return service.createBufferedStream(state.destination);
             } catch (IOException | RuntimeException e) {
                 failure = e;
             }
-            // The wide missing-table verdict, not NOT_FOUND alone: the real service masks a table
-            // that is not there as PERMISSION_DENIED (see AppendErrorClassifier#isMissingTable),
-            // so NOT_FOUND alone never fires outside the emulator.
-            boolean notFound = AppendErrorClassifier.isMissingTable(failure);
-            if (notFound
+            // The wide missing-table verdict: the real service masks a table that is not there as
+            // PERMISSION_DENIED (see AppendErrorClassifier#isMissingTable), so NOT_FOUND alone
+            // never fires outside the emulator.
+            boolean mayBeMissingTable = AppendErrorClassifier.isMissingTable(failure);
+            if (mayBeMissingTable
                     && !tableCreated
                     && config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED) {
                 LOG.info(
@@ -1134,14 +1134,14 @@ public class BigQueryBufferedStreamWriter<T>
                         config.getTableSchema(state.destination),
                         config.getTableCreateOptionsProvider().optionsFor(state.destination));
                 tableCreated = true;
-            } else if (!(notFound && tableCreated)
+            } else if (!(mayBeMissingTable && tableCreated)
                     && AppendErrorClassifier.classify(failure)
                             != AppendErrorClassifier.Kind.TRANSIENT) {
                 throw wrapFailure(
                         "Failed to create a BigQuery buffered stream on " + state.destination,
                         failure);
             }
-            if (attempt >= retrySchedule.maxAttempts()) {
+            if (attempt >= recoverySchedule.maxAttempts()) {
                 throw wrapFailure(
                         "Failed to create a BigQuery buffered stream on "
                                 + state.destination
@@ -1151,7 +1151,7 @@ public class BigQueryBufferedStreamWriter<T>
                                 + " attempt(s))",
                         failure);
             }
-            sleep(retrySchedule.backoffMs(attempt));
+            sleep(recoverySchedule.backoffMs(attempt));
         }
         throw new IllegalStateException("unreachable");
     }

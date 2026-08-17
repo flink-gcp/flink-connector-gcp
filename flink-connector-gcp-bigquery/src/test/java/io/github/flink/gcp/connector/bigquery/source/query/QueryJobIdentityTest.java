@@ -117,7 +117,7 @@ class QueryJobIdentityTest {
 
     @Test
     void theIdIsALegalBigQueryJobIdAndTableName() {
-        // The suffix doubles as the result table's name, whose alphabet is the narrower of the
+        // The id doubles as the result table's name, whose alphabet is the narrower of the
         // two — letters, digits and underscores. A long unicode name must still fit.
         QueryJobIdentity identity =
                 QueryJobIdentity.of("ジョブ: really → long ".repeat(20), SPEC, DAY, NOW);

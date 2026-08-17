@@ -75,7 +75,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
 
     private final BufferedStreamServiceFactory serviceFactory;
     @Nullable private final String location;
-    private final RetrySchedule retrySchedule;
+    private final RetrySchedule recoverySchedule;
     private final BufferedStreamOptions options;
     private final CreateDisposition createDisposition;
 
@@ -86,7 +86,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
      *
      * @param serviceFactory the Storage Write API service factory
      * @param location the BigQuery location routing hint, or {@code null}
-     * @param options the buffered-stream options (retry schedule)
+     * @param options the buffered-stream options (recovery schedule)
      * @param createDisposition the sink's create disposition, which decides whether a missing-table
      *     verdict is waited out as a propagation window or failed immediately
      */
@@ -97,7 +97,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
             CreateDisposition createDisposition) {
         this.serviceFactory = serviceFactory;
         this.location = location;
-        this.retrySchedule = options.toRecoverySchedule();
+        this.recoverySchedule = options.toRecoverySchedule();
         this.options = options;
         this.createDisposition = createDisposition;
     }
@@ -149,7 +149,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
                 // Retrying a flush in place is always safe (FlushRows is idempotent) and much
                 // cheaper than the restart the throw below causes.
                 boolean retriable = AppendErrorClassifier.isTransient(e) || isPropagating(e);
-                if (!retriable || attempt >= retrySchedule.maxAttempts()) {
+                if (!retriable || attempt >= recoverySchedule.maxAttempts()) {
                     throw new IOException(
                             "Failed to flush BigQuery stream "
                                     + committable.getStreamName()
@@ -169,7 +169,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
                                     + "); the commit will be retried after a restart",
                             e);
                 }
-                long backoffMs = retrySchedule.backoffMs(attempt);
+                long backoffMs = recoverySchedule.backoffMs(attempt);
                 // The attempt and the budget, as the writers' repair log carries them: a masked
                 // denial can repeat for the whole schedule, and nine identical lines would say
                 // nothing about whether the wait is progressing or merely running out.
@@ -179,7 +179,7 @@ public class BufferedStreamCommitter implements Committer<BufferedStreamCommitta
                         committable.getStreamName(),
                         committable.getFlushOffset(),
                         attempt,
-                        retrySchedule.maxAttempts(),
+                        recoverySchedule.maxAttempts(),
                         backoffMs,
                         e.toString());
                 Retries.sleep(backoffMs, "Interrupted while waiting to retry a BigQuery flush");

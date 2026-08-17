@@ -159,11 +159,15 @@ public final class BigQueryQueryRunner implements QueryRunner {
     public QueryResult run(QuerySpec spec) throws IOException {
         QueryJobIdentity identity = spec.getJobIdentity();
         if (identity == null) {
-            // One suffix for both names, so the job and the table it wrote are found from each
+            // One string for both names, so the job and the table it wrote are found from each
             // other in a log line or in the BigQuery console.
-            String suffix = QueryJobIdentity.PREFIX + UUID.randomUUID().toString().replace("-", "");
-            LOG.info("Running the BigQuery source's query as job {}: {}", suffix, spec);
-            Job job = await(submit(jobId(spec, suffix), configuration(spec, suffix), spec), spec);
+            String queryJobId =
+                    QueryJobIdentity.PREFIX + UUID.randomUUID().toString().replace("-", "");
+            LOG.info("Running the BigQuery source's query as job {}: {}", queryJobId, spec);
+            Job job =
+                    await(
+                            submit(jobId(spec, queryJobId), configuration(spec, queryJobId), spec),
+                            spec);
             return new QueryResult(landed(job, spec), false);
         }
         return runReusable(identity, spec);
@@ -247,10 +251,10 @@ public final class BigQueryQueryRunner implements QueryRunner {
      */
     private ProbeOutcome probeOnce(QueryJobIdentity identity, QuerySpec spec, int probe)
             throws IOException {
-        String suffix = retrySuffix(identity.getCurrentJobId(), probe);
-        Job existing = lookUp(jobId(spec, suffix), spec.getProject());
+        String queryJobId = retryJobId(identity.getCurrentJobId(), probe);
+        Job existing = lookUp(jobId(spec, queryJobId), spec.getProject());
         if (existing != null) {
-            return adopt(suffix, existing, probe, spec);
+            return adopt(queryJobId, existing, probe, spec);
         }
         if (probe == 0) {
             Job straddled = previousWindowJob(identity, spec);
@@ -263,7 +267,7 @@ public final class BigQueryQueryRunner implements QueryRunner {
                 return ProbeOutcome.of(new QueryResult(landed(await(straddled, spec), spec), true));
             }
         }
-        return submitOrAttach(suffix, spec, probe);
+        return submitOrAttach(queryJobId, spec, probe);
     }
 
     /**
@@ -277,18 +281,18 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * vanished table is treated exactly like a failed link: probed past, so the query is submitted
      * fresh under the next retry id.
      */
-    private ProbeOutcome adopt(String suffix, Job existing, int probe, QuerySpec spec)
+    private ProbeOutcome adopt(String queryJobId, Job existing, int probe, QuerySpec spec)
             throws IOException {
         if (isFailed(existing.getStatus())) {
-            return ProbeOutcome.unusable(probePast(suffix, existing.getStatus(), probe));
+            return ProbeOutcome.unusable(probePast(queryJobId, existing.getStatus(), probe));
         }
         TableId vanished = vanishedResultTable(existing, spec.getProject());
         if (vanished != null) {
-            return ProbeOutcome.unusable(probePastVanished(suffix, vanished, probe));
+            return ProbeOutcome.unusable(probePastVanished(queryJobId, vanished, probe));
         }
         LOG.info(
                 "Re-attached to the BigQuery query job {} from a previous attempt (state {}).",
-                suffix,
+                queryJobId,
                 state(existing.getStatus()));
         return ProbeOutcome.of(new QueryResult(landed(await(existing, spec), spec), true));
     }
@@ -300,26 +304,26 @@ public final class BigQueryQueryRunner implements QueryRunner {
      * are made again here — on the conflict winner's job, which is as much a previous attempt's as
      * one the look-up would have found.
      */
-    private ProbeOutcome submitOrAttach(String suffix, QuerySpec spec, int probe)
+    private ProbeOutcome submitOrAttach(String queryJobId, QuerySpec spec, int probe)
             throws IOException {
-        Created created = create(jobId(spec, suffix), configuration(spec, suffix), spec);
+        Created created = create(jobId(spec, queryJobId), configuration(spec, queryJobId), spec);
         if (isFailed(created.job.getStatus())) {
             // create lost its race to a zombie that had itself already failed, whose id is as
             // unusable as one the look-up would have found failed.
-            return ProbeOutcome.unusable(probePast(suffix, created.job.getStatus(), probe));
+            return ProbeOutcome.unusable(probePast(queryJobId, created.job.getStatus(), probe));
         }
         if (created.conflicted) {
             TableId vanished = vanishedResultTable(created.job, spec.getProject());
             if (vanished != null) {
-                return ProbeOutcome.unusable(probePastVanished(suffix, vanished, probe));
+                return ProbeOutcome.unusable(probePastVanished(queryJobId, vanished, probe));
             }
             LOG.info(
                     "Re-attached to the BigQuery query job {} another attempt submitted first"
                             + " (state {}).",
-                    suffix,
+                    queryJobId,
                     state(created.job.getStatus()));
         } else {
-            LOG.info("Running the BigQuery source's query as job {}: {}", suffix, spec);
+            LOG.info("Running the BigQuery source's query as job {}: {}", queryJobId, spec);
         }
         return ProbeOutcome.of(
                 new QueryResult(landed(await(created.job, spec), spec), created.conflicted));
@@ -338,8 +342,8 @@ public final class BigQueryQueryRunner implements QueryRunner {
     @Nullable
     private Job previousWindowJob(QueryJobIdentity identity, QuerySpec spec) throws IOException {
         for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
-            String suffix = retrySuffix(identity.getPreviousJobId(), probe);
-            Job job = lookUp(jobId(spec, suffix), spec.getProject());
+            String queryJobId = retryJobId(identity.getPreviousJobId(), probe);
+            Job job = lookUp(jobId(spec, queryJobId), spec.getProject());
             if (job == null) {
                 return null;
             }
@@ -357,7 +361,7 @@ public final class BigQueryQueryRunner implements QueryRunner {
                 LOG.warn(
                         "The BigQuery query job {} from the previous reuse window completed, but"
                                 + " its result table {}.{} is gone; walking past it.",
-                        suffix,
+                        queryJobId,
                         vanished.getDataset(),
                         vanished.getTable());
                 continue;
@@ -367,8 +371,8 @@ public final class BigQueryQueryRunner implements QueryRunner {
         return null;
     }
 
-    private static String retrySuffix(String base, int probe) {
-        // An underscore, not the load runner's hyphen: this suffix is also the result table's
+    private static String retryJobId(String base, int probe) {
+        // An underscore, not the load runner's hyphen: this string is also the result table's
         // name, and a hyphen is not legal there.
         return probe == 0 ? base : base + "_r" + probe;
     }
@@ -398,19 +402,19 @@ public final class BigQueryQueryRunner implements QueryRunner {
     }
 
     /** Logs the failed job being walked past and answers its error for the give-up message. */
-    private static String probePast(String suffix, JobStatus status, int probe) {
+    private static String probePast(String queryJobId, JobStatus status, int probe) {
         String error = status.getError().toString();
         if (probe < MAX_RETRY_PROBES) {
             LOG.warn(
                     "The BigQuery query job {} from a previous attempt failed ({}); probing the"
                             + " next retry id.",
-                    suffix,
+                    queryJobId,
                     error);
         } else {
             LOG.warn(
                     "The BigQuery query job {} from a previous attempt failed ({}), and no retry"
                             + " ids are left to probe.",
-                    suffix,
+                    queryJobId,
                     error);
         }
         return error;
@@ -453,7 +457,7 @@ public final class BigQueryQueryRunner implements QueryRunner {
     }
 
     /** Logs the vanished result table being walked past and answers the give-up line's error. */
-    private static String probePastVanished(String suffix, TableId vanished, int probe) {
+    private static String probePastVanished(String queryJobId, TableId vanished, int probe) {
         String error =
                 "its result table "
                         + vanished.getDataset()
@@ -464,33 +468,33 @@ public final class BigQueryQueryRunner implements QueryRunner {
             LOG.warn(
                     "The BigQuery query job {} from a previous attempt completed, but {}; probing"
                             + " the next retry id.",
-                    suffix,
+                    queryJobId,
                     error);
         } else {
             LOG.warn(
                     "The BigQuery query job {} from a previous attempt completed, but {}, and no"
                             + " retry ids are left to probe.",
-                    suffix,
+                    queryJobId,
                     error);
         }
         return error;
     }
 
-    private static JobId jobId(QuerySpec spec, String suffix) {
-        JobId.Builder jobId = JobId.newBuilder().setJob(suffix).setProject(spec.getProject());
+    private static JobId jobId(QuerySpec spec, String queryJobId) {
+        JobId.Builder jobId = JobId.newBuilder().setJob(queryJobId).setProject(spec.getProject());
         if (spec.getLocation() != null) {
             jobId.setLocation(spec.getLocation());
         }
         return jobId.build();
     }
 
-    private static QueryJobConfiguration configuration(QuerySpec spec, String suffix) {
+    private static QueryJobConfiguration configuration(QuerySpec spec, String queryJobId) {
         QueryJobConfiguration.Builder configuration =
                 QueryJobConfiguration.newBuilder(spec.getSql());
         if (spec.getResultDataset() != null) {
             configuration
                     .setDestinationTable(
-                            TableId.of(spec.getProject(), spec.getResultDataset(), suffix))
+                            TableId.of(spec.getProject(), spec.getResultDataset(), queryJobId))
                     .setWriteDisposition(JobInfo.WriteDisposition.WRITE_TRUNCATE);
         }
         return configuration.build();
