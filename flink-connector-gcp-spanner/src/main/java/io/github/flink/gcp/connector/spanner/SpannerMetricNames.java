@@ -61,13 +61,16 @@ public final class SpannerMetricNames {
     /** Batch write requests the writer sent, first attempts and re-sends alike. */
     public static final String BATCHES_SENT = "batchesSent";
 
-    // Registered by the batch source's enumerator (SpannerPartitionSplitEnumerator).
+    // Registered by both split enumerators (SpannerPartitionSplitEnumerator and
+    // SpannerChangeStreamSplitEnumerator).
 
     /** Partition splits handed to a reader. */
     public static final String SPLITS_ASSIGNED = "splitsAssigned";
 
     /** Partition splits a failed reader gave back, to be handed out again. */
     public static final String SPLITS_RETURNED = "splitsReturned";
+
+    // Registered by the Change Streams coordinator (SpannerChangeStreamSplitEnumerator).
 
     /** Child partition tokens first accepted into the Change Streams coordinator ledger. */
     public static final String CHANGE_STREAM_PARTITIONS_DISCOVERED =
@@ -76,6 +79,8 @@ public final class SpannerMetricNames {
     /** Lag of the oldest scheduled Change Streams partition no reader owns yet. */
     public static final String UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
             "unassignedChangeStreamPartitionLagMillis";
+
+    // Registered by the batch source's enumerator (SpannerPartitionSplitEnumerator).
 
     /**
      * Reads planned into partitions. One per job at most: a restored enumerator plans nothing, so

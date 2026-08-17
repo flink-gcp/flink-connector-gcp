@@ -86,20 +86,15 @@ public final class SpannerClients {
     }
 
     /**
-     * Opens a service handle for a database.
+     * Opens a service handle for a database, with an optional runtime-loaded credential override.
      *
      * @param database the database to reach
      * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
+     * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
+     *     ADC
      * @return the handle, which the caller owns and must close
      * @throws IOException if the handle cannot be created
      */
-    public static Spanner open(
-            SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint)
-            throws IOException {
-        return open(database, emulatorEndpoint, null);
-    }
-
-    /** Opens a service handle with an optional runtime-loaded credential override. */
     public static Spanner open(
             SpannerDatabase database,
             @Nullable EmulatorEndpoint emulatorEndpoint,
@@ -108,7 +103,14 @@ public final class SpannerClients {
         return open(database, settings(database, emulatorEndpoint, credentialsOverride));
     }
 
-    /** Opens a handle from settings already assembled by the owning runtime component. */
+    /**
+     * Opens a handle from settings already assembled by the owning runtime component.
+     *
+     * @param database the database to reach, for the failure message
+     * @param settings the settings to open the handle from
+     * @return the handle, which the caller owns and must close
+     * @throws IOException if the handle cannot be created
+     */
     public static Spanner open(SpannerDatabase database, SpannerOptions settings)
             throws IOException {
         try {
