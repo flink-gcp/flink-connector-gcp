@@ -31,7 +31,6 @@ import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
 
 /** Immutable configuration assembled by {@link SpannerChangeStreamSourceBuilder}. */
 @Internal
@@ -101,8 +100,9 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         return startPosition;
     }
 
-    public Optional<StartPosition> getResumeFallback() {
-        return Optional.ofNullable(resumeFallback);
+    @Nullable
+    public StartPosition getResumeFallback() {
+        return resumeFallback;
     }
 
     public Duration getAbsentRetentionFallback() {
@@ -121,8 +121,9 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         return maxConcurrentQueriesPerSubtask;
     }
 
-    public Optional<String> getServiceAccountKeyFile() {
-        return Optional.ofNullable(serviceAccountKeyFile);
+    @Nullable
+    public String getServiceAccountKeyFile() {
+        return serviceAccountKeyFile;
     }
 
     public SpannerChangeStreamRecordFilter getRecordFilter() {

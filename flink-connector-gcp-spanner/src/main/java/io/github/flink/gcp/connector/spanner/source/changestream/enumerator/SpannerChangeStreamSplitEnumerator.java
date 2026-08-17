@@ -62,7 +62,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -135,7 +134,7 @@ public final class SpannerChangeStreamSplitEnumerator
     private final SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context;
     private final SpannerChangeStreamCoordinatorClientFactory clientFactory;
     private final StartPosition startPosition;
-    private final Optional<StartPosition> resumeFallback;
+    @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant endTimestamp;
     private final long heartbeatMillis;
     @Nullable private final SpannerChangeStreamEnumeratorState restoredState;
@@ -166,7 +165,7 @@ public final class SpannerChangeStreamSplitEnumerator
             SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context,
             SpannerChangeStreamCoordinatorClientFactory clientFactory,
             StartPosition startPosition,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
             @Nullable SpannerChangeStreamEnumeratorState restoredState) {
@@ -186,7 +185,7 @@ public final class SpannerChangeStreamSplitEnumerator
             SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context,
             SpannerChangeStreamCoordinatorClientFactory clientFactory,
             StartPosition startPosition,
-            Optional<StartPosition> resumeFallback,
+            @Nullable StartPosition resumeFallback,
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
             @Nullable SpannerChangeStreamEnumeratorState restoredState,
@@ -196,8 +195,7 @@ public final class SpannerChangeStreamSplitEnumerator
                 Preconditions.checkNotNull(clientFactory, "clientFactory must not be null");
         this.startPosition =
                 Preconditions.checkNotNull(startPosition, "startPosition must not be null");
-        this.resumeFallback =
-                Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
+        this.resumeFallback = resumeFallback;
         this.endTimestamp = endTimestamp;
         Preconditions.checkArgument(
                 heartbeatMillis > 0,
@@ -243,7 +241,7 @@ public final class SpannerChangeStreamSplitEnumerator
             return Initialization.restored(
                     restoredState.getPartitions(), restoredState.getSourceWatermark());
         }
-        if (!resumeFallback.isPresent()) {
+        if (resumeFallback == null) {
             FlinkRuntimeException expiry = expiries.get(0).asFailure();
             throw new FlinkRuntimeException(
                     expiry.getMessage()
@@ -253,7 +251,7 @@ public final class SpannerChangeStreamSplitEnumerator
                     expiry);
         }
 
-        StartPosition requestedFallback = resumeFallback.get();
+        StartPosition requestedFallback = resumeFallback;
         Instant resolvedFallback = resolver.resolveFallback(requestedFallback);
         RestoreExpiry oldest = oldest(expiries);
         LOG.warn(

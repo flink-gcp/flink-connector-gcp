@@ -55,12 +55,12 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(defaults.getDatabase()).isEqualTo(DATABASE);
         assertThat(defaults.getChangeStreamName()).isEqualTo("changes");
         assertThat(defaults.getStartPosition()).isEqualTo(StartPosition.latest());
-        assertThat(defaults.getResumeFallback()).isEmpty();
+        assertThat(defaults.getResumeFallback()).isNull();
         assertThat(defaults.getAbsentRetentionFallback()).isEqualTo(Duration.ofDays(7));
         assertThat(defaults.getHeartbeatMillis()).isEqualTo(2_000);
         assertThat(defaults.getRpcPriority()).isEqualTo(SpannerRpcPriority.HIGH);
         assertThat(defaults.getMaxConcurrentQueriesPerSubtask()).isEqualTo(8);
-        assertThat(defaults.getServiceAccountKeyFile()).isEmpty();
+        assertThat(defaults.getServiceAccountKeyFile()).isNull();
         assertThat(defaults.getRecordFilter().hasFilters()).isFalse();
         DataChangeRecord unfiltered = record("orders");
         assertThat(defaults.getRecordFilter().filter(unfiltered).getRecord()).isSameAs(unfiltered);
@@ -81,7 +81,7 @@ class SpannerChangeStreamSourceBuilderTest {
                                 .skipMessagesWithoutChange(true));
 
         assertThat(configured.getStartPosition()).isEqualTo(StartPosition.earliest());
-        assertThat(configured.getResumeFallback()).contains(StartPosition.latest());
+        assertThat(configured.getResumeFallback()).isEqualTo(StartPosition.latest());
         assertThat(configured.getAbsentRetentionFallback()).isEqualTo(Duration.ofDays(3));
         assertThat(configured.getHeartbeatMillis()).isEqualTo(1_500);
         assertThat(configured.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
@@ -140,7 +140,7 @@ class SpannerChangeStreamSourceBuilderTest {
         SpannerChangeStreamSource<Long> copy = InstantiationUtil.clone(source);
 
         assertThat(copy.getConfig().getServiceAccountKeyFile())
-                .contains("/var/run/secrets/spanner.json");
+                .isEqualTo("/var/run/secrets/spanner.json");
         assertThatThrownBy(() -> builderWithoutEndpoint().serviceAccountKeyFile("  "))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must not be blank");

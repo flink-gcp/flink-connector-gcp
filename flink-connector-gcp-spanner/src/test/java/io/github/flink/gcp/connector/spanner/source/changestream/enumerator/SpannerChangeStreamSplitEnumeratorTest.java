@@ -40,7 +40,6 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -106,7 +105,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                         context,
                         () -> client,
                         StartPosition.at(Instant.now().plus(Duration.ofDays(1))),
-                        Optional.empty(),
+                        null,
                         null,
                         2_000,
                         restored);
@@ -374,7 +373,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedClient::new,
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         null,
                         2_000,
                         restored,
@@ -607,7 +606,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                         context,
                         () -> new ScriptedClient(),
                         StartPosition.latest(),
-                        Optional.of(StartPosition.at(fallback)),
+                        StartPosition.at(fallback),
                         null,
                         2_000,
                         restored);
@@ -799,7 +798,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                         context,
                         ScriptedClient::new,
                         StartPosition.latest(),
-                        Optional.empty(),
+                        null,
                         Instant.now().plus(Duration.ofHours(1)),
                         2_000,
                         null);
@@ -834,13 +833,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
             ScriptedClient client,
             SpannerChangeStreamEnumeratorState restored) {
         return new SpannerChangeStreamSplitEnumerator(
-                context,
-                () -> client,
-                StartPosition.latest(),
-                Optional.empty(),
-                null,
-                2_000,
-                restored);
+                context, () -> client, StartPosition.latest(), null, null, 2_000, restored);
     }
 
     private static ChildPartitionsEvent children(
