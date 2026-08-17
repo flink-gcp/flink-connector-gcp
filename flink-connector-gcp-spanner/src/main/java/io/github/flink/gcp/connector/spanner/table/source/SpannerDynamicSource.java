@@ -270,12 +270,10 @@ public final class SpannerDynamicSource
                         filterState.runtime()));
     }
 
-    private List<SpannerFilterPushDown.KeyPart> declaredPrimaryKey() {
-        List<SpannerFilterPushDown.KeyPart> key = new ArrayList<>();
+    private List<KeyColumn> declaredPrimaryKey() {
+        List<KeyColumn> key = new ArrayList<>();
         for (int index : schema.getPrimaryKeyIndexes()) {
-            key.add(
-                    new SpannerFilterPushDown.KeyPart(
-                            schema.getColumns().get(index).getName(), index, false, false));
+            key.add(new KeyColumn(schema.getColumns().get(index).getName(), index, false, false));
         }
         return key;
     }
