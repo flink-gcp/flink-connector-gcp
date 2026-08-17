@@ -29,7 +29,7 @@ limitations under the License.
   executor, and it was evaluated against every loop and adopted nowhere (recorded on [#61]): all
   seven measured loops are not plain predicate-retry — success-via-exception in
   `BufferedStreamCommitter.flush`, repair side effects in `createStream`, a mid-loop schedule
-  swap in `retryBatches`, condition-driven retry in `LoadJobOrchestrator`'s schema loop,
+  swap in `retryBatches`, condition-driven retry in `FileLoadsSchemaReconciler`'s schema loop,
   unbounded completion polling in `BigQueryLoadJobRunner.awaitJob`, drain-based success in
   `TopicRepairer.repair`, and no loop at all in Cloud Tasks' park-and-redispatch
   writer — and each carries site-specific messages and logging that tests pin. Do not add an

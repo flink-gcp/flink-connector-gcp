@@ -34,8 +34,13 @@ never a problem.
 ## Decision
 
 `ensureFinalTable` is the shared entry point for **every** load — direct and temp-table alike —
-memoized once per destination per run (`finalTableSchema`; the orchestrator is constructed per
-commit, so the memo is naturally per-run and an overflow's partition loads reconcile once).
+memoized once per destination per commit (`finalTableSchema`). Both live on `FileLoadsSchemaReconciler`,
+which owns the memo and nothing else; `LoadJobOrchestrator` builds one in its own constructor and
+`FileLoadsCommitter` builds one orchestrator per commit, so the memo is per-commit by construction
+and an overflow's partition loads reconcile once. That chain is the guarantee — the reconciler is
+deliberately not a constructor parameter, because injecting it is what would let one memo outlive
+its commit, and `FileLoadsCommitterTest.eachCommitReconcilesTheDestinationAgain` is the only test
+that would notice.
 
 Consequences that are decisions, not accidents:
 
