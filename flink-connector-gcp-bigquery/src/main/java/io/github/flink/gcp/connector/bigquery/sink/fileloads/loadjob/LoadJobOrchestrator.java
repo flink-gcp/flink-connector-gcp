@@ -824,7 +824,7 @@ public final class LoadJobOrchestrator {
                 || options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE_DATA;
     }
 
-    /** One destination table's load plan and the job/table names it produced. */
+    /** One destination-and-format's sorted, bin-packed partitions. */
     private static final class DestinationLoad {
 
         private final TableDestination destination;

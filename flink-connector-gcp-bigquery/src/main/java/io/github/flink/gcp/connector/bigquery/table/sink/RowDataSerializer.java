@@ -149,7 +149,7 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
         return localState;
     }
 
-    /** The derived triple, published through one volatile read on the per-record path. */
+    /** The derived conversion state, published through one volatile read on the per-record path. */
     private static final class ConversionState {
 
         private final TableSchema tableSchema;

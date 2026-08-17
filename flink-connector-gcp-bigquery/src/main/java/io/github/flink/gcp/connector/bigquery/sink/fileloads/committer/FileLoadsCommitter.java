@@ -73,6 +73,13 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
 
     private static final long QUOTA_WARN_THROTTLE_MS = 10 * 60 * 1_000L;
 
+    private final BigQuerySinkConfig<?> config;
+
+    private final FileLoadsOptions options;
+    private final StagingStorage storage;
+    private final Supplier<LoadJobRunner> runnerFactory;
+    private final Supplier<TableAdmin> tableAdminFactory;
+
     /**
      * Load jobs this committer has submitted to BigQuery. The one custom metric of the FILE_LOADS
      * path's commit side: it is what turns "the checkpoint took a while" into "the checkpoint
@@ -82,12 +89,6 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      * <p>The framework registers the standard committer metrics ({@code totalCommittables} and
      * friends) itself; nothing here has to.
      */
-    private final BigQuerySinkConfig<?> config;
-
-    private final FileLoadsOptions options;
-    private final StagingStorage storage;
-    private final Supplier<LoadJobRunner> runnerFactory;
-    private final Supplier<TableAdmin> tableAdminFactory;
     private final Counter loadJobsSubmitted;
 
     /** Committer-lifetime collaborators; the clients they hold are expensive to build. */

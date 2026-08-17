@@ -225,11 +225,9 @@ public final class ProtoSchemaOptions implements Serializable {
         boolean geography = isGeographyField(field, path);
         // A column has one type, so a field claimed by both markers is a configuration error rather
         // than a precedence question. Checked here because this is the one place both are visible:
-        // an
-        // option cannot be intersected with a path without a descriptor, and neither can two
+        // an option cannot be intersected with a path without a descriptor, and neither can two
         // *different* option numbers that happen to meet on one field. One number registered as
-        // both
-        // markers needs no descriptor and is rejected earlier, in build().
+        // both markers needs no descriptor and is rejected earlier, in build().
         Preconditions.checkArgument(
                 !(json && geography),
                 "Field %s is marked as both a JSON and a GEOGRAPHY column",

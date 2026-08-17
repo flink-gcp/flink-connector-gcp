@@ -52,17 +52,21 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * The FILE_LOADS {@link org.apache.flink.api.connector.sink2.SinkWriter}: encodes records to Avro
- * and streams them to per-destination staging files on Cloud Storage, emitting one {@link
- * FileLoadsCommittable} per finalized file from {@link #prepareCommit()} — once at end of input in
- * batch execution, once per checkpoint in streaming execution.
+ * The FILE_LOADS {@link org.apache.flink.api.connector.sink2.SinkWriter}: encodes records in the
+ * configured {@link FileLoadsOptions#getStagingFormat() staging format} and streams them to
+ * per-destination staging files on Cloud Storage, emitting one {@link FileLoadsCommittable} per
+ * finalized file from {@link #prepareCommit()} — once at end of input in batch execution, once per
+ * checkpoint in streaming execution.
  *
- * <p>Rows never accumulate on the heap: a record the serializer converts is appended to an Avro
+ * <p>Rows never accumulate on the heap: a record the serializer converts is appended to a file
  * writer that streams into a GCS resumable upload, so memory use is proportional to the number of
- * concurrently open destinations (one upload chunk plus one Avro block each), not to the data
- * volume or job length. In streaming execution the inter-checkpoint buffer therefore <em>is</em>
- * GCS. Files are rolled at {@link FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for
- * load throughput and bounded by the per-load-job URI cap — see that option's default for both.
+ * concurrently open destinations rather than to the data volume or job length. What one open
+ * destination costs depends on the format: Avro holds one upload chunk plus one block, while
+ * Parquet buffers a whole row group sized from {@link FileLoadsOptions#getMaxStagingFileBytes()},
+ * so a task manager is sized for the format in use. In streaming execution the inter-checkpoint
+ * buffer therefore <em>is</em> GCS. Files are rolled at {@link
+ * FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load throughput and bounded by the
+ * per-load-job URI cap — see that option's default for both.
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
@@ -72,7 +76,7 @@ import java.util.UUID;
  * cannot reuse an earlier checkpoint's URI; the cost is a few KB of conversion state per distinct
  * destination.
  *
- * <p>Serialization and Avro-conversion failures are row-level and routed to the configured {@link
+ * <p>Serialization and row-conversion failures are row-level and routed to the configured {@link
  * io.github.flink.gcp.connector.base.failure.FailureHandler}; staging I/O failures fail the job.
  * There is no row-level policy at load time — a BigQuery load job is all-or-nothing. A record the
  * serializer skips by returning {@code null} is neither: it reaches no staging file and no handler.

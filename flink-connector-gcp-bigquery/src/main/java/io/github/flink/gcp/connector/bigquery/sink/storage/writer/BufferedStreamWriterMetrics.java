@@ -99,8 +99,8 @@ final class BufferedStreamWriterMetrics {
     }
 
     /**
-     * Counts one row routed to the failure handler, whether the serializer rejected it, it exceeded
-     * the per-row limit, or the service rejected it by index.
+     * Counts one row routed to the failure handler, whatever sent it there — an unroutable record,
+     * a serializer rejection, the per-row limit, or a service rejection by index.
      */
     void rowFailed() {
         numRecordsSendErrors.inc();

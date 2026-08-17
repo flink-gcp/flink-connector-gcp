@@ -65,10 +65,9 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
                 Preconditions.checkNotNull(messageClass, "messageClass must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
         // Derived here so an unmappable descriptor or a bad marker configuration fails while the
-        // job
-        // graph is built, as it already did on the Avro side. Left to the lazy path it would first
-        // be
-        // derived from serialize(), whose exceptions the writers route to the FailureHandler: one
+        // job graph is built, as it already did on the Avro side. Left to the lazy path it would
+        // first be derived from serialize(), whose exceptions the writers route to the
+        // FailureHandler: one
         // misconfiguration would look like a poison record, and a log-and-drop or DLQ policy would
         // swallow it once per record for the life of the job, leaving the table empty and the job
         // green. The state is transient, so a task manager rebuilds it after deserialization

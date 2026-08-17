@@ -53,10 +53,11 @@ import java.io.IOException;
 import java.time.Duration;
 
 /**
- * The {@link WriteMethod#FILE_LOADS} sink: writers stage per-destination Avro files on Cloud
- * Storage, the pre-commit topology routes every subtask's committables to a single committer
- * subtask (stamping their checkpoint id in streaming, see {@link FileLoadsCheckpointStamper}), and
- * the committer turns each batch into BigQuery load jobs (see {@link FileLoadsCommitter} and {@link
+ * The {@link WriteMethod#FILE_LOADS} sink: writers stage per-destination files on Cloud Storage in
+ * the configured {@link FileLoadsOptions#getStagingFormat() staging format}, the pre-commit
+ * topology routes every subtask's committables to a single committer subtask (stamping their
+ * checkpoint id in streaming, see {@link FileLoadsCheckpointStamper}), and the committer turns each
+ * batch into BigQuery load jobs (see {@link FileLoadsCommitter} and {@link
  * io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobOrchestrator}) — the whole
  * run at end of input in batch execution, each checkpoint's files at its completion in streaming
  * execution.

@@ -26,7 +26,7 @@ import java.io.IOException;
 /**
  * The Storage Write API operations of the buffered-stream write path, abstracted so writer and
  * committer logic can be unit-tested against fakes: creating buffered streams, opening offset-aware
- * appenders on them, finalizing them, and flushing rows.
+ * appenders on them, and flushing rows.
  *
  * <p>Implementations own the underlying client; {@link #close()} releases it. Appenders returned by
  * {@link #openAppender} have their own lifecycle and must be closed by the caller.

@@ -170,7 +170,10 @@ public final class RetryingTableAdmin implements TableAdmin {
                 try {
                     Retries.sleep(
                             backoffMs,
-                            "Interrupted while waiting to retry a BigQuery table creation");
+                            "Interrupted while waiting to "
+                                    + operation
+                                    + " BigQuery table "
+                                    + destination);
                 } catch (IOException interrupted) {
                     if (retainCreationOutcome) {
                         throw new TableAdminException(
