@@ -251,7 +251,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
         /** Rows of this stream handed to the task thread, including those still in the queue. */
         private long deliveredOffset;
 
-        /** Volatile for the same reason {@link #active} is: {@link #cancel()} reads it. */
+        /** Volatile for the same reason {@code active} is: {@link #cancel()} reads it. */
         @Nullable private volatile RowStream stream;
 
         /** Set by {@link #wakeUp()} on the task thread, read by the fetcher thread. */

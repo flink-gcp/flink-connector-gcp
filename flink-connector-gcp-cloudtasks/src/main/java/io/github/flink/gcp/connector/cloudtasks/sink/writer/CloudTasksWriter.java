@@ -105,7 +105,7 @@ import java.util.Set;
  * an {@code INVALID_ARGUMENT}, so an unstable service can never produce a dead letter.
  * Drop-versus-throw semantics, the never-routed backlog argument and the asynchronous capture of a
  * handler failing inside a completion callback are stated once on {@link FailureHandler}; here that
- * capture lands in {@link #asyncError}.
+ * capture lands in {@code asyncError}.
  *
  * <h2>Task naming</h2>
  *
@@ -521,8 +521,8 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
 
     /**
      * Hands a task-level creation failure to the configured handler. Runs as a mailbox mail, so a
-     * handler that fails the job cannot throw at a caller: its failure is captured into {@link
-     * #asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
+     * handler that fails the job cannot throw at a caller: its failure is captured into {@code
+     * asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
      * terminal creation failure is. First failure wins, as everywhere else here.
      *
      * <p>The description does not name the queue: every reader of it reaches the element's {@code

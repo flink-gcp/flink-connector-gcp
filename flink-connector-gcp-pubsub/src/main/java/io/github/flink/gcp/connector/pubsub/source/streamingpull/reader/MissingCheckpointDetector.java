@@ -77,7 +77,7 @@ public final class MissingCheckpointDetector {
 
     private boolean started;
 
-    /** Meaningful only once {@link #started}. */
+    /** Meaningful only once {@code started}. */
     private long startNanos;
 
     private volatile boolean sawCheckpoint;

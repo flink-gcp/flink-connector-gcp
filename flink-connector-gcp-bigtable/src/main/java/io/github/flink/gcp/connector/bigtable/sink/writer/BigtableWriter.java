@@ -70,7 +70,7 @@ import java.util.stream.Collectors;
  * MailboxExecutor}, whose mails run on the task thread inside the writer's own waits. This is the
  * model the Pub/Sub sink's writer uses.
  *
- * <p>The exception is {@link #lastCompletionNanos}, stamped by the completion callback on the gax
+ * <p>The exception is {@code lastCompletionNanos}, stamped by the completion callback on the gax
  * thread so that a wait can tell a stalled client from a busy task thread. The waits themselves run
  * {@link MailboxExecutor#tryYield()} and park rather than calling {@link MailboxExecutor#yield()},
  * which is what lets them notice a stall at all — and which is why they read the interrupt flag
@@ -123,7 +123,7 @@ import java.util.stream.Collectors;
  * status anywhere is transient even when a data-shaped status sits in front of it, so an unstable
  * service can never produce a dead letter. Drop-versus-throw semantics, the never-routed backlog
  * argument and the asynchronous capture of a handler failing inside a completion callback are
- * stated once on {@link FailureHandler}; here that capture lands in {@link #asyncError}.
+ * stated once on {@link FailureHandler}; here that capture lands in {@code asyncError}.
  *
  * <p><b>A {@code ROW_LEVEL} verdict is confirmed solo before it is routed</b> (#239). Bigtable may
  * reject a whole {@code MutateRows} request rather than the entry that provoked it, and the client
@@ -141,15 +141,15 @@ import java.util.stream.Collectors;
  * once that many confirmed rejections arrive with no applied mutation between them — on any table,
  * since a broken stream is a property of the stream and not of one destination — the stream's data
  * is broken rather than anomalous, and the writer fails the job instead of isolating it record by
- * record. The bound is a policy about the stream, accumulated across passes in {@link
- * #consecutiveRejections}; the pass's own loop budget is a per-pass invariant tripwire, and the two
+ * record. The bound is a policy about the stream, accumulated across passes in {@code
+ * consecutiveRejections}; the pass's own loop budget is a per-pass invariant tripwire, and the two
  * failures deliberately share no message.
  *
  * <h2>Table auto-creation</h2>
  *
  * <p>Under {@code CreateDisposition.CREATE_IF_NEEDED} a mutation failing {@code NOT_FOUND} — the
- * table or one of its column families does not exist — is <em>parked</em> into {@link
- * #pendingRepair} rather than failing the job, and {@link #runRepair()} repairs the incident from
+ * table or one of its column families does not exist — is <em>parked</em> into {@code
+ * pendingRepair} rather than failing the job, and {@link #runRepair()} repairs the incident from
  * the next {@link #write} or {@link #flush(boolean)}: it drains the writer, ensures every table
  * that reported itself missing and its declared families exist through the {@link TableAdmin},
  * re-applies the parked mutations, and retries on a jittered backoff schedule until they land,
@@ -157,8 +157,8 @@ import java.util.stream.Collectors;
  * family unrepairable as described below. The disposition gates the <em>parking</em>, unlike the
  * Pub/Sub writer's (where a cascade behind a dropped ordered message must be parked whatever the
  * disposition): this writer has no ordering keys and no cascades, so under {@code CREATE_NEVER} a
- * {@code NOT_FOUND} is simply fatal, with the disposition named in the failure. {@link
- * #tablesMissing} carries the repair's reason — added to only where a {@code NOT_FOUND} is parked,
+ * {@code NOT_FOUND} is simply fatal, with the disposition named in the failure. {@code
+ * tablesMissing} carries the repair's reason — added to only where a {@code NOT_FOUND} is parked,
  * consumed per table per attempt, so the admin is called only for a table that actually reported
  * itself missing, and not again once its ensure has succeeded.
  *
@@ -169,8 +169,8 @@ import java.util.stream.Collectors;
  * neither applied nor routed, which at-least-once covers for the reason {@link #close()}'s discard
  * is covered — no checkpoint completed with it parked.
  *
- * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@link
- * #asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
+ * <p>A failure that first surfaces during {@link #close()} reaches neither the handler nor {@code
+ * asyncError}: Flink quiesces the task mailbox before it closes operators, so a completion
  * callback's re-dispatch is rejected from there on. A batcher reports such a failure only inside
  * its accumulated shutdown report, which {@code DefaultMutationBatcherFactory} logs rather than
  * throws — throwing it would re-report every failure this writer had already routed, failing a job
@@ -618,7 +618,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * that may park further mutations, and those are picked up by this same loop. Nothing parks
      * <em>for isolation</em> during the per-mutation drains: the only submission in flight there is
      * solo, and a solo verdict is routed, made fatal, or — a {@code NOT_FOUND} under {@code
-     * CREATE_IF_NEEDED}, a table vanishing mid-pass — migrated to {@link #pendingRepair}, never
+     * CREATE_IF_NEEDED}, a table vanishing mid-pass — migrated to {@code pendingRepair}, never
      * parked for isolation again.
      *
      * <p>That last sentence is the loop's termination argument, and it lives in {@link
@@ -666,7 +666,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * and, before anything is re-applied, what surfaces a fatal root through {@code
      * checkAsyncError} so a cascade of one is never re-applied over it. Once a table's ensure has
      * succeeded it is not repeated within the repair, but the decision is re-taken per table per
-     * attempt off {@link #tablesMissing}: a batch parked while a creation was still propagating
+     * attempt off {@code tablesMissing}: a batch parked while a creation was still propagating
      * re-parks with its table named again, and the set consumed here is what keeps a later incident
      * from inheriting this repair's answer. An ensure that <em>fails</em> spends an attempt from
      * the same schedule instead of failing the job: the admin client retries neither of its RPCs,
@@ -839,7 +839,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     /**
      * Closes and drops the state of destinations idle beyond the configured timeout — memory
      * hygiene for long-lived jobs with per-record destinations (for example date-suffixed tables),
-     * whose {@link #states} map otherwise grows without bound. Runs at the end of a successful
+     * whose {@code states} map otherwise grows without bound. Runs at the end of a successful
      * flush, where every batcher has been drained and both parks are empty, so the batcher closed
      * here is empty: its close sends nothing and waits for nothing, which is what makes an
      * unbounded close acceptable on the task thread at all. Correctness is unaffected — an evicted
@@ -1014,7 +1014,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * <p>Measured against the later of "this wait began" and "the client last answered", or a
      * writer whose stream went quiet for an hour would report its next wait as an hour-long stall.
      *
-     * @return the time this wait has gone without progress, or {@link #RAN_A_MAIL} if it ran a mail
+     * @return the time this wait has gone without progress, or {@code RAN_A_MAIL} if it ran a mail
      *     instead — which is what tells the caller the mailbox is empty
      */
     private long awaitMutationProgress(long waitStartNanos, String what)
@@ -1207,11 +1207,11 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * Hands a row-level failure to the configured handler. Reached only with a solo verdict — an
      * {@code INVALID_ARGUMENT} answering a single-entry request of the isolation pass — so the
      * mutation really is the one the service rejected. Runs as a mailbox mail, so a handler that
-     * fails the job cannot throw at a caller: its failure is captured into {@link #asyncError} and
+     * fails the job cannot throw at a caller: its failure is captured into {@code asyncError} and
      * rethrown from the next {@link #write} or {@link #flush}, exactly as a terminal failure is.
      * First failure wins, as everywhere else here.
      *
-     * <p>Routing is <em>not</em> skipped once {@link #asyncError} is set. The writer is about to
+     * <p>Routing is <em>not</em> skipped once {@code asyncError} is set. The writer is about to
      * fail either way, but this mutation really did fail terminally, and a dead-letter destination
      * missing it is worse than one holding a mutation a replay will produce again — the guarantee
      * is at-least-once.

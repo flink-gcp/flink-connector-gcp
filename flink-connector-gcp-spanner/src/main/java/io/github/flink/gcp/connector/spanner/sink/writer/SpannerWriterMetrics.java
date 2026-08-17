@@ -35,8 +35,8 @@ import javax.annotation.Nullable;
  *
  * <p><b>{@code numRecordsSend} counts records, not send attempts.</b> The writer owns the retry
  * loop here — the client library does not retry {@code batchWrite} at all — so without that rule a
- * database having a bad minute would inflate the throughput a dashboard reads. {@link
- * #mutationsRetried} is where the retry volume is, and it is this connector's alone: on the sibling
+ * database having a bad minute would inflate the throughput a dashboard reads. {@code
+ * mutationsRetried} is where the retry volume is, and it is this connector's alone: on the sibling
  * sinks the same work happens inside the SDK and is invisible.
  *
  * <p>There are no per-destination counters. The sink writes one database but any number of its

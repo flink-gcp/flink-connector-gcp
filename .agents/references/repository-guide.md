@@ -114,19 +114,21 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `verify.yaml` job is recorded in ADR-0058; the checker design is ADR-0117, and every failure
   routes through `.agents/skills/curate-metric-docs/`
 - `just check-javadoc-links` — holds every `{@link}`, `{@linkplain}` and `@see` member reference in
-  the main sources to a member Javadoc can actually reach (#897). Two shapes fail: one bound by a
-  field that shadows the method it names, which renders no anchor at all, and one naming an
-  overloaded method, which renders an anchor on an overload the reader cannot predict. Both were
-  measured on the generated reference, and neither reaches the build — `failOnWarnings` does not
-  cover this shape, so `just docs-javadoc` is green either way, which is how the same defect
-  outlived three pull requests that each repaired a site of it by hand (#840, #890, #891). It
-  judges only types this
-  repository declares, and only members those types declare themselves, so an inherited or vendor
-  member is left alone; it says nothing about whether a resolvable reference names the *right*
-  member. Its own `verify.yaml` job, for `check-option-docs`'s reason: its inputs are every Java
-  main source. **The second checker with no `curate-*` skill**, on the argument the next entry
-  makes: no allowlist to judge, and the failure message carries the whole repair — the parameter
-  list to write, spelled from the declared signatures
+  the main sources to a member Javadoc can actually reach (#897, #930, #931). Three shapes fail:
+  one bound by a field that shadows the method it names, which renders no anchor at all; one naming
+  an overloaded method, which renders an anchor on an overload the reader cannot predict; and one
+  naming a field the API reference does not document — private or package-private, with no method
+  of the name — which renders no anchor either. All three were measured on the generated reference,
+  and none reaches the build: `failOnWarnings` does not cover this shape, so `just docs-javadoc` is
+  green either way, which is how the defect outlived three pull requests that each repaired a site
+  of it by hand (#840, #890, #891). It judges only types this repository declares, and only members
+  those types declare themselves, so an inherited or vendor member is left alone; a reference that
+  already carries a parameter list is not matched against the declared signature; and it says
+  nothing about whether a resolvable reference names the *right* member. Its own `verify.yaml` job,
+  for `check-option-docs`'s reason: its inputs are every Java main source. **The second checker
+  with no `curate-*` skill**, on the argument the next entry makes: no allowlist to judge, and the
+  failure message carries the whole repair — the parameter list where there is a method to name,
+  `{@code member}` where the sentence means the state itself
 - `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
   (#245; ADR-0065 records both failure directions): the `@EnabledIfEnvironmentVariable` the E2E
   suite is *discovered* by, and the `@Tag("gated")` that keeps the class out of every ordinary

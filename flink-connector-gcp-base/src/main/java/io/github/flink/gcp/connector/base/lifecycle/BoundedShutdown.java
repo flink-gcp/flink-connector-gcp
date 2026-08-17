@@ -76,7 +76,7 @@ import java.util.concurrent.atomic.LongAdder;
  * can drive.
  *
  * <p><b>{@link #start()} and {@link #close()} must be called from one thread</b> — the task thread,
- * for both users today. That precondition is what makes {@link #thread} safe as a plain field, and
+ * for both users today. That precondition is what makes {@code thread} safe as a plain field, and
  * it is enforced by nothing: two threads racing {@code start()} would each see a null {@code
  * thread} and run {@code shutdown} twice, on two daemon threads. A guard was weighed and left out —
  * the callers are writer teardowns, which Flink runs on the task thread by construction — so a
@@ -95,14 +95,14 @@ import java.util.concurrent.atomic.LongAdder;
  * <p>The threading of the remaining mutable state, stated precisely because the class is shared:
  *
  * <ul>
- *   <li>{@link #deadlineNanos} is read by <em>both</em> threads ({@link #close()} and {@link
+ *   <li>{@code deadlineNanos} is read by <em>both</em> threads ({@link #close()} and {@link
  *       #shutdownAndAwait()}), so it is not confined. It is safe as a plain {@code long} because
  *       its single write happens before {@code Thread.start()} and the idempotence guard means it
  *       never happens again — publication, not confinement. A write added after the thread starts
  *       would be a data race.
- *   <li>{@link #abandoned} is written by the calling thread and read by the shutdown thread with no
+ *   <li>{@code abandoned} is written by the calling thread and read by the shutdown thread with no
  *       synchronisation edge between them, so it genuinely needs {@code volatile}.
- *   <li>{@link #failure} is written by the shutdown thread and read by {@link #close()} only after
+ *   <li>{@code failure} is written by the shutdown thread and read by {@link #close()} only after
  *       {@code thread.isAlive()} has returned false, which is itself a happens-before edge (JLS
  *       17.4.5), so a plain field would suffice. It is {@code volatile} as belt and braces, since
  *       the read is one early-return away from being unordered.
@@ -136,8 +136,8 @@ public final class BoundedShutdown implements AutoCloseable {
     /**
      * Set by the first {@link #close()}, so a second one does nothing. {@code AutoCloseable}
      * strongly encourages idempotence and neither caller relies on the alternative: without this, a
-     * second close re-runs {@link #release}, rethrows the same captured failure, and re-emits the
-     * give-up warning. Calling-thread only, like {@link #thread}.
+     * second close re-runs {@code release}, rethrows the same captured failure, and re-emits the
+     * give-up warning. Calling-thread only, like {@code thread}.
      */
     private boolean closed;
 
@@ -217,7 +217,7 @@ public final class BoundedShutdown implements AutoCloseable {
     /**
      * Returns the budget the timeout has not yet used, in nanoseconds; never negative.
      *
-     * <p>Correct at the largest budget this class accepts, where {@link #deadlineNanos} has
+     * <p>Correct at the largest budget this class accepts, where {@code deadlineNanos} has
      * overflowed: this subtraction wraps a second time and the two cancel, leaving the true
      * remainder — measured rather than argued, and pinned by {@code
      * theLargestExpressibleBudgetIsNotSpentTheInstantItStarts}. Do not "harden" the stamp in {@link

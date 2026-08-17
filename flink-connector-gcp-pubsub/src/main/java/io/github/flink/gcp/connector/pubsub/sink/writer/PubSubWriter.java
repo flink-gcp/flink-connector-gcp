@@ -63,7 +63,7 @@ import java.util.Map;
  * run on the task thread inside {@link MailboxExecutor#yield()} calls, rather than acting on any of
  * it from the SDK's thread; the one thing it does do there is stamp {@link InFlightTracker}'s
  * progress clock, which that class documents as its single off-thread write. Reads are not all on
- * the task thread, and that is what shapes {@link #parkedMessages}: the metric reporter runs on a
+ * the task thread, and that is what shapes {@code parkedMessages}: the metric reporter runs on a
  * thread of its own, so a gauge over a plain {@code int} is safe where one summing the destination
  * maps would race the task thread mutating them. The in-flight ledger is the tracker's and carries
  * the tracker's own rules. This is the backpressure model of the Apache {@code
@@ -99,12 +99,12 @@ import java.util.Map;
  * <em>solo</em> — a true per-message verdict — reaches the handler, and its co-batched neighbours
  * are published. Drop-versus-throw semantics, the never-routed backlog argument and the
  * asynchronous capture of a handler failing inside a completion callback are stated once on {@link
- * FailureHandler}; here that capture lands in {@link #asyncError}. Under a dropping policy the
+ * FailureHandler}; here that capture lands in {@code asyncError}. Under a dropping policy the
  * pass's one-request-per-message degradation is bounded by {@code
  * PubSubPublisherOptions.maxConsecutiveRejections} (#361): once that many confirmed rejections
  * arrive with no successfully published message between them, the stream's data is broken rather
  * than anomalous, and the writer fails the job instead of isolating it message by message. The
- * bound is a policy about the stream, accumulated across repairs in {@link #consecutiveRejections};
+ * bound is a policy about the stream, accumulated across repairs in {@code consecutiveRejections};
  * the recovery budget is a different bound — it caps one repair's unproductive attempts — and the
  * two failures share no text.
  *
@@ -468,12 +468,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
 
     /**
      * Holds a failed publish for the destination's next repair, keyed by its publish sequence so
-     * the batch keeps publish order. Sole entry point, so the {@link #parkedMessages} gauge cannot
+     * the batch keeps publish order. Sole entry point, so the {@code parkedMessages} gauge cannot
      * drift from the pending buffers it reports.
      *
-     * <p>Parking does not decide that a topic will be created: only {@link
-     * DestinationState#topicMissing} does, which is why a cascade may be parked under {@code
-     * CREATE_NEVER}.
+     * <p>Parking does not decide that a topic will be created: only {@code topicMissing} does,
+     * which is why a cascade may be parked under {@code CREATE_NEVER}.
      */
     private void park(DestinationState state, long sequence, PubsubMessage message) {
         if (state.pendingRetries.put(sequence, message) == null) {
@@ -597,11 +596,11 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Hands a message-level publish failure to the configured handler. Reached only with a solo
      * verdict — an {@code INVALID_ARGUMENT} answering a single-message request of the isolation
      * pass — so the message really is the one the service rejected. Runs as a mailbox mail, so a
-     * handler that fails the job cannot throw at a caller: its failure is captured into {@link
-     * #asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
+     * handler that fails the job cannot throw at a caller: its failure is captured into {@code
+     * asyncError} and rethrown from the next {@link #write} or {@link #flush}, exactly as a
      * terminal publish failure is. First failure wins, as everywhere else here.
      *
-     * <p>Routing is <em>not</em> skipped once {@link #asyncError} is set. The writer is about to
+     * <p>Routing is <em>not</em> skipped once {@code asyncError} is set. The writer is about to
      * fail either way, but this message really did fail terminally, and a dead-letter destination
      * that is missing it is worse than one holding a message a replay will produce again — the
      * guarantee is at-least-once.
@@ -725,8 +724,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
      * Whether a missing topic may be repaired by creating it. Gates the {@code NOT_FOUND} parking
      * branch and that one only: since #215 the disposition does not gate parking at all — a cascade
      * is parked under {@code CREATE_NEVER} too, including one behind a message the handler dropped,
-     * because repairing an ordering key creates nothing. What decides a creation is {@link
-     * DestinationState#topicMissing}, which only this branch sets.
+     * because repairing an ordering key creates nothing. What decides a creation is {@code
+     * topicMissing}, which only this branch sets.
      */
     private boolean repairsTopics() {
         return config.getCreateDisposition() == CreateDisposition.CREATE_IF_NEEDED;

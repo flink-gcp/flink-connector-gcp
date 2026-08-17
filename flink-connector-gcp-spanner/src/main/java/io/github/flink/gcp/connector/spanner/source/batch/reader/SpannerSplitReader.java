@@ -263,7 +263,7 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
          */
         private long delivered;
 
-        /** Volatile for the same reason {@link #active} is: {@link #cancel()} reads it. */
+        /** Volatile for the same reason {@code active} is: {@link #cancel()} reads it. */
         @Nullable private volatile StructStream stream;
 
         /** Set by {@link #wakeUp()} on the task thread, read by the fetcher thread. */

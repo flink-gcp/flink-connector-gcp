@@ -43,8 +43,7 @@ import java.util.List;
  * <p>This class imports neither {@code CreateDisposition} nor {@code PubSubSinkConfig}, and that
  * absence is ADR-0006's invariant made structural: the disposition gates only the writer's {@code
  * NOT_FOUND} parking branch, so by the time a batch reaches a repair the only thing that decides a
- * creation is {@link DestinationState#topicMissing} — the repairer cannot consult the disposition
- * even by accident.
+ * creation is {@code topicMissing} — the repairer cannot consult the disposition even by accident.
  *
  * <p>Logs under the writer's category (ADR-0122, invariant 8): the constructor takes the writer's
  * logger, so an operator's log filter and the tests that pin the repair's INFO lines keep working.

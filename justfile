@@ -461,17 +461,21 @@ check-metric-docs:
     scripts/check-metric-docs.py
 
 # Fails on a Javadoc member reference written without a parameter list that gets
-# something other than the member it names (issue #897): one shadowed by a field
-# renders no anchor at all, and one naming an overloaded method renders an anchor
-# on whichever overload Javadoc picks. Both were measured on the generated
-# reference, because `just docs-javadoc` exits 0 on either — failOnWarnings does
-# not cover this shape, so nothing else in CI sees it. The failure names the
-# parameter list to write, which is why there is no allowlist and so no curate-*
-# skill: there is one repair, and the message carries it. It judges only types
-# this repository declares, and members those types declare themselves, so an
-# inherited or vendor member is left alone. Offline and stdlib-only, but a
-# verify.yaml job rather than part of `just lint`, for check-option-docs's
-# reason: its inputs are every Java main source.
+# something other than the member it names (issues #897, #930, #931): one
+# shadowed by a field renders no anchor at all, one naming an overloaded method
+# renders an anchor on whichever overload Javadoc picks, and one naming a field
+# the reference does not document — private or package-private — renders no
+# anchor either. All three were measured on the generated reference, because
+# `just docs-javadoc` exits 0 on every one of them: failOnWarnings does not cover
+# this shape, so nothing else in CI sees it. The failure carries the repair — a
+# parameter list where there is a method to name, `{@code member}` where the
+# sentence means the state — which is why there is no allowlist and so no
+# curate-* skill. It judges only types this repository declares, and members
+# those types declare themselves, so an inherited or vendor member is left alone,
+# and a reference that already carries a parameter list is not matched against
+# the declared signature. Offline and stdlib-only, but a verify.yaml job rather
+# than part of `just lint`, for check-option-docs's reason: its inputs are every
+# Java main source.
 #
 # Does every Javadoc member reference resolve to the member it names?
 check-javadoc-links:

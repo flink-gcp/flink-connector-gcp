@@ -172,7 +172,7 @@ final class DefaultStreamWriterMetrics {
     /**
      * Counts one failed append under the status code that classifies it — every failure the task
      * thread classifies, first attempts and re-appends alike, so the sum over the transient codes
-     * is the retry volume the {@link #appendRetries} counter measures from the other side.
+     * is the retry volume the {@code appendRetries} counter measures from the other side.
      *
      * @param code the status code, or {@code null} for a failure carrying none
      */

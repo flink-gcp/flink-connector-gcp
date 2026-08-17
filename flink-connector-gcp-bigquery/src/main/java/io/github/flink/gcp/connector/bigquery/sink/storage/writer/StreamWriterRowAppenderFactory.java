@@ -260,7 +260,7 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
 
     /**
      * Applies the pool bounds to the JVM-global {@code ConnectionWorkerPool} settings, first
-     * factory wins; see {@link #APPLIED_POOL_BOUNDS}. Called before {@code StreamWriter.build()} so
+     * factory wins; see {@code APPLIED_POOL_BOUNDS}. Called before {@code StreamWriter.build()} so
      * the bounds are in place before this factory can create the pool — though another BigQuery
      * client in the JVM may already have created it, in which case the floor is latched and only
      * the ceiling (read live) still applies.

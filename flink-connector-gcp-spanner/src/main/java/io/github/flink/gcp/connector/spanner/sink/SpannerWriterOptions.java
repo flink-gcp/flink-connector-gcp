@@ -108,7 +108,7 @@ public final class SpannerWriterOptions implements Serializable {
 
     /**
      * The largest {@link Builder#maxBatchMutations(int)} this connector accepts — <b>derived from
-     * {@link #MAX_BATCH_CELLS_LIMIT}, not a second figure</b>. Every mutation costs at least one
+     * {@code MAX_BATCH_CELLS_LIMIT}, not a second figure</b>. Every mutation costs at least one
      * cell, so a batch never holds more mutations than cells; a value above the cell ceiling
      * therefore names a batch that cannot exist. Deriving it rather than repeating 80,000 is what
      * keeps the two moving together: a cell ceiling raised later would otherwise leave this one
@@ -123,7 +123,7 @@ public final class SpannerWriterOptions implements Serializable {
     /**
      * The largest {@link Builder#maxBatchBytes(long)} this connector accepts: 100 MiB, from "the
      * maximum size for a batch write request is the same as the limit for a commit request" and
-     * Spanner's 100 MiB commit size. Package-private for the reason {@link #MAX_BATCH_CELLS_LIMIT}
+     * Spanner's 100 MiB commit size. Package-private for the reason {@code MAX_BATCH_CELLS_LIMIT}
      * gives.
      *
      * <p><b>Measured</b> (#441, 2026-08-10, against the service): a request of roughly 110 MiB is
