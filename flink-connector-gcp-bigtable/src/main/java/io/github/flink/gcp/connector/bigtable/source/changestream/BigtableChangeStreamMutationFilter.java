@@ -28,7 +28,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
 
-/** Applies connector-side family and qualifier filters to complete logical mutations. */
+/**
+ * The connector-side family and qualifier patterns, answering whether one identifier is retained.
+ *
+ * <p>Holds no mutation and applies nothing itself: the converter asks it per family and per
+ * qualified column while it walks a complete SDK mutation, and the record emitter reads {@link
+ * #hasEntryFilters()} to decide whether that walk is needed at all.
+ */
 @Internal
 public final class BigtableChangeStreamMutationFilter implements Serializable {
 

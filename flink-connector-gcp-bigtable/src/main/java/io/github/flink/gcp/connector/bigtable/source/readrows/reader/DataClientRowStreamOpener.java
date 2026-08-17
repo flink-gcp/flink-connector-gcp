@@ -44,12 +44,12 @@ import java.util.Iterator;
  * <p>Named after the client its {@link #close()} releases, which is the connector's convention for
  * the real implementation of a seam.
  *
- * <p><b>The only place in the connector where a {@code Query} exists.</b> One is built per open and
- * thrown away, never stored and never checkpointed: a {@code Query} cannot be read back — its
- * target id accessor is internal, it exposes no row set, and its bound is the minimal range
- * enclosing everything it holds — so a split carrying one could not be logged, truncated at the
- * last emitted key, or compared. Checkpointed state also has to have a byte format this connector
- * owns rather than one a client upgrade can move.
+ * <p><b>The {@code Query} this opener builds does not outlive the call that builds it.</b> One is
+ * built per open and thrown away, never stored and never checkpointed: a {@code Query} cannot be
+ * read back — its target id accessor is internal, it exposes no row set, and its bound is the
+ * minimal range enclosing everything it holds — so a split carrying one could not be logged,
+ * truncated at the last emitted key, or compared. Checkpointed state also has to have a byte format
+ * this connector owns rather than one a client upgrade can move.
  *
  * <p>No row limit is ever set. A limit is global to a query, so it cannot be partitioned across
  * splits without coordination; the client library says the same thing from the other side, by

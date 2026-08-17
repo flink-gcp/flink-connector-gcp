@@ -61,17 +61,20 @@ import java.util.Set;
  * <p>This is the only place a DDL option becomes a value. Value validation stays in the connector's
  * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
  * are the checks whose message has to name <em>option keys</em> or <em>columns</em>, which a
- * builder's cannot: the shape of the DDL schema, the primary key, a table-creation key set under a
- * disposition that creates nothing, and a scan bound the client would silently widen.
+ * builder's cannot — among them the shape of the DDL schema, the primary key, a scan bound the
+ * client would silently widen, an option belonging to the source mode this DDL did not select, and
+ * the credential keys that are mutually exclusive. A table-creation key set under a disposition
+ * that creates nothing is rejected on the same grounds, by the option mapper this class calls.
  *
  * <p>The identifier {@code bigtable} is also google/flink-connector-gcp's. A classpath carrying
  * both fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
  *
  * <p>Nothing here reads the session configuration. The Bigtable sink is at-least-once in both
- * execution modes, the source is a bounded scan, and neither has a rule that depends on the runtime
- * mode or the checkpoint interval. A source selects the bounded HBase-compatible row shape, the
- * exact generic Change Streams mutation envelope, or the constrained selected-cell upsert shape;
- * options for the other mode are rejected instead of ignored.
+ * execution modes, and neither it nor a source has a rule that depends on the runtime mode or the
+ * checkpoint interval. A source selects the bounded HBase-compatible row shape, the exact generic
+ * Change Streams mutation envelope, or the constrained selected-cell upsert shape; the first is
+ * bounded and the other two are unbounded unless an end timestamp bounds them. Options for the
+ * other mode are rejected instead of ignored.
  */
 @Internal
 public class BigtableDynamicTableFactory
