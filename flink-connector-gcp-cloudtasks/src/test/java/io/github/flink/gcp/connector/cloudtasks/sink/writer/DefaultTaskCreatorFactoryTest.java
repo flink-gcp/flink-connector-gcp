@@ -23,6 +23,7 @@ import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,7 +38,7 @@ class DefaultTaskCreatorFactoryTest {
 
     @Test
     void configuredCredentialsReachTheClientSettings() throws Exception {
-        Path keyFile = ServiceAccountKeyFileTestUtil.write(tempDir);
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
         CloudTasksSettings settings =
                 DefaultTaskCreatorFactory.productionSettings(keyFile.toString()).build();
@@ -56,7 +57,7 @@ class DefaultTaskCreatorFactoryTest {
 
     @Test
     void buildsAndClosesAProductionCreatorWithConfiguredCredentials() throws Exception {
-        Path keyFile = ServiceAccountKeyFileTestUtil.write(tempDir);
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
         TaskCreator creator = new DefaultTaskCreatorFactory(keyFile.toString(), null).create();
 

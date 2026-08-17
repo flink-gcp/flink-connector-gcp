@@ -21,7 +21,7 @@ import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigquery.ServiceAccountKeyFiles;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

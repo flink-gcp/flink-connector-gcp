@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.spanner;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.spanner.v1.stub.SpannerStubSettings;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -42,7 +43,7 @@ class SpannerCredentialsTest {
     @Test
     void loadsAndScopesAServiceAccountKey() throws Exception {
         GoogleCredentials loaded =
-                SpannerCredentials.load(TestServiceAccountKeyFile.create(tempDir).toString());
+                SpannerCredentials.load(ServiceAccountKeyFiles.create(tempDir).toString());
 
         assertThat(loaded).isInstanceOf(ServiceAccountCredentials.class);
         assertThat(((ServiceAccountCredentials) loaded).getScopes())

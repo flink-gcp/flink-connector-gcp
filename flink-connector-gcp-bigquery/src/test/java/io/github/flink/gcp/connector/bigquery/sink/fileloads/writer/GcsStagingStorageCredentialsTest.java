@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.storage.StorageOptions;
-import io.github.flink.gcp.connector.bigquery.ServiceAccountKeyFiles;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
@@ -42,12 +43,9 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -349,7 +347,8 @@ class PubSubDeadLetterQueueTest {
     @Test
     void serializedQueueCarriesThePathButNotCredentialMaterial() throws Exception {
         Path keyFile = tempDir.resolve("mounted-pubsub-key.json");
-        String credentialMaterial = serviceAccountKeyJson();
+        String credentialMaterial =
+                ServiceAccountKeyFiles.json("credential-private-key-id-must-not-be-serialized");
         Files.writeString(keyFile, credentialMaterial, StandardCharsets.UTF_8);
         PubSubDeadLetterQueue queue =
                 PubSubDeadLetterQueue.builder()
@@ -363,7 +362,7 @@ class PubSubDeadLetterQueueTest {
         assertThat(bytes).contains(keyFile.toString());
         assertThat(bytes)
                 .doesNotContain("credential-private-key-id-must-not-be-serialized")
-                .doesNotContain("service-account@example.invalid");
+                .doesNotContain(ServiceAccountKeyFiles.CLIENT_EMAIL);
     }
 
     @Test
@@ -375,7 +374,7 @@ class PubSubDeadLetterQueueTest {
                         .serviceAccountKeyFile(keyFile.toString())
                         .build();
         byte[] serialized = InstantiationUtil.serializeObject(queue);
-        Files.writeString(keyFile, serviceAccountKeyJson(), StandardCharsets.UTF_8);
+        Files.writeString(keyFile, ServiceAccountKeyFiles.json(), StandardCharsets.UTF_8);
         PubSubDeadLetterQueue restored =
                 InstantiationUtil.deserializeObject(serialized, getClass().getClassLoader());
 
@@ -1144,29 +1143,6 @@ class PubSubDeadLetterQueueTest {
         assertThat(PubSubDeadLetterQueue.builder().topic(TOPIC).build().flushTimeout())
                 .isEqualTo(PubSubDeadLetterQueue.DEFAULT_FLUSH_TIMEOUT)
                 .isEqualTo(Duration.ofSeconds(60));
-    }
-
-    private static String serviceAccountKeyJson() throws Exception {
-        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-        generator.initialize(2048);
-        KeyPair keyPair = generator.generateKeyPair();
-        String encoded =
-                Base64.getMimeEncoder(64, new byte[] {'\n'})
-                        .encodeToString(keyPair.getPrivate().getEncoded());
-        String privateKey =
-                "-----BEGIN PRIVATE KEY-----\n" + encoded + "\n-----END PRIVATE KEY-----\n";
-        return "{"
-                + "\"type\":\"service_account\","
-                + "\"project_id\":\"test-project\","
-                + "\"private_key_id\":\"credential-private-key-id-must-not-be-serialized\","
-                + "\"private_key\":\""
-                + privateKey.replace("\n", "\\n")
-                + "\","
-                + "\"client_email\":\"service-account@example.invalid\","
-                + "\"client_id\":\"1234567890\","
-                + "\"auth_uri\":\"https://accounts.google.com/o/oauth2/auth\","
-                + "\"token_uri\":\"https://oauth2.googleapis.com/token\""
-                + "}";
     }
 
     private static Object field(Object target, String name) throws Exception {
