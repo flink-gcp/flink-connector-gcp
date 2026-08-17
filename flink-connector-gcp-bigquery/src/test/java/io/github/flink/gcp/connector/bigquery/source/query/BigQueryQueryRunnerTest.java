@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.source.query;
 
 import com.google.cloud.bigquery.BigQueryError;
+import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.QueryJobConfiguration;
@@ -24,6 +25,7 @@ import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TestJobs;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
+import io.github.flink.gcp.connector.bigquery.StubBigQuery.TableAnswer;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.junit.jupiter.api.Test;
 
@@ -197,6 +199,67 @@ class BigQueryQueryRunnerTest {
         client.completedConfiguration =
                 QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
         return client;
+    }
+
+    @Test
+    void reappliesTheExpirationOnAResultTableThatStillExists() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(TableAnswer.existing());
+        long before = System.currentTimeMillis();
+
+        new BigQueryQueryRunner(client).run(new QuerySpec(SQL, "p", null, "scratch"));
+
+        // The backstop pushes the expiration out to a day from now — it never removes one, and it
+        // never leaves the table permanent in the user's own dataset. The update must also aim at
+        // the table the job wrote, not merely carry the right expiration.
+        TableId destination =
+                ((QueryJobConfiguration) client.created.get(0).getConfiguration())
+                        .getDestinationTable();
+        assertThat(client.updatedTables)
+                .singleElement()
+                .satisfies(
+                        updated -> {
+                            assertThat(updated.getTableId()).isEqualTo(destination);
+                            assertThat(updated.getExpirationTime())
+                                    .isBetween(
+                                            before
+                                                    + BigQueryQueryRunner.RESULT_TABLE_EXPIRATION
+                                                            .toMillis(),
+                                            System.currentTimeMillis()
+                                                    + BigQueryQueryRunner.RESULT_TABLE_EXPIRATION
+                                                            .toMillis());
+                        });
+    }
+
+    @Test
+    void aFailedExpirationBackstopDoesNotFailTheQuery() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(TableAnswer.existing());
+        client.updateTableFailure = new BigQueryException(403, "tables.update was denied");
+
+        TableDestination landed =
+                new BigQueryQueryRunner(client)
+                        .run(new QuerySpec(SQL, "p", null, "scratch"))
+                        .getTable();
+
+        // The table exists and is readable; failing the job here would turn a missing cleanup
+        // backstop into a missing read.
+        assertThat(landed.getDataset()).isEqualTo("scratch");
+    }
+
+    @Test
+    void reportsAViewLookupFailureWithItsCause() {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(TableAnswer.failing(new BigQueryException(500, "backend error")));
+
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryQueryRunner(client)
+                                        .isView(TableDestination.of("p", "d", "t")))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("to see whether it is a view")
+                .hasCauseInstanceOf(BigQueryException.class)
+                .hasRootCauseMessage("backend error");
     }
 
     @Test

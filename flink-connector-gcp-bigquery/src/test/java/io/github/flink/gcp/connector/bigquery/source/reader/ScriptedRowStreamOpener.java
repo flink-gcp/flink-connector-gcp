@@ -55,6 +55,9 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
 
     private static final Map<String, AtomicInteger> CLOSES = new ConcurrentHashMap<>();
 
+    /** How many opened streams have been closed, keyed the same way as {@link #CLOSES}. */
+    private static final Map<String, AtomicInteger> STREAM_CLOSES = new ConcurrentHashMap<>();
+
     /**
      * Holds a stream after its first block until the test says it may continue.
      *
@@ -106,6 +109,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         this.blockDelayMillis = blockDelayMillis;
         OPENS.computeIfAbsent(id, key -> new CopyOnWriteArrayList<>());
         CLOSES.computeIfAbsent(id, key -> new AtomicInteger());
+        STREAM_CLOSES.computeIfAbsent(id, key -> new AtomicInteger());
     }
 
     /** Creates an opener over one stream holding rows {@code 0..rowCount}. */
@@ -128,7 +132,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
                         ? Collections.emptyList()
                         : new ArrayList<>(rows.subList((int) offset, rows.size()));
         return new ScriptedRowStream(
-                TestRows.blocks(remaining, blockSize), blockDelayMillis, GATES.get(id));
+                id, TestRows.blocks(remaining, blockSize), blockDelayMillis, GATES.get(id));
     }
 
     @Override
@@ -155,10 +159,22 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         return CLOSES.getOrDefault(id, new AtomicInteger()).get();
     }
 
+    /**
+     * Returns how many of this opener's streams have been closed.
+     *
+     * <p>Distinct from {@link #closeCount}, which counts the opener's own release: a reader that
+     * drops a stream without closing it leaks the underlying {@code ReadRows} call, and this is the
+     * only way a test can see that.
+     */
+    public static int streamCloses(String id) {
+        return STREAM_CLOSES.getOrDefault(id, new AtomicInteger()).get();
+    }
+
     /** Forgets the recordings of the given id, and any gate it had. */
     public static void reset(String id) {
         OPENS.put(id, new CopyOnWriteArrayList<>());
         CLOSES.put(id, new AtomicInteger());
+        STREAM_CLOSES.put(id, new AtomicInteger());
         GATES.remove(id);
     }
 
@@ -175,6 +191,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
     /** A stream over a fixed list of blocks. */
     private static final class ScriptedRowStream implements RowStream {
 
+        private final String openerId;
         private final List<ReadRowsResponse> blocks;
         private final long blockDelayMillis;
         @Nullable private final BooleanSupplier gate;
@@ -182,9 +199,11 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         private volatile boolean cancelled;
 
         private ScriptedRowStream(
+                String openerId,
                 List<ReadRowsResponse> blocks,
                 long blockDelayMillis,
                 @Nullable BooleanSupplier gate) {
+            this.openerId = openerId;
             this.blocks = blocks;
             this.blockDelayMillis = blockDelayMillis;
             this.gate = gate;
@@ -233,6 +252,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         @Override
         public void close() {
             cancelled = true;
+            STREAM_CLOSES.get(openerId).incrementAndGet();
         }
     }
 }

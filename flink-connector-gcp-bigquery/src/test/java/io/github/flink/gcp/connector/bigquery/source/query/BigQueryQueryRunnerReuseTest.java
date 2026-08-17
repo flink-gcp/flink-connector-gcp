@@ -390,6 +390,52 @@ class BigQueryQueryRunnerReuseTest {
     }
 
     @Test
+    void keepsTheConflictWhenItsFollowUpLookupFails() {
+        StubBigQuery client = new StubBigQuery();
+        // Current id absent, previous window absent — then the create loses a race, and the
+        // follow-up look-up of the winner fails too.
+        client.answering(
+                JobAnswer.absent(),
+                JobAnswer.absent(),
+                JobAnswer.failing(new BigQueryException(500, "backend error")));
+        client.createFailure =
+                new BigQueryException(HttpURLConnection.HTTP_CONFLICT, "already exists");
+        QuerySpec spec = reusableSpec("scratch");
+
+        assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to submit")
+                .satisfies(
+                        failure -> {
+                            // The look-up failure is the cause, and the conflict rides along
+                            // suppressed: it names the one thing the look-up failure does not —
+                            // that another attempt's job exists under this id.
+                            assertThat(failure.getCause()).hasMessage("backend error");
+                            assertThat(failure.getCause().getSuppressed()).hasSize(1);
+                            assertThat(failure.getCause().getSuppressed()[0])
+                                    .hasMessage("already exists");
+                        });
+    }
+
+    @Test
+    void reportsAConflictWhoseWinningJobThenVanishes() {
+        StubBigQuery client = new StubBigQuery();
+        // Current id absent, previous window absent, and the conflict winner's job absent too.
+        client.answering(JobAnswer.absent(), JobAnswer.absent(), JobAnswer.absent());
+        client.createFailure =
+                new BigQueryException(HttpURLConnection.HTTP_CONFLICT, "already exists");
+        QuerySpec spec = reusableSpec("scratch");
+
+        // A conflict proves another attempt submitted this id, but a winner that cannot then be
+        // found is not a job to adopt: the submission is reported failed, with the conflict as
+        // its cause.
+        assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to submit")
+                .hasRootCauseMessage("already exists");
+    }
+
+    @Test
     void aFailedResultTableLookupIsReportedNotTreatedAsAnAnswer() {
         StubBigQuery client = new StubBigQuery();
         client.answering(JobAnswer.withStatus(DONE));
