@@ -71,8 +71,11 @@ public interface BigtableSerializationSchema<T> extends Serializable {
 ```
 
 Returning a `RowMutationEntry` rather than a narrower value type is deliberate: it is the client's
-own mutation builder, so `setCell`, `deleteCells`, `deleteFamily` and `deleteRow` are all
-expressible, several of them per record, and the sink adds no vocabulary of its own to learn.
+own mutation builder, so `setCell`, `deleteCells`, `deleteFamily`, `deleteRow` and the aggregate
+`addToCell` and `mergeToCell` are all expressible, several of them per record, and the sink adds no
+vocabulary of its own to learn.
+The two aggregate mutations take a value model the client library has not settled, so a client
+upgrade may move their argument types.
 Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
 the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
 in the serializer rather than upstream of the sink. Every serializer in this connector family reads

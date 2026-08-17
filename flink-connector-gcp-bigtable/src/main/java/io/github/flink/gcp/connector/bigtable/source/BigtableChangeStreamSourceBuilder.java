@@ -90,8 +90,8 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     /**
      * Authenticates Change Streams with the service-account JSON key at the given path instead of
      * application-default credentials. The JobManager reads it when a fresh or restored coordinator
-     * starts. Each TaskManager reads it when a reader first opens a stream or resolves an expired
-     * restored split. Every eligible process must therefore see the same path.
+     * starts. Each TaskManager reads it when its reader is created, before any partition is
+     * assigned to it. Every eligible process must therefore see the same path.
      *
      * <p>Service-account keys are long-lived secrets. Prefer an attached service account or
      * Workload Identity where the deployment supports one.

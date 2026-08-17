@@ -18,6 +18,9 @@ package io.github.flink.gcp.connector.bigtable.sink;
 
 import org.apache.flink.annotation.Public;
 
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
+
 /**
  * Entry point for building a Bigtable sink.
  *
@@ -27,14 +30,19 @@ import org.apache.flink.annotation.Public;
  * see {@code BigtableSerializationSchema}.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
- * Under a dropping policy configured through {@link BigtableSinkBuilder#failedMutationHandler}, a
- * completed checkpoint means every record up to the barrier was either applied, skipped by the
- * serializer, or handed to that handler.
+ * Under a dropping policy configured through {@link
+ * BigtableSinkBuilder#failedMutationHandler(FailureHandler)}, a completed checkpoint means every
+ * record up to the barrier was either applied, skipped by the serializer, or handed to that
+ * handler.
  *
- * <p>The sink writes to one fixed table. By default it never creates the table — it and its column
- * families must exist; {@link BigtableSinkBuilder#createDisposition(CreateDisposition)} with {@link
+ * <p>The sink writes to one fixed table, or to a table it resolves per record: {@link
+ * BigtableSinkBuilder#table(TableDestination)} names one, and {@link
+ * BigtableSinkBuilder#destinationResolver(DestinationResolver)} routes each record to a table of
+ * its own. By default it never creates a table — every table it writes to, and its column families,
+ * must exist; {@link BigtableSinkBuilder#createDisposition(CreateDisposition)} with {@link
  * CreateDisposition#CREATE_IF_NEEDED} and {@link
- * BigtableSinkBuilder#tableCreateOptions(TableCreateOptions)} opts into creating them.
+ * BigtableSinkBuilder#tableCreateOptions(TableCreateOptions)} opts into creating them, from one
+ * schema that serves every table the sink creates.
  *
  * <p>Example:
  * <!-- javadoc-example file="JavadocBigtableExamples.java" tag="sink" -->
