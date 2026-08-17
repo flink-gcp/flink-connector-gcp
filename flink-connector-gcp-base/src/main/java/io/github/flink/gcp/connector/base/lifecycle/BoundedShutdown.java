@@ -156,8 +156,8 @@ public final class BoundedShutdown implements AutoCloseable {
      *     it runs in a {@code finally}, where anything it threw would replace the failure being
      *     propagated, so this is for a release that does not fail — {@code
      *     ManagedChannel.shutdownNow()} is the one it was written for. A resource whose release can
-     *     fail belongs in the caller's own {@link Closers#closeAll(Iterable)} list beside this one
-     *     instead.
+     *     fail belongs in the caller's own {@link Closers#closeAll(AutoCloseable...)} list beside
+     *     this one instead — the shape {@code PubSubDeadLetterQueue.close()} takes.
      * @param timeout the whole budget, measured from {@link #start()}; at most {@code
      *     Duration.ofNanos(Long.MAX_VALUE)}, which is checked — a non-positive one is not, and
      *     gives up at once, the callers' own setters being where positivity is refused
