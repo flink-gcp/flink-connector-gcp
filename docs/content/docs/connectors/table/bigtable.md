@@ -521,8 +521,11 @@ Two more read-side facts worth knowing:
   HBase's `Bytes` decoder, trailing bytes after a complete fixed-width value are ignored.
 - **Declare a qualifier `NOT NULL` only when every row carries the cell.** The read path cannot
   manufacture a value for an absent cell, so sparse data under a `NOT NULL` column hands the
-  planner a null it was told cannot exist; an *empty* cell there fails the scan outright, the
-  plain decoder having no null to offer.
+  planner a null it was told cannot exist. What an *empty* cell does under `NOT NULL` depends on
+  the declared type: a character-string or binary column decodes it to an empty value, while every
+  other type fails the scan, the plain decoder having no null to offer and no bytes to read. (A
+  nullable binary column reads the same empty cell as `NULL`, per the convention above — the two
+  differ only under `NOT NULL`.)
 
 ### Bounding the scan
 

@@ -524,6 +524,10 @@ API notes:
   splits and by each TaskManager when its reader starts.
   The key authenticates both `SampleRowKeys` and `ReadRows` clients.
   It is rejected beside `emulatorEndpoint(...)`; when absent, ADC remains in effect.
+- Reading and writing this table from SQL exist today, on the [Bigtable SQL
+  connector]({{< relref "docs/connectors/table/bigtable" >}}) page: its `ScanTableSource` maps onto
+  this source, and its [lookup joins]({{< relref "docs/connectors/table/bigtable" >}}#lookup-joins)
+  serve point lookups over the same table.
 - Every option is listed, with its default, in the
   [configuration reference]({{< relref "docs/reference/bigtable" >}}#bigtablesourcebuilder).
 
@@ -633,10 +637,6 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 - Read-ahead and paging knobs. How many rows one fetch hands to the task thread is a fixed internal
   bound — a correctness floor that lets a checkpoint land inside a long range — rather than a knob,
   and turning it into one needs a measurement rather than a preference.
-- Reading and writing this table from SQL exist today, on the [Bigtable SQL
-  connector]({{< relref "docs/connectors/table/bigtable" >}}) page — its
-  `ScanTableSource` maps onto this source; a lookup join over it is
-  [#460]({{< param BookRepo >}}/issues/460).
 
 ## Change Streams source
 
@@ -892,12 +892,8 @@ Flink's `currentEmitEventTimeLag` describes the latest emitted record rather tha
 
 ## Scope
 
-Not implemented, each with its issue rather than a promise:
+Not implemented, with the reason rather than a promise:
 
-- a lookup join from SQL — a `LookupTableSource` is
-  [#460]({{< param BookRepo >}}/issues/460). Scanning and writing from SQL exist, each with its
-  own `RowData` schema, on the
-  [Bigtable SQL connector]({{< relref "docs/connectors/table/bigtable" >}}) page;
 - conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
   request-response primitives rather than a write path a sink batches: each is one RPC whose result
   the caller is expected to read, and neither participates in `MutateRows`.

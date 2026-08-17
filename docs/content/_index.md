@@ -77,12 +77,9 @@ building from source this way.
 |---|---|
 | BigQuery | [Sink]({{< relref "docs/connectors/datastream/bigquery" >}}) — unified write API over the Storage Write API (at-least-once and exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations. Writable [from SQL]({{< relref "docs/connectors/table/bigquery" >}}) as well |
 | Cloud Pub/Sub | [Sink and source]({{< relref "docs/connectors/datastream/pubsub" >}}) — dynamic per-record topic destinations, and a FLIP-27 source with multi-subscription splits. Writable [from SQL]({{< relref "docs/connectors/table/pubsub" >}}) as well |
-| Cloud Tasks | [Sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}) — dispatch a stream as HTTP tasks the service executes later, paced by the queue's rate limit |
-| Bigtable | [Sink and source]({{< relref "docs/connectors/datastream/bigtable" >}}) — one row mutation per record through the bulk `MutateRows` batcher, into a fixed table or one the record names; and a bounded scan source splitting a table by sampled row-key range. Readable and writable [from SQL]({{< relref "docs/connectors/table/bigtable" >}}) as well |
-
-A Bigtable lookup join from SQL is [#460]({{< param BookRepo >}}/issues/460), the Spanner Table
-API layer is [#223]({{< param BookRepo >}}/issues/223), and a Bigtable change
-streams source is [#35]({{< param BookRepo >}}/issues/35).
+| Cloud Tasks | [Sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}) — dispatch a stream as HTTP tasks the service executes later, paced by the queue's rate limit. Writable [from SQL]({{< relref "docs/connectors/table/cloudtasks" >}}) as well |
+| Bigtable | [Sink and source]({{< relref "docs/connectors/datastream/bigtable" >}}) — one row mutation per record through the bulk `MutateRows` batcher, into a fixed table or one the record names; a bounded scan source splitting a table by sampled row-key range; and a Change Streams source over `ReadChangeStream`. Readable and writable [from SQL]({{< relref "docs/connectors/table/bigtable" >}}) as well |
+| Spanner | [Sink and source]({{< relref "docs/connectors/datastream/spanner" >}}) — one `Mutation` per record through `batchWriteAtLeastOnce`; a bounded source reading a database at one snapshot on partitions the service planned; and a Change Streams source. Both dialects, GoogleSQL and PostgreSQL. Readable and writable [from SQL]({{< relref "docs/connectors/table/spanner" >}}) as well |
 
 ## API reference
 
