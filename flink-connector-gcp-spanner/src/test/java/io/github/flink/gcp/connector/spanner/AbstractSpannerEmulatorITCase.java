@@ -29,13 +29,13 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.testutils.TestNames;
+import io.github.flink.gcp.connector.testutils.spanner.SpannerEmulatorContainers;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.SpannerEmulatorContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -60,14 +60,8 @@ public abstract class AbstractSpannerEmulatorITCase {
     protected static final String PROJECT = "it-project";
     protected static final String INSTANCE = "it-instance";
 
-    /**
-     * Pinned, and above the floor that matters: {@code BatchWrite} landed in v1.5.31 (emulator
-     * issue #172, closed 2025-06-20).
-     */
-    private static final DockerImageName IMAGE =
-            DockerImageName.parse("gcr.io/cloud-spanner-emulator/emulator:1.5.56");
-
-    @Container static final SpannerEmulatorContainer EMULATOR = new SpannerEmulatorContainer(IMAGE);
+    @Container
+    static final SpannerEmulatorContainer EMULATOR = SpannerEmulatorContainers.newContainer();
 
     private static Spanner spanner;
 

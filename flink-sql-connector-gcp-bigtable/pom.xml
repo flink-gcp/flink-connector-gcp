@@ -89,8 +89,9 @@
              against these classes (see the surefire configuration below), so what is
              needed here is a Flink able to plan and run a SQL job, plus the emulator. -->
         <dependency>
-            <!-- Shared test utilities (#27): the emulator container image and the stock
-                 admin/pull clients the smoke test drives the emulator with. -->
+            <!-- Shared test utilities (#27): the SQL packaging, NOTICE and shaded-class
+                 provenance harnesses, plus the emulator container image and the stock
+                 admin/data clients the smoke test drives the emulator with. -->
             <groupId>io.github.flink-gcp</groupId>
             <artifactId>flink-connector-gcp-test-utils</artifactId>
             <version>${project.version}</version>
