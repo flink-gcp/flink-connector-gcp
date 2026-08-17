@@ -158,9 +158,9 @@ final class RowDataJsonRenderer implements Serializable {
     }
 
     private static Renderer arrayRenderer(ArrayType type, String path) {
-        LogicalType element = type.getElementType();
-        Renderer item = build(element, path + "[]");
-        ArrayData.ElementGetter getter = ArrayData.createElementGetter(element);
+        LogicalType elementType = type.getElementType();
+        Renderer item = build(elementType, path + "[]");
+        ArrayData.ElementGetter getter = ArrayData.createElementGetter(elementType);
         return (value, out) -> {
             ArrayData array = (ArrayData) value;
             out.append('[');
@@ -168,11 +168,11 @@ final class RowDataJsonRenderer implements Serializable {
                 if (i > 0) {
                     out.append(',');
                 }
-                Object element0 = getter.getElementOrNull(array, i);
-                if (element0 == null) {
+                Object elementValue = getter.getElementOrNull(array, i);
+                if (elementValue == null) {
                     out.append("null");
                 } else {
-                    item.render(element0, out);
+                    item.render(elementValue, out);
                 }
             }
             out.append(']');
@@ -209,11 +209,11 @@ final class RowDataJsonRenderer implements Serializable {
                 }
                 escape(key.toString(), out);
                 out.append(':');
-                Object entry = valueGetter.getElementOrNull(values, i);
-                if (entry == null) {
+                Object mapValue = valueGetter.getElementOrNull(values, i);
+                if (mapValue == null) {
                     out.append("null");
                 } else {
-                    valueRenderer.render(entry, out);
+                    valueRenderer.render(mapValue, out);
                 }
             }
             out.append('}');

@@ -91,14 +91,15 @@ class BigQueryQueryRunnerTest {
     }
 
     @Test
-    void namesTheJobAndTheTableItWroteWithTheSameSuffix() throws Exception {
+    void givesTheJobAndTheTableItWroteTheSameName() throws Exception {
         StubBigQuery client = new StubBigQuery();
 
         new BigQueryQueryRunner(client).run(new QuerySpec(SQL, "p", null, "scratch"));
 
         QueryJobConfiguration sent =
                 (QueryJobConfiguration) client.created.get(0).getConfiguration();
-        // One suffix for both, so a log line naming the job also finds the table in the console.
+        // One string for both names, so a log line naming the job also finds the table in the
+        // console.
         assertThat(client.created.get(0).getJobId().getJob())
                 .isEqualTo(sent.getDestinationTable().getTable());
     }

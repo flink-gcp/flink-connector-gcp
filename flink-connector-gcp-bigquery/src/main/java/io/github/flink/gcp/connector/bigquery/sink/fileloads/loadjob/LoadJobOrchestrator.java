@@ -268,10 +268,10 @@ public final class LoadJobOrchestrator {
     /** Builds and validates every load, copy level, terminal query and cleanup target first. */
     private CommitPlan planCommit(List<FileLoadsCommittable> committables) throws IOException {
         List<DestinationLoad> destinationLoads = plan(committables);
-        Map<TableDestination, Integer> formatCounts = new HashMap<>();
+        Map<TableDestination, Integer> formatsPerDestination = new HashMap<>();
         Set<TableDestination> overflowingDestinations = new HashSet<>();
         for (DestinationLoad load : destinationLoads) {
-            formatCounts.merge(load.destination, 1, Integer::sum);
+            formatsPerDestination.merge(load.destination, 1, Integer::sum);
             if (load.partitions.size() > 1) {
                 overflowingDestinations.add(load.destination);
             }
@@ -281,7 +281,7 @@ public final class LoadJobOrchestrator {
         Map<TableDestination, List<TableDestination>> copySources = new LinkedHashMap<>();
         for (DestinationLoad load : destinationLoads) {
             boolean replacementAcrossFormats =
-                    isReplacementDisposition() && formatCounts.get(load.destination) > 1;
+                    isReplacementDisposition() && formatsPerDestination.get(load.destination) > 1;
             boolean useTempTables =
                     overflowingDestinations.contains(load.destination) || replacementAcrossFormats;
             for (int partitionIndex = 0;
@@ -294,7 +294,7 @@ public final class LoadJobOrchestrator {
                             tempTable(
                                     load.destination,
                                     load.format,
-                                    formatCounts.get(load.destination) > 1,
+                                    formatsPerDestination.get(load.destination) > 1,
                                     partitionIndex);
                     loads.add(
                             new PlannedLoad(
@@ -335,7 +335,9 @@ public final class LoadJobOrchestrator {
             copyJobCount += copy.jobCount();
         }
         validateJobCounts(loads.size(), copyJobCount, limits);
-        return new CommitPlan(loads, copies, intermediateLevelCount, formatCounts.size());
+        // Keyed by destination, so its size is the destination count the plan reports.
+        int destinationCount = formatsPerDestination.size();
+        return new CommitPlan(loads, copies, intermediateLevelCount, destinationCount);
     }
 
     private DestinationCopy planCopy(
