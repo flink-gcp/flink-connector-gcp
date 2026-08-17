@@ -656,6 +656,63 @@ class CdcTableProvisionerTest {
         assertThat(service.labelUpdates).isEmpty();
     }
 
+    // The three below pin the *false* direction of the creation-request outcome. Every other
+    // assertion on it in this module reads isTrue(), so a regression that reported an ordinary
+    // provisioning run as a creation would have inflated the tablesCreated metric with the whole
+    // suite still green.
+
+    @Test
+    void anExistingTableAlreadyAtTheSpecificationRequestsNoCreation() throws Exception {
+        CdcTableOptions options = options(TEN_MINUTES);
+        FakeService service =
+                existing(serviceState(Arrays.asList("id", "tenant"), complete(options), "e1"));
+        service.liveMaxStaleness = TEN_MINUTES;
+
+        boolean requested =
+                ensure(
+                        service,
+                        options,
+                        CreateDisposition.CREATE_IF_NEEDED,
+                        CdcTableReconciliationPolicy.RECONCILE);
+
+        assertThat(requested).isFalse();
+        assertThat(service.creates).isZero();
+    }
+
+    @Test
+    void aCreateNeverRefusalRequestsNoCreation() {
+        FakeService service = new FakeService();
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        options(TEN_MINUTES),
+                                        CreateDisposition.CREATE_NEVER,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(TableAdminException.class)
+                .hasMessageContaining("CREATE_NEVER");
+        assertThat(service.creates).isZero();
+    }
+
+    @Test
+    void aRefusalToCreateWithoutADeclaredPrimaryKeyRequestsNoCreation() {
+        FakeService service = new FakeService();
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        CdcTableOptions.builder().maxStaleness(TEN_MINUTES).build(),
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(TableAdminException.class)
+                .hasMessageContaining("primaryKeyColumns");
+        assertThat(service.creates).isZero();
+    }
+
     private static boolean ensure(
             FakeService service,
             CdcTableOptions options,
