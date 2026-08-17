@@ -43,7 +43,52 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
-/** Translates the exact subset of Flink predicates that Spanner key reads can preserve. */
+/**
+ * Translates the exact subset of Flink predicates that Spanner key reads can preserve.
+ *
+ * <h2>What "the exact subset" is, and why it is that small</h2>
+ *
+ * <p>A Spanner read is not a query: it takes a {@code KeySet} — points and ranges over the key, in
+ * key order. Everything below follows from that one shape.
+ *
+ * <p>{@link #compile} walks the key columns <b>in key order</b> and stops at the first one an
+ * equality does not pin. Equalities extend the prefix; the first column carrying only inequalities
+ * contributes the range and ends the walk; a column carrying nothing ends it too. So {@code a = 1
+ * AND b > 2} is expressible and {@code b > 2} alone is not — not because the second is harder, but
+ * because a {@code KeySet} has no way to say "any {@code a}, with {@code b} above 2".
+ *
+ * <p>Only {@code AND} is descended. An {@code OR} is left untranslated rather than turned into a
+ * union of ranges: a {@code KeySet} can hold several ranges, but proving that a particular union is
+ * exactly the predicate — rather than a superset that silently drops the leftover — is a different
+ * problem from the prefix walk, and this class does not attempt it.
+ *
+ * <p>Comparisons are normalized so that the column is always on the left; {@code 10 < id} is parsed
+ * as {@code id > 10}. Two types are carved out because a range needs a total order the key agrees
+ * with: a {@code Double} is refused outside equality and refused entirely when it is {@code NaN},
+ * and a {@code UUID} is accepted only for equality.
+ *
+ * <h2>The rule that keeps this safe</h2>
+ *
+ * <p><b>{@code accepted} and {@code remaining} are not complements, and a filter is routinely in
+ * both.</b> A filter joins {@code accepted} when the key constraint used <em>any</em> of its
+ * predicates, which is what tells the planner the source did something with it. It stays in {@code
+ * remaining} unless it is <em>exact</em> — every one of its predicates used, no part of it
+ * unsupported, and no {@code IS NOT NULL} among them.
+ *
+ * <p>That asymmetry is the correctness property of this whole class. The key read is allowed to be
+ * a superset of the predicate; what is not allowed is for a partially expressible filter to be
+ * reported as fully handled, because the rows the range over-selects would then never be filtered
+ * out. An {@code IS NOT NULL} is never exact for the same reason: a Spanner key range does not
+ * exclude nulls the way the SQL predicate does, so the filter has to run as well.
+ *
+ * <p>Contradictions are resolved here rather than sent: {@code a = 1 AND a = 2}, or a lower bound
+ * above its upper, compile to an empty key set, so Spanner is never asked to read a range that
+ * cannot match.
+ *
+ * <p>A read through a secondary index accepts nothing. These predicates were compiled against the
+ * <em>primary</em> key, and an index has a key of its own; the state carries them all the same, so
+ * that {@code RuntimeState.keySet} can recompile against whichever key the read actually uses.
+ */
 final class SpannerFilterPushDown {
 
     private SpannerFilterPushDown() {}
