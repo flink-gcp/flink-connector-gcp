@@ -118,7 +118,7 @@ limitations under the License.
              the parent's ignoreNonResolvableArtifacts=true makes the check log a
              warning and pass. -->
         <japicmp.referenceVersion>1.0.0</japicmp.referenceVersion>
-        <google-cloud-libraries-bom.version>26.85.1</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.86.0</google-cloud-libraries-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.1</avro.version>
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
@@ -129,7 +129,7 @@ limitations under the License.
              selects StagingFormat.PARQUET places these on its own runtime classpath, guided by the
              docs, so no user pays for a format they did not ask for. -->
         <parquet.version>1.18.0</parquet.version>
-        <hadoop.version>3.4.1</hadoop.version>
+        <hadoop.version>3.5.0</hadoop.version>
         <!-- JSONObject is the parameter type of the Storage Write API client's
              JsonToProtoMessage, so this has to stay compatible with whatever
              google-cloud-bigquerystorage itself depends on (org.json is in no BOM).
@@ -142,7 +142,7 @@ limitations under the License.
 
         <!-- Test dependencies -->
         <assertj.version>3.27.7</assertj.version>
-        <junit5.version>5.13.3</junit5.version>
+        <junit5.version>5.14.4</junit5.version>
         <testcontainers.version>1.21.4</testcontainers.version>
         <!-- protoc, for the test-only .proto sources of the BigQuery module. Not an
              exception to "Google Cloud library versions come only from libraries-bom":
