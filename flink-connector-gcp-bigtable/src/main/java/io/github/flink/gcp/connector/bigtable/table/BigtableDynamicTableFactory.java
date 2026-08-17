@@ -53,6 +53,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Creates the {@code bigtable} table sink and table source from a {@code CREATE TABLE} statement's
@@ -211,13 +212,13 @@ public class BigtableDynamicTableFactory
                                         new ValidationException(
                                                 String.format(
                                                         "Option '%s' is required when '%s' ="
-                                                                + " '%s'. Set it to '%s'.",
+                                                                + " '%s'. Set it to one of: %s.",
                                                         BigtableConnectorOptions
                                                                 .SCAN_CHANGE_STREAM_CHANGELOG_MODE
                                                                 .key(),
                                                         BigtableConnectorOptions.SCAN_MODE.key(),
                                                         ScanMode.CHANGE_STREAM,
-                                                        ChangeStreamChangelogMode.ENVELOPE)));
+                                                        changelogModeValues())));
         validateChangeStreamChangelogOptions(context, changelogMode);
         String appProfileId =
                 config.getOptional(BigtableConnectorOptions.SCAN_APP_PROFILE_ID)
@@ -330,6 +331,21 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64,
                         qualifier),
                 sourceClusterId);
+    }
+
+    /**
+     * Renders every changelog mode as a quoted, comma-separated list.
+     *
+     * <p>Derived from {@link ChangeStreamChangelogMode#values()} so a mode added later reaches the
+     * message without it being edited. The quoted spellings are {@code toString()}'s, which is what
+     * a DDL must carry — the constant names are not parseable.
+     *
+     * @return the modes, in declaration order
+     */
+    private static String changelogModeValues() {
+        return Arrays.stream(ChangeStreamChangelogMode.values())
+                .map(mode -> "'" + mode + "'")
+                .collect(Collectors.joining(", "));
     }
 
     private static void validateChangeStreamChangelogOptions(

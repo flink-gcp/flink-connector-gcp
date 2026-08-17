@@ -204,8 +204,8 @@ public final class BigtableConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The physical changelog representation for Change Streams."
-                                    + " ENVELOPE emits one insert-only generic mutation"
-                                    + " envelope per Bigtable mutation. SELECTED_CELL decodes a"
+                                    + " 'envelope' emits one insert-only generic mutation"
+                                    + " envelope per Bigtable mutation. 'selected-cell' decodes a"
                                     + " complete logical row from one configured cell and emits"
                                     + " keyed upserts and deletes.");
 

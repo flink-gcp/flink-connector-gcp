@@ -120,7 +120,7 @@ class BigtableConnectorOptionsTest {
         // calling a setter, so one here would be a second copy that nothing keeps in step. An
         // option this layer owns has no such original, so any Table API default belongs here.
         // scan.change-stream.changelog-mode is the required table-owned exception: users must
-        // explicitly select the generic mutation envelope.
+        // explicitly select one of the changelog modes.
         assertThat(declaredOptions())
                 .allSatisfy(
                         option ->
