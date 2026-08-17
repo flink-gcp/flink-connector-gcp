@@ -261,7 +261,7 @@ public final class HttpTargetSpec extends TargetSpec {
 
     @Override
     RowDataToTaskConverter converter(int physicalArity, WritableMetadata[] metadata) {
-        return new RowDataToTaskMetadataConverter(physicalArity, metadata, this);
+        return new RowDataToHttpTaskConverter(physicalArity, metadata, this);
     }
 
     @Override

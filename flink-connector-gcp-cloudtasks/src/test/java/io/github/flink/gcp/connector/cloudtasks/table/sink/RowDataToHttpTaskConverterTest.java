@@ -37,8 +37,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link RowDataToTaskMetadataConverter}. */
-class RowDataToTaskMetadataConverterTest {
+/** Tests for {@link RowDataToHttpTaskConverter}. */
+class RowDataToHttpTaskConverterTest {
 
     private static HttpTargetSpec target(Configuration config) {
         return HttpTargetSpec.from(config);
@@ -62,7 +62,7 @@ class RowDataToTaskMetadataConverterTest {
     private static Task convert(
             Configuration config, WritableMetadata[] metadata, RowData row, String bodyContentType)
             throws IOException {
-        return new RowDataToTaskMetadataConverter(
+        return new RowDataToHttpTaskConverter(
                         1, metadata, HttpTargetSpec.from(config, bodyContentType))
                 .convert(row)
                 .build();
@@ -268,8 +268,8 @@ class RowDataToTaskMetadataConverterTest {
         config.set(
                 CloudTasksConnectorOptions.HTTP_OAUTH_SERVICE_ACCOUNT_EMAIL,
                 "dispatcher@example.iam.gserviceaccount.com");
-        RowDataToTaskMetadataConverter converter =
-                new RowDataToTaskMetadataConverter(
+        RowDataToHttpTaskConverter converter =
+                new RowDataToHttpTaskConverter(
                         1, new WritableMetadata[] {WritableMetadata.HEADERS}, target(config));
 
         HttpRequest first =
