@@ -19,11 +19,6 @@ package io.github.flink.gcp.connector.cloudtasks.sql;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 
-import com.google.api.gax.core.NoCredentialsProvider;
-import com.google.api.gax.grpc.GrpcTransportChannel;
-import com.google.api.gax.rpc.FixedTransportChannelProvider;
-import com.google.cloud.tasks.v2.CloudTasksClient;
-import com.google.cloud.tasks.v2.CloudTasksSettings;
 import com.google.cloud.tasks.v2.HttpMethod;
 import com.google.cloud.tasks.v2.ListTasksRequest;
 import com.google.cloud.tasks.v2.LocationName;
@@ -31,16 +26,15 @@ import com.google.cloud.tasks.v2.Queue;
 import com.google.cloud.tasks.v2.QueueName;
 import com.google.cloud.tasks.v2.RateLimits;
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.testutils.cloudtasks.CloudTasksEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.cloudtasks.CloudTasksTestClients;
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorSmokeITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
@@ -69,45 +63,30 @@ class CloudTasksSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase 
     private static final String PROJECT = "it-project";
     private static final String LOCATION = "us-central1";
     private static final String QUEUE = "sql-smoke";
-    private static final int EMULATOR_PORT = 8123;
 
     @Container
-    private static final GenericContainer<?> EMULATOR =
-            new GenericContainer<>("ghcr.io/aertje/cloud-tasks-emulator:1.2.0")
-                    .withCommand("-host", "0.0.0.0", "-port", String.valueOf(EMULATOR_PORT))
-                    .withExposedPorts(EMULATOR_PORT)
-                    .waitingFor(Wait.forListeningPorts(EMULATOR_PORT));
+    private static final GenericContainer<?> EMULATOR = CloudTasksEmulatorContainers.newContainer();
 
-    private static ManagedChannel channel;
-    private static CloudTasksClient client;
+    private static CloudTasksTestClients clients;
 
     @BeforeAll
     static void createClientAndPausedQueue() throws IOException {
-        channel = ManagedChannelBuilder.forTarget(emulatorEndpoint()).usePlaintext().build();
-        client =
-                CloudTasksClient.create(
-                        CloudTasksSettings.newBuilder()
-                                .setTransportChannelProvider(
-                                        FixedTransportChannelProvider.create(
-                                                GrpcTransportChannel.create(channel)))
-                                .setCredentialsProvider(NoCredentialsProvider.create())
+        clients = CloudTasksTestClients.forEmulator(emulatorEndpoint());
+        clients.client()
+                .createQueue(
+                        LocationName.of(PROJECT, LOCATION),
+                        Queue.newBuilder()
+                                .setName(QueueName.of(PROJECT, LOCATION, QUEUE).toString())
+                                .setRateLimits(
+                                        RateLimits.newBuilder().setMaxConcurrentDispatches(1))
                                 .build());
-        client.createQueue(
-                LocationName.of(PROJECT, LOCATION),
-                Queue.newBuilder()
-                        .setName(QueueName.of(PROJECT, LOCATION, QUEUE).toString())
-                        .setRateLimits(RateLimits.newBuilder().setMaxConcurrentDispatches(1))
-                        .build());
-        client.pauseQueue(QueueName.of(PROJECT, LOCATION, QUEUE));
+        clients.client().pauseQueue(QueueName.of(PROJECT, LOCATION, QUEUE));
     }
 
     @AfterAll
     static void closeClient() {
-        if (client != null) {
-            client.close();
-        }
-        if (channel != null) {
-            channel.shutdownNow();
+        if (clients != null) {
+            clients.close();
         }
     }
 
@@ -155,7 +134,8 @@ class CloudTasksSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase 
                 .await(60, TimeUnit.SECONDS);
 
         List<Task> tasks = new ArrayList<>();
-        client.listTasks(
+        clients.client()
+                .listTasks(
                         ListTasksRequest.newBuilder()
                                 .setParent(QueueName.of(PROJECT, LOCATION, QUEUE).toString())
                                 .setResponseView(Task.View.FULL)
@@ -177,6 +157,6 @@ class CloudTasksSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase 
     }
 
     private static String emulatorEndpoint() {
-        return EMULATOR.getHost() + ":" + EMULATOR.getMappedPort(EMULATOR_PORT);
+        return CloudTasksEmulatorContainers.endpoint(EMULATOR);
     }
 }
