@@ -80,7 +80,7 @@ public final class RetryingTableAdmin implements TableAdmin {
     @Override
     public void create(TableDestination destination, TableSchema schema, TableCreateOptions options)
             throws IOException {
-        retry(destination, "create", false, () -> delegate.create(destination, schema, options));
+        retry(destination, "create", () -> delegate.create(destination, schema, options));
     }
 
     @Override
@@ -92,48 +92,74 @@ public final class RetryingTableAdmin implements TableAdmin {
             CreateDisposition createDisposition,
             CdcTableReconciliationPolicy reconciliationPolicy)
             throws IOException {
-        boolean[] creationRequested = {false};
-        retry(
-                destination,
-                "provision for CDC",
-                true,
-                () -> {
-                    try {
-                        creationRequested[0] |=
-                                delegate.ensureCdcTable(
-                                        destination,
-                                        schema,
-                                        createOptionsProvider,
-                                        cdcOptions,
-                                        createDisposition,
-                                        reconciliationPolicy);
-                    } catch (RetriableTableAdminException e) {
-                        creationRequested[0] |= e.wasCreationRequested();
-                        if (creationRequested[0] && !e.wasCreationRequested()) {
-                            throw new RetriableTableAdminException(e.getMessage(), e, true);
+        CreationOutcome outcome = new CreationOutcome();
+        try {
+            retry(
+                    destination,
+                    "provision for CDC",
+                    () -> {
+                        try {
+                            outcome.record(
+                                    delegate.ensureCdcTable(
+                                            destination,
+                                            schema,
+                                            createOptionsProvider,
+                                            cdcOptions,
+                                            createDisposition,
+                                            reconciliationPolicy));
+                        } catch (TableAdminException e) {
+                            // Records and rethrows unchanged. The accumulator outlives the
+                            // exception, so nothing has to be smuggled inside it.
+                            outcome.record(e.wasCreationRequested());
+                            throw e;
                         }
-                        throw e;
-                    } catch (TableAdminException e) {
-                        creationRequested[0] |= e.wasCreationRequested();
-                        if (creationRequested[0] && !e.wasCreationRequested()) {
-                            throw new TableAdminException(e.getMessage(), e, true);
-                        }
-                        throw e;
-                    } catch (IOException e) {
-                        if (creationRequested[0]) {
-                            throw new TableAdminException(e.getMessage(), e, true);
-                        }
-                        throw e;
-                    }
-                });
-        return creationRequested[0];
+                    });
+        } catch (IOException e) {
+            throw outcome.attach(e);
+        }
+        return outcome.requested();
     }
 
-    private void retry(
-            TableDestination destination,
-            String operation,
-            boolean retainCreationOutcome,
-            IoRunnable runnable)
+    /**
+     * Whether any attempt asked BigQuery to create the table.
+     *
+     * <p>The accumulation is across <em>attempts</em>, which is why it cannot live in the failure
+     * that ends the last one: an attempt may request creation and fail, and a later attempt may
+     * then find the table already there and request nothing. The metric counts requests, so the
+     * earlier one must survive the attempt that made it.
+     */
+    private static final class CreationOutcome {
+
+        private boolean requested;
+
+        void record(boolean creationRequested) {
+            this.requested |= creationRequested;
+        }
+
+        boolean requested() {
+            return requested;
+        }
+
+        /**
+         * Returns the failure to throw, carrying the accumulated outcome.
+         *
+         * <p>The single point at which the bit meets an exception. A failure that already reports a
+         * creation request is returned untouched rather than re-wrapped, so the message a caller
+         * reads is the one the service produced.
+         */
+        IOException attach(IOException failure) {
+            if (!requested) {
+                return failure;
+            }
+            if (failure instanceof TableAdminException
+                    && ((TableAdminException) failure).wasCreationRequested()) {
+                return failure;
+            }
+            return new TableAdminException(failure.getMessage(), failure, true);
+        }
+    }
+
+    private void retry(TableDestination destination, String operation, IoRunnable runnable)
             throws IOException {
         for (int attempt = 1; ; attempt++) {
             try {
@@ -149,9 +175,6 @@ public final class RetryingTableAdmin implements TableAdmin {
                                     + ", the retry budget is exhausted ("
                                     + attempt
                                     + " attempt(s))";
-                    if (retainCreationOutcome) {
-                        throw new TableAdminException(message, e, e.wasCreationRequested());
-                    }
                     throw new IOException(message, e);
                 }
                 long backoffMs = schedule.backoffMs(attempt);
@@ -167,20 +190,12 @@ public final class RetryingTableAdmin implements TableAdmin {
                         schedule.maxAttempts(),
                         backoffMs,
                         e);
-                try {
-                    Retries.sleep(
-                            backoffMs,
-                            "Interrupted while waiting to "
-                                    + operation
-                                    + " BigQuery table "
-                                    + destination);
-                } catch (IOException interrupted) {
-                    if (retainCreationOutcome) {
-                        throw new TableAdminException(
-                                interrupted.getMessage(), interrupted, e.wasCreationRequested());
-                    }
-                    throw interrupted;
-                }
+                Retries.sleep(
+                        backoffMs,
+                        "Interrupted while waiting to "
+                                + operation
+                                + " BigQuery table "
+                                + destination);
             }
         }
     }

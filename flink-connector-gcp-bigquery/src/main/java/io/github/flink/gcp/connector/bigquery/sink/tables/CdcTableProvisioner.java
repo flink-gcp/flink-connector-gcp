@@ -129,78 +129,141 @@ final class CdcTableProvisioner {
             CreateDisposition createDisposition,
             CdcTableReconciliationPolicy reconciliationPolicy)
             throws IOException {
-        boolean[] creationRequested = {false};
-        try {
-            return ensure(
-                    destination,
-                    schema,
-                    createOptionsProvider,
-                    cdcOptions,
-                    createDisposition,
-                    reconciliationPolicy,
-                    creationRequested);
-        } catch (RetriableTableAdminException e) {
-            if (creationRequested[0] || e.wasCreationRequested()) {
-                throw new RetriableTableAdminException(e.getMessage(), e, true);
-            }
-            throw e;
-        } catch (IOException e) {
-            if (creationRequested[0]) {
-                throw new TableAdminException(e.getMessage(), e, true);
-            }
-            throw e;
+        TableState state = service.read(destination);
+        if (state != null) {
+            reconcile(destination, cdcOptions, reconciliationPolicy, state, false);
+            return false;
         }
+
+        // Both refusals — CREATE_NEVER, and a creation with no declared primary key — are decided
+        // before the service is asked for anything, so they propagate as themselves and are not
+        // creation requests. Past this line the request has been made, and every failure after it
+        // has to say so: the metric counts requests, not successes, and a table that was asked for
+        // and then failed to provision is still a table this job asked BigQuery to create.
+        String initialLabel = plannedInitialLabel(destination, cdcOptions, createDisposition);
+        try {
+            Creation creation =
+                    createMissing(
+                            destination, schema, createOptionsProvider, cdcOptions, initialLabel);
+            reconcile(
+                    destination,
+                    cdcOptions,
+                    reconciliationPolicy,
+                    creation.state(),
+                    creation.wonTheRace());
+        } catch (RetriableTableAdminException e) {
+            throw e.wasCreationRequested()
+                    ? e
+                    : new RetriableTableAdminException(e.getMessage(), e, true);
+        } catch (IOException e) {
+            throw e instanceof TableAdminException
+                            && ((TableAdminException) e).wasCreationRequested()
+                    ? e
+                    : new TableAdminException(e.getMessage(), e, true);
+        }
+        return true;
     }
 
-    private boolean ensure(
+    /**
+     * The provisioning label a missing table would be created with.
+     *
+     * <p>Split from {@link #createMissing} so that the two conditions which refuse to create run
+     * before anything is requested of the service. A refusal is not a creation request, and keeping
+     * the two apart is what lets the caller decide that by position rather than by inspecting a
+     * flag.
+     *
+     * @throws IOException if the disposition forbids creation, or no primary key is declared
+     */
+    private String plannedInitialLabel(
+            TableDestination destination,
+            CdcTableOptions cdcOptions,
+            CreateDisposition createDisposition)
+            throws IOException {
+        if (createDisposition == CreateDisposition.CREATE_NEVER) {
+            throw new IOException(
+                    "BigQuery CDC table "
+                            + destination
+                            + " does not exist and createDisposition is CREATE_NEVER");
+        }
+        List<String> declaredPrimaryKey = cdcOptions.getPrimaryKeyColumns();
+        if (declaredPrimaryKey.isEmpty()) {
+            throw new IOException(
+                    "Creating missing BigQuery CDC table "
+                            + destination
+                            + " requires CdcTableOptions.primaryKeyColumns(...)");
+        }
+        String hash = specificationHash(declaredPrimaryKey, cdcOptions);
+        return cdcOptions.managesMaxStaleness() ? PENDING_PREFIX + hash : COMPLETE_PREFIX + hash;
+    }
+
+    /**
+     * Creates the missing table under {@code initialLabel} and reads back the state to reconcile
+     * from.
+     *
+     * <p>A creation this attempt lost is not an error: {@code tables.insert} answering 409 means
+     * another subtask created the same table, which is the ordinary parallel case. What the caller
+     * needs to know is whether <em>this</em> attempt won, because only a winner may assume the
+     * label it wrote is the one on the table.
+     */
+    private Creation createMissing(
             TableDestination destination,
             TableSchema schema,
             TableCreateOptionsProvider createOptionsProvider,
             CdcTableOptions cdcOptions,
-            CreateDisposition createDisposition,
-            CdcTableReconciliationPolicy reconciliationPolicy,
-            boolean[] creationRequested)
+            String initialLabel)
             throws IOException {
+        TableCreateOptions createOptions =
+                Preconditions.checkNotNull(
+                        createOptionsProvider.optionsFor(destination),
+                        "TableCreateOptionsProvider returned null for %s",
+                        destination);
+        boolean createWon =
+                service.tryCreate(destination, schema, createOptions, cdcOptions, initialLabel);
         TableState state = service.read(destination);
-        boolean createdHere = false;
         if (state == null) {
-            if (createDisposition == CreateDisposition.CREATE_NEVER) {
-                throw new IOException(
-                        "BigQuery CDC table "
-                                + destination
-                                + " does not exist and createDisposition is CREATE_NEVER");
-            }
-            List<String> declaredPrimaryKey = cdcOptions.getPrimaryKeyColumns();
-            if (declaredPrimaryKey.isEmpty()) {
-                throw new IOException(
-                        "Creating missing BigQuery CDC table "
-                                + destination
-                                + " requires CdcTableOptions.primaryKeyColumns(...)");
-            }
-            String hash = specificationHash(declaredPrimaryKey, cdcOptions);
-            String initialLabel =
-                    cdcOptions.managesMaxStaleness()
-                            ? PENDING_PREFIX + hash
-                            : COMPLETE_PREFIX + hash;
-            creationRequested[0] = true;
-            TableCreateOptions createOptions =
-                    Preconditions.checkNotNull(
-                            createOptionsProvider.optionsFor(destination),
-                            "TableCreateOptionsProvider returned null for %s",
-                            destination);
-            boolean createWon =
-                    service.tryCreate(destination, schema, createOptions, cdcOptions, initialLabel);
-            state = service.read(destination);
-            if (state == null) {
-                throw new RetriableTableAdminException(
-                        "BigQuery table "
-                                + destination
-                                + " was created but is not visible through the Tables API yet",
-                        null);
-            }
-            createdHere = createWon;
+            throw new RetriableTableAdminException(
+                    "BigQuery table "
+                            + destination
+                            + " was created but is not visible through the Tables API yet",
+                    null);
+        }
+        return new Creation(state, createWon);
+    }
+
+    /** What creating a missing table produced. */
+    private static final class Creation {
+
+        private final TableState state;
+        private final boolean wonTheRace;
+
+        Creation(TableState state, boolean wonTheRace) {
+            this.state = state;
+            this.wonTheRace = wonTheRace;
         }
 
+        TableState state() {
+            return state;
+        }
+
+        boolean wonTheRace() {
+            return wonTheRace;
+        }
+    }
+
+    /**
+     * Brings an existing table's provisioning label and mutable CDC properties to the configured
+     * specification, or verifies them.
+     *
+     * @param createdHere whether this attempt created the table, which is the only case in which
+     *     the live label is required to be the one just written
+     */
+    private void reconcile(
+            TableDestination destination,
+            CdcTableOptions cdcOptions,
+            CdcTableReconciliationPolicy reconciliationPolicy,
+            TableState state,
+            boolean createdHere)
+            throws IOException {
         List<String> effectivePrimaryKey =
                 effectivePrimaryKey(destination, cdcOptions, state.primaryKeyColumns());
         if (reconciliationPolicy == CdcTableReconciliationPolicy.RECONCILE
@@ -219,7 +282,7 @@ final class CdcTableProvisioner {
 
         if (pending.equals(liveLabel)) {
             completePending(destination, cdcOptions, effectivePrimaryKey, pending, complete, state);
-            return creationRequested[0];
+            return;
         }
         if (liveLabel != null && liveLabel.startsWith(PENDING_PREFIX)) {
             throw new IOException(
@@ -241,21 +304,21 @@ final class CdcTableProvisioner {
                                 + " carries unexpected provisioning label "
                                 + liveLabel);
             }
-            return creationRequested[0];
+            return;
         }
 
         if (reconciliationPolicy == CdcTableReconciliationPolicy.VERIFY_ONLY) {
             verifyExisting(destination, liveLabel, complete, maxStalenessMatches);
-            return creationRequested[0];
+            return;
         }
 
         if (complete.equals(liveLabel) && maxStalenessMatches) {
-            return creationRequested[0];
+            return;
         }
 
         if (maxStalenessMatches) {
             updateLabelOrRetry(destination, liveLabel, complete, state.etag());
-            return creationRequested[0];
+            return;
         }
 
         updateLabelOrRetry(destination, liveLabel, pending, state.etag());
@@ -268,7 +331,6 @@ final class CdcTableProvisioner {
                     null);
         }
         completePending(destination, cdcOptions, effectivePrimaryKey, pending, complete, state);
-        return creationRequested[0];
     }
 
     private void verifyExisting(
