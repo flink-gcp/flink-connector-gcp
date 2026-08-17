@@ -53,6 +53,15 @@ updates:
       # on the property in the root POM. Every update type, because the version
       # should move when avro.version moves and at no other time.
       - dependency-name: com.github.luben:zstd-jni
+      # Same rule, different upstream: the BigQuery module hand-assembles the
+      # minimum Hadoop test classpath a COMPRESSED Parquet staging file needs,
+      # and these two are pinned to what hadoop-project ${hadoop.version} pins so
+      # that classpath resolves what a deployment adding hadoop-common resolves.
+      # Every update type — they move when hadoop.version moves, which dependabot
+      # is still free to bump. Issue #940 records the decision; the pom comment
+      # beside the two dependencies carries the reason.
+      - dependency-name: org.apache.commons:commons-collections4
+      - dependency-name: org.apache.hadoop.thirdparty:hadoop-shaded-guava
   - package-ecosystem: github-actions
     directory: /
     schedule:

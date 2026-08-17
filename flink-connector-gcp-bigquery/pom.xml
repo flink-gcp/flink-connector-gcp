@@ -169,6 +169,12 @@ limitations under the License.
             Which means the list moves with ${hadoop.version}: on 3.5.0 it was re-measured by
             removing each entry in turn, and commons-configuration2 — required on 3.4.1 — left the
             writer green, so it is gone rather than bumped.
+
+            It also means the two hardcoded versions below are not free choices: each is what
+            hadoop-project ${hadoop.version} pins, so this classpath resolves what a deployment
+            adding hadoop-common resolves rather than something only this build has tested.
+            dependabot ignores both for that reason (see .github/dependabot.yml); they move when
+            ${hadoop.version} moves.
         -->
         <dependency>
             <!-- Reading a Parquet file needs more Hadoop than writing one: ParquetFileReader.open
@@ -199,7 +205,7 @@ limitations under the License.
                  initialise rather than failing to find a method. -->
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-collections4</artifactId>
-            <version>4.6.0</version>
+            <version>4.4</version>
             <scope>test</scope>
         </dependency>
         <dependency>
