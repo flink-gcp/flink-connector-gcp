@@ -307,9 +307,8 @@ count. Bigtable's own documented limit is stated in the other unit: no more than
 reconciled by a job**, because the client enforces the mutation limit itself and unconditionally: it
 flushes the accumulated batch as soon as one more entry would carry it past 100,000 mutations,
 whatever `batchElementCount` says, and refuses to build a single entry carrying more than that on
-its own. So no setting of these knobs produces an over-limit request (read from
-google-cloud-bigtable 2.80.0 on 2026-08-10, and pinned by a test so that a client upgrade moving
-either fact goes red).
+its own. So no setting of these knobs produces an over-limit request, and a test pins both facts so
+that a client upgrade moving either one goes red.
 
 **The batch thresholds** (`batchElementCount`, `batchByteSize`) are handed to the client and decide
 when it sends a batch. Both are unset by default, which leaves the client's own values (100
@@ -665,7 +664,7 @@ With no output filter, filter evaluation is bypassed, although the public-model 
 occurs.
 The model preserves the row key, mutation type, source cluster, commit timestamp, tie breaker,
 continuation token, estimated low watermark, and every ordered `SetCell`, `DeleteCells`,
-`DeleteFamily`, `AddToCell`, and `MergeToCell` entry returned by java-bigtable 2.80.0.
+`DeleteFamily`, `AddToCell`, and `MergeToCell` entry the client returns.
 Its Flink type information selects the connector serializer even when a later transformation asks
 for `TypeInformation.of(ChangeStreamMutation.class)`.
 An explicit `.returns(...)` remains useful when a transformation erases its declared output type:
