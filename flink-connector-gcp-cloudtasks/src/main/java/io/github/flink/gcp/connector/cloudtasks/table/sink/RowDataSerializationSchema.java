@@ -42,6 +42,7 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
     private final int physicalArity;
     private final boolean hasMetadata;
     private final RowDataToTaskConverter taskConverter;
+    @Nullable private final String bodyContentType;
 
     @Nullable private transient ProjectedRowData projection;
 
@@ -56,6 +57,7 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
         this.hasMetadata =
                 Preconditions.checkNotNull(metadata, "metadata must not be null").length != 0;
         this.taskConverter = target.converter(physicalArity, metadata);
+        this.bodyContentType = target.getBodyContentType();
     }
 
     @Override
@@ -108,17 +110,17 @@ final class RowDataSerializationSchema implements CloudTasksSerializationSchema<
     }
 
     private void setBody(Task.Builder task, ByteString payload) {
-        String contentType = taskConverter.getBodyContentType();
         switch (task.getMessageTypeCase()) {
             case HTTP_REQUEST:
-                if (contentType != null) {
-                    task.getHttpRequestBuilder().putHeaders("Content-Type", contentType);
+                if (bodyContentType != null) {
+                    task.getHttpRequestBuilder().putHeaders("Content-Type", bodyContentType);
                 }
                 task.getHttpRequestBuilder().setBody(payload);
                 return;
             case APP_ENGINE_HTTP_REQUEST:
-                if (contentType != null) {
-                    task.getAppEngineHttpRequestBuilder().putHeaders("Content-Type", contentType);
+                if (bodyContentType != null) {
+                    task.getAppEngineHttpRequestBuilder()
+                            .putHeaders("Content-Type", bodyContentType);
                 }
                 task.getAppEngineHttpRequestBuilder().setBody(payload);
                 return;

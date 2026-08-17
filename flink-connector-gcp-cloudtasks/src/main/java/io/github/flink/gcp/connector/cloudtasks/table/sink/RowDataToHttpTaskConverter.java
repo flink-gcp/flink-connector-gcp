@@ -75,12 +75,6 @@ final class RowDataToHttpTaskConverter implements RowDataToTaskConverter {
         return task;
     }
 
-    @Override
-    @Nullable
-    public String getBodyContentType() {
-        return target.getBodyContentType();
-    }
-
     private String url(RowData element) throws IOException {
         String value = target.getUrl();
         if (urlIndex >= 0 && !element.isNullAt(urlIndex)) {

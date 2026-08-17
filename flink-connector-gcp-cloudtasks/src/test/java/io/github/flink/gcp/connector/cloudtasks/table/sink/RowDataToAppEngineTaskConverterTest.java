@@ -205,6 +205,27 @@ class RowDataToAppEngineTaskConverterTest {
     }
 
     @Test
+    void passesARowContentTypeThroughWhenTheFormatClaimsNone() throws Exception {
+        // The negative control for the two conflict cases above: under a generic format the spec's
+        // Content-Type is null, and a row is then free to name the media type of the bytes it
+        // supplies. Without the converter's null guard, TargetSpec.sameContentType would compare
+        // against that null and fail the record with a NullPointerException instead. The HTTP arm
+        // has this in RowDataSerializationSchemaTest; App Engine had no equivalent.
+        RowDataToAppEngineTaskConverter converter =
+                converter(appEngineTarget("/tasks"), WritableMetadata.HEADERS);
+
+        Task task =
+                converter
+                        .convert(
+                                GenericRowData.of(
+                                        header("Content-Type", "application/merge-patch+json")))
+                        .build();
+
+        assertThat(task.getAppEngineHttpRequest().getHeadersMap())
+                .containsOnly(entry("Content-Type", "application/merge-patch+json"));
+    }
+
+    @Test
     void aSecondRowStillCarriesTheFixedRequest() throws Exception {
         // The converter builds the fixed request once and merges it into every task, so a record
         // after the first has to find the fixed headers and routing still there and the previous

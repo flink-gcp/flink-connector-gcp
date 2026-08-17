@@ -213,6 +213,7 @@ public final class HttpTargetSpec extends TargetSpec {
         return headers;
     }
 
+    @Override
     @Nullable
     String getBodyContentType() {
         return bodyContentType;
