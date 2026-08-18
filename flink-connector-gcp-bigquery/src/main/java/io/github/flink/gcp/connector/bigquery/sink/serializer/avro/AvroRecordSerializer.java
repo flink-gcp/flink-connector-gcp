@@ -19,12 +19,13 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.IndexedRecord;
 
@@ -62,7 +63,7 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
     private final String avroSchemaJson;
     private final AvroSchemaOptions options;
 
-    private transient volatile ConversionState state;
+    private final LazyDerivedState<ConversionState> conversionState = new LazyDerivedState<>();
 
     private AvroRecordSerializer(String avroSchemaJson, AvroSchemaOptions options) {
         this.avroSchemaJson =
@@ -145,41 +146,21 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
     }
 
     private ConversionState state() {
-        ConversionState localState = state;
-        if (localState == null) {
-            localState = initialize();
-        }
-        return localState;
+        return conversionState.get(this, AvroRecordSerializer::deriveConversionState);
     }
 
-    private synchronized ConversionState initialize() {
-        ConversionState localState = state;
-        if (localState != null) {
-            return localState;
-        }
+    private ConversionState deriveConversionState() {
         Schema avroSchema = new Schema.Parser().parse(avroSchemaJson);
         TableSchema tableSchema = AvroToTableSchemaConverter.convert(avroSchema, options);
-        Descriptors.Descriptor rowDescriptor;
-        try {
-            rowDescriptor =
-                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                            tableSchema);
-        } catch (Descriptors.DescriptorValidationException e) {
-            throw new IllegalStateException(
-                    "Failed to derive a BigQuery-storage compatible descriptor for "
-                            + avroSchema.getFullName(),
-                    e);
-        }
-        localState =
-                new ConversionState(
-                        tableSchema,
-                        rowDescriptor,
-                        new AvroRowConverter(avroSchema, tableSchema, rowDescriptor));
-        state = localState;
-        return localState;
+        Descriptors.Descriptor rowDescriptor =
+                RowDescriptors.derive(tableSchema, avroSchema.getFullName());
+        return new ConversionState(
+                tableSchema,
+                rowDescriptor,
+                new AvroRowConverter(avroSchema, tableSchema, rowDescriptor));
     }
 
-    /** Immutable holder published through one volatile read on the per-record path. */
+    /** The immutable triple {@link LazyDerivedState} holds for this serializer. */
     private static final class ConversionState {
         private final TableSchema tableSchema;
         private final Descriptors.Descriptor rowDescriptor;

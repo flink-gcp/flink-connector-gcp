@@ -383,7 +383,11 @@ class AvroToTableSchemaConverterTest {
                                                 "{\"name\":\"a\",\"type\":\"string\"},"
                                                         + "{\"name\":\"A\",\"type\":\"string\"}")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("differ only by case");
+                // The whole sentence: a fragment match would not see the location go wrong,
+                // which is the part a reader needs to find the offending record.
+                .hasMessage(
+                        "Fields of Row differ only by case (A), which the BigQuery Storage API"
+                                + " cannot distinguish (at <root>)");
     }
 
     @Test
@@ -500,7 +504,9 @@ class AvroToTableSchemaConverterTest {
                                                         + "[{\"name\":\"a\",\"type\":\"string\"},"
                                                         + "{\"name\":\"A\",\"type\":\"string\"}]}")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("(at f)");
+                .hasMessage(
+                        "Fields of Inner differ only by case (A), which the BigQuery Storage API"
+                                + " cannot distinguish (at f)");
     }
 
     /**

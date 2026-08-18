@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.BigDecimalByteStringEncoder;
 import com.google.cloud.bigquery.storage.v1.CivilTimeEncoder;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
@@ -215,25 +214,19 @@ public final class ProtoRowAugmentationField<T> implements Serializable {
     }
 
     private static FieldDescriptorProto descriptorField(TableFieldSchema tableField) {
-        try {
-            Descriptors.Descriptor descriptor =
-                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                            TableSchema.newBuilder().addFields(tableField).build());
-            return descriptor.getFields().get(0).toProto().toBuilder()
-                    // The Google converter uses the default locale. Additional-field names are
-                    // protobuf-compatible ASCII, so retain the connector's locale-independent
-                    // spelling before appending the field to the delegate descriptor.
-                    .setName(tableField.getName().toLowerCase(Locale.ROOT))
-                    // ProtoDescriptorAugmenter owns allocation against the delegate's used,
-                    // reserved, extension, and protobuf-global field-number ranges.
-                    .clearNumber()
-                    .build();
-        } catch (Descriptors.DescriptorValidationException e) {
-            throw new IllegalStateException(
-                    "Failed to derive the protobuf field for additional BigQuery field "
-                            + tableField.getName(),
-                    e);
-        }
+        Descriptors.Descriptor descriptor =
+                RowDescriptors.derive(
+                        TableSchema.newBuilder().addFields(tableField).build(),
+                        "additional BigQuery field " + tableField.getName());
+        return descriptor.getFields().get(0).toProto().toBuilder()
+                // The Google converter uses the default locale. Additional-field names are
+                // protobuf-compatible ASCII, so retain the connector's locale-independent
+                // spelling before appending the field to the delegate descriptor.
+                .setName(tableField.getName().toLowerCase(Locale.ROOT))
+                // ProtoDescriptorAugmenter owns allocation against the delegate's used,
+                // reserved, extension, and protobuf-global field-number ranges.
+                .clearNumber()
+                .build();
     }
 
     @Nullable

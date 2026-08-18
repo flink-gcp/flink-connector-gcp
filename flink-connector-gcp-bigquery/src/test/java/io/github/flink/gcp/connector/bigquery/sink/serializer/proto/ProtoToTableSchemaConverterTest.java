@@ -557,7 +557,9 @@ class ProtoToTableSchemaConverterTest {
                                 ProtoToTableSchemaConverter.convert(
                                         TestProtos.caseCollision(), ProtoSchemaOptions.defaults()))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("case");
+                .hasMessage(
+                        "Fields of test.CaseCollision differ only by case (id), which the BigQuery"
+                                + " Storage API cannot distinguish (at <root>)");
     }
 
     @Test

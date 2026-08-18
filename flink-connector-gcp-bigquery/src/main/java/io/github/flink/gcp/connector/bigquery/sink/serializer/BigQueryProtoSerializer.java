@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 
 import org.apache.flink.annotation.Public;
 
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
@@ -46,8 +45,8 @@ import java.io.Serializable;
  * <p>This is deliberately an abstract class rather than a functional interface: implementations are
  * shipped inside the Flink job graph and must be {@link Serializable}, while protobuf {@link
  * Descriptors.Descriptor} instances are <em>not</em> serializable. Descriptors must therefore be
- * held only in {@code transient} fields that are rebuilt lazily after deserialization, or obtained
- * statically (for example from generated message classes).
+ * held only in state that does not survive serialization and is rebuilt lazily after it, or
+ * obtained statically (for example from generated message classes).
  *
  * <p>Exception contract: {@link #serialize(Object)} throws {@link IOException} for per-record
  * serialization failures (which sinks may route to error handling); configuration errors (for
@@ -86,14 +85,7 @@ public abstract class BigQueryProtoSerializer<T> implements Serializable {
      * @return the descriptor of the rows written to that destination
      */
     public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-        try {
-            return BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                    getTableSchema(destination));
-        } catch (Descriptors.DescriptorValidationException e) {
-            throw new IllegalStateException(
-                    "Failed to derive a BigQuery-storage compatible descriptor for " + destination,
-                    e);
-        }
+        return RowDescriptors.derive(getTableSchema(destination), String.valueOf(destination));
     }
 
     /**

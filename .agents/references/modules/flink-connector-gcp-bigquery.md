@@ -56,7 +56,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (constructor / `of(...)`), because the lazy path reports misconfiguration through the
   `FailureHandler` catch, where log-and-drop leaves an empty table under a green job
   (`docs/adr/0023`, `0024`, `0027`). A serializer `null` is a skip (`docs/adr/0001`) and does
-  not loosen this rule.
+  not loosen this rule. **The transient-and-rebuilt half is `LazyDerivedState`, and the
+  descriptor derivation is `RowDescriptors.derive`** (`sink.serializer`, both `@Internal`): the
+  four record serializers — proto, Avro, JSON and `RowDataSerializer` — go through them, so a new
+  one adds a derivation rather than another double-checked holder (`docs/adr/0024`).
+  `ProtoRowAugmentingSerializer` is not one of them: its cache is per destination and invalidated
+  by fingerprint, which is a different shape.
 - Additional fields are absent unless `additionalFields(...)` is configured.
   Every built-in serializer reaches the common protobuf row boundary before the fields are added.
   Configured fields are physical singular scalar columns used by all three write methods; only the

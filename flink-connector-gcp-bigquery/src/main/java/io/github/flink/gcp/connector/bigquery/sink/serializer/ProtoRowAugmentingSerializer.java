@@ -87,8 +87,8 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
     }
 
     /**
-     * Derives both schema surfaces before row-failure handling so destination-wide conflicts fail
-     * the job rather than being dropped once per record.
+     * Derives the destination's schema surfaces before row-failure handling so destination-wide
+     * conflicts fail the job rather than being dropped once per record.
      */
     public void prepare(TableDestination destination) {
         schemaSurfaces(destination);
@@ -125,9 +125,11 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
             return null;
         }
 
-        Descriptors.Descriptor descriptor = schemaSurfaces(destination).descriptor;
-        DynamicMessage.Builder row = DynamicMessage.newBuilder(descriptor).mergeFrom(serialized);
-        for (ProtoRowAugmentationField<? super T> field : fields) {
+        SchemaSurfaces surfaces = schemaSurfaces(destination);
+        DynamicMessage.Builder row =
+                DynamicMessage.newBuilder(surfaces.descriptor).mergeFrom(serialized);
+        for (int i = 0; i < fields.size(); i++) {
+            ProtoRowAugmentationField<? super T> field = fields.get(i);
             Object value;
             try {
                 value = field.getValueProvider().getValue(element);
@@ -143,8 +145,7 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
                 continue;
             }
             try {
-                row.setField(
-                        descriptor.findFieldByName(field.getDescriptorField().getName()), value);
+                row.setField(surfaces.augmentationFields.get(i), value);
             } catch (RuntimeException e) {
                 throw new IOException(rowFailureMessage, e);
             }
@@ -179,13 +180,37 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         if (cached != null && Objects.equals(cached.fingerprint, fingerprint)) {
             return cached;
         }
+        // The table schema first: a name a destination already carries is reported as the column
+        // collision it is, rather than as the descriptor collision it also causes.
+        TableSchema augmentedTableSchema = augmentedTableSchema(destination);
+        Descriptors.Descriptor descriptor = augmentedDescriptor(destination);
         SchemaSurfaces derived =
                 new SchemaSurfaces(
                         fingerprint,
-                        augmentedTableSchema(destination),
-                        augmentedDescriptor(destination));
+                        augmentedTableSchema,
+                        descriptor,
+                        augmentationFields(descriptor));
         cache().put(destination, derived);
         return derived;
+    }
+
+    /**
+     * Resolves each augmentation field against the augmented descriptor, in declaration order, so
+     * that the record path sets fields by descriptor rather than by name.
+     */
+    private List<Descriptors.FieldDescriptor> augmentationFields(
+            Descriptors.Descriptor descriptor) {
+        List<Descriptors.FieldDescriptor> resolved = new ArrayList<>(fields.size());
+        for (ProtoRowAugmentationField<? super T> field : fields) {
+            String name = field.getDescriptorField().getName();
+            Descriptors.FieldDescriptor resolvedField = descriptor.findFieldByName(name);
+            // ProtoDescriptorAugmenter appends exactly these names, having rejected a collision
+            // with an existing one, so a miss would mean the augmenter broke its own contract.
+            Preconditions.checkState(
+                    resolvedField != null, "The augmented row descriptor has no field %s", name);
+            resolved.add(resolvedField);
+        }
+        return Collections.unmodifiableList(resolved);
     }
 
     private Map<TableDestination, SchemaSurfaces> cache() {
@@ -201,12 +226,17 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         private final Object fingerprint;
         private final TableSchema tableSchema;
         private final Descriptors.Descriptor descriptor;
+        private final List<Descriptors.FieldDescriptor> augmentationFields;
 
         private SchemaSurfaces(
-                Object fingerprint, TableSchema tableSchema, Descriptors.Descriptor descriptor) {
+                Object fingerprint,
+                TableSchema tableSchema,
+                Descriptors.Descriptor descriptor,
+                List<Descriptors.FieldDescriptor> augmentationFields) {
             this.fingerprint = fingerprint;
             this.tableSchema = tableSchema;
             this.descriptor = descriptor;
+            this.augmentationFields = augmentationFields;
         }
     }
 }

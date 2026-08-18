@@ -315,6 +315,23 @@ class ProtoRowAugmentingSerializerTest {
         assertThat(evolved.findFieldByName("name")).isNotNull();
         assertThat(evolved.findFieldByName("computed")).isNotNull();
         assertThat(dynamic.findFieldByName("other_value")).isNotNull();
+
+        // Rows follow the descriptor they were serialized against, on both sides of the evolution
+        // and on both destinations. The augmentation fields are resolved when the surfaces are
+        // derived, so a resolution held past a re-derivation would set a field of the previous
+        // descriptor here — which protobuf rejects per row, inside the sink's row-failure handling.
+        DynamicMessage evolvedRow =
+                DynamicMessage.parseFrom(
+                        evolved,
+                        serializer.serialize(
+                                new TestRecord(1, "uuid-1", Instant.EPOCH), DESTINATION));
+        DynamicMessage dynamicRow =
+                DynamicMessage.parseFrom(
+                        dynamic,
+                        serializer.serialize(new TestRecord(2, "uuid-2", Instant.EPOCH), other));
+
+        assertThat(evolvedRow.getField(evolved.findFieldByName("computed"))).isEqualTo("uuid-1");
+        assertThat(dynamicRow.getField(dynamic.findFieldByName("computed"))).isEqualTo("uuid-2");
     }
 
     @Test
