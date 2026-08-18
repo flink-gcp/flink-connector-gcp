@@ -63,6 +63,43 @@ def test_the_trigger_fires_on_every_terminal_state():
     )
 
 
+def sweep_command():
+    # Joined rather than matched on one line: the command is a folded scalar, so
+    # the flag and the expression that gates it sit on different lines.
+    text = SWEEP.read_text()
+    assert "just sweep-e2e" in text, "sweep-e2e.yaml does not run just sweep-e2e"
+    tail = text[text.index("just sweep-e2e") :]
+    return " ".join(line.strip() for line in tail.splitlines() if line.strip())
+
+
+def test_the_post_e2e_sweep_drops_the_age_threshold():
+    # Without --all the workflow_run trigger reclaims nothing: the instances it
+    # exists to collect are minutes old, which is exactly what the threshold
+    # skips (issue #966). The flag is the whole point of that trigger.
+    assert "--all" in sweep_command()
+
+
+def test_only_the_post_e2e_sweep_drops_it():
+    # And the other direction, which is the dangerous one: an unconditional
+    # --all would let the three-hourly schedule delete an instance a run is
+    # still using. The flag has to be gated on the event.
+    # Pinned as the association, not as an ordering: with the two merely both
+    # present, the inverted expression `(...) && '' || '--all'` — which puts the
+    # flag on the *schedule*, the one case that must never have it — reads as
+    # correct.
+    command = sweep_command()
+    assert "&& '--all' || ''" in command
+    # And the condition is those two cases and no other.
+    assert "github.event_name == 'workflow_run' || inputs.all" in command
+
+
+def test_the_manual_switch_reads_the_typed_input():
+    # github.event.inputs.all is the string "false" on an unchecked box, and a
+    # non-empty string is truthy in a GitHub expression, so that spelling would
+    # delete everything on every dispatch. inputs.all is a real boolean.
+    assert "github.event.inputs" not in sweep_command()
+
+
 def test_the_wif_binding_admits_the_event_the_trigger_uses():
     # The member is keyed on repository_id:event_name:ref, so an event missing
     # from this set fails authentication rather than being ignored.

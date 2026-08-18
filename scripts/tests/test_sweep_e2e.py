@@ -440,6 +440,58 @@ def test_arguments_it_does_not_understand_are_rejected(sweep, args):
     assert result.deleted == []
 
 
+# --- --all, the post-E2E sweep (issue #966) ---
+
+
+def test_all_takes_an_instance_far_too_young_for_the_threshold(sweep):
+    # The case the flag exists for: E2E has just finished, so the instance it
+    # left is minutes old and the threshold would skip exactly the leak the
+    # post-E2E sweep was added to reclaim.
+    fresh = instance(0.01)
+    result = sweep("--all", instances=[fresh], spanner_instances=[fresh])
+    assert result.returncode == 0, result.stderr
+    assert result.deleted == [f"bigtable {fresh}", f"spanner {fresh}"]
+
+
+def test_without_all_that_same_instance_survives(sweep):
+    # The contrast, in one place: the flag is the whole difference, so a change
+    # that made the schedule path ignore the threshold would fail here.
+    fresh = instance(0.01)
+    result = sweep(instances=[fresh], spanner_instances=[fresh])
+    assert result.returncode == 0, result.stderr
+    assert result.deleted == []
+
+
+@pytest.mark.parametrize(
+    "foreigner",
+    [
+        instance(0.01, prefix="production-"),
+        "1700000000-legacy",
+        "flink-it-notanepoch-abcd1234",
+    ],
+)
+def test_all_drops_the_age_guard_and_keeps_the_prefix_one(sweep, foreigner):
+    # The dangerous reading of "delete everything". --all widens which of the
+    # sweep's OWN instances go, never which instances are its own, so a
+    # neighbouring production instance in the same project is still untouched.
+    #
+    # Only "1700000000-legacy" discriminates, as in the survivor test above:
+    # the other two are rejected by the date parse even with the prefix guard
+    # removed, so they pass for a second reason. They are kept because a change
+    # that moved the guards around should fail here for whichever reason.
+    result = sweep("--all", instances=[foreigner], spanner_instances=[foreigner])
+    assert result.returncode == 0, result.stderr
+    assert result.deleted == []
+
+
+def test_all_and_dry_run_together_delete_nothing(sweep):
+    fresh = instance(0.01)
+    result = sweep("--dry-run", "--all", instances=[fresh])
+    assert result.returncode == 0, result.stderr
+    assert result.deleted == []
+    assert f"would delete bigtable {fresh}" in result.stdout
+
+
 # --- against the real tree ---
 
 
