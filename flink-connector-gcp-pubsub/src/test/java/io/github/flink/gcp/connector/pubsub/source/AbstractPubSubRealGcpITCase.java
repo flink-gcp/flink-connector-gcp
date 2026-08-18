@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.testutils.pubsub.PubSubTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,8 +67,12 @@ import java.util.function.UnaryOperator;
  * fork — one class's {@link AfterAll} clears and closes, the next class's {@link BeforeAll}
  * re-creates. That hand-off assumes surefire's default sequential class execution in one fork;
  * enabling class-level parallelism would let one class's cleanup delete another's live resources.
+ *
+ * <p>The timeout runs in a separate thread because the default mode cannot end a wait that ignores
+ * interruption, which is how #951 outlived its own deadline. ADR-0119 records the measurement and
+ * the fork-level ceiling that covers what abandoning a thread cannot.
  */
-@Timeout(300)
+@Timeout(value = 300, threadMode = ThreadMode.SEPARATE_THREAD)
 public abstract class AbstractPubSubRealGcpITCase {
 
     private static final Logger LOG = LoggerFactory.getLogger(AbstractPubSubRealGcpITCase.class);

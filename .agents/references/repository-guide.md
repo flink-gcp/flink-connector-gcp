@@ -78,7 +78,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   Tasks App Engine version is stopped. It reads the owned identifiers and thresholds from source,
   treats an unreadable source or listing as an error, attempts every service independently and
   reports the worst status. The schedule and how its interval is priced, source-derived values,
-  shell failure boundaries and billing-account boundary are recorded in ADR-0119
+  shell failure boundaries and billing-account boundary are recorded in ADR-0119, which also owns
+  the `it.fork.timeout.seconds` ceiling on an integration-test fork: it is coupled to the sweep's
+  staleness threshold, and the two manual BigQuery schema-propagation probes are the only things
+  that need it raised
 - `just check-notice <module>` / `just update-notice <module>` — a shaded module's
   `META-INF/NOTICE` is generated (prose from the module's `NOTICE.template`, artifact lists from
   what Maven resolves) and its `META-INF/licenses/` texts come from sha256-pinned sources in

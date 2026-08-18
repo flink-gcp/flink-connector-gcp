@@ -121,6 +121,15 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       pooled production writer's is the discriminator. Canary rows are filtered out of the final
  *       assertion.
  * </ul>
+ *
+ * <p>This class outlives the default integration-test fork ceiling (issue #959), which is 90
+ * minutes against the three hours declared below. Run it with the ceiling raised, or surefire kills
+ * the fork mid-probe and reports a timeout that says nothing about the measurement:
+ *
+ * <pre>{@code
+ * mvn -pl flink-connector-gcp-bigquery surefire:test@integration-tests \
+ *     -Dtest.excluded.groups= -Dit.fork.timeout.seconds=14400 -Dtest=BigQueryDefaultStreamSchemaEvolutionITCase
+ * }</pre>
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_SCHEMA_EVOLUTION", matches = ".+")
