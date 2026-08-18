@@ -221,7 +221,9 @@ class RowTypeToTableSchemaConverterTest {
                                 RowTypeToTableSchemaConverter.convert(
                                         rowType, RowDataSchemaOptions.defaults()))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("differ only by case");
+                .hasMessage(
+                        "Columns of the table differ only by case (ID), which the BigQuery Storage"
+                                + " API cannot distinguish");
     }
 
     @Test

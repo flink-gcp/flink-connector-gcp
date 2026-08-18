@@ -19,13 +19,14 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import java.io.IOException;
 
@@ -58,7 +59,7 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
     private final Class<T> messageClass;
     private final ProtoSchemaOptions options;
 
-    private transient volatile ConversionState state;
+    private final LazyDerivedState<ConversionState> conversionState = new LazyDerivedState<>();
 
     private ProtoMessageSerializer(Class<T> messageClass, ProtoSchemaOptions options) {
         this.messageClass =
@@ -116,38 +117,18 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
     }
 
     private ConversionState state() {
-        ConversionState localState = state;
-        if (localState == null) {
-            localState = initialize();
-        }
-        return localState;
+        return conversionState.get(this, ProtoMessageSerializer::deriveConversionState);
     }
 
-    private synchronized ConversionState initialize() {
-        ConversionState localState = state;
-        if (localState != null) {
-            return localState;
-        }
+    private ConversionState deriveConversionState() {
         Descriptors.Descriptor sourceDescriptor = sourceDescriptor();
         TableSchema tableSchema = ProtoToTableSchemaConverter.convert(sourceDescriptor, options);
-        Descriptors.Descriptor rowDescriptor;
-        try {
-            rowDescriptor =
-                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                            tableSchema);
-        } catch (Descriptors.DescriptorValidationException e) {
-            throw new IllegalStateException(
-                    "Failed to derive a BigQuery-storage compatible descriptor for "
-                            + messageClass.getName(),
-                    e);
-        }
-        localState =
-                new ConversionState(
-                        tableSchema,
-                        rowDescriptor,
-                        new ProtoRowConverter(sourceDescriptor, rowDescriptor, options));
-        state = localState;
-        return localState;
+        Descriptors.Descriptor rowDescriptor =
+                RowDescriptors.derive(tableSchema, messageClass.getName());
+        return new ConversionState(
+                tableSchema,
+                rowDescriptor,
+                new ProtoRowConverter(sourceDescriptor, rowDescriptor, options));
     }
 
     private Descriptors.Descriptor sourceDescriptor() {
@@ -162,7 +143,7 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
         }
     }
 
-    /** Immutable holder published through one volatile read on the per-record path. */
+    /** The immutable triple {@link LazyDerivedState} holds for this serializer. */
     private static final class ConversionState {
         private final TableSchema tableSchema;
         private final Descriptors.Descriptor rowDescriptor;

@@ -22,12 +22,13 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import javax.annotation.Nullable;
 
@@ -61,7 +62,7 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
     private final RowDataSchemaOptions options;
     private final int[] primaryKeyIndexes;
 
-    private transient volatile ConversionState state;
+    private final LazyDerivedState<ConversionState> conversionState = new LazyDerivedState<>();
 
     /**
      * Creates the serializer.
@@ -110,46 +111,26 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
     }
 
     private ConversionState state() {
-        ConversionState localState = state;
-        if (localState == null) {
-            localState = initialize();
-        }
-        return localState;
+        return conversionState.get(this, RowDataSerializer::deriveConversionState);
     }
 
-    private synchronized ConversionState initialize() {
-        ConversionState localState = state;
-        if (localState != null) {
-            return localState;
-        }
+    private ConversionState deriveConversionState() {
         TableSchema tableSchema = RowTypeToTableSchemaConverter.convert(rowType, options);
-        Descriptors.Descriptor rowDescriptor;
-        try {
-            rowDescriptor =
-                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                            tableSchema);
-        } catch (Descriptors.DescriptorValidationException e) {
-            throw new IllegalStateException(
-                    "Failed to derive a BigQuery-storage compatible descriptor for the table's"
-                            + " columns",
-                    e);
-        }
+        Descriptors.Descriptor rowDescriptor =
+                RowDescriptors.derive(tableSchema, "the table's columns");
         RowDataToProtoConverter deleteRowConverter =
                 primaryKeyIndexes.length == 0
                         ? null
                         : new RowDataToProtoConverter(
                                 rowType, tableSchema, rowDescriptor, primaryKeyIndexes);
-        localState =
-                new ConversionState(
-                        tableSchema,
-                        rowDescriptor,
-                        new RowDataToProtoConverter(rowType, tableSchema, rowDescriptor),
-                        deleteRowConverter);
-        state = localState;
-        return localState;
+        return new ConversionState(
+                tableSchema,
+                rowDescriptor,
+                new RowDataToProtoConverter(rowType, tableSchema, rowDescriptor),
+                deleteRowConverter);
     }
 
-    /** The derived conversion state, published through one volatile read on the per-record path. */
+    /** The derived conversion state {@link LazyDerivedState} holds for this serializer. */
     private static final class ConversionState {
 
         private final TableSchema tableSchema;

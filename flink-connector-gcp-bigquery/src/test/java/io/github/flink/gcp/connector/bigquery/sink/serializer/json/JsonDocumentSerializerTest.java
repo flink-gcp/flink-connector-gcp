@@ -262,6 +262,33 @@ class JsonDocumentSerializerTest {
     }
 
     @Test
+    void columnsThatCollideOnceLowerCasedFailNamingTheSuppliedSchema() {
+        // A supplied schema is not read back from a table, so it can carry two columns BigQuery
+        // itself would refuse; the generated descriptor lower-cases both to one field name. Neither
+        // name carries an "i", because that lower-casing uses the default locale, under which
+        // Turkish "ID" would become "ıd" and not collide at all.
+        TableSchema ambiguous =
+                TableSchema.newBuilder()
+                        .addFields(
+                                field(
+                                        "count",
+                                        TableFieldSchema.Type.INT64,
+                                        TableFieldSchema.Mode.NULLABLE))
+                        .addFields(
+                                field(
+                                        "COUNT",
+                                        TableFieldSchema.Type.INT64,
+                                        TableFieldSchema.Mode.NULLABLE))
+                        .build();
+
+        assertThatThrownBy(() -> JsonDocumentSerializer.of(ambiguous))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(
+                        "Failed to derive a BigQuery-storage compatible descriptor for the supplied"
+                                + " schema");
+    }
+
+    @Test
     void rejectsEmptyAndNullSchemas() {
         assertThatThrownBy(() -> JsonDocumentSerializer.of(TableSchema.getDefaultInstance()))
                 .isInstanceOf(IllegalArgumentException.class)

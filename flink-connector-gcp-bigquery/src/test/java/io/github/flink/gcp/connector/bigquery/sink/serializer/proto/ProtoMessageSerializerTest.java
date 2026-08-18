@@ -65,6 +65,14 @@ class ProtoMessageSerializerTest {
     }
 
     @Test
+    void cachesTheDerivedDescriptor() {
+        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+
+        assertThat(serializer.getDescriptor(DESTINATION))
+                .isSameAs(serializer.getDescriptor(DESTINATION));
+    }
+
+    @Test
     void serializedRowsParseAgainstTheRowDescriptor() throws Exception {
         ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
         Timestamp record = Timestamp.newBuilder().setSeconds(123L).setNanos(456).build();

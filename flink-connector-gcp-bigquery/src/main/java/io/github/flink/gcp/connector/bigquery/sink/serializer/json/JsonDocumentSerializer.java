@@ -20,13 +20,14 @@ import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.Schema;
-import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
 import com.google.cloud.bigquery.storage.v1.JsonToProtoMessage;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -67,7 +68,7 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
 
     private final JsonDocumentSerializerOptions options;
 
-    private transient volatile Descriptors.Descriptor rowDescriptor;
+    private final LazyDerivedState<Descriptors.Descriptor> rowDescriptor = new LazyDerivedState<>();
 
     private JsonDocumentSerializer(TableSchema tableSchema, JsonDocumentSerializerOptions options) {
         this.tableSchema = Preconditions.checkNotNull(tableSchema, "tableSchema must not be null");
@@ -194,33 +195,10 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
     }
 
     private Descriptors.Descriptor descriptor() {
-        Descriptors.Descriptor local = rowDescriptor;
-        if (local == null) {
-            local = buildDescriptor();
-        }
-        return local;
+        return rowDescriptor.get(this, JsonDocumentSerializer::deriveDescriptor);
     }
 
-    private synchronized Descriptors.Descriptor buildDescriptor() {
-        Descriptors.Descriptor local = rowDescriptor;
-        if (local != null) {
-            return local;
-        }
-        try {
-            local =
-                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
-                            tableSchema);
-        } catch (Descriptors.DescriptorValidationException e) {
-            // Not reachable through any schema found so far: the library rejects what it cannot
-            // express with IllegalArgumentException first (a RANGE column, for instance). Kept
-            // because it is a checked exception and swallowing it would be worse than a branch no
-            // test covers.
-            throw new IllegalStateException(
-                    "Failed to derive a BigQuery-storage compatible descriptor from the supplied"
-                            + " schema",
-                    e);
-        }
-        rowDescriptor = local;
-        return local;
+    private Descriptors.Descriptor deriveDescriptor() {
+        return RowDescriptors.derive(tableSchema, "the supplied schema");
     }
 }

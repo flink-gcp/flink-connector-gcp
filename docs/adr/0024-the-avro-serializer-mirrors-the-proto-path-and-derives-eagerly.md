@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-26
-- Issues: [#66] (Avro half)
+- Issues: [#66] (Avro half); the shared holder extracted by [#828] (2026-08-18)
 - Modules: bigquery (`sink.serializer.avro`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Avro records
 
@@ -60,6 +60,23 @@ conversions enabled carries the latter and assuming the former would be a per-ro
 - A `["null", array]` field is `REPEATED`, so a null array and an empty one are
   indistinguishable — BigQuery offers no way to keep them apart, and the alternative is
   rejecting the schema.
+- The mirroring is a shared mechanism rather than a copied one (refined by [#828], 2026-08-18).
+  `LazyDerivedState` holds what a serializer derives from its serializable fields and rebuilds it
+  on the task manager, and `RowDescriptors.derive` wraps the checked validation failure
+  `BQTableSchemaToProtoDescriptor` can raise. Both are `@Internal` in `sink.serializer`, the
+  nearest package every caller can import — the format packages must not import each other
+  (ADR-0055) and `RowDataSerializer` is in `table.sink` besides. Neither is BigQuery-specific
+  enough to belong there on its own, so a second module needing one is a reason to move it to
+  `flink-connector-gcp-base`, not to copy it. `JsonDocumentSerializer` and `RowDataSerializer`
+  hold their state through the same two. Each serializer keeps its own derivation, called from its
+  own constructor, and its own private conversion-state class: the triple is where the formats
+  differ, and the JSON serializer has no row converter to put in one (ADR-0025). The serialized
+  form of the four changed — a `transient` field became a non-transient holder whose contents are
+  transient — at unchanged `serialVersionUID`: a job graph written by an earlier build restores
+  with nothing where the holder belongs and fails on first use, and one written by this build does
+  not restore against an earlier build at all, the holder's class being unknown there. Neither
+  crosses in practice, since a job graph is written and read by one jar and no checkpoint carries a
+  serializer.
 
 ## Evidence
 
@@ -75,3 +92,4 @@ Two things caught in self-review and worth not re-deriving:
   just produced.
 
 [#66]: https://github.com/laughingman7743/flink-connector-gcp/issues/66
+[#828]: https://github.com/flink-gcp/flink-connector-gcp/issues/828
