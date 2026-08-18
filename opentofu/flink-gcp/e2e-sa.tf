@@ -91,11 +91,14 @@ resource "google_storage_bucket_iam_member" "e2e" {
   member = google_service_account.github_actions_e2e.member
 }
 
-# Reachable only from this repository's push, schedule and workflow_dispatch
-# events on main — the triggers the nightly E2E workflow will carry — never
-# from a pull request.
+# Reachable only from this repository's push, schedule, workflow_dispatch and
+# workflow_run events on main — the triggers the E2E workflow carries, plus
+# the one the sweep uses to run when E2E finishes (issue #964) — never from a
+# pull request. workflow_run widens which *event* may assume this account,
+# not which repository, ref or roles: the sweep runs as the same service
+# account on the same branch it already runs on hourly schedules.
 resource "google_service_account_iam_member" "e2e_wif" {
-  for_each = toset(["push", "schedule", "workflow_dispatch"])
+  for_each = toset(["push", "schedule", "workflow_dispatch", "workflow_run"])
 
   service_account_id = google_service_account.github_actions_e2e.name
   role               = "roles/iam.workloadIdentityUser"
