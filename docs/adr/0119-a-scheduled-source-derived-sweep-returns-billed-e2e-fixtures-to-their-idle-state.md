@@ -50,7 +50,9 @@ That safety rests on every run finishing inside the threshold.
 Raising either the ceiling past the threshold or `e2e.yaml`'s `timeout-minutes` past it removes that guarantee, which is why both carry a note saying what depends on them.
 The value is deliberately not the tightest one that fits: `forkCount` is 2, so one fork carries about half of the 33 gated classes the E2E suite selects, and only Bigtable's 7 have been measured — 20.6 minutes of work, which extrapolates past a 45-minute ceiling.
 Tightness would buy nothing regardless, because the per-class `@Timeout` already fires at 5 or 10 minutes and this ceiling exists only for the fork that will not die.
-It is not a service-side expiry and cannot bound a delayed or disabled workflow run.
+It is not a service-side expiry and cannot bound a delayed or disabled workflow run, which is not a hypothetical: GitHub schedules are best effort and may be dropped under load, and this repository's slots have started 38 to 91 minutes late.
+The sweep therefore also triggers on the E2E workflow's completion in every terminal state (#964), so the run that creates the fixtures is always followed by one that reclaims them, whatever the schedule does.
+That trigger is `workflow_run` rather than a finalising step inside the E2E job because a step dies with its job and hard cancellation is the case the sweep exists for; the cost is one more event name on the E2E service account's Workload Identity binding, which widens which event may assume it and not the repository, ref or roles.
 
 One shell script owns the shared sweep.
 It attempts Bigtable deletion, Spanner deletion and App Engine stop independently, then returns the worst status so one service's failure cannot prevent another service from being cleaned.

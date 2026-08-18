@@ -53,6 +53,22 @@ on:
     - cron: '23 */3 * * *'
   workflow_dispatch:
 
+  # A schedule is best effort: GitHub's own documentation says queued jobs may
+  # be dropped under load, and this repository's slots have started 38 to 91
+  # minutes late. So the sweep also runs the moment the workflow that creates
+  # the fixtures finishes, in every terminal state - success, failure and
+  # cancellation - which is what `types: [completed]` means.
+  #
+  # A finalising step inside the E2E job would be cheaper and would not need
+  # the WIF binding widened, but it dies with its job, and hard cancellation is
+  # exactly what this sweep exists for. A separate run outlives that, and a
+  # runner that disappears entirely.
+  #
+  # No loop: E2E does not trigger on this workflow's completion.
+  workflow_run:
+    workflows: [E2E]
+    types: [completed]
+
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
