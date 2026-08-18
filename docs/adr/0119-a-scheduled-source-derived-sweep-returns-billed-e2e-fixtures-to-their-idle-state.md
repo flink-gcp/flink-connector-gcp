@@ -64,6 +64,12 @@ The script does not repeat those values because a stale copy could turn a broken
 Missing sources, unparsable constants and failed resource listings are therefore hard errors.
 
 Only instance identifiers with the owned prefix and a parseable creation epoch older than the source threshold are deleted.
+The threshold has two exceptions, and both are the caller's to state: the sweep that runs when the E2E workflow has finished passes `--all` and drops the age comparison, because that workflow is over and anything still carrying the prefix is a leak (#966), and a manual dispatch may ask for the same through a typed boolean input.
+The manual switch exists because the operator reaching for it has usually just seen a leak, and the threshold would skip exactly the fresh instance they are trying to reclaim — the case that sent one cleanup through `gcloud` by hand.
+It defaults to off, so an absent-minded dispatch behaves like the schedule.
+Without it the post-E2E trigger reclaims nothing — the instances it exists to collect are minutes old, which is precisely what the threshold skips.
+`--all` widens which of the sweep's own instances go, never which instances are its own: the prefix guard is untouched, so a neighbouring production instance is as safe as before.
+The accepted cost is a local gated run in flight when the weekly E2E finishes, which loses its instance and fails loudly.
 An identifier the script cannot date is left alone, matching the Java harness's conservative deletion boundary.
 `--dry-run` reports eligible changes without applying them.
 

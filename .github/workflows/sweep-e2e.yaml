@@ -52,6 +52,12 @@ on:
     # left running past two hours can have its instance swept from under it.
     - cron: '23 */3 * * *'
   workflow_dispatch:
+    inputs:
+      all:
+        description: Delete every instance with the owned prefix, whatever its age
+        type: boolean
+        default: false
+
 
   # A schedule is best effort: GitHub's own documentation says queued jobs may
   # be dropped under load, and this repository's slots have started 38 to 91
@@ -119,4 +125,20 @@ jobs:
           BIGTABLE_IT_PROJECT: flink-gcp
           CLOUDTASKS_IT_PROJECT: flink-gcp
           SPANNER_IT_PROJECT: flink-gcp
-        run: just sweep-e2e
+        # --all after E2E, or when a human ticks the box: that workflow has
+        # finished, so anything still
+        # carrying the owned prefix is a leak, and the age threshold would skip
+        # exactly the instances this run just left behind (issue #966). On a
+        # schedule the threshold stays, because some other run may be in flight
+        # and age is the only thing that tells the two apart.
+        #
+        # The accepted risk is a local gated run in flight when the weekly E2E
+        # finishes: it loses its instance and fails loudly. Minutes a week,
+        # against a post-E2E sweep that would otherwise reclaim nothing.
+        #
+        # `inputs.all` and not `github.event.inputs.all`: the latter is the
+        # string "false" on an unchecked box, and a non-empty string is truthy
+        # in a GitHub expression, so it would delete everything every time.
+        run: >-
+          just sweep-e2e
+          ${{ (github.event_name == 'workflow_run' || inputs.all) && '--all' || '' }}

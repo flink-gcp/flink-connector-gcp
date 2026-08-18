@@ -45,21 +45,27 @@
 set -euo pipefail
 
 dry_run=false
-case "${1:-}" in
-    --dry-run) dry_run=true ;;
-    "") ;;
-    *)
-        echo "usage: $0 [--dry-run]" >&2
-        exit 2
-        ;;
-esac
-# An argument this does not understand must not be dropped on the floor: the
-# one a caller is most likely to reach for is a narrowing flag, and silently
-# ignoring it would widen a delete rather than refuse it.
-if [ "$#" -gt 1 ]; then
-    echo "usage: $0 [--dry-run]" >&2
-    exit 2
-fi
+# --all drops the age comparison, so every instance carrying the owned prefix
+# goes. Only one caller may say that and mean it: the sweep that runs when the
+# E2E workflow has finished, where anything still standing is a leak by
+# definition (issue #966). On a schedule the age is the only thing that can
+# tell a leak from a run still using its instance, so the default keeps it.
+all=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --dry-run) dry_run=true ;;
+        --all) all=true ;;
+        # An argument this does not understand must not be dropped on the
+        # floor: the one a caller is most likely to reach for is a narrowing
+        # flag, and silently ignoring it would widen a delete rather than
+        # refuse it.
+        *)
+            echo "usage: $0 [--dry-run] [--all]" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -127,8 +133,15 @@ sweep_service() {
     fi
 
     local cutoff
-    cutoff=$(( $(date +%s) - hours * 3600 ))
-    echo "Sweeping ${project} for '${prefix}*' ${group} instances older than ${hours}h."
+    if [ "$all" = true ]; then
+        # Now, not epoch: an instance created in the same second must still be
+        # older than the cutoff for the comparison below to take it.
+        cutoff=$(( $(date +%s) + 1 ))
+        echo "Sweeping ${project} for every '${prefix}*' ${group} instance, whatever its age."
+    else
+        cutoff=$(( $(date +%s) - hours * 3600 ))
+        echo "Sweeping ${project} for '${prefix}*' ${group} instances older than ${hours}h."
+    fi
 
     # Listed into a variable rather than piped into the loop on purpose. A
     # failing process substitution does not trip `set -e` — the loop simply
