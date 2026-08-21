@@ -34,7 +34,7 @@ import org.apache.flink.util.Collector;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ScriptedChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
@@ -263,7 +263,7 @@ class BigtableChangeStreamSourceRescalingITCase {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public void deserialize(ChangeStreamMutation mutation, Collector<String> out) {
+        public void deserialize(BigtableChangeStreamMutation mutation, Collector<String> out) {
             out.collect(mutation.getToken());
         }
 

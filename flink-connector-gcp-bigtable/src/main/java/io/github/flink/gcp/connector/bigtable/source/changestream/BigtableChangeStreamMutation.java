@@ -30,10 +30,25 @@ import java.util.List;
 import java.util.Objects;
 import java.util.OptionalLong;
 
-/** One complete logical row mutation returned by Bigtable Change Streams. */
+/**
+ * One complete logical row mutation returned by Bigtable Change Streams.
+ *
+ * <p>Instances are immutable and compare by value. There is deliberately <b>no {@code
+ * toString}</b>: a mutation's row key and cell values are the row's own data, and a value type
+ * whose {@code toString} prints user data is one accidental log line away from putting that data
+ * where it does not belong.
+ *
+ * <p>A redacting {@code toString} rendering only the metadata and the row key and entry list
+ * <em>sizes</em> was considered and declined. Redaction is a property of one implementation rather
+ * than an invariant: no test can pin the absence of user data in a free-form string, and every
+ * later widening of it — printing the entries to debug something — is individually plausible.
+ * Omitting it leaves nothing to erode. A caller that wants to render a mutation chooses what to
+ * print, through the accessors. Spanner's {@code DataChangeRecord} is governed by the same
+ * reasoning.
+ */
 @Public
-@TypeInfo(ChangeStreamMutationTypeInfoFactory.class)
-public final class ChangeStreamMutation implements Serializable {
+@TypeInfo(BigtableChangeStreamMutationTypeInfoFactory.class)
+public final class BigtableChangeStreamMutation implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -46,7 +61,7 @@ public final class ChangeStreamMutation implements Serializable {
     private final Instant estimatedLowWatermarkTime;
     private final List<Entry> entries;
 
-    public ChangeStreamMutation(
+    public BigtableChangeStreamMutation(
             ByteString rowKey,
             MutationType type,
             String sourceClusterId,
@@ -100,6 +115,38 @@ public final class ChangeStreamMutation implements Serializable {
 
     public List<Entry> getEntries() {
         return entries;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof BigtableChangeStreamMutation)) {
+            return false;
+        }
+        BigtableChangeStreamMutation that = (BigtableChangeStreamMutation) other;
+        return tieBreaker == that.tieBreaker
+                && type == that.type
+                && rowKey.equals(that.rowKey)
+                && sourceClusterId.equals(that.sourceClusterId)
+                && commitTime.equals(that.commitTime)
+                && token.equals(that.token)
+                && estimatedLowWatermarkTime.equals(that.estimatedLowWatermarkTime)
+                && entries.equals(that.entries);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(
+                rowKey,
+                type,
+                sourceClusterId,
+                commitTime,
+                tieBreaker,
+                token,
+                estimatedLowWatermarkTime,
+                entries);
     }
 
     @Public

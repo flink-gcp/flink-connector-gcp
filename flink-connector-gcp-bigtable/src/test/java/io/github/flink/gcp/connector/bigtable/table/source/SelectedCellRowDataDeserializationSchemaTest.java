@@ -28,13 +28,14 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
 
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
 import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestChangeStreamMutations;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestBigtableChangeStreamMutations;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
 import org.junit.jupiter.api.Test;
 
@@ -228,7 +229,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
         };
     }
 
-    private static ChangeStreamMutation upsert() {
+    private static BigtableChangeStreamMutation upsert() {
         return mutation(
                 builder -> {
                     builder.deleteCells(FAMILY, QUALIFIER, Range.TimestampRange.unbounded());
@@ -238,17 +239,17 @@ class SelectedCellRowDataDeserializationSchemaTest {
                 });
     }
 
-    private static ChangeStreamMutation delete() {
+    private static BigtableChangeStreamMutation delete() {
         return mutation(
                 builder ->
                         builder.deleteCells(FAMILY, QUALIFIER, Range.TimestampRange.unbounded()));
     }
 
-    private static ChangeStreamMutation unrelated() {
+    private static BigtableChangeStreamMutation unrelated() {
         return mutation(builder -> builder.deleteFamily("other"));
     }
 
-    private static ChangeStreamMutation mutation(
+    private static BigtableChangeStreamMutation mutation(
             java.util.function.Consumer<ChangeStreamRecordBuilder<ChangeStreamRecord>> entries) {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
                 new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
@@ -258,8 +259,8 @@ class SelectedCellRowDataDeserializationSchemaTest {
                 Instant.parse("2026-08-13T00:00:00Z"),
                 0);
         entries.accept(builder);
-        return TestChangeStreamMutations.convert(
-                (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+        return TestBigtableChangeStreamMutations.convert(
+                (ChangeStreamMutation)
                         builder.finishChangeStreamMutation(
                                 "token", Instant.parse("2026-08-12T23:59:00Z")));
     }

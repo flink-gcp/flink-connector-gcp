@@ -22,7 +22,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.util.Collector;
 
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -48,7 +48,7 @@ public interface BigtableChangeStreamDeserializationSchema<T>
      *     call and must not be retained
      * @throws IOException if the mutation cannot be deserialized
      */
-    void deserialize(ChangeStreamMutation mutation, Collector<T> out) throws IOException;
+    void deserialize(BigtableChangeStreamMutation mutation, Collector<T> out) throws IOException;
 
     @Override
     TypeInformation<T> getProducedType();

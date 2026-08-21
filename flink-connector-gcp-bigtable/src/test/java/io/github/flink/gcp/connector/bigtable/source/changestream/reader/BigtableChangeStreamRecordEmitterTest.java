@@ -23,8 +23,8 @@ import org.apache.flink.util.Collector;
 
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
@@ -130,7 +130,7 @@ class BigtableChangeStreamRecordEmitterTest {
                         new BigtableChangeStreamDeserializationSchema<String>() {
                             @Override
                             public void deserialize(
-                                    ChangeStreamMutation mutation, Collector<String> out) {}
+                                    BigtableChangeStreamMutation mutation, Collector<String> out) {}
 
                             @Override
                             public org.apache.flink.api.common.typeinfo.TypeInformation<String>
@@ -158,13 +158,13 @@ class BigtableChangeStreamRecordEmitterTest {
 
     @Test
     void outputFilterDeliversAnEmptyMutationByDefaultAndCountsRemovedEntries() throws Exception {
-        AtomicReference<ChangeStreamMutation> delivered = new AtomicReference<>();
+        AtomicReference<BigtableChangeStreamMutation> delivered = new AtomicReference<>();
         BigtableChangeStreamRecordEmitter<String> emitter =
                 new BigtableChangeStreamRecordEmitter<>(
                         new BigtableChangeStreamDeserializationSchema<String>() {
                             @Override
                             public void deserialize(
-                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                    BigtableChangeStreamMutation mutation, Collector<String> out) {
                                 delivered.set(mutation);
                                 out.collect("projected");
                             }
@@ -199,13 +199,13 @@ class BigtableChangeStreamRecordEmitterTest {
 
     @Test
     void partialOutputFilterCountsRemovedEntriesOnADeliveredMutation() throws Exception {
-        AtomicReference<ChangeStreamMutation> delivered = new AtomicReference<>();
+        AtomicReference<BigtableChangeStreamMutation> delivered = new AtomicReference<>();
         BigtableChangeStreamRecordEmitter<String> emitter =
                 new BigtableChangeStreamRecordEmitter<>(
                         new BigtableChangeStreamDeserializationSchema<String>() {
                             @Override
                             public void deserialize(
-                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                    BigtableChangeStreamMutation mutation, Collector<String> out) {
                                 delivered.set(mutation);
                                 out.collect("projected");
                             }
@@ -229,7 +229,7 @@ class BigtableChangeStreamRecordEmitterTest {
                 state());
 
         assertThat(delivered.get().getEntries())
-                .extracting(ChangeStreamMutation.Entry::getFamilyName)
+                .extracting(BigtableChangeStreamMutation.Entry::getFamilyName)
                 .containsExactly("family-2");
         assertThat(counter("changeStreamMutationEntriesFiltered")).isEqualTo(2);
         assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isZero();
@@ -243,7 +243,7 @@ class BigtableChangeStreamRecordEmitterTest {
                         new BigtableChangeStreamDeserializationSchema<String>() {
                             @Override
                             public void deserialize(
-                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                    BigtableChangeStreamMutation mutation, Collector<String> out) {
                                 throw new AssertionError("a skipped mutation must not deserialize");
                             }
 
@@ -313,7 +313,7 @@ class BigtableChangeStreamRecordEmitterTest {
                         new BigtableChangeStreamDeserializationSchema<String>() {
                             @Override
                             public void deserialize(
-                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                    BigtableChangeStreamMutation mutation, Collector<String> out) {
                                 if (calls.getAndIncrement() == 0) {
                                     retained.set(out);
                                 } else {
@@ -359,7 +359,7 @@ class BigtableChangeStreamRecordEmitterTest {
                         new BigtableChangeStreamDeserializationSchema<String>() {
                             @Override
                             public void deserialize(
-                                    ChangeStreamMutation mutation, Collector<String> out) {
+                                    BigtableChangeStreamMutation mutation, Collector<String> out) {
                                 out.collect(null);
                             }
 
@@ -408,7 +408,7 @@ class BigtableChangeStreamRecordEmitterTest {
     private static BigtableChangeStreamDeserializationSchema<String> schema() {
         return new BigtableChangeStreamDeserializationSchema<String>() {
             @Override
-            public void deserialize(ChangeStreamMutation mutation, Collector<String> out) {
+            public void deserialize(BigtableChangeStreamMutation mutation, Collector<String> out) {
                 out.collect(mutation.getRowKey().toStringUtf8());
             }
 

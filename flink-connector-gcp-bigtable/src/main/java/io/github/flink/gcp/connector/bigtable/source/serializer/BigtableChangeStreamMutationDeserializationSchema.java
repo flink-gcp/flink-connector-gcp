@@ -20,24 +20,25 @@ import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
 
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
-/** Emits the connector-owned {@link ChangeStreamMutation} unchanged. */
+/** Emits the connector-owned {@link BigtableChangeStreamMutation} unchanged. */
 @Public
-public final class ChangeStreamMutationDeserializationSchema
-        implements BigtableChangeStreamDeserializationSchema<ChangeStreamMutation> {
+public final class BigtableChangeStreamMutationDeserializationSchema
+        implements BigtableChangeStreamDeserializationSchema<BigtableChangeStreamMutation> {
 
     private static final long serialVersionUID = 1L;
-    private static final TypeInformation<ChangeStreamMutation> TYPE_INFORMATION =
-            TypeInformation.of(ChangeStreamMutation.class);
+    private static final TypeInformation<BigtableChangeStreamMutation> TYPE_INFORMATION =
+            TypeInformation.of(BigtableChangeStreamMutation.class);
 
     @Override
-    public void deserialize(ChangeStreamMutation mutation, Collector<ChangeStreamMutation> out) {
+    public void deserialize(
+            BigtableChangeStreamMutation mutation, Collector<BigtableChangeStreamMutation> out) {
         out.collect(mutation);
     }
 
     @Override
-    public TypeInformation<ChangeStreamMutation> getProducedType() {
+    public TypeInformation<BigtableChangeStreamMutation> getProducedType() {
         return TYPE_INFORMATION;
     }
 }

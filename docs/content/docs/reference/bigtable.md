@@ -171,7 +171,7 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | Option | Default | What it does |
 |---|---|---|
 | `table` | **required** | The change-stream-enabled table to read |
-| `deserializer` | **required** | Turns each `ChangeStreamMutation` into zero or more non-null records. Emit synchronously during the call; do not retain the collector |
+| `deserializer` | **required** | Turns each `BigtableChangeStreamMutation` into zero or more non-null records. Emit synchronously during the call; do not retain the collector |
 | `appProfileId` | **required** | A single-cluster-routing application profile used by every change-stream RPC |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's coordinator or a TaskManager's reader starts. Each component shares the provider among the data, table-admin and instance-admin clients that it owns, and every eligible process must see the same path. See the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |

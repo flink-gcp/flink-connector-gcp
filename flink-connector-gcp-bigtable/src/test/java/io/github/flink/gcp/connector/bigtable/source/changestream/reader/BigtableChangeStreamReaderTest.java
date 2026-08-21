@@ -29,7 +29,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
@@ -522,7 +522,7 @@ class BigtableChangeStreamReaderTest {
     private static BigtableChangeStreamDeserializationSchema<String> schema() {
         return new BigtableChangeStreamDeserializationSchema<String>() {
             @Override
-            public void deserialize(ChangeStreamMutation mutation, Collector<String> out) {
+            public void deserialize(BigtableChangeStreamMutation mutation, Collector<String> out) {
                 out.collect(mutation.getRowKey().toStringUtf8());
             }
 

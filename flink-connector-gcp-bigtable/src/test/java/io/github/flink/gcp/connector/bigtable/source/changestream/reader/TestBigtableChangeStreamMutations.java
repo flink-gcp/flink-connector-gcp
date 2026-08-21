@@ -16,19 +16,19 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
 import java.io.IOException;
 
 /** Converts pinned SDK fixtures without exposing the production converter as public API. */
-public final class TestChangeStreamMutations {
+public final class TestBigtableChangeStreamMutations {
 
-    private TestChangeStreamMutations() {}
+    private TestBigtableChangeStreamMutations() {}
 
-    public static ChangeStreamMutation convert(
-            com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation mutation) {
+    public static BigtableChangeStreamMutation convert(ChangeStreamMutation mutation) {
         try {
-            return ChangeStreamMutationConverter.convert(mutation);
+            return BigtableChangeStreamMutationConverter.convert(mutation);
         } catch (IOException e) {
             throw new AssertionError("The pinned SDK fixture must be supported", e);
         }

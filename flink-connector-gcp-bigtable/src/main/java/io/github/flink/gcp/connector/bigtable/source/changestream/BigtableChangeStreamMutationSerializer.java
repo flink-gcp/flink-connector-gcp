@@ -35,7 +35,8 @@ import java.util.Objects;
 
 /** Serializes the connector-owned mutation model without reflective collection access. */
 @Internal
-public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeStreamMutation> {
+public final class BigtableChangeStreamMutationSerializer
+        extends TypeSerializer<BigtableChangeStreamMutation> {
 
     private static final long serialVersionUID = 1L;
     private static final ThreadLocal<byte[]> COPY_BUFFER =
@@ -57,22 +58,23 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
     }
 
     @Override
-    public TypeSerializer<ChangeStreamMutation> duplicate() {
+    public TypeSerializer<BigtableChangeStreamMutation> duplicate() {
         return this;
     }
 
     @Override
-    public ChangeStreamMutation createInstance() {
+    public BigtableChangeStreamMutation createInstance() {
         return null;
     }
 
     @Override
-    public ChangeStreamMutation copy(ChangeStreamMutation from) {
+    public BigtableChangeStreamMutation copy(BigtableChangeStreamMutation from) {
         return from;
     }
 
     @Override
-    public ChangeStreamMutation copy(ChangeStreamMutation from, ChangeStreamMutation reuse) {
+    public BigtableChangeStreamMutation copy(
+            BigtableChangeStreamMutation from, BigtableChangeStreamMutation reuse) {
         return from;
     }
 
@@ -82,7 +84,8 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
     }
 
     @Override
-    public void serialize(ChangeStreamMutation record, DataOutputView target) throws IOException {
+    public void serialize(BigtableChangeStreamMutation record, DataOutputView target)
+            throws IOException {
         Objects.requireNonNull(record, "record");
         writeBytes(record.getRowKey(), target);
         writeMutationType(record.getType(), target);
@@ -92,15 +95,16 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
         writeString(record.getToken(), target);
         writeInstant(record.getEstimatedLowWatermarkTime(), target);
         target.writeInt(record.getEntries().size());
-        for (ChangeStreamMutation.Entry entry : record.getEntries()) {
+        for (BigtableChangeStreamMutation.Entry entry : record.getEntries()) {
             writeEntry(entry, target);
         }
     }
 
-    private static void writeEntry(ChangeStreamMutation.Entry entry, DataOutputView target)
+    private static void writeEntry(BigtableChangeStreamMutation.Entry entry, DataOutputView target)
             throws IOException {
-        if (entry instanceof ChangeStreamMutation.SetCellEntry) {
-            ChangeStreamMutation.SetCellEntry set = (ChangeStreamMutation.SetCellEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.SetCellEntry) {
+            BigtableChangeStreamMutation.SetCellEntry set =
+                    (BigtableChangeStreamMutation.SetCellEntry) entry;
             target.writeByte(SET_CELL);
             writeString(set.getFamilyName(), target);
             writeBytes(set.getQualifier(), target);
@@ -108,22 +112,23 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
             writeBytes(set.getValue(), target);
             return;
         }
-        if (entry instanceof ChangeStreamMutation.DeleteCellsEntry) {
-            ChangeStreamMutation.DeleteCellsEntry delete =
-                    (ChangeStreamMutation.DeleteCellsEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.DeleteCellsEntry) {
+            BigtableChangeStreamMutation.DeleteCellsEntry delete =
+                    (BigtableChangeStreamMutation.DeleteCellsEntry) entry;
             target.writeByte(DELETE_CELLS);
             writeString(delete.getFamilyName(), target);
             writeBytes(delete.getQualifier(), target);
             writeRange(delete.getTimestampRange(), target);
             return;
         }
-        if (entry instanceof ChangeStreamMutation.DeleteFamilyEntry) {
+        if (entry instanceof BigtableChangeStreamMutation.DeleteFamilyEntry) {
             target.writeByte(DELETE_FAMILY);
             writeString(entry.getFamilyName(), target);
             return;
         }
-        if (entry instanceof ChangeStreamMutation.AddToCellEntry) {
-            ChangeStreamMutation.AddToCellEntry add = (ChangeStreamMutation.AddToCellEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.AddToCellEntry) {
+            BigtableChangeStreamMutation.AddToCellEntry add =
+                    (BigtableChangeStreamMutation.AddToCellEntry) entry;
             target.writeByte(ADD_TO_CELL);
             writeString(add.getFamilyName(), target);
             writeValue(add.getQualifier(), target);
@@ -131,9 +136,9 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
             writeValue(add.getInput(), target);
             return;
         }
-        if (entry instanceof ChangeStreamMutation.MergeToCellEntry) {
-            ChangeStreamMutation.MergeToCellEntry merge =
-                    (ChangeStreamMutation.MergeToCellEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.MergeToCellEntry) {
+            BigtableChangeStreamMutation.MergeToCellEntry merge =
+                    (BigtableChangeStreamMutation.MergeToCellEntry) entry;
             target.writeByte(MERGE_TO_CELL);
             writeString(merge.getFamilyName(), target);
             writeValue(merge.getQualifier(), target);
@@ -146,7 +151,8 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
     }
 
     private static void writeMutationType(
-            ChangeStreamMutation.MutationType type, DataOutputView target) throws IOException {
+            BigtableChangeStreamMutation.MutationType type, DataOutputView target)
+            throws IOException {
         switch (type) {
             case USER:
                 target.writeByte(1);
@@ -159,34 +165,36 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
         }
     }
 
-    private static void writeValue(ChangeStreamMutation.Value value, DataOutputView target)
+    private static void writeValue(BigtableChangeStreamMutation.Value value, DataOutputView target)
             throws IOException {
-        if (value instanceof ChangeStreamMutation.RawValue) {
+        if (value instanceof BigtableChangeStreamMutation.RawValue) {
             target.writeByte(RAW_VALUE);
-            writeBytes(((ChangeStreamMutation.RawValue) value).getValue(), target);
+            writeBytes(((BigtableChangeStreamMutation.RawValue) value).getValue(), target);
             return;
         }
-        if (value instanceof ChangeStreamMutation.RawTimestamp) {
+        if (value instanceof BigtableChangeStreamMutation.RawTimestamp) {
             target.writeByte(RAW_TIMESTAMP);
-            target.writeLong(((ChangeStreamMutation.RawTimestamp) value).getValue());
+            target.writeLong(((BigtableChangeStreamMutation.RawTimestamp) value).getValue());
             return;
         }
-        if (value instanceof ChangeStreamMutation.Int64Value) {
+        if (value instanceof BigtableChangeStreamMutation.Int64Value) {
             target.writeByte(INT64);
-            target.writeLong(((ChangeStreamMutation.Int64Value) value).getValue());
+            target.writeLong(((BigtableChangeStreamMutation.Int64Value) value).getValue());
             return;
         }
         throw new IOException(
                 "Unsupported Bigtable Change Streams value type: " + value.getClass().getName());
     }
 
-    private static void writeRange(ChangeStreamMutation.TimestampRange range, DataOutputView target)
+    private static void writeRange(
+            BigtableChangeStreamMutation.TimestampRange range, DataOutputView target)
             throws IOException {
         writeBound(range.getStart(), target);
         writeBound(range.getEnd(), target);
     }
 
-    private static void writeBound(ChangeStreamMutation.TimestampBound bound, DataOutputView target)
+    private static void writeBound(
+            BigtableChangeStreamMutation.TimestampBound bound, DataOutputView target)
             throws IOException {
         switch (bound.getType()) {
             case UNBOUNDED:
@@ -206,14 +214,14 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
     }
 
     @Override
-    public ChangeStreamMutation deserialize(DataInputView source) throws IOException {
+    public BigtableChangeStreamMutation deserialize(DataInputView source) throws IOException {
         ByteString rowKey = readBytes(source);
         int mutationType = source.readUnsignedByte();
-        ChangeStreamMutation.MutationType type;
+        BigtableChangeStreamMutation.MutationType type;
         if (mutationType == 1) {
-            type = ChangeStreamMutation.MutationType.USER;
+            type = BigtableChangeStreamMutation.MutationType.USER;
         } else if (mutationType == 2) {
-            type = ChangeStreamMutation.MutationType.GARBAGE_COLLECTION;
+            type = BigtableChangeStreamMutation.MutationType.GARBAGE_COLLECTION;
         } else {
             throw new IOException("Unknown Bigtable Change Streams mutation type: " + mutationType);
         }
@@ -223,11 +231,11 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
         String token = readString(source);
         Instant estimatedLowWatermarkTime = readInstant(source);
         int count = readCount(source, "entry");
-        List<ChangeStreamMutation.Entry> entries = new ArrayList<>(count);
+        List<BigtableChangeStreamMutation.Entry> entries = new ArrayList<>(count);
         for (int index = 0; index < count; index++) {
             entries.add(readEntry(source));
         }
-        return new ChangeStreamMutation(
+        return new BigtableChangeStreamMutation(
                 rowKey,
                 type,
                 sourceClusterId,
@@ -238,66 +246,69 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
                 entries);
     }
 
-    private static ChangeStreamMutation.Entry readEntry(DataInputView source) throws IOException {
+    private static BigtableChangeStreamMutation.Entry readEntry(DataInputView source)
+            throws IOException {
         int tag = source.readUnsignedByte();
         String family = readString(source);
         switch (tag) {
             case SET_CELL:
-                return new ChangeStreamMutation.SetCellEntry(
+                return new BigtableChangeStreamMutation.SetCellEntry(
                         family, readBytes(source), source.readLong(), readBytes(source));
             case DELETE_CELLS:
-                return new ChangeStreamMutation.DeleteCellsEntry(
+                return new BigtableChangeStreamMutation.DeleteCellsEntry(
                         family, readBytes(source), readRange(source));
             case DELETE_FAMILY:
-                return new ChangeStreamMutation.DeleteFamilyEntry(family);
+                return new BigtableChangeStreamMutation.DeleteFamilyEntry(family);
             case ADD_TO_CELL:
-                return new ChangeStreamMutation.AddToCellEntry(
+                return new BigtableChangeStreamMutation.AddToCellEntry(
                         family, readValue(source), readValue(source), readValue(source));
             case MERGE_TO_CELL:
-                return new ChangeStreamMutation.MergeToCellEntry(
+                return new BigtableChangeStreamMutation.MergeToCellEntry(
                         family, readValue(source), readValue(source), readValue(source));
             default:
                 throw new IOException("Unknown Bigtable Change Streams entry tag: " + tag);
         }
     }
 
-    private static ChangeStreamMutation.Value readValue(DataInputView source) throws IOException {
+    private static BigtableChangeStreamMutation.Value readValue(DataInputView source)
+            throws IOException {
         int tag = source.readUnsignedByte();
         switch (tag) {
             case RAW_VALUE:
-                return new ChangeStreamMutation.RawValue(readBytes(source));
+                return new BigtableChangeStreamMutation.RawValue(readBytes(source));
             case RAW_TIMESTAMP:
-                return new ChangeStreamMutation.RawTimestamp(source.readLong());
+                return new BigtableChangeStreamMutation.RawTimestamp(source.readLong());
             case INT64:
-                return new ChangeStreamMutation.Int64Value(source.readLong());
+                return new BigtableChangeStreamMutation.Int64Value(source.readLong());
             default:
                 throw new IOException("Unknown Bigtable Change Streams value tag: " + tag);
         }
     }
 
-    private static ChangeStreamMutation.TimestampRange readRange(DataInputView source)
+    private static BigtableChangeStreamMutation.TimestampRange readRange(DataInputView source)
             throws IOException {
-        return new ChangeStreamMutation.TimestampRange(readBound(source), readBound(source));
+        return new BigtableChangeStreamMutation.TimestampRange(
+                readBound(source), readBound(source));
     }
 
-    private static ChangeStreamMutation.TimestampBound readBound(DataInputView source)
+    private static BigtableChangeStreamMutation.TimestampBound readBound(DataInputView source)
             throws IOException {
         int tag = source.readUnsignedByte();
         switch (tag) {
             case 0:
-                return ChangeStreamMutation.TimestampBound.unbounded();
+                return BigtableChangeStreamMutation.TimestampBound.unbounded();
             case 1:
-                return ChangeStreamMutation.TimestampBound.open(source.readLong());
+                return BigtableChangeStreamMutation.TimestampBound.open(source.readLong());
             case 2:
-                return ChangeStreamMutation.TimestampBound.closed(source.readLong());
+                return BigtableChangeStreamMutation.TimestampBound.closed(source.readLong());
             default:
                 throw new IOException("Unknown Bigtable timestamp-bound tag: " + tag);
         }
     }
 
     @Override
-    public ChangeStreamMutation deserialize(ChangeStreamMutation reuse, DataInputView source)
-            throws IOException {
+    public BigtableChangeStreamMutation deserialize(
+            BigtableChangeStreamMutation reuse, DataInputView source) throws IOException {
         return deserialize(source);
     }
 
@@ -391,18 +402,18 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
     }
 
     @Override
-    public TypeSerializerSnapshot<ChangeStreamMutation> snapshotConfiguration() {
+    public TypeSerializerSnapshot<BigtableChangeStreamMutation> snapshotConfiguration() {
         return new Snapshot();
     }
 
     @Override
     public boolean equals(Object other) {
-        return other instanceof ChangeStreamMutationSerializer;
+        return other instanceof BigtableChangeStreamMutationSerializer;
     }
 
     @Override
     public int hashCode() {
-        return ChangeStreamMutationSerializer.class.hashCode();
+        return BigtableChangeStreamMutationSerializer.class.hashCode();
     }
 
     private static void writeString(String value, DataOutputView target) throws IOException {
@@ -481,7 +492,8 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
     }
 
     /** Snapshot for the connector-owned field format. */
-    public static final class Snapshot implements TypeSerializerSnapshot<ChangeStreamMutation> {
+    public static final class Snapshot
+            implements TypeSerializerSnapshot<BigtableChangeStreamMutation> {
         private static final int VERSION = 1;
 
         @Override
@@ -497,7 +509,7 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
                 throws IOException {
             if (readVersion != VERSION) {
                 throw new IOException(
-                        "Unsupported ChangeStreamMutation serializer snapshot version "
+                        "Unsupported BigtableChangeStreamMutation serializer snapshot version "
                                 + readVersion
                                 + "; this connector reads version "
                                 + VERSION
@@ -506,13 +518,15 @@ public final class ChangeStreamMutationSerializer extends TypeSerializer<ChangeS
         }
 
         @Override
-        public TypeSerializer<ChangeStreamMutation> restoreSerializer() {
-            return new ChangeStreamMutationSerializer();
+        public TypeSerializer<BigtableChangeStreamMutation> restoreSerializer() {
+            return new BigtableChangeStreamMutationSerializer();
         }
 
         @Override
-        public TypeSerializerSchemaCompatibility<ChangeStreamMutation> resolveSchemaCompatibility(
-                TypeSerializerSnapshot<ChangeStreamMutation> oldSerializerSnapshot) {
+        public TypeSerializerSchemaCompatibility<BigtableChangeStreamMutation>
+                resolveSchemaCompatibility(
+                        TypeSerializerSnapshot<BigtableChangeStreamMutation>
+                                oldSerializerSnapshot) {
             return oldSerializerSnapshot instanceof Snapshot
                     ? TypeSerializerSchemaCompatibility.compatibleAsIs()
                     : TypeSerializerSchemaCompatibility.incompatible();

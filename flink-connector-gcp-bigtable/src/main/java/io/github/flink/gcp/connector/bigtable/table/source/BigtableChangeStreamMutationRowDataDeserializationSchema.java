@@ -24,28 +24,29 @@ import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 
 import java.io.IOException;
 
 /** Delegates mutation conversion while retaining the planner-produced type information. */
 @Internal
-final class ChangeStreamMutationRowDataDeserializationSchema
+final class BigtableChangeStreamMutationRowDataDeserializationSchema
         implements BigtableChangeStreamDeserializationSchema<RowData> {
 
     private static final long serialVersionUID = 1L;
 
-    private final ChangeStreamMutationToRowDataConverter converter =
-            new ChangeStreamMutationToRowDataConverter();
+    private final BigtableChangeStreamMutationToRowDataConverter converter =
+            new BigtableChangeStreamMutationToRowDataConverter();
     private final ChangeStreamReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedType;
 
-    ChangeStreamMutationRowDataDeserializationSchema(TypeInformation<RowData> producedType) {
+    BigtableChangeStreamMutationRowDataDeserializationSchema(
+            TypeInformation<RowData> producedType) {
         this(new ChangeStreamReadableMetadata[0], producedType);
     }
 
-    ChangeStreamMutationRowDataDeserializationSchema(
+    BigtableChangeStreamMutationRowDataDeserializationSchema(
             ChangeStreamReadableMetadata[] metadata, TypeInformation<RowData> producedType) {
         this.metadata = Preconditions.checkNotNull(metadata, "metadata must not be null").clone();
         this.producedType =
@@ -53,7 +54,7 @@ final class ChangeStreamMutationRowDataDeserializationSchema
     }
 
     @Override
-    public void deserialize(ChangeStreamMutation mutation, Collector<RowData> out)
+    public void deserialize(BigtableChangeStreamMutation mutation, Collector<RowData> out)
             throws IOException {
         RowData physical = converter.convert(mutation);
         if (metadata.length == 0) {

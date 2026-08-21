@@ -21,7 +21,7 @@ import org.apache.flink.table.data.GenericArrayData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.StringData;
 
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -30,7 +30,7 @@ import java.util.List;
 
 /** Converts one connector-owned Change Streams mutation to the generic table envelope. */
 @Internal
-final class ChangeStreamMutationToRowDataConverter implements Serializable {
+final class BigtableChangeStreamMutationToRowDataConverter implements Serializable {
 
     private static final long serialVersionUID = 1L;
     private static final StringData SET_CELL = stringData("SET_CELL");
@@ -45,8 +45,8 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
     private static final StringData CLOSED = stringData("CLOSED");
     private static final StringData UNBOUNDED = stringData("UNBOUNDED");
 
-    GenericRowData convert(ChangeStreamMutation mutation) throws IOException {
-        List<ChangeStreamMutation.Entry> entries = mutation.getEntries();
+    GenericRowData convert(BigtableChangeStreamMutation mutation) throws IOException {
+        List<BigtableChangeStreamMutation.Entry> entries = mutation.getEntries();
         Object[] converted = new Object[entries.size()];
         for (int index = 0; index < entries.size(); index++) {
             converted[index] = convertEntry(index, entries.get(index));
@@ -59,10 +59,11 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
         return StringData.fromBytes(value.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static GenericRowData convertEntry(int index, ChangeStreamMutation.Entry entry)
+    private static GenericRowData convertEntry(int index, BigtableChangeStreamMutation.Entry entry)
             throws IOException {
-        if (entry instanceof ChangeStreamMutation.SetCellEntry) {
-            ChangeStreamMutation.SetCellEntry set = (ChangeStreamMutation.SetCellEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.SetCellEntry) {
+            BigtableChangeStreamMutation.SetCellEntry set =
+                    (BigtableChangeStreamMutation.SetCellEntry) entry;
             return entry(
                     index,
                     SET_CELL,
@@ -72,9 +73,9 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                     rawValue(set.getValue().toByteArray()),
                     null);
         }
-        if (entry instanceof ChangeStreamMutation.DeleteCellsEntry) {
-            ChangeStreamMutation.DeleteCellsEntry delete =
-                    (ChangeStreamMutation.DeleteCellsEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.DeleteCellsEntry) {
+            BigtableChangeStreamMutation.DeleteCellsEntry delete =
+                    (BigtableChangeStreamMutation.DeleteCellsEntry) entry;
             return entry(
                     index,
                     DELETE_CELLS,
@@ -84,13 +85,14 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                     null,
                     deleteRange(delete.getTimestampRange()));
         }
-        if (entry instanceof ChangeStreamMutation.DeleteFamilyEntry) {
-            ChangeStreamMutation.DeleteFamilyEntry delete =
-                    (ChangeStreamMutation.DeleteFamilyEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.DeleteFamilyEntry) {
+            BigtableChangeStreamMutation.DeleteFamilyEntry delete =
+                    (BigtableChangeStreamMutation.DeleteFamilyEntry) entry;
             return entry(index, DELETE_FAMILY, delete.getFamilyName(), null, null, null, null);
         }
-        if (entry instanceof ChangeStreamMutation.AddToCellEntry) {
-            ChangeStreamMutation.AddToCellEntry add = (ChangeStreamMutation.AddToCellEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.AddToCellEntry) {
+            BigtableChangeStreamMutation.AddToCellEntry add =
+                    (BigtableChangeStreamMutation.AddToCellEntry) entry;
             return entry(
                     index,
                     ADD_TO_CELL,
@@ -100,9 +102,9 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                     value(add.getInput()),
                     null);
         }
-        if (entry instanceof ChangeStreamMutation.MergeToCellEntry) {
-            ChangeStreamMutation.MergeToCellEntry merge =
-                    (ChangeStreamMutation.MergeToCellEntry) entry;
+        if (entry instanceof BigtableChangeStreamMutation.MergeToCellEntry) {
+            BigtableChangeStreamMutation.MergeToCellEntry merge =
+                    (BigtableChangeStreamMutation.MergeToCellEntry) entry;
             return entry(
                     index,
                     MERGE_TO_CELL,
@@ -136,16 +138,18 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                 deleteRange);
     }
 
-    private static GenericRowData value(ChangeStreamMutation.Value value) throws IOException {
-        if (value instanceof ChangeStreamMutation.RawValue) {
-            return rawValue(((ChangeStreamMutation.RawValue) value).getValue().toByteArray());
+    private static GenericRowData value(BigtableChangeStreamMutation.Value value)
+            throws IOException {
+        if (value instanceof BigtableChangeStreamMutation.RawValue) {
+            return rawValue(
+                    ((BigtableChangeStreamMutation.RawValue) value).getValue().toByteArray());
         }
-        if (value instanceof ChangeStreamMutation.RawTimestamp) {
-            return rawTimestamp(((ChangeStreamMutation.RawTimestamp) value).getValue());
+        if (value instanceof BigtableChangeStreamMutation.RawTimestamp) {
+            return rawTimestamp(((BigtableChangeStreamMutation.RawTimestamp) value).getValue());
         }
-        if (value instanceof ChangeStreamMutation.Int64Value) {
+        if (value instanceof BigtableChangeStreamMutation.Int64Value) {
             return GenericRowData.of(
-                    INT64, null, ((ChangeStreamMutation.Int64Value) value).getValue());
+                    INT64, null, ((BigtableChangeStreamMutation.Int64Value) value).getValue());
         }
         throw new IOException(
                 "Unsupported Bigtable Change Streams value type: "
@@ -161,7 +165,7 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
         return GenericRowData.of(RAW_TIMESTAMP, null, micros);
     }
 
-    private static GenericRowData deleteRange(ChangeStreamMutation.TimestampRange range) {
+    private static GenericRowData deleteRange(BigtableChangeStreamMutation.TimestampRange range) {
         return GenericRowData.of(
                 bound(range.getStart().getType()),
                 range.getStart().getTimestampMicros().isPresent()
@@ -173,7 +177,7 @@ final class ChangeStreamMutationToRowDataConverter implements Serializable {
                         : null);
     }
 
-    private static StringData bound(ChangeStreamMutation.BoundType bound) {
+    private static StringData bound(BigtableChangeStreamMutation.BoundType bound) {
         switch (bound) {
             case OPEN:
                 return OPEN;

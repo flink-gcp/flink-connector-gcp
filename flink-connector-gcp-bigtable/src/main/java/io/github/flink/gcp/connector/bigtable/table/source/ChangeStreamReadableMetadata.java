@@ -22,7 +22,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
 
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -34,7 +34,7 @@ enum ChangeStreamReadableMetadata {
     /** Whether the service produced a user or garbage-collection mutation. */
     MUTATION_TYPE("mutation-type", DataTypes.STRING().notNull()) {
         @Override
-        Object read(ChangeStreamMutation mutation) {
+        Object read(BigtableChangeStreamMutation mutation) {
             return StringData.fromString(mutation.getType().name());
         }
     },
@@ -42,7 +42,7 @@ enum ChangeStreamReadableMetadata {
     /** The originating cluster, or {@code null} for a garbage-collection mutation. */
     SOURCE_CLUSTER_ID("source-cluster-id", DataTypes.STRING()) {
         @Override
-        Object read(ChangeStreamMutation mutation) {
+        Object read(BigtableChangeStreamMutation mutation) {
             return mutation.getSourceClusterId().isEmpty()
                     ? null
                     : StringData.fromString(mutation.getSourceClusterId());
@@ -52,7 +52,7 @@ enum ChangeStreamReadableMetadata {
     /** The service commit time, retaining its nanosecond precision. */
     COMMIT_TIMESTAMP("commit-timestamp", DataTypes.TIMESTAMP_LTZ(9).notNull()) {
         @Override
-        Object read(ChangeStreamMutation mutation) {
+        Object read(BigtableChangeStreamMutation mutation) {
             return TimestampData.fromInstant(mutation.getCommitTime());
         }
     },
@@ -60,7 +60,7 @@ enum ChangeStreamReadableMetadata {
     /** The service tie breaker for mutations committed at the same time. */
     TIE_BREAKER("tie-breaker", DataTypes.INT().notNull()) {
         @Override
-        Object read(ChangeStreamMutation mutation) {
+        Object read(BigtableChangeStreamMutation mutation) {
             return mutation.getTieBreaker();
         }
     },
@@ -68,7 +68,7 @@ enum ChangeStreamReadableMetadata {
     /** The partition's estimated low watermark at this mutation. */
     ESTIMATED_LOW_WATERMARK("estimated-low-watermark", DataTypes.TIMESTAMP_LTZ(9).notNull()) {
         @Override
-        Object read(ChangeStreamMutation mutation) {
+        Object read(BigtableChangeStreamMutation mutation) {
             return TimestampData.fromInstant(mutation.getEstimatedLowWatermarkTime());
         }
     };
@@ -102,5 +102,5 @@ enum ChangeStreamReadableMetadata {
     }
 
     /** Reads this field from a mutation using Flink's internal data structures. */
-    abstract Object read(ChangeStreamMutation mutation);
+    abstract Object read(BigtableChangeStreamMutation mutation);
 }

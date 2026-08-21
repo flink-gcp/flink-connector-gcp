@@ -30,11 +30,11 @@ import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
-import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.Test;
@@ -51,12 +51,15 @@ class BigtableChangeStreamSourceBuilderTest {
 
     @Test
     void requiresTableDeserializerAndAppProfile() {
-        assertThatThrownBy(() -> BigtableChangeStreamSource.<ChangeStreamMutation>builder().build())
+        assertThatThrownBy(
+                        () ->
+                                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
+                                        .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("table(...)");
         assertThatThrownBy(
                         () ->
-                                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+                                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                                         .table(TableDestination.of("p", "i", "t"))
                                         .build())
                 .hasMessageContaining("deserializer(...)");
@@ -64,14 +67,15 @@ class BigtableChangeStreamSourceBuilderTest {
 
     @Test
     void endTimeMakesOnlyThatSourceBounded() {
-        BigtableChangeStreamSource<ChangeStreamMutation> continuous = minimal().build();
-        BigtableChangeStreamSource<ChangeStreamMutation> bounded =
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> continuous = minimal().build();
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> bounded =
                 minimal().endTime(Instant.parse("2026-08-11T00:00:00Z")).build();
 
         assertThat(continuous.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
         assertThat(bounded.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
         assertThat(bounded.getProducedType())
-                .isEqualTo(new ChangeStreamMutationDeserializationSchema().getProducedType());
+                .isEqualTo(
+                        new BigtableChangeStreamMutationDeserializationSchema().getProducedType());
     }
 
     @Test
@@ -83,7 +87,7 @@ class BigtableChangeStreamSourceBuilderTest {
                         ByteStringRange.unbounded(),
                         Collections.emptyList(),
                         Instant.parse("2026-08-01T00:00:00Z"));
-        BigtableChangeStreamSource<ChangeStreamMutation> source =
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
                 minimal()
                         .opener(new NoOpChangeStreamOpener())
                         .restoreResolver((split, ignored) -> split.restartAt(fallback))
@@ -92,7 +96,7 @@ class BigtableChangeStreamSourceBuilderTest {
                 new FakeSourceReaderContext(
                         InternalSourceReaderMetricGroup.mock(
                                 new MetricListener().getMetricGroup()));
-        SourceReader<ChangeStreamMutation, ChangeStreamPartitionSplit> reader =
+        SourceReader<BigtableChangeStreamMutation, ChangeStreamPartitionSplit> reader =
                 source.createReader(context);
 
         reader.addSplits(Collections.singletonList(restored));
@@ -109,7 +113,7 @@ class BigtableChangeStreamSourceBuilderTest {
 
     @Test
     void sourceConfigurationSurvivesJobSubmissionSerialization() throws Exception {
-        BigtableChangeStreamSource<ChangeStreamMutation> source =
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
                 minimal()
                         .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
                         .maxConcurrentStreamsPerSubtask(3)
@@ -143,10 +147,10 @@ class BigtableChangeStreamSourceBuilderTest {
 
     @Test
     void changedFilterConfigurationDoesNotAlterRestoredSplitProgress() throws Exception {
-        BigtableChangeStreamSource<ChangeStreamMutation> oldSource =
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> oldSource =
                 minimal().familyIncludeList(Collections.singletonList("old")).build();
         CapturingChangeStreamOpener opener = new CapturingChangeStreamOpener();
-        BigtableChangeStreamSource<ChangeStreamMutation> newSource =
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> newSource =
                 minimal()
                         .familyIncludeList(Collections.singletonList("new"))
                         .opener(opener)
@@ -178,13 +182,14 @@ class BigtableChangeStreamSourceBuilderTest {
                 new FakeSourceReaderContext(
                         InternalSourceReaderMetricGroup.mock(
                                 new MetricListener().getMetricGroup()));
-        SourceReader<ChangeStreamMutation, ChangeStreamPartitionSplit> reader =
+        SourceReader<BigtableChangeStreamMutation, ChangeStreamPartitionSplit> reader =
                 newSource.createReader(context);
         try {
             reader.addSplits(Collections.singletonList(restored));
             reader.start();
             opener.deliver(mutation("old", "new"));
-            CollectingReaderOutput<ChangeStreamMutation> output = new CollectingReaderOutput<>();
+            CollectingReaderOutput<BigtableChangeStreamMutation> output =
+                    new CollectingReaderOutput<>();
 
             reader.pollNext(output);
 
@@ -194,8 +199,8 @@ class BigtableChangeStreamSourceBuilderTest {
                             delivered ->
                                     assertThat(delivered.getEntries())
                                             .containsExactly(
-                                                    new ChangeStreamMutation.DeleteFamilyEntry(
-                                                            "new")));
+                                                    new BigtableChangeStreamMutation
+                                                            .DeleteFamilyEntry("new")));
             assertThat(reader.snapshotState(1L))
                     .singleElement()
                     .satisfies(
@@ -229,13 +234,13 @@ class BigtableChangeStreamSourceBuilderTest {
     void rejectsNullOrBlankServiceAccountKeyFile() {
         assertThatThrownBy(
                         () ->
-                                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+                                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                                         .serviceAccountKeyFile(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("serviceAccountKeyFile must not be null");
         assertThatThrownBy(
                         () ->
-                                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+                                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                                         .serviceAccountKeyFile(" \t"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("serviceAccountKeyFile must not be blank");
@@ -270,11 +275,11 @@ class BigtableChangeStreamSourceBuilderTest {
                 .hasMessageContaining("must not both be set");
     }
 
-    private static BigtableChangeStreamSourceBuilder<ChangeStreamMutation> minimal() {
-        return BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+    private static BigtableChangeStreamSourceBuilder<BigtableChangeStreamMutation> minimal() {
+        return BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                 .table(TableDestination.of("p", "i", "t"))
                 .appProfileId("single-cluster")
-                .deserializer(new ChangeStreamMutationDeserializationSchema());
+                .deserializer(new BigtableChangeStreamMutationDeserializationSchema());
     }
 
     private static ChangeStreamRecord mutation(String firstFamily, String secondFamily) {

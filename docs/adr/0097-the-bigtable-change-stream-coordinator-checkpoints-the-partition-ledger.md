@@ -85,7 +85,7 @@ connector's general-purpose range copy normalizes an empty key to an unbounded m
 remains safe for internal range algebra and is deliberately not the SDK representation.
 
 The reader evaluates output filters against each complete SDK mutation and converts only retained
-entries into the connector-owned immutable `ChangeStreamMutation` before application
+entries into the connector-owned immutable `BigtableChangeStreamMutation` before application
 deserialization.
 The public model carries every mutation-level field and an ordered typed representation of the
 five entry kinds and three aggregate value kinds exposed by java-bigtable 2.80.0.

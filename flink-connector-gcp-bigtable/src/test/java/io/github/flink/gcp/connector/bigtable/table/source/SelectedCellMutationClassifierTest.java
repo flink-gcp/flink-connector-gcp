@@ -16,14 +16,15 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
 import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.cloud.bigtable.data.v2.models.Value;
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestChangeStreamMutations;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestBigtableChangeStreamMutations;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -42,14 +43,14 @@ class SelectedCellMutationClassifierTest {
 
     @Test
     void recognizesCanonicalColumnAndFamilyUpserts() throws Exception {
-        ChangeStreamMutation columnUpsert =
+        BigtableChangeStreamMutation columnUpsert =
                 mutation(
                         builder -> {
                             builder.deleteCells(
                                     FAMILY, QUALIFIER, Range.TimestampRange.unbounded());
                             set(builder, "one");
                         });
-        ChangeStreamMutation familyUpsert =
+        BigtableChangeStreamMutation familyUpsert =
                 mutation(
                         builder -> {
                             builder.deleteFamily(FAMILY);
@@ -64,13 +65,14 @@ class SelectedCellMutationClassifierTest {
 
     @Test
     void recognizesCanonicalDeletesAndIgnoresUnrelatedEntries() throws Exception {
-        ChangeStreamMutation columnDelete =
+        BigtableChangeStreamMutation columnDelete =
                 mutation(
                         builder ->
                                 builder.deleteCells(
                                         FAMILY, QUALIFIER, Range.TimestampRange.unbounded()));
-        ChangeStreamMutation familyDelete = mutation(builder -> builder.deleteFamily(FAMILY));
-        ChangeStreamMutation unrelated =
+        BigtableChangeStreamMutation familyDelete =
+                mutation(builder -> builder.deleteFamily(FAMILY));
+        BigtableChangeStreamMutation unrelated =
                 mutation(
                         builder -> {
                             builder.deleteFamily("other");
@@ -151,16 +153,17 @@ class SelectedCellMutationClassifierTest {
         builder.startGcMutation(
                 ByteString.copyFromUtf8("row-1"), Instant.parse("2026-08-13T00:00:00Z"), 0);
         builder.deleteCells(FAMILY, QUALIFIER, Range.TimestampRange.unbounded());
-        ChangeStreamMutation mutation =
-                TestChangeStreamMutations.convert(
-                        (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+        BigtableChangeStreamMutation mutation =
+                TestBigtableChangeStreamMutations.convert(
+                        (ChangeStreamMutation)
                                 builder.finishChangeStreamMutation(
                                         "token", Instant.parse("2026-08-12T23:59:00Z")));
 
         assertProtocolFailure(mutation, "garbage-collection mutation");
     }
 
-    private static void assertProtocolFailure(ChangeStreamMutation mutation, String detail) {
+    private static void assertProtocolFailure(
+            BigtableChangeStreamMutation mutation, String detail) {
         SelectedCellMutationClassifier classifier =
                 new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1");
         assertThatThrownBy(() -> classifier.classify(mutation))
@@ -168,7 +171,7 @@ class SelectedCellMutationClassifierTest {
                 .hasMessageContaining(detail);
     }
 
-    private static ChangeStreamMutation mutation(
+    private static BigtableChangeStreamMutation mutation(
             Consumer<ChangeStreamRecordBuilder<ChangeStreamRecord>> entries) {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
                 new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
@@ -178,8 +181,8 @@ class SelectedCellMutationClassifierTest {
                 Instant.parse("2026-08-13T00:00:00Z"),
                 0);
         entries.accept(builder);
-        return TestChangeStreamMutations.convert(
-                (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+        return TestBigtableChangeStreamMutations.convert(
+                (ChangeStreamMutation)
                         builder.finishChangeStreamMutation(
                                 "token", Instant.parse("2026-08-12T23:59:00Z")));
     }

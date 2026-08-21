@@ -23,13 +23,14 @@ import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.CloseStream;
 import com.google.cloud.bigtable.data.v2.models.Heartbeat;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitions;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
@@ -73,13 +74,13 @@ public final class BigtableChangeStreamRecordEmitter<T>
             SourceOutput<T> output,
             ChangeStreamPartitionSplitState state)
             throws Exception {
-        if (record instanceof com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation) {
-            com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation sdkMutation =
-                    (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation) record;
+        if (record instanceof ChangeStreamMutation) {
+            ChangeStreamMutation sdkMutation = (ChangeStreamMutation) record;
             long removedEntries = 0;
             if (mutationFilter.hasEntryFilters()) {
-                ChangeStreamMutationConverter.Result result =
-                        ChangeStreamMutationConverter.convertFiltered(sdkMutation, mutationFilter);
+                BigtableChangeStreamMutationConverter.Result result =
+                        BigtableChangeStreamMutationConverter.convertFiltered(
+                                sdkMutation, mutationFilter);
                 removedEntries = result.getRemovedEntries();
                 if (result.isSkipped()) {
                     metrics.skippedWithoutChange();
@@ -87,7 +88,7 @@ public final class BigtableChangeStreamRecordEmitter<T>
                     emitMutation(result.getMutation(), output);
                 }
             } else {
-                emitMutation(ChangeStreamMutationConverter.convert(sdkMutation), output);
+                emitMutation(BigtableChangeStreamMutationConverter.convert(sdkMutation), output);
             }
             state.advance(
                     ChangeStreamContinuationToken.create(
@@ -139,7 +140,7 @@ public final class BigtableChangeStreamRecordEmitter<T>
                 "Unsupported Bigtable change-stream record " + record + ".");
     }
 
-    private void emitMutation(ChangeStreamMutation mutation, SourceOutput<T> output)
+    private void emitMutation(BigtableChangeStreamMutation mutation, SourceOutput<T> output)
             throws Exception {
         long timestamp = mutation.getCommitTime().toEpochMilli();
         long emittedCount =
