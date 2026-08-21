@@ -82,6 +82,12 @@ Change Streams options are rejected in bounded mode.
 Selected-cell options and `value.format` are rejected in envelope mode.
 This prevents a valid-looking DDL from carrying options that no selected runtime consumes.
 
+**A Change Streams table is source-only, and the sink enforces it.**
+`scan.mode = change-stream` is rejected when the table is used as an `INSERT INTO` target, and a sink otherwise rejects the Change Streams options bounded mode rejects.
+Neither the mode nor those options reach the sink runtime at all, so without these rules a write plans successfully against the named table while discarding the Change Streams configuration.
+The sink's schema check refuses the shapes both published modes declare, but it names column shape and never the scan mode, so it is not this rule: it gives the wrong reason for the shapes it catches and admits any DDL of one atomic column and a `ROW<...>` family.
+The scan and lookup options a sink cannot act on stay accepted, because one table legitimately scans and writes — under separate application profiles, since a Data Boost profile reads and cannot write.
+
 ## Alternatives declined
 
 - **Emit row-level updates and deletes from arbitrary mutations.**

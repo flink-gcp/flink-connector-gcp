@@ -319,6 +319,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   It never claims row-level update or delete semantics without before and full after images.
   Reject a primary key, any physical schema change, an unknown future SDK entry/value subtype and
   every option owned by the bounded scan instead of widening or ignoring the contract.
+  **A Change Streams table is source-only**: reject `scan.mode = change-stream` on the sink path,
+  and reject the Change Streams options there too. Keep the scan and lookup options a sink cannot
+  act on accepted — one table legitimately scans and writes under separate application profiles.
 - **Selected-cell mode is stateless because the producer supplies the complete logical value.**
   Require exactly one physical primary key and at least one non-key field; decode the mutation row
   key with `CellValueCodec` and the non-key fields with insert-only `value.format`.

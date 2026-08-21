@@ -184,6 +184,9 @@ Set `scan.mode = 'change-stream'` to replace the bounded scan with an unbounded 
 The default remains `bounded`, so existing DDL keeps its snapshot behavior.
 Change-stream mode maps the declared `schema` and `table` to the exact dialect-aware native table name and silently advances past records for other watched tables.
 It does not support lookup joins, projection or filter pushdown, bounded-scan partition and timestamp options, or lookup options.
+A change-stream table is source-only.
+Its declared columns are the watched table's own, so an `INSERT INTO` naming one would otherwise write into the very table being watched; it is rejected when the statement is planned instead.
+A table written to may still carry the bounded-scan and lookup options it is also read with, but a `scan.change-stream.*` option on it is rejected rather than ignored.
 
 `scan.change-stream.changelog-mode` is required.
 `full` accepts only records captured with `NEW_ROW_AND_OLD_VALUES` and emits `INSERT`, adjacent `UPDATE_BEFORE` and `UPDATE_AFTER`, and full `DELETE` rows.
@@ -285,7 +288,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `schema.proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `schema.enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
-| `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits an unbounded CDC changelog |
+| `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits an unbounded CDC changelog and makes the table source-only, so writing to it is rejected |
 | `scan.change-stream.name` | **required in change-stream mode** | Change Stream whose generated read function supplies records |
 | `scan.change-stream.changelog-mode` | **required in change-stream mode** | `full` emits retract rows from `NEW_ROW_AND_OLD_VALUES`; `upsert` emits keyed upserts from `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` |
 | `scan.startup.mode` | `latest` | Fresh Change Streams start: `earliest`, `latest`, or `timestamp` |

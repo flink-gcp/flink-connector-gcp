@@ -253,7 +253,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table Change Streams CDC (`docs/adr/0105`)
 
 - `scan.mode` defaults to the independent bounded source. Change-stream mode implements only
-  `ScanTableSource`: no bounded projection or filter pushdown and no lookup provider.
+  `ScanTableSource`: no bounded projection or filter pushdown and no lookup provider. It is
+  **source-only** — reject it on the sink path, and reject the change-stream options there too,
+  because both directions build the physical schema through the same converter and a write would
+  otherwise land in the watched table (`docs/adr/0096`).
 - Match `DataChangeRecord.tableName` through `SpannerTableName`'s dialect-aware native API key.
   A record for another watched table emits nothing and still advances source progress; never use a
   regex to approximate named-schema or quoted-identifier identity.

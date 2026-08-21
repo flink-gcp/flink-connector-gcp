@@ -237,7 +237,9 @@ Set `scan.mode = change-stream` to read the table's mutation log through the Dat
 Streams source.
 The default remains `bounded`, so existing DDL keeps its current row-scan behavior.
 
-A Change Streams table is source-only.
+A Change Streams table is source-only: an `INSERT INTO` naming one is rejected when the statement is
+planned, rather than writing to the table as an ordinary sink and discarding the
+`scan.change-stream.*` options.
 Its physical envelope has exactly the `row_key` and `entries` columns; this example also selects
 all optional metadata as virtual columns:
 
@@ -297,7 +299,8 @@ The metadata columns expose scalar fields attached to the mutation:
 The declared column names are local to the DDL; `METADATA FROM` selects the stable connector key.
 Flink permits an explicitly castable declared type and applies the cast after the source, while the
 connector always emits the type in the table above.
-Marking the columns `VIRTUAL` keeps them out of a sink schema if the catalog table is reused.
+Marking the columns `VIRTUAL` keeps them out of the physical row, which is what the envelope schema
+check reads.
 
 | `kind` | `qualifier` | `timestamp` | `value` | `delete_range` |
 |---|---|---|---|---|
@@ -416,6 +419,8 @@ Row ranges, the HBase-compatible cell codec, lookup options, projection pushdown
 pushdown belong to the bounded source and are not Change Streams settings.
 The factory rejects those options in Change Streams mode and rejects Change Streams options in
 bounded mode.
+A sink is held to the same rule: a table written to may carry the scan and lookup options it also
+reads with, but a Change Streams option on it is rejected rather than ignored.
 
 An absent `scan.startup.mode` retains the DataStream builder's latest-position default.
 Choose `earliest` or `timestamp`; the timestamp mode also requires
@@ -618,7 +623,7 @@ builder.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter |
+| `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter. `change-stream` makes the table source-only, so writing to it is rejected |
 | `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
 | `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
 | `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with every range |

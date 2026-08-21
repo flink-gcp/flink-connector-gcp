@@ -65,9 +65,10 @@ import java.util.stream.Collectors;
  * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
  * are the checks whose message has to name <em>option keys</em> or <em>columns</em>, which a
  * builder's cannot — among them the shape of the DDL schema, the primary key, a scan bound the
- * client would silently widen, an option belonging to the source mode this DDL did not select, and
- * the credential keys that are mutually exclusive. A table-creation key set under a disposition
- * that creates nothing is rejected on the same grounds, by the option mapper this class calls.
+ * client would silently widen, an option belonging to the scan mode this DDL did not select, a
+ * Change Streams table used as a write target, and the credential keys that are mutually exclusive.
+ * A table-creation key set under a disposition that creates nothing is rejected on the same
+ * grounds, by the option mapper this class calls.
  *
  * <p>The identifier {@code bigtable} is also google/flink-connector-gcp's. A classpath carrying
  * both fails factory discovery loudly, which is the acceptable outcome: the natural name wins.
@@ -76,8 +77,11 @@ import java.util.stream.Collectors;
  * execution modes, and neither it nor a source has a rule that depends on the runtime mode or the
  * checkpoint interval. A source selects the bounded HBase-compatible row shape, the exact generic
  * Change Streams mutation envelope, or the constrained selected-cell upsert shape; the first is
- * bounded and the other two are unbounded unless an end timestamp bounds them. Options for the
- * other mode are rejected instead of ignored.
+ * bounded and the other two are unbounded unless an end timestamp bounds them. A source rejects the
+ * other mode's options instead of ignoring them, and a Change Streams table is source-only: an
+ * {@code INSERT INTO} over one is rejected rather than served as an ordinary upsert sink that
+ * discards those options, and a table being written to is refused them too. What a sink keeps are
+ * the scan and lookup options of a table it is also read with.
  */
 @Internal
 public class BigtableDynamicTableFactory
@@ -160,10 +164,16 @@ public class BigtableDynamicTableFactory
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        // Read the scan mode before validating, as the source does: a selected-cell DDL carries
+        // value.<format>.* keys this direction discovers no format for, so helper.validate() would
+        // reject those first and bury the reason the table cannot be written to at all.
+        ScanMode preliminaryScanMode = helper.getOptions().get(BigtableConnectorOptions.SCAN_MODE);
+        checkNotAChangeStreamTable(preliminaryScanMode);
         helper.validate();
 
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
+        checkSinkHasNoChangeStreamOptions(context);
         DataType physicalDataType = context.getPhysicalRowDataType();
         BigtableTableSchema schema =
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
@@ -416,6 +426,45 @@ public class BigtableDynamicTableFactory
         if (value.isBlank()) {
             throw new ValidationException(
                     String.format("Option '%s' must not be blank.", option.key()));
+        }
+    }
+
+    /**
+     * Rejects a Change Streams table used as an {@code INSERT INTO} target.
+     *
+     * <p>Without this the sink builds over the named table and discards the DDL's Change Streams
+     * options. A schema check refuses the shapes both published modes use, but for the wrong
+     * reason: {@link BigtableTableSchema#of(RowType)} names column shape and never the scan mode.
+     * Any DDL it does admit — one atomic column and a {@code ROW<...>} family — builds a working
+     * sink.
+     */
+    private static void checkNotAChangeStreamTable(ScanMode scanMode) {
+        if (scanMode != ScanMode.CHANGE_STREAM) {
+            return;
+        }
+        throw new ValidationException(
+                String.format(
+                        "A 'bigtable' table with '%s' = '%s' is source-only and cannot be written"
+                                + " to, because Change Streams is a mutation log rather than a"
+                                + " table. Remove the option, or write to a table declared without"
+                                + " it.",
+                        BigtableConnectorOptions.SCAN_MODE.key(), ScanMode.CHANGE_STREAM));
+    }
+
+    /**
+     * Rejects the Change Streams options on a table being written to. Its own sentence rather than
+     * {@link #validateSourceModeOptions}'s, whose remedy — select the matching scan mode — is a
+     * dead end here, because selecting it is what {@link #checkNotAChangeStreamTable} refuses.
+     */
+    private static void checkSinkHasNoChangeStreamOptions(Context context) {
+        List<String> present = presentOptionKeys(context, changeStreamSourceOptions());
+        if (!present.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Options %s are not valid on a 'bigtable' table that is written to:"
+                                    + " they configure the Change Streams source, and a Change"
+                                    + " Streams table is source-only. Remove them.",
+                            String.join(", ", present)));
         }
     }
 

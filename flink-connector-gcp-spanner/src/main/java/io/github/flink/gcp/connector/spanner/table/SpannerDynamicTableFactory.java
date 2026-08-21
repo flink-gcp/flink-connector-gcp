@@ -42,7 +42,15 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-/** Creates the {@code spanner} table source and sink from a SQL DDL. */
+/**
+ * Creates the {@code spanner} table source and sink from a SQL DDL.
+ *
+ * <p>A source rejects the options the other scan mode owns rather than ignoring them, and {@code
+ * scan.mode = change-stream} selects a source-only table: an {@code INSERT INTO} over one is
+ * refused instead of silently writing into the table being watched, as are the change-stream
+ * options on any table being written to. The bounded-scan and lookup options of a table that is
+ * also read stay accepted on a sink.
+ */
 @Internal
 public final class SpannerDynamicTableFactory
         implements DynamicTableSinkFactory, DynamicTableSourceFactory {
@@ -115,9 +123,13 @@ public final class SpannerDynamicTableFactory
     @Override
     public DynamicTableSink createDynamicTableSink(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
+        // Before validating, as Bigtable's sink does: a table that cannot be written to at all is
+        // the reason to report, not whichever secondary complaint validate() reaches first.
+        checkNotAChangeStreamTable(helper.getOptions());
         helper.validate();
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
+        rejectChangeStreamOptions(context.getCatalogTable().getOptions(), "a sink");
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
         SpannerTableName table = tableName(config);
@@ -170,18 +182,7 @@ public final class SpannerDynamicTableFactory
             SpannerTableSchemaConverter schema) {
         ScanMode mode = config.get(SpannerConnectorOptions.SCAN_MODE);
         if (mode == ScanMode.BOUNDED) {
-            rejectSupplied(
-                    supplied,
-                    "scan.mode=bounded",
-                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
-                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
-                    SpannerConnectorOptions.SCAN_STARTUP_MODE,
-                    SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
-                    SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
-                    SpannerConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
-                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
-                    SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
-                    SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK);
+            rejectChangeStreamOptions(supplied, "scan.mode=bounded");
             return;
         }
         rejectSupplied(
@@ -214,12 +215,42 @@ public final class SpannerDynamicTableFactory
         ChangeStreamStartPositionMapper.validate(config, supplied);
     }
 
+    /**
+     * Rejects a change-stream table written to. Nothing downstream catches it: a change-stream DDL
+     * declares the watched table's own columns and {@link #createSchema} builds it identically for
+     * both directions, so the write lands in the table being watched.
+     */
+    private static void checkNotAChangeStreamTable(ReadableConfig config) {
+        if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
+            throw new ValidationException(
+                    "scan.mode=change-stream selects a source-only table and cannot be written to;"
+                            + " write to a table declared without it.");
+        }
+    }
+
+    private static void rejectChangeStreamOptions(
+            Map<String, String> supplied, String incompatibleWith) {
+        rejectSupplied(
+                supplied,
+                incompatibleWith,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                SpannerConnectorOptions.SCAN_STARTUP_MODE,
+                SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
+                SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
+                SpannerConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
+                SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK);
+    }
+
     @SafeVarargs
     private static void rejectSupplied(
-            Map<String, String> supplied, String mode, ConfigOption<?>... options) {
+            Map<String, String> supplied, String incompatibleWith, ConfigOption<?>... options) {
         for (ConfigOption<?> option : options) {
             if (supplied.containsKey(option.key())) {
-                throw new ValidationException(option.key() + " is incompatible with " + mode + ".");
+                throw new ValidationException(
+                        option.key() + " is incompatible with " + incompatibleWith + ".");
             }
         }
     }

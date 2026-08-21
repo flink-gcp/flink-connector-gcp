@@ -65,6 +65,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -93,6 +94,26 @@ class BigtableDynamicTableFactoryTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my-instance", "my-table");
+
+    /**
+     * Every option the Change Streams mode owns, one legal value each. Bounded mode rejects all of
+     * them, and both directions are held to that: a sink can act on a Change Streams option no more
+     * than a bounded source can. Adding one to {@code changeStreamSourceOptions()} without adding
+     * it here leaves it untested rather than failing.
+     */
+    private static final List<Map.Entry<String, String>> CHANGE_STREAM_OWNED_OPTIONS =
+            Arrays.asList(
+                    Map.entry("scan.change-stream.changelog-mode", "envelope"),
+                    Map.entry("scan.startup.mode", "latest"),
+                    Map.entry("scan.startup.timestamp-millis", "1000"),
+                    Map.entry("scan.resume-fallback.mode", "earliest"),
+                    Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
+                    Map.entry("scan.end-timestamp-millis", "2000"),
+                    Map.entry("scan.max-concurrent-streams-per-subtask", "1"),
+                    Map.entry("scan.change-stream.selected-cell.family", "state"),
+                    Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
+                    Map.entry("scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
+                    Map.entry("value.format", "json"));
 
     private static final DataType CHANGE_STREAM_GENERIC_VALUE =
             DataTypes.ROW(
@@ -470,6 +491,94 @@ class BigtableDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(schema, minimalOptions()))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("no Bigtable cell encoding");
+    }
+
+    /**
+     * Every case carries the ordinary sink schema, not a Change Streams one. That is the point: the
+     * published Change Streams shapes are refused by {@code BigtableTableSchema.of} anyway, so only
+     * a DDL a sink could otherwise serve shows that the scan mode itself is what refuses it.
+     *
+     * <p>The bare case matters most. Both option helpers add a second Change Streams key, so
+     * without it a check keying off {@code scan.change-stream.changelog-mode} instead of the mode
+     * would pass every other case here.
+     */
+    @Test
+    void rejectsAChangeStreamTableAsASink() {
+        Map<String, String> bare = minimalOptions();
+        bare.put("scan.mode", "change-stream");
+        assertThatThrownBy(() -> sink(bare))
+                .as("scan.mode alone")
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("is source-only and cannot be written to");
+
+        assertThatThrownBy(() -> sink(minimalChangeStreamOptions()))
+                .as("envelope mode")
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("is source-only and cannot be written to");
+
+        assertThatThrownBy(() -> sink(minimalSelectedCellOptions()))
+                .as("selected-cell mode")
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("is source-only and cannot be written to");
+    }
+
+    /**
+     * The scan mode is read before {@code helper.validate()}, so the reason the table cannot be
+     * written to arrives ahead of the format sub-keys no sink discovers a format for. With the two
+     * reversed this fails on {@code Unsupported options} instead.
+     */
+    @Test
+    void theSourceOnlyRejectionOutrunsTheUnconsumedFormatKeys() {
+        Map<String, String> options = minimalSelectedCellOptions();
+        options.put("value.json.ignore-parse-errors", "true");
+
+        assertThatThrownBy(() -> sink(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("is source-only and cannot be written to");
+    }
+
+    /**
+     * The needle names the offending key <em>inside</em> this connector's own sentence. The key on
+     * its own would be satisfied by {@code FactoryUtil}'s dump of the whole {@code WITH} clause,
+     * and the sentence on its own would not catch a message that named the wrong key.
+     */
+    @Test
+    void rejectsChangeStreamOptionsOnASinkInsteadOfIgnoringThem() {
+        for (Map.Entry<String, String> incompatible : CHANGE_STREAM_OWNED_OPTIONS) {
+            Map<String, String> options = minimalOptions();
+            options.put(incompatible.getKey(), incompatible.getValue());
+            assertThatThrownBy(() -> sink(options))
+                    .as("with incompatible option '%s'", incompatible.getKey())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(
+                            "Options '"
+                                    + incompatible.getKey()
+                                    + "' are not valid on a 'bigtable' table that is written to");
+        }
+    }
+
+    /**
+     * The boundary the source-only rule deliberately does not cross. One table legitimately scans
+     * and writes — under different application profiles, because a Data Boost profile reads and
+     * cannot write — so the scan and lookup options a sink cannot act on stay accepted rather than
+     * being swept up with the Change Streams ones.
+     */
+    @Test
+    void aSinkStillAcceptsTheScanAndLookupOptionsOfATableThatIsAlsoRead() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.app-profile-id", "reader-profile");
+        options.put("sink.app-profile-id", "writer-profile");
+        options.put("scan.row-key-encoding", "UTF8");
+        options.put("scan.row-prefix", "user;web");
+        options.put("scan.row-range.start-closed", "a");
+        options.put("scan.row-range.end-open", "m");
+        options.put("scan.row-ranges", "[q,s)");
+        options.put("lookup.async", "true");
+        options.put("lookup.cache", "PARTIAL");
+        options.put("lookup.partial-cache.max-rows", "100");
+
+        assertThat(built(SCHEMA, options).getConfig().getAppProfileId())
+                .isEqualTo("writer-profile");
     }
 
     // ------------------------------------------------------------------------
@@ -953,20 +1062,7 @@ class BigtableDynamicTableFactoryTest {
 
     @Test
     void rejectsOptionsOwnedByTheOtherSourceMode() {
-        for (Map.Entry<String, String> incompatible :
-                Arrays.asList(
-                        Map.entry("scan.change-stream.changelog-mode", "envelope"),
-                        Map.entry("scan.startup.mode", "latest"),
-                        Map.entry("scan.startup.timestamp-millis", "1000"),
-                        Map.entry("scan.resume-fallback.mode", "earliest"),
-                        Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
-                        Map.entry("scan.end-timestamp-millis", "2000"),
-                        Map.entry("scan.max-concurrent-streams-per-subtask", "1"),
-                        Map.entry("scan.change-stream.selected-cell.family", "state"),
-                        Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
-                        Map.entry(
-                                "scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
-                        Map.entry("value.format", "json"))) {
+        for (Map.Entry<String, String> incompatible : CHANGE_STREAM_OWNED_OPTIONS) {
             Map<String, String> bounded = minimalOptions();
             bounded.put(incompatible.getKey(), incompatible.getValue());
             assertThatThrownBy(() -> source(bounded))
