@@ -356,7 +356,12 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("retry budget is exhausted")
-                .hasMessageContaining("2 attempt(s)");
+                .hasMessageContaining("2 attempt(s)")
+                // A transient repair creates no table and reconciles no schema, so it must report
+                // neither. The message is where a repair's accumulated state reaches an operator,
+                // which makes it also the place that pins the state the repair started from.
+                .hasMessageNotContaining("after a table-creation attempt")
+                .hasMessageNotContaining("after reconciling the table schema");
     }
 
     @Test

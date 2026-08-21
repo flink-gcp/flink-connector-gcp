@@ -59,6 +59,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -340,7 +341,10 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         // Two attempts, the recovery bound — not the twenty the schema schedule would have allowed.
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("2 attempt(s)");
+                .hasMessageContaining("2 attempt(s)")
+                // Both reach-points share one repair-or-fail step, so which of them gave up is
+                // carried by the message alone. This one is the append loop.
+                .hasMessageContaining("A re-append to BigQuery table " + DESTINATION + " failed");
     }
 
     @Test
@@ -396,7 +400,10 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
 
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("2 attempt(s)");
+                .hasMessageContaining("2 attempt(s)")
+                // The other half of the pair above: the same shared step, reached from the
+                // rebuildState catch, has to say that opening the stream is what failed.
+                .hasMessageContaining("Failed to open a BigQuery write stream to " + DESTINATION);
     }
 
     /** The masked {@code PERMISSION_DENIED} the real service answers for a table it cannot see. */
@@ -407,6 +414,66 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                                 "Permission 'TABLES_UPDATE_DATA' denied on resource"
                                         + " 'projects/p/datasets/d/tables/t' (or it may not"
                                         + " exist).")));
+    }
+
+    /**
+     * A failure both {@code isSchemaMismatch} and {@code findRowLevel} answer: a schema-mismatch
+     * {@code StorageError} over a row-detailed cause. Synthesized to make the repair drain's
+     * ordering observable, and no claim about which failures the service pairs this way — what it
+     * pins is which verdict the drain consults first when one failure answers both.
+     */
+    private static ApiFuture<AppendRowsResponse> rowDetailedSchemaMismatch() {
+        return ApiFutures.immediateFailedFuture(
+                Exceptions.toStorageException(
+                        com.google.rpc.Status.newBuilder()
+                                .setCode(Status.Code.INVALID_ARGUMENT.value())
+                                .setMessage("synthesized row-detailed schema mismatch")
+                                .addDetails(
+                                        Any.pack(
+                                                StorageError.newBuilder()
+                                                        .setCode(
+                                                                StorageError.StorageErrorCode
+                                                                        .SCHEMA_MISMATCH_EXTRA_FIELDS)
+                                                        .setEntity("t")
+                                                        .setErrorMessage("extra field: email")
+                                                        .build()))
+                                .build(),
+                        new Exceptions.AppendSerializtionError(
+                                Status.Code.INVALID_ARGUMENT.value(),
+                                "bad rows",
+                                "stream",
+                                Map.of(0, "no such field: email"))));
+    }
+
+    @Test
+    void aRowDetailedSchemaMismatchInsideARepairIsReconciledRatherThanRouted() throws Exception {
+        // The repair drain checks reconciliation before row-level routing, mirroring
+        // repairActionFor, and the order only matters for a failure answering both: routing first
+        // would hand the failure handler rows that a schema update saves. The drain expresses the
+        // order as a short-circuit, so this pins which operand is evaluated first, not the
+        // conditions themselves.
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        // Transient first, so the repair enters the drain having neither created the table nor
+        // reconciled the schema — the state in which the two verdicts compete.
+        factory.scriptedResults.add(
+                ApiFutures.immediateFailedFuture(new StatusRuntimeException(Status.UNAVAILABLE)));
+        factory.scriptedResults.add(rowDetailedSchemaMismatch());
+        RecordingTableAdmin admin = new RecordingTableAdmin(V1);
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        config(
+                                new EvolvingSerializer(V2),
+                                SchemaUpdateOptions.builder().allowNewFields().build()),
+                        factory,
+                        admin);
+
+        writer.write("aa", CONTEXT);
+
+        // Reconciled and re-appended: the default handler fails the job on a routed row, so a
+        // drain that routed first could not reach a clean flush.
+        assertThatCode(() -> writer.flush(false)).doesNotThrowAnyException();
+        assertThat(admin.updates).hasSize(1);
+        assertThat(factory.allAppendedRows()).containsExactly("aa", "aa", "aa");
     }
 
     // --- schema-mismatch append failures ---
@@ -550,6 +617,10 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                 .hasMessageContaining("after reconciling the table schema")
                 .hasMessageContaining("retry budget is exhausted");
         assertThat(admin.updates).hasSize(1);
+        // One reconciliation per repair, which is what the repair carries the flag for — and
+        // `updates` alone cannot show it, since a second reconciliation of an already-updated
+        // table reads the live schema and short-circuits without updating.
+        assertThat(admin.reads).isEqualTo(1);
     }
 
     @Test

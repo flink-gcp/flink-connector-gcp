@@ -93,6 +93,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The SDK watchdog timeout and `StreamWriterClosedException` are one client-side dead-writer
   verdict (`isWriterClosed`); repair in place, and do not add a bounded `future.get` — declined
   with reasons (`docs/adr/0017`).
+- One default-stream repair carries its state — created table, reconciled schema, schedule,
+  attempt — in the private `RepairState` value object `retryBatches` seeds and mutates; the
+  repair steps read and write it instead of threading flags. Keep it private to the writer: it is
+  a holder, not the shared retry executor `docs/adr/0039` evaluated and adopted nowhere.
 - **A missing table answers `PERMISSION_DENIED`, not `NOT_FOUND`** — `isMissingTable` takes both
   codes, match status codes never message text (the *permission* named tracks neither the RPC nor
   whether the table is absent: three observations, `TABLES_GET` once and `TABLES_UPDATE_DATA`

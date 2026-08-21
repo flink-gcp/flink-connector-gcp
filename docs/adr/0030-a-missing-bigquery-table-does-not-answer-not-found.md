@@ -145,7 +145,11 @@ true from then on — so without the bound a failure that used to be immediate a
 becomes a checkpoint timeout with no cause attached. The bound caps a missing-table verdict at
 the recovery schedule wherever the repair happens to be, at **both** `retryBatches` call sites —
 the `rebuildState` catch and the append loop; fixing only the first leaves the defect reachable,
-which is how it was found. It **also restores** the schema budget for a later mismatch: the
+which is how it was found. **Refined by [#827]** (2026-08-22): both reach-points now call one
+`repairOrFail`, so "both" is structural rather than a rule to remember. They differ only in the
+message they hand it, and each of those two messages is pinned by a test — which is the thing a
+shared step can otherwise get silently wrong. It **also restores** the schema budget for a later
+mismatch: the
 escalation fires only on the reconciliation, which runs once per repair, so a mismatch arriving
 *after* a missing-table verdict would otherwise wait out schema propagation on the one-minute
 budget and fail a repair that was progressing. Deliberately those two failures only — a
@@ -245,3 +249,4 @@ cannot influence.
 [#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
 [#318]: https://github.com/laughingman7743/flink-connector-gcp/issues/318
 [#382]: https://github.com/laughingman7743/flink-connector-gcp/issues/382
+[#827]: https://github.com/flink-gcp/flink-connector-gcp/issues/827
