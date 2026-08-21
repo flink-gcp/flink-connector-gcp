@@ -72,6 +72,25 @@ class SpannerDynamicTableFactoryTest {
                     Column.physical("id", DataTypes.BIGINT().notNull()),
                     Column.physical("name", DataTypes.STRING()));
 
+    /**
+     * Every option change-stream mode owns, one legal value each. Bounded mode rejects all of them,
+     * and so does a sink: neither can act on one, and accepting it silently is what lets a copied
+     * setting plan successfully while doing nothing. Adding one to {@code
+     * rejectChangeStreamOptions} without adding it here leaves it untested in <em>both</em>
+     * directions rather than failing.
+     */
+    private static final Map<String, String> CHANGE_STREAM_OWNED_OPTIONS =
+            Map.ofEntries(
+                    Map.entry("scan.change-stream.name", "people_changes"),
+                    Map.entry("scan.change-stream.changelog-mode", "full"),
+                    Map.entry("scan.startup.mode", "latest"),
+                    Map.entry("scan.startup.timestamp-millis", "1000"),
+                    Map.entry("scan.resume-fallback.mode", "earliest"),
+                    Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
+                    Map.entry("scan.change-stream.absent-retention-fallback", "3 d"),
+                    Map.entry("scan.change-stream.heartbeat-interval", "2 s"),
+                    Map.entry("scan.max-concurrent-queries-per-subtask", "4"));
+
     private static Map<String, String> options() {
         Map<String, String> options = new HashMap<>();
         options.put("connector", SpannerDynamicTableFactory.IDENTIFIER);
@@ -221,6 +240,73 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> source(SCHEMA, conflict))
                 .hasStackTraceContaining(
                         "service-account-key-file cannot be combined with emulator-endpoint");
+    }
+
+    /**
+     * A change-stream DDL declares the watched table's own columns, so nothing in the sink's schema
+     * would object. Both changelog modes are driven because upsert additionally declares a primary
+     * key, which makes it the shape an upsert sink is happiest with.
+     *
+     * <p>The bare case matters most: {@code changeStreamOptions} always adds {@code
+     * scan.change-stream.name}, so without it a check keying off that key instead of the mode would
+     * pass the other two.
+     */
+    @Test
+    void rejectsAChangeStreamTableAsASink() {
+        Map<String, String> bare = options();
+        bare.put("scan.mode", "change-stream");
+        assertThatThrownBy(() -> sink(SCHEMA, bare))
+                .as("scan.mode alone")
+                .hasStackTraceContaining(
+                        "scan.mode=change-stream selects a source-only table and cannot be written"
+                                + " to");
+
+        assertThatThrownBy(() -> sink(SCHEMA, changeStreamOptions("full")))
+                .as("full")
+                .hasStackTraceContaining(
+                        "scan.mode=change-stream selects a source-only table and cannot be written"
+                                + " to");
+
+        assertThatThrownBy(() -> sink(withPrimaryKey(), changeStreamOptions("upsert")))
+                .as("upsert")
+                .hasStackTraceContaining(
+                        "scan.mode=change-stream selects a source-only table and cannot be written"
+                                + " to");
+    }
+
+    @Test
+    void rejectsChangeStreamOptionsOnASinkInsteadOfIgnoringThem() {
+        for (Map.Entry<String, String> entry : CHANGE_STREAM_OWNED_OPTIONS.entrySet()) {
+            Map<String, String> options = options();
+            options.put(entry.getKey(), entry.getValue());
+            assertThatThrownBy(() -> sink(SCHEMA, options))
+                    .as(entry.getKey())
+                    .hasStackTraceContaining(entry.getKey() + " is incompatible with a sink");
+        }
+    }
+
+    /**
+     * The boundary the source-only rule does not cross: one table is legitimately scanned, looked
+     * up and written, so the bounded-scan and lookup options a sink cannot act on stay accepted
+     * rather than being swept up with the change-stream ones.
+     */
+    @Test
+    void aSinkStillAcceptsTheScanAndLookupOptionsOfATableThatIsAlsoRead() {
+        Map<String, String> options = options();
+        options.put("scan.index", "by_name");
+        options.put("scan.partition.max-partitions", "12");
+        options.put("scan.data-boost-enabled", "true");
+        options.put("scan.timestamp-bound.exact-staleness", "15 s");
+        options.put("lookup.async", "true");
+        options.put("lookup.cache", "PARTIAL");
+        options.put("lookup.partial-cache.max-rows", "100");
+
+        SpannerMutationsSink<?> sink = built(SCHEMA, options);
+
+        // Accepted, and left on the read side: none of the above reaches the write path.
+        assertThat(sink.getConfig().getDatabase())
+                .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
+        assertThat(sink.getConfig().getWriterOptions().getMaxBatchCells()).isEqualTo(5_000);
     }
 
     @Test
@@ -412,18 +498,7 @@ class SpannerDynamicTableFactoryTest {
 
     @Test
     void rejectsEveryOptionOwnedByTheOtherScanMode() {
-        Map<String, String> changeStreamOnly =
-                Map.ofEntries(
-                        Map.entry("scan.change-stream.name", "people_changes"),
-                        Map.entry("scan.change-stream.changelog-mode", "full"),
-                        Map.entry("scan.startup.mode", "latest"),
-                        Map.entry("scan.startup.timestamp-millis", "1000"),
-                        Map.entry("scan.resume-fallback.mode", "earliest"),
-                        Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
-                        Map.entry("scan.change-stream.absent-retention-fallback", "3 d"),
-                        Map.entry("scan.change-stream.heartbeat-interval", "2 s"),
-                        Map.entry("scan.max-concurrent-queries-per-subtask", "4"));
-        for (Map.Entry<String, String> entry : changeStreamOnly.entrySet()) {
+        for (Map.Entry<String, String> entry : CHANGE_STREAM_OWNED_OPTIONS.entrySet()) {
             Map<String, String> bounded = options();
             bounded.put(entry.getKey(), entry.getValue());
             assertThatThrownBy(() -> source(SCHEMA, bounded))

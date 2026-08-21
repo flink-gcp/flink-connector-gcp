@@ -33,6 +33,7 @@ A stream can watch several tables, and the schema descriptors carried by an olde
 **`scan.mode` selects one of two independent scan sources and defaults to `bounded`.**
 `change-stream` creates an unbounded `ScanTableSource` over `SpannerChangeStreamSource`; it does not advertise bounded projection or filter pushdown and cannot serve lookup joins.
 The factory rejects options owned by the other mode instead of accepting settings that would have no effect.
+The same rule makes the table source-only on the sink path, which [ADR-0096](0096-the-spanner-table-sink-maps-ddl-rows-to-native-mutations.md) records.
 
 **One DDL maps to one exact dialect-aware native table name.**
 GoogleSQL catalog names compare case-insensitively, while PostgreSQL preserves the distinction established by quoted identifiers.

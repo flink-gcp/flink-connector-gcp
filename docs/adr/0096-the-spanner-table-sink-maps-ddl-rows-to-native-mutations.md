@@ -78,6 +78,11 @@ Partition hints, Data Boost, RPC priority, snapshot bounds, and source paralleli
 The CDC converter validates each record's self-describing native types against this mapping and reuses the same native-value-to-`RowData` conversion.
 Its full and upsert changelog contracts, exact table matching, and atomic per-record conversion are settled separately in [ADR-0105](0105-the-spanner-table-change-stream-source-emits-full-or-keyed-changelogs.md).
 
+**That shared mapping is exactly why a change-stream table is source-only, and the sink enforces it.**
+Because both directions build the physical schema the same way, a change-stream DDL is a valid sink schema, and an `INSERT INTO` naming one would write into the table being watched while discarding every `scan.change-stream.*` option.
+`scan.mode = change-stream` is therefore rejected on the sink path, and a sink otherwise rejects the change-stream options bounded mode rejects, applying ADR-0105's rule that options owned by an unselected mode are refused rather than accepted with no effect.
+The bounded-scan and lookup options a sink cannot act on stay accepted: one table is legitimately scanned, looked up, and written.
+
 **Bounded scans push the exact key subset and can select a secondary index.**
 The source translates equality and ordered comparisons over consecutive key columns into native `KeySet` points and lexicographic ranges.
 A complete primary-key equality and a leading equality prefix, optionally followed by one range column, are exact, so Flink need not evaluate them again.
