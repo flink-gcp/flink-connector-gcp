@@ -47,9 +47,10 @@ import java.util.Set;
  *       handler.
  *   <li>{@link Kind#FATAL} — everything else. That includes {@code PERMISSION_DENIED} and {@code
  *       UNAUTHENTICATED}, which are configuration-shaped and would fail every record alike;
- *       failures the client's own per-entry retries gave up on ({@code UNAVAILABLE}, {@code
- *       DEADLINE_EXCEEDED}, {@code ABORTED}, {@code RESOURCE_EXHAUSTED}); and failures carrying no
- *       status at all. These fail the ongoing write or checkpoint.
+ *       failures the client's own per-entry retries gave up on ({@code UNAVAILABLE} and {@code
+ *       DEADLINE_EXCEEDED}, the two it retries) and ones naming an overloaded or contended service
+ *       that it never retries at all ({@code ABORTED}, {@code RESOURCE_EXHAUSTED}); and failures
+ *       carrying no status at all. These fail the ongoing write or checkpoint.
  * </ul>
  *
  * <p><b>Only a status that is unrecoverable by definition may be routed</b>, because the handler
@@ -106,7 +107,8 @@ final class BigtableErrorClassifier {
     /**
      * Statuses that mean the service, not the mutation; a chain carrying one is never data-shaped.
      * The first two are what the client itself retries {@code MutateRows} on, and the other two
-     * name an overloaded or contended service just as clearly.
+     * name an overloaded or contended service just as clearly. The table lookup holds a constant of
+     * the same name that omits {@code RESOURCE_EXHAUSTED}, deliberately and for a reason it states.
      */
     private static final Set<StatusCode.Code> TRANSIENT_CODES =
             EnumSet.of(

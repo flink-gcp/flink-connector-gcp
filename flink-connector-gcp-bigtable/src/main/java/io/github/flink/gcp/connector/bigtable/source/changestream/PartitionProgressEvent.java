@@ -27,6 +27,8 @@ import java.time.Instant;
 @Internal
 public final class PartitionProgressEvent implements SourceEvent {
 
+    private static final long serialVersionUID = 1L;
+
     private final String splitId;
     private final ChangeStreamContinuationToken continuationToken;
     private final Instant lowWatermark;

@@ -247,6 +247,28 @@ class BigtableChangeStreamSourceBuilderTest {
     }
 
     @Test
+    void rejectsABlankApplicationProfile() {
+        assertThatThrownBy(() -> minimal().appProfileId("  "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("appProfileId must not be blank");
+        // U+2028 is the value that tells the two idioms apart: Character.isWhitespace calls it
+        // whitespace, and String.trim() leaves it alone because it sits above U+0020. Only this
+        // assertion fails if appProfileId returns to trim().isEmpty(); the ASCII one above passes
+        // either way. serviceAccountKeyFile, checked here beside it, has always rejected it.
+        assertThatThrownBy(() -> minimal().appProfileId("\u2028"))
+                .as("U+2028 is blank to isBlank() but survives trim()")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("appProfileId must not be blank");
+        assertThatThrownBy(
+                        () ->
+                                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
+                                        .serviceAccountKeyFile("\u2028"))
+                .as("the sibling check this one was aligned with")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("serviceAccountKeyFile must not be blank");
+    }
+
+    @Test
     void rejectsInvalidNullAndMutuallyExclusiveFilterLists() {
         assertThatThrownBy(() -> minimal().familyIncludeList(null))
                 .isInstanceOf(NullPointerException.class)

@@ -80,8 +80,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
 
     public BigtableChangeStreamSourceBuilder<T> appProfileId(String appProfileId) {
         Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
-        Preconditions.checkArgument(
-                !appProfileId.trim().isEmpty(), "appProfileId must not be blank");
+        Preconditions.checkArgument(!appProfileId.isBlank(), "appProfileId must not be blank");
         this.appProfileId = appProfileId;
         return this;
     }

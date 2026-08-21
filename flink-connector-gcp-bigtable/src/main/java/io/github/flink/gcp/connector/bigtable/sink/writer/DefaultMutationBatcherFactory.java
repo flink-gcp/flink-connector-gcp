@@ -52,8 +52,10 @@ import java.util.function.Function;
  * BigtableDataClient}s, connected the way {@link BigtableDataClients} connects every data client of
  * this connector — that class owns the credential and emulator modes.
  *
- * <p>The client's own retry configuration is left alone: it retries {@code MutateRows} per entry
- * for the transient codes already, which is why this sink owns no retry loop.
+ * <p>The client's own retry configuration is left alone: it already retries {@code MutateRows} per
+ * entry for {@code UNAVAILABLE} and {@code DEADLINE_EXCEEDED}, which is why this sink owns no retry
+ * loop. The other two statuses the writer's classifier calls transient are retried by nobody; they
+ * fail the write rather than reaching the failure handler.
  *
  * <h2>One batcher per table, one client per instance</h2>
  *

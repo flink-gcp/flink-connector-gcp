@@ -593,8 +593,11 @@ or asynchronous function. Configure at least one of `lookup.partial-cache.max-ro
 `lookup.async = true` is rejected. Its scan may use a Data Boost profile. Scan prefix and range
 bounds apply consistently to point reads and FULL-cache contents.
 
-Point reads retry only `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `ABORTED`. `lookup.max-retries`
-counts retries after the first attempt and defaults to 3. Other failures surface immediately. The
+Point reads retry only `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `ABORTED`, which are the statuses the
+Bigtable client itself retries a point read on, so `lookup.max-retries` buys more attempts rather
+than a different retry policy. It counts retries after the first attempt and defaults to 3. Other
+failures surface immediately, `RESOURCE_EXHAUSTED` among them: Bigtable raises it for an exhausted
+admin API quota, node limit or node storage limit, and another point read clears none of those. The
 connector adds no lookup-specific metrics; Flink owns cache metrics and the Bigtable client owns
 RPC metrics.
 

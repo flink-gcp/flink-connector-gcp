@@ -27,6 +27,7 @@ import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -123,13 +124,19 @@ public final class BigtableChangeStreamDynamicSource
                 endTime,
                 maxConcurrentStreamsPerSubtask,
                 parallelism,
-                Objects.requireNonNull(selectedCellSchema).getPhysicalDataType(),
+                Preconditions.checkNotNull(
+                                selectedCellSchema, "selectedCellSchema must not be null")
+                        .getPhysicalDataType(),
                 ChangeStreamChangelogMode.SELECTED_CELL,
-                Objects.requireNonNull(decodingFormat),
+                Preconditions.checkNotNull(decodingFormat, "decodingFormat must not be null"),
                 selectedCellSchema,
-                Objects.requireNonNull(selectedCellFamily),
-                Objects.requireNonNull(selectedCellQualifier),
-                Objects.requireNonNull(selectedCellSourceClusterId));
+                Preconditions.checkNotNull(
+                        selectedCellFamily, "selectedCellFamily must not be null"),
+                Preconditions.checkNotNull(
+                        selectedCellQualifier, "selectedCellQualifier must not be null"),
+                Preconditions.checkNotNull(
+                        selectedCellSourceClusterId,
+                        "selectedCellSourceClusterId must not be null"));
     }
 
     private BigtableChangeStreamDynamicSource(
@@ -148,16 +155,19 @@ public final class BigtableChangeStreamDynamicSource
             @Nullable String selectedCellFamily,
             @Nullable ByteString selectedCellQualifier,
             @Nullable String selectedCellSourceClusterId) {
-        this.destination = Objects.requireNonNull(destination);
-        this.appProfileId = Objects.requireNonNull(appProfileId);
+        this.destination = Preconditions.checkNotNull(destination, "destination must not be null");
+        this.appProfileId =
+                Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.startPosition = startPosition;
         this.resumeFallback = resumeFallback;
         this.endTime = endTime;
         this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
         this.parallelism = parallelism;
-        this.physicalDataType = Objects.requireNonNull(physicalDataType);
-        this.changelogMode = Objects.requireNonNull(changelogMode);
+        this.physicalDataType =
+                Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
+        this.changelogMode =
+                Preconditions.checkNotNull(changelogMode, "changelogMode must not be null");
         this.decodingFormat = decodingFormat;
         this.selectedCellSchema = selectedCellSchema;
         this.selectedCellFamily = selectedCellFamily;
@@ -178,7 +188,8 @@ public final class BigtableChangeStreamDynamicSource
             ChangeStreamReadableMetadata.of(key);
         }
         this.metadataKeys = Collections.unmodifiableList(new ArrayList<>(metadataKeys));
-        this.producedDataType = Objects.requireNonNull(producedDataType);
+        this.producedDataType =
+                Preconditions.checkNotNull(producedDataType, "producedDataType must not be null");
     }
 
     @Override

@@ -24,6 +24,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -62,7 +63,7 @@ public final class PartitionTransitionEvent implements SourceEvent {
 
     /** One target range from CloseStream paired with the token that arrived from this parent. */
     @Internal
-    public static final class Successor implements java.io.Serializable {
+    public static final class Successor implements Serializable {
 
         private static final long serialVersionUID = 1L;
 

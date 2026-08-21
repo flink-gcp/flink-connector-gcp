@@ -43,6 +43,7 @@ import io.github.flink.gcp.connector.bigtable.source.readrows.reader.DataClientR
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
 
+import java.io.IOException;
 import java.util.function.Supplier;
 
 /**
@@ -124,7 +125,7 @@ public class BigtableReadRowsSource<T>
         return new BigtableScanSplitEnumerator(context, config, checkpoint);
     }
 
-    private void loadEnumeratorCredentials() throws java.io.IOException {
+    private void loadEnumeratorCredentials() throws IOException {
         if (config.getSampler() instanceof DataClientRowKeySampler) {
             ((DataClientRowKeySampler) config.getSampler()).loadCredentials();
         }

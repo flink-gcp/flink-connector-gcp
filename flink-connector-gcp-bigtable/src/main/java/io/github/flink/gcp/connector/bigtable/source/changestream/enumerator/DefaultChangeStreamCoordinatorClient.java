@@ -40,6 +40,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -182,7 +183,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     }
 
     @Nullable
-    private CredentialsProvider credentials() throws java.io.IOException {
+    private CredentialsProvider credentials() throws IOException {
         if (credentialsOverride == null && serviceAccountKeyFile != null) {
             credentialsOverride = BigtableCredentials.loadAll(serviceAccountKeyFile);
         }
@@ -190,15 +191,15 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     }
 
     /** Loads the shared data and admin provider when the JobManager starts the coordinator. */
-    public void loadCredentials() throws java.io.IOException {
+    public void loadCredentials() throws IOException {
         credentials();
     }
 
-    BigtableDataSettings dataSettings() throws java.io.IOException {
+    BigtableDataSettings dataSettings() throws IOException {
         return BigtableDataClients.settings(table, appProfileId, null, credentials()).build();
     }
 
-    BigtableTableAdminSettings tableAdminSettings() throws java.io.IOException {
+    BigtableTableAdminSettings tableAdminSettings() throws IOException {
         CredentialsProvider credentials = credentials();
         BigtableTableAdminSettings.Builder settings =
                 BigtableTableAdminSettings.newBuilder()
@@ -210,7 +211,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         return settings.build();
     }
 
-    BigtableInstanceAdminSettings instanceAdminSettings() throws java.io.IOException {
+    BigtableInstanceAdminSettings instanceAdminSettings() throws IOException {
         CredentialsProvider credentials = credentials();
         BigtableInstanceAdminSettings.Builder settings =
                 BigtableInstanceAdminSettings.newBuilder().setProjectId(table.getProject());

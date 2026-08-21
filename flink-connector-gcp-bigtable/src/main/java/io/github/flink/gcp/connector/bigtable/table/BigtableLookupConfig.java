@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
@@ -166,9 +167,7 @@ public final class BigtableLookupConfig implements Serializable {
     }
 
     private static <T> void setIfPresent(
-            Configuration config,
-            org.apache.flink.configuration.ConfigOption<T> option,
-            @Nullable T value) {
+            Configuration config, ConfigOption<T> option, @Nullable T value) {
         if (value != null) {
             config.set(option, value);
         }
