@@ -99,7 +99,13 @@ not choosing, so only the "rejected for other methods" half carries safety and o
   (recorded on the issue; the seam story then changed again in ADR-0029). The `maybe*` methods
   were renamed with it: `createTableIfMissing`, `reconcileSchemaIfMismatched` (kept returning
   "ran just now" — its caller switches to the schema-wait schedule on exactly that),
-  `warnIfCommitsAreTooFrequent`.
+  `warnIfCommitsAreTooFrequent`. **Refined by [#827]** (2026-08-22): the repair's state moved into
+  a private `RepairState` value object, so `reconcileSchemaIfMismatched` makes that schedule
+  switch itself and its return is only the caller's branch selector. Which schedule a fresh
+  reconciliation installs is unchanged. What the two helpers return no longer differs by what they
+  accumulate but by what the drain branches on: `createTableIfMissing` returns nothing, because no
+  branch turns on a creation, and its sibling still returns, because the drain has to know whether
+  to skip row-level routing.
 
 [#15]: https://github.com/laughingman7743/flink-connector-gcp/issues/15
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
@@ -108,3 +114,4 @@ not choosing, so only the "rejected for other methods" half carries safety and o
 [#147]: https://github.com/laughingman7743/flink-connector-gcp/issues/147
 [#197]: https://github.com/laughingman7743/flink-connector-gcp/issues/197
 [#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
+[#827]: https://github.com/flink-gcp/flink-connector-gcp/issues/827

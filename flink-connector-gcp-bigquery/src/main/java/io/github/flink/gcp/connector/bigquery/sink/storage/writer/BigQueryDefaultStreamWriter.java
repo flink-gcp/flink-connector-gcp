@@ -681,9 +681,9 @@ public class BigQueryDefaultStreamWriter<T>
         retryBatches(
                 destination,
                 failedBatches,
-                false,
-                schemaUpdated,
-                schemaUpdated ? schemaWaitSchedule : recoverySchedule);
+                schemaUpdated
+                        ? RepairState.afterSchemaReconciliation(schemaWaitSchedule)
+                        : RepairState.startingFresh(recoverySchedule));
     }
 
     private void appendPending(TableDestination destination, DestinationState state) {
@@ -837,10 +837,14 @@ public class BigQueryDefaultStreamWriter<T>
                 break;
             case UPDATE_SCHEMA:
                 reconcileSchema(batch.destination);
-                retryBatches(batch.destination, batches, false, true, schemaWaitSchedule);
+                retryBatches(
+                        batch.destination,
+                        batches,
+                        RepairState.afterSchemaReconciliation(schemaWaitSchedule));
                 break;
             default:
-                retryBatches(batch.destination, batches, false, false, recoverySchedule);
+                retryBatches(
+                        batch.destination, batches, RepairState.startingFresh(recoverySchedule));
                 break;
         }
     }
@@ -971,7 +975,7 @@ public class BigQueryDefaultStreamWriter<T>
     private void recoverDestination(TableDestination destination, List<ProtoRows> batches)
             throws IOException {
         createTable(destination);
-        retryBatches(destination, batches, true, false, recoverySchedule);
+        retryBatches(destination, batches, RepairState.afterTableCreation(recoverySchedule));
     }
 
     /**
@@ -1068,37 +1072,23 @@ public class BigQueryDefaultStreamWriter<T>
      *
      * @param destination the destination whose appender is rebuilt
      * @param batches the batches to re-append
-     * @param tableCreated whether the destination table was just created for this repair
-     * @param schemaUpdated whether the table schema was just reconciled for this repair
-     * @param schedule the retry schedule bounding this repair
+     * @param repairState what this repair has already done and the budget it is spending, seeded
+     *     from what the caller did before the repair started
      */
     private void retryBatches(
-            TableDestination destination,
-            List<ProtoRows> batches,
-            boolean tableCreated,
-            boolean schemaUpdated,
-            RetrySchedule schedule)
+            TableDestination destination, List<ProtoRows> batches, RepairState repairState)
             throws IOException {
         List<ProtoRows> remaining = new ArrayList<>(batches);
-        for (int attempt = 1; ; attempt++) {
+        while (true) {
             DestinationState state = null;
             try {
                 state = rebuildState(destination);
             } catch (IOException | RuntimeException e) {
-                tableCreated = createTableIfMissing(destination, e, tableCreated);
-                schedule = scheduleFor(e, tableCreated, schemaUpdated, schedule);
-                boolean retriable = isRetriable(e, tableCreated, schemaUpdated);
-                if (!retriable || attempt >= schedule.maxAttempts()) {
-                    throw wrapFailure(
-                            retryFailureMessage(
-                                    "Failed to open a BigQuery write stream to " + destination,
-                                    retriable,
-                                    tableCreated,
-                                    schemaUpdated,
-                                    attempt,
-                                    schedule),
-                            e);
-                }
+                repairOrFail(
+                        destination,
+                        e,
+                        repairState,
+                        "Failed to open a BigQuery write stream to " + destination);
             }
             boolean backOff = state == null;
             while (state != null && !remaining.isEmpty() && !backOff) {
@@ -1119,13 +1109,10 @@ public class BigQueryDefaultStreamWriter<T>
                 metrics.appendFailed(AppendErrorClassifier.statusCode(failure));
                 // Schema-mismatch reconciliation is checked before row-level routing, mirroring
                 // repairActionFor: a mismatch fails the batch as a whole, and a schema update can
-                // save rows that per-row routing would drop.
-                if (reconcileSchemaIfMismatched(destination, failure, schemaUpdated)) {
-                    // The remaining re-appends now wait on schema propagation, which needs the
-                    // longer budget.
-                    schemaUpdated = true;
-                    schedule = schemaWaitSchedule;
-                } else if (AppendErrorClassifier.findRowLevel(failure).isPresent()) {
+                // save rows that per-row routing would drop. The short-circuit is what orders the
+                // two, so the reconcile call has to stay the left operand.
+                if (!reconcileSchemaIfMismatched(destination, failure, repairState)
+                        && AppendErrorClassifier.findRowLevel(failure).isPresent()) {
                     Exceptions.AppendSerializtionError rowLevel =
                             AppendErrorClassifier.findRowLevel(failure).get();
                     // Shrink the batch to the surviving rows and stay in the same attempt.
@@ -1138,7 +1125,7 @@ public class BigQueryDefaultStreamWriter<T>
                                         + destination
                                         + " failed with row errors matching none of the batch's"
                                         + " rows ("
-                                        + attempt
+                                        + repairState.attempt
                                         + " attempt(s))",
                                 failure);
                     }
@@ -1148,71 +1135,86 @@ public class BigQueryDefaultStreamWriter<T>
                     }
                     continue;
                 }
-                tableCreated = createTableIfMissing(destination, failure, tableCreated);
-                schedule = scheduleFor(failure, tableCreated, schemaUpdated, schedule);
-                boolean retriable = isRetriable(failure, tableCreated, schemaUpdated);
-                if (!retriable || attempt >= schedule.maxAttempts()) {
-                    throw wrapFailure(
-                            retryFailureMessage(
-                                    "A re-append to BigQuery table " + destination + " failed",
-                                    retriable,
-                                    tableCreated,
-                                    schemaUpdated,
-                                    attempt,
-                                    schedule),
-                            failure);
-                }
+                repairOrFail(
+                        destination,
+                        failure,
+                        repairState,
+                        "A re-append to BigQuery table " + destination + " failed");
                 backOff = true;
             }
             if (!backOff) {
                 return;
             }
-            long backoffMs = schedule.backoffMs(attempt);
+            long backoffMs = repairState.schedule.backoffMs(repairState.attempt);
             LOG.info(
                     "Re-appending to BigQuery table {} is not possible yet"
                             + " (attempt {}/{}), backing off {} ms",
                     destination,
-                    attempt,
-                    schedule.maxAttempts(),
+                    repairState.attempt,
+                    repairState.schedule.maxAttempts(),
                     backoffMs);
             sleep(backoffMs);
+            repairState.attempt++;
+        }
+    }
+
+    /**
+     * The shared tail of both places a repair meets a failure: creates the table when the verdict
+     * allows it, installs the budget that failure deserves, and throws when the failure is terminal
+     * or the budget is spent. Returns normally when the repair may take another attempt.
+     *
+     * <p>One method rather than two identical sequences, and that is ADR-0030 rather than tidiness.
+     * The budget bound belongs at <em>both</em> reach-points — the {@code rebuildState} catch and
+     * the append loop — and the defect that ADR records is precisely a version of it that reached
+     * only the first: "fixing only the first leaves the defect reachable, which is how it was
+     * found". A single method is the form in which a later change cannot repeat that.
+     *
+     * @param base what failed, in the words the operator should read; the repair state appends what
+     *     it has already tried and how much budget it has spent
+     */
+    private void repairOrFail(
+            TableDestination destination, Throwable failure, RepairState repairState, String base)
+            throws IOException {
+        createTableIfMissing(destination, failure, repairState);
+        repairState.schedule = scheduleFor(failure, repairState);
+        boolean retriable = repairState.isRetriable(failure);
+        if (!retriable || repairState.budgetExhausted()) {
+            throw wrapFailure(repairState.retryFailureMessage(base, retriable), failure);
         }
     }
 
     /**
      * Creates the destination table when a repair-time failure is a recoverable missing-table
      * verdict and the table has not been created during this repair yet (a transient repair can
-     * discover a missing table).
-     *
-     * @return the updated created-flag: {@code true} once the table has been created, whether just
-     *     now or on an earlier attempt of this repair
+     * discover a missing table). Records the creation on the repair state, where it stays {@code
+     * true} for every later attempt of this repair.
      */
-    private boolean createTableIfMissing(
-            TableDestination destination, Throwable failure, boolean tableCreated)
+    private void createTableIfMissing(
+            TableDestination destination, Throwable failure, RepairState repairState)
             throws IOException {
-        if (!tableCreated && isRecoverableMissingTable(failure)) {
+        if (!repairState.tableCreated && isRecoverableMissingTable(failure)) {
             LOG.info(
                     "The table behind {} may not exist, creating it (CREATE_IF_NEEDED)",
                     destination);
             createTable(destination);
-            return true;
+            repairState.tableCreated = true;
         }
-        return tableCreated;
     }
 
     /**
      * Reconciles the destination table's schema when a repair-time failure is a schema mismatch,
      * updates are enabled, and no reconciliation has run during this repair yet (a transient repair
-     * can discover a schema mismatch).
+     * can discover a schema mismatch). A fresh reconciliation also moves the repair onto the
+     * schema-wait schedule, because the remaining re-appends now wait on schema propagation, which
+     * needs the longer budget.
      *
-     * @return whether a reconciliation ran just now — not the accumulated flag its sibling {@code
-     *     createTableIfMissing} returns; the caller switches to the schema-wait schedule only on a
-     *     fresh reconciliation
+     * @return whether this failure was handled by reconciling — the caller's branch selector, not a
+     *     flag it has to carry: what a reconciliation leaves behind is on the repair state
      */
     private boolean reconcileSchemaIfMismatched(
-            TableDestination destination, Throwable failure, boolean schemaUpdated)
+            TableDestination destination, Throwable failure, RepairState repairState)
             throws IOException {
-        if (schemaUpdated
+        if (repairState.schemaUpdated
                 || !config.getSchemaUpdateOptions().isEnabled()
                 || !AppendErrorClassifier.isSchemaMismatch(failure)) {
             return false;
@@ -1221,6 +1223,8 @@ public class BigQueryDefaultStreamWriter<T>
                 "A re-append to {} failed with a schema mismatch, reconciling the table schema",
                 destination);
         reconcileSchema(destination);
+        repairState.schemaUpdated = true;
+        repairState.schedule = schemaWaitSchedule;
         return true;
     }
 
@@ -1254,59 +1258,16 @@ public class BigQueryDefaultStreamWriter<T>
      * during a schema repair keeps the long budget: unlike a possibly-permanent denial those really
      * are retriable, and shortening their wait would fail repairs that would have succeeded.
      */
-    private RetrySchedule scheduleFor(
-            Throwable failure,
-            boolean tableCreated,
-            boolean schemaUpdated,
-            RetrySchedule schedule) {
-        if (schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure)) {
+    private RetrySchedule scheduleFor(Throwable failure, RepairState repairState) {
+        if (repairState.schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure)) {
             return schemaWaitSchedule;
         }
-        if (tableCreated
-                && schedule == schemaWaitSchedule
+        if (repairState.tableCreated
+                && repairState.schedule == schemaWaitSchedule
                 && AppendErrorClassifier.isMissingTable(failure)) {
             return recoverySchedule;
         }
-        return schedule;
-    }
-
-    /**
-     * Whether a repair-time failure warrants another attempt: a missing-table verdict while created
-     * table metadata propagates, a schema mismatch while a schema update propagates, a stale-writer
-     * failure, or a transient failure.
-     *
-     * <p>The first clause takes the wide {@link AppendErrorClassifier#isMissingTable} rather than
-     * {@code NOT_FOUND} alone: the service masks a table it cannot see yet as {@code
-     * PERMISSION_DENIED}, so a propagation window right after this writer created the table looks
-     * exactly like the failure that made it create the table. {@link #scheduleFor} is what keeps
-     * that allowance from costing a schema budget.
-     */
-    private static boolean isRetriable(
-            Throwable failure, boolean tableCreated, boolean schemaUpdated) {
-        return (tableCreated && AppendErrorClassifier.isMissingTable(failure))
-                || (schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure))
-                || AppendErrorClassifier.requiresWriterRefresh(failure)
-                || AppendErrorClassifier.classify(failure) == AppendErrorClassifier.Kind.TRANSIENT;
-    }
-
-    private String retryFailureMessage(
-            String base,
-            boolean retriable,
-            boolean tableCreated,
-            boolean schemaUpdated,
-            int attempt,
-            RetrySchedule schedule) {
-        StringBuilder message = new StringBuilder(base);
-        if (tableCreated) {
-            message.append(" after a table-creation attempt");
-        }
-        if (schemaUpdated) {
-            message.append(" after reconciling the table schema");
-        }
-        if (retriable && attempt >= schedule.maxAttempts()) {
-            message.append(", the retry budget is exhausted");
-        }
-        return message.append(" (").append(attempt).append(" attempt(s))").toString();
+        return repairState.schedule;
     }
 
     /**
@@ -1468,6 +1429,90 @@ public class BigQueryDefaultStreamWriter<T>
                 throw (IOException) error;
             }
             throw new IOException("An append to BigQuery failed", error);
+        }
+    }
+
+    /**
+     * What one repair carries across its attempts: what it has already done to the table, the
+     * budget it is spending, and how much of that budget is gone. {@link
+     * BigQueryDefaultStreamWriter#retryBatches(TableDestination, List, RepairState)} seeds it from
+     * what the caller did before the repair started and mutates it in place; each repair gets its
+     * own.
+     *
+     * <p>A holder, not the seed of a shared retry abstraction: ADR-0039 evaluated a {@code
+     * Retries.run(schedule, isRetryable, action)} executor against every loop in the repository and
+     * adopted it nowhere, naming this repair's mid-loop schedule swap as one of the reasons. It
+     * stays private to this writer.
+     *
+     * <p>The two flags are not bookkeeping either. Each one licenses a retry of the failure it
+     * repaired — a missing-table verdict while creation propagates, a schema mismatch while an
+     * update propagates — and {@link BigQueryDefaultStreamWriter#scheduleFor(Throwable,
+     * RepairState)} bounds what that licence may spend; ADR-0030 records why both are needed and
+     * why the allowance is wide.
+     */
+    private static final class RepairState {
+        private boolean tableCreated;
+        private boolean schemaUpdated;
+        private RetrySchedule schedule;
+        private int attempt = 1;
+
+        private RepairState(boolean tableCreated, boolean schemaUpdated, RetrySchedule schedule) {
+            this.tableCreated = tableCreated;
+            this.schemaUpdated = schemaUpdated;
+            this.schedule = schedule;
+        }
+
+        /** A repair that has not yet touched the table: a transient or stale-writer failure. */
+        static RepairState startingFresh(RetrySchedule schedule) {
+            return new RepairState(false, false, schedule);
+        }
+
+        /** A repair whose caller created the table before re-appending. */
+        static RepairState afterTableCreation(RetrySchedule schedule) {
+            return new RepairState(true, false, schedule);
+        }
+
+        /** A repair whose caller reconciled the table schema before re-appending. */
+        static RepairState afterSchemaReconciliation(RetrySchedule schedule) {
+            return new RepairState(false, true, schedule);
+        }
+
+        boolean budgetExhausted() {
+            return attempt >= schedule.maxAttempts();
+        }
+
+        /**
+         * Whether a repair-time failure warrants another attempt: a missing-table verdict while
+         * created table metadata propagates, a schema mismatch while a schema update propagates, a
+         * stale-writer failure, or a transient failure.
+         *
+         * <p>The first clause takes the wide {@link AppendErrorClassifier#isMissingTable} rather
+         * than {@code NOT_FOUND} alone: the service masks a table it cannot see yet as {@code
+         * PERMISSION_DENIED}, so a propagation window right after this writer created the table
+         * looks exactly like the failure that made it create the table. {@link
+         * BigQueryDefaultStreamWriter#scheduleFor(Throwable, RepairState)} is what keeps that
+         * allowance from costing a schema budget.
+         */
+        boolean isRetriable(Throwable failure) {
+            return (tableCreated && AppendErrorClassifier.isMissingTable(failure))
+                    || (schemaUpdated && AppendErrorClassifier.isSchemaMismatch(failure))
+                    || AppendErrorClassifier.requiresWriterRefresh(failure)
+                    || AppendErrorClassifier.classify(failure)
+                            == AppendErrorClassifier.Kind.TRANSIENT;
+        }
+
+        String retryFailureMessage(String base, boolean retriable) {
+            StringBuilder message = new StringBuilder(base);
+            if (tableCreated) {
+                message.append(" after a table-creation attempt");
+            }
+            if (schemaUpdated) {
+                message.append(" after reconciling the table schema");
+            }
+            if (retriable && budgetExhausted()) {
+                message.append(", the retry budget is exhausted");
+            }
+            return message.append(" (").append(attempt).append(" attempt(s))").toString();
         }
     }
 
