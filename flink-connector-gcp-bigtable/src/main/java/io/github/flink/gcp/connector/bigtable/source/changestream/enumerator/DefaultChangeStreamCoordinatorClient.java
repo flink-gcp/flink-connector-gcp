@@ -31,7 +31,6 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
@@ -56,48 +55,47 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     private final TableDestination table;
     private final String appProfileId;
-    @Nullable private final String serviceAccountKeyFile;
     @Nullable private final transient Operations testOperations;
 
     @Nullable private transient BigtableDataClient dataClient;
     @Nullable private transient BigtableTableAdminClient tableAdminClient;
     @Nullable private transient BigtableInstanceAdminClient instanceAdminClient;
-    @Nullable private transient CredentialsProvider credentialsOverride;
+    @Nullable private transient CredentialsProvider credentials;
 
     public DefaultChangeStreamCoordinatorClient(TableDestination table, String appProfileId) {
         this(table, appProfileId, null, null);
     }
 
-    public DefaultChangeStreamCoordinatorClient(
-            TableDestination table, String appProfileId, @Nullable String serviceAccountKeyFile) {
-        this(table, appProfileId, serviceAccountKeyFile, null);
-    }
-
+    /**
+     * Creates the client with the provider its owner loaded.
+     *
+     * @param table the table whose change stream is coordinated
+     * @param appProfileId the single-cluster application profile to route through
+     * @param credentials the provider to build all three client families with, or {@code null} to
+     *     leave application default credentials in place
+     */
     public DefaultChangeStreamCoordinatorClient(
             TableDestination table,
             String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable CredentialsProvider credentialsOverride) {
-        this(table, appProfileId, serviceAccountKeyFile, credentialsOverride, null);
+            @Nullable CredentialsProvider credentials) {
+        this(table, appProfileId, credentials, null);
     }
 
     DefaultChangeStreamCoordinatorClient(
             TableDestination table, String appProfileId, @Nullable Operations testOperations) {
-        this(table, appProfileId, null, null, testOperations);
+        this(table, appProfileId, null, testOperations);
     }
 
     private DefaultChangeStreamCoordinatorClient(
             TableDestination table,
             String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable CredentialsProvider credentialsOverride,
+            @Nullable CredentialsProvider credentials,
             @Nullable Operations testOperations) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.appProfileId =
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         Preconditions.checkArgument(!appProfileId.isEmpty(), "appProfileId must not be empty");
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
-        this.credentialsOverride = credentialsOverride;
+        this.credentials = credentials;
         this.testOperations = testOperations;
     }
 
@@ -182,25 +180,11 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         return instanceAdminClient;
     }
 
-    @Nullable
-    private CredentialsProvider credentials() throws IOException {
-        if (credentialsOverride == null && serviceAccountKeyFile != null) {
-            credentialsOverride = BigtableCredentials.loadAll(serviceAccountKeyFile);
-        }
-        return credentialsOverride;
-    }
-
-    /** Loads the shared data and admin provider when the JobManager starts the coordinator. */
-    public void loadCredentials() throws IOException {
-        credentials();
-    }
-
     BigtableDataSettings dataSettings() throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, null, credentials()).build();
+        return BigtableDataClients.settings(table, appProfileId, null, credentials).build();
     }
 
     BigtableTableAdminSettings tableAdminSettings() throws IOException {
-        CredentialsProvider credentials = credentials();
         BigtableTableAdminSettings.Builder settings =
                 BigtableTableAdminSettings.newBuilder()
                         .setProjectId(table.getProject())
@@ -212,7 +196,6 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     }
 
     BigtableInstanceAdminSettings instanceAdminSettings() throws IOException {
-        CredentialsProvider credentials = credentials();
         BigtableInstanceAdminSettings.Builder settings =
                 BigtableInstanceAdminSettings.newBuilder().setProjectId(table.getProject());
         if (credentials != null) {
@@ -231,7 +214,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         dataClient = null;
         tableAdminClient = null;
         instanceAdminClient = null;
-        credentialsOverride = null;
+        credentials = null;
     }
 
     interface Operations extends AutoCloseable {

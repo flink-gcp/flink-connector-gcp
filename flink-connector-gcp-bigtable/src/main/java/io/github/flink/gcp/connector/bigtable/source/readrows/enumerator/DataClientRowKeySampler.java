@@ -75,16 +75,7 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      */
     public DataClientRowKeySampler(
             @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this(appProfileId, emulatorEndpoint, null);
-    }
-
-    public DataClientRowKeySampler(
-            @Nullable String appProfileId,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable String serviceAccountKeyFile) {
-        this.client =
-                new LazyBigtableDataClient(
-                        "row key sampler", appProfileId, emulatorEndpoint, serviceAccountKeyFile);
+        this.client = new LazyBigtableDataClient("row key sampler", appProfileId, emulatorEndpoint);
     }
 
     @Override
@@ -114,14 +105,8 @@ public final class DataClientRowKeySampler implements RowKeySampler {
         return client.settings(table);
     }
 
-    /** Loads credentials when the JobManager creates or restores the enumerator. */
-    public void loadCredentials() throws IOException {
-        client.loadCredentials();
-    }
-
-    /** Supplies a runtime provider directly for settings-level tests. */
-    @VisibleForTesting
-    void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        client.setCredentialsOverride(credentialsOverride);
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {
+        client.useCredentials(credentials);
     }
 }

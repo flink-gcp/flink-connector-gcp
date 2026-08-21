@@ -25,7 +25,6 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ReadChangeStreamQuery;
-import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -45,19 +44,12 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final String appProfileId;
-    @Nullable private final String serviceAccountKeyFile;
     @Nullable private transient volatile BigtableDataClient client;
-    @Nullable private transient CredentialsProvider credentialsOverride;
+    @Nullable private transient CredentialsProvider credentials;
     private transient volatile boolean closed;
 
     public DataClientChangeStreamOpener(String appProfileId) {
-        this(appProfileId, null);
-    }
-
-    public DataClientChangeStreamOpener(
-            String appProfileId, @Nullable String serviceAccountKeyFile) {
         this.appProfileId = appProfileId;
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -106,7 +98,7 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     /** Builds the stream settings, exposed so tests can verify runtime credentials. */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination table) throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, null, credentials()).build();
+        return BigtableDataClients.settings(table, appProfileId, null, credentials).build();
     }
 
     @Override
@@ -122,16 +114,8 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
         }
     }
 
-    /** Supplies the provider loaded when the TaskManager creates the source reader. */
-    public void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        this.credentialsOverride = credentialsOverride;
-    }
-
-    @Nullable
-    private CredentialsProvider credentials() throws IOException {
-        if (credentialsOverride == null && serviceAccountKeyFile != null) {
-            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
-        }
-        return credentialsOverride;
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {
+        this.credentials = credentials;
     }
 }

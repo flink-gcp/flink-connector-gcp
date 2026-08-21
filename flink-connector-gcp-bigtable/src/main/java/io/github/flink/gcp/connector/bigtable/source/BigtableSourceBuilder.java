@@ -312,12 +312,10 @@ public class BigtableSourceBuilder<T> {
                         serviceAccountKeyFile,
                         sampler != null
                                 ? sampler
-                                : new DataClientRowKeySampler(
-                                        appProfileId, emulatorEndpoint, serviceAccountKeyFile),
+                                : new DataClientRowKeySampler(appProfileId, emulatorEndpoint),
                         opener != null
                                 ? opener
-                                : new DataClientRowStreamOpener(
-                                        appProfileId, emulatorEndpoint, serviceAccountKeyFile),
+                                : new DataClientRowStreamOpener(appProfileId, emulatorEndpoint),
                         maxRowsPerFetch));
     }
 

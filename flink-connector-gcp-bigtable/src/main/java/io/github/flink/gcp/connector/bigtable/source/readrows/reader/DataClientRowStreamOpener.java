@@ -80,16 +80,8 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
      */
     public DataClientRowStreamOpener(
             @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this(appProfileId, emulatorEndpoint, null);
-    }
-
-    public DataClientRowStreamOpener(
-            @Nullable String appProfileId,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable String serviceAccountKeyFile) {
         this.client =
-                new LazyBigtableDataClient(
-                        "row stream opener", appProfileId, emulatorEndpoint, serviceAccountKeyFile);
+                new LazyBigtableDataClient("row stream opener", appProfileId, emulatorEndpoint);
     }
 
     @Override
@@ -118,15 +110,9 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
         return client.settings(table);
     }
 
-    /** Loads credentials when a TaskManager creates the source reader. */
-    public void loadCredentials() throws IOException {
-        client.loadCredentials();
-    }
-
-    /** Supplies a runtime provider directly for settings-level tests. */
-    @VisibleForTesting
-    void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        client.setCredentialsOverride(credentialsOverride);
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {
+        client.useCredentials(credentials);
     }
 
     /**

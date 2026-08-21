@@ -37,7 +37,7 @@ class DataClientChangeStreamOpenerTest {
     void injectsTheRuntimeCredentialProvider() throws Exception {
         DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile");
         NoCredentialsProvider provider = NoCredentialsProvider.create();
-        opener.setCredentialsOverride(provider);
+        opener.useCredentials(provider);
 
         assertThat(
                         opener.settings(TableDestination.of("project", "instance", "table"))

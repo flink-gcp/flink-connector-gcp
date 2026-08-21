@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.reader;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -36,7 +37,9 @@ import java.io.Serializable;
  *
  * <p>{@link Serializable} because the source configuration this travels in goes into the job graph.
  * An implementation creates its client on first use rather than in its constructor, so that
- * building a job needs no credentials.
+ * building a job needs no credentials. It carries no service-account key-file path either: the
+ * reader that owns it loads one provider and hands it over through {@link
+ * #useCredentials(CredentialsProvider)}.
  *
  * <p>The range and the filter are arguments rather than fields because a reader opens a different
  * range for every split it is handed and for every reopen after a wake-up, while the table and the
@@ -57,6 +60,19 @@ public interface RowStreamOpener extends Serializable, AutoCloseable {
      */
     RowStream open(TableDestination table, ByteStringRange range, @Nullable Filters.Filter filter)
             throws IOException;
+
+    /**
+     * Receives the provider the owning reader loaded, before the first {@link #open}.
+     *
+     * <p>Declared here rather than on the implementation so that the reader needs no cast, and
+     * abstract rather than defaulted because an implementation that quietly skipped it would read
+     * as the process's application default credentials instead of the configured service account —
+     * a misconfiguration nothing would report.
+     *
+     * @param credentials the provider to build clients with, or {@code null} to leave the client's
+     *     application default credentials in place
+     */
+    void useCredentials(@Nullable CredentialsProvider credentials);
 
     @Override
     void close() throws IOException;

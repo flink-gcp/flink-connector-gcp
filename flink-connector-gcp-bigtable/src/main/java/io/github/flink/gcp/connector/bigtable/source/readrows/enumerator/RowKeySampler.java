@@ -18,7 +18,10 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -34,7 +37,9 @@ import java.util.List;
  *
  * <p>{@link Serializable} because the source configuration this travels in goes into the job graph.
  * An implementation creates its client on first use rather than in its constructor, so that
- * building a job needs no credentials.
+ * building a job needs no credentials. It carries no service-account key-file path either: the
+ * enumerator that owns it loads one provider and hands it over through {@link
+ * #useCredentials(CredentialsProvider)}.
  *
  * <p>{@code close()} releases whatever the implementation built. The enumerator owns the sampler
  * and closes it once, so nothing here has to tolerate being closed twice by different owners.
@@ -54,6 +59,19 @@ public interface RowKeySampler extends Serializable, AutoCloseable {
      * @throws IOException if the call fails
      */
     List<RowKeySample> sample(TableDestination table) throws IOException;
+
+    /**
+     * Receives the provider the owning enumerator loaded, before the first {@link #sample}.
+     *
+     * <p>Declared here rather than on the implementation so that the enumerator needs no cast, and
+     * abstract rather than defaulted because an implementation that quietly skipped it would sample
+     * as the process's application default credentials instead of the configured service account —
+     * a misconfiguration nothing would report.
+     *
+     * @param credentials the provider to build clients with, or {@code null} to leave the client's
+     *     application default credentials in place
+     */
+    void useCredentials(@Nullable CredentialsProvider credentials);
 
     @Override
     void close() throws IOException;

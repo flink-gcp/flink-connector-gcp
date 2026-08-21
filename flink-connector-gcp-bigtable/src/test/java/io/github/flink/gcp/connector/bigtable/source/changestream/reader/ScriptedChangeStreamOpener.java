@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ResponseObserver;
 import com.google.api.gax.rpc.StreamController;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
@@ -120,6 +121,10 @@ public final class ScriptedChangeStreamOpener implements ChangeStreamOpener {
         }
         return readerNumber;
     }
+
+    /** Answers from a script rather than a client, so there is nothing to authenticate. */
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {}
 
     @Override
     public void close() {

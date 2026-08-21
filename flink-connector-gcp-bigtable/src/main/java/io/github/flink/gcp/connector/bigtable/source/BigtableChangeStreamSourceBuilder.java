@@ -260,14 +260,10 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                                 qualifierIncludeList,
                                 qualifierExcludeList,
                                 skipMessagesWithoutChange),
-                        opener != null
-                                ? opener
-                                : new DataClientChangeStreamOpener(
-                                        appProfileId, serviceAccountKeyFile),
+                        opener != null ? opener : new DataClientChangeStreamOpener(appProfileId),
                         restoreResolver != null
                                 ? restoreResolver
-                                : new DefaultChangeStreamRestoreResolver(
-                                        table, appProfileId, serviceAccountKeyFile),
+                                : new DefaultChangeStreamRestoreResolver(table, appProfileId),
                         coordinatorClient));
     }
 

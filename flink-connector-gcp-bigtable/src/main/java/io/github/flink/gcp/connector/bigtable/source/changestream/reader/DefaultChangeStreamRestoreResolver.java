@@ -32,7 +32,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
 
-/** Retention-aware reader restore resolution backed by Bigtable table metadata. */
+/**
+ * Retention-aware reader restore resolution backed by Bigtable table metadata.
+ *
+ * <p>Reads that metadata through a table-admin client, which is why the reader that owns this loads
+ * one provider scoped for data <em>and</em> table admin and hands the same one to the stream
+ * opener: two loads would produce two providers, each scoped for half of what the reader does.
+ */
 @Internal
 public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRestoreResolver {
 
@@ -40,19 +46,12 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
 
     private final TableDestination table;
     private final String appProfileId;
-    @Nullable private final String serviceAccountKeyFile;
     @Nullable private transient StartPositionResolver resolver;
-    @Nullable private transient CredentialsProvider credentialsOverride;
+    @Nullable private transient CredentialsProvider credentials;
 
     public DefaultChangeStreamRestoreResolver(TableDestination table, String appProfileId) {
-        this(table, appProfileId, null);
-    }
-
-    public DefaultChangeStreamRestoreResolver(
-            TableDestination table, String appProfileId, @Nullable String serviceAccountKeyFile) {
         this.table = table;
         this.appProfileId = appProfileId;
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     @Override
@@ -60,8 +59,7 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
             ChangeStreamPartitionSplit split, @Nullable StartPosition fallback) throws Exception {
         if (resolver == null) {
             try (DefaultChangeStreamCoordinatorClient client =
-                    new DefaultChangeStreamCoordinatorClient(
-                            table, appProfileId, serviceAccountKeyFile, credentialsOverride)) {
+                    new DefaultChangeStreamCoordinatorClient(table, appProfileId, credentials)) {
                 Duration retention = client.retention();
                 resolver = StartPositionResolver.create(getClass(), () -> retention);
             }
@@ -72,8 +70,8 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
         return restart.map(split::restartAt).orElse(split);
     }
 
-    /** Supplies the provider loaded when the TaskManager creates the source reader. */
-    public void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        this.credentialsOverride = credentialsOverride;
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {
+        this.credentials = credentials;
     }
 }

@@ -459,10 +459,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - ADC remains the default.
   `serviceAccountKeyFile(...)` and the shared Table option `service-account-key-file` carry only a
   path through Flink serialization; never serialize parsed credentials, key JSON or a provider.
-- Load and scope the service-account key at each runtime client-creation boundary.
+- Load and scope the service-account key once per runtime component, and push the provider into
+  every seam that component owns; a seam carries no path and loads nothing itself.
   Share one loaded provider across every client family that component owns: sink data and
   table-admin; scan sampling and reading; lookup data clients including FULL cache; Change Streams
   coordinator data, table-admin and instance-admin; and reader stream and restore clients.
+  The seam interfaces declare the injection (`ChangeStreamOpener`, `RowStreamOpener` and
+  `RowKeySampler` abstractly, `ChangeStreamRestoreResolver` defaulted because resolving can be a
+  pure function of the split), so no caller reaches a seam by downcast.
 - A configured path must be nonblank and is mutually exclusive with emulator mode.
   Credential-loading failures use the stable sanitized message and carry no cause, path or key
   material.
