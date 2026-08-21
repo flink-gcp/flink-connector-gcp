@@ -510,14 +510,59 @@ docs-javadoc:
     {{ mvn }} javadoc:aggregate
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
-# into build failures.
+# into build failures. It says nothing about a link's *fragment*, which is what
+# `just check-doc-fragments` below is for.
 #
 # The API reference is a separate recipe (`just docs-javadoc`) so that iterating
 # on prose stays a seconds-long build rather than a Maven one.
 #
+# --cleanDestinationDir because Hugo otherwise leaves orphans in docs/public: a
+# page deleted or renamed locally keeps its previously built copy, which is
+# gitignored and so survives a branch switch. That is invisible in a preview and
+# not invisible to check-doc-fragments below, which would resolve a link against
+# a page CI no longer builds. It removes nothing a build produces — the API
+# reference comes through docs/static, which Hugo copies every time.
+#
 # Build the documentation site, as the docs workflow does.
 docs:
-    mise x hugo-extended go -- hugo --gc --minify --source docs --panicOnWarning
+    mise x hugo-extended go -- hugo --gc --minify --cleanDestinationDir --source docs --panicOnWarning
+
+# Fails on a link to a heading that no page emits (issue #867). Two tools cover
+# part of this each and neither covers a cross-page fragment: markdownlint's
+# MD051 judges in-page `[](#anchor)` fragments only, and Hugo's relref resolves
+# the page and never the fragment — measured: a relref naming a heading that does
+# not exist builds clean under --panicOnWarning and emits the fragment verbatim.
+# So renaming a heading silently breaks every inbound link to it, measured on
+# PR #836, where the emitted HTML pointed at a fragment its target page no longer
+# contained and `just lint`, `just docs` and CI all stayed green.
+#
+# Reads the *rendered* site rather than the markdown. Hugo's heading ids come
+# from a configured algorithm (markup.goldmark.parser.autoidtype, `github` here),
+# so a checker with those rules baked in would agree today and go silently wrong
+# the day the setting moved; reading what was emitted cannot, and it covers an
+# anchor a shortcode or raw HTML defines without knowing anything about either.
+#
+# Depends on `docs` rather than checking whatever is in docs/public, because a
+# stale build gives a confident wrong verdict in both directions — the local one
+# this was first prototyped against was a week old. Hugo is idempotent and takes
+# about a second, so the dependency costs nothing that matters. The dependency
+# alone is not enough, which is why `docs` above now cleans its output: a page
+# deleted locally would otherwise linger and resolve links CI cannot.
+#
+# Not part of `just lint`, which stays offline: this needs a site build, and
+# Hugo resolves the theme as a Go module. That is check-flink-api-tiers's rule
+# applied rather than excepted.
+#
+# No allowlist, and so no `curate-*` skill — ADR-0000 states the rule and records
+# the exemption for check-gated-tags, which check-javadoc-links and
+# check-skill-frontmatter take on the same argument. There is nothing to
+# forgive here: a fragment that resolves to no anchor is a link to correct or a
+# heading to restore, and the failure names the file, every line writing it, and
+# the nearest ids on the target page. ADR-0126 records the design.
+#
+# Does every documentation link fragment reach an anchor the site emits?
+check-doc-fragments: docs
+    scripts/check-doc-fragments.py
 
 # Preview the documentation site at http://localhost:1313.
 docs-serve:

@@ -146,6 +146,16 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   network. **A checker with no `curate-*` skill**, and the exemption is argued rather than
   an oversight: those skills exist for allowlist judgment — which entry, with what reason — and
   this check has no allowlist and exactly two mechanical fixes, both named in the failure message
+- `just check-doc-fragments` — holds every internal link fragment the documentation prose writes to
+  an anchor the built site really emits (#867), the half markdownlint's MD051 and Hugo's `relref`
+  leave between them. It reads the *rendered* site, takes links from the prose only and its base
+  path from `hugo.toml`, and turns three ways of judging nothing into infrastructure failures
+  rather than clean runs; ADR-0126 carries all of that and the evidence. It says nothing about
+  external link liveness, nor about whether a fragment reaches the *right* heading. In `docs.yaml`'s
+  build job rather than `verify.yaml` or `just lint`, because the recipe depends on `docs`: the site
+  is built exactly once and a stale `docs/public` can never be judged. **No `curate-*` skill**, on
+  the argument the entry above makes: no allowlist to judge, and the failure names the markdown
+  file, every line writing the fragment and the nearest ids on the target page
 - `just ci-maven-args` — CI's module-selection decision (#243; ADR-0058 carries the design):
   which Maven modules does a change build? The mapping is derived from the poms, never
   configured — the script's docstring is the specification.
@@ -316,6 +326,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   reason. `just check-doc-snippets` checks the two-way inventory before compiling the backing
   sources against the current reactor. Use `.agents/skills/maintain-javadoc-examples/` when adding,
   updating or repairing either form
+- **A cross-page link is written `[text]({{< relref "page" >}}#anchor)`**, with the anchor outside
+  the shortcode — `relref` reaches Hugo content and validates the page half only. Both fragment
+  forms are held to the rendered site by `just check-doc-fragments` (#867; ADR-0126), so a heading
+  rename fails on the pull request that makes it
 - The site is built as a CI check only; GitHub Pages publishing waits until the repository is
   public (#6). Each module README links to its docs page by in-repo relative path — those links
   become site URLs when Pages goes live, which is a checklist item on #6

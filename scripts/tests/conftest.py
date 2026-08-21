@@ -87,3 +87,8 @@ def check_readme_examples():
 @pytest.fixture(scope="session")
 def check_javadoc_links():
     return load_script("check-javadoc-links.py")
+
+
+@pytest.fixture(scope="session")
+def check_doc_fragments():
+    return load_script("check-doc-fragments.py")

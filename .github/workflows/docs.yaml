@@ -46,6 +46,8 @@ on:
       - 'scripts/check-javadoc-examples.py'
       # Both source-copy checkers share the Java tagged-region parser.
       - 'scripts/java_example_regions.py'
+      # Link fragments are swept over the site this job builds (#867).
+      - 'scripts/check-doc-fragments.py'
       - 'pom.xml'
       - '**/pom.xml'
       - 'tools/**'
@@ -156,8 +158,14 @@ jobs:
       # shortcodes into build failures. On a pull request that is the whole
       # point of this job; on a push to main the same output is what gets
       # published.
-      - name: Build
-        run: just docs
+      #
+      # Through check-doc-fragments rather than `just docs` directly: that
+      # recipe depends on this one, so the site is built exactly once and then
+      # swept for links to headings no page emits — the half relref validation
+      # does not reach (#867). The site it leaves behind is what `Upload site`
+      # below packages.
+      - name: Build the site and check its link fragments
+        run: just check-doc-fragments
 
       # Uploaded from this job rather than rebuilt in `deploy` because
       # docs/public is only complete when `just docs-javadoc` ran first, in

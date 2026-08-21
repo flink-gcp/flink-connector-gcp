@@ -44,6 +44,7 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just check-doc-snippets`: check and compile source-backed Java examples rendered in the docs,
   module READMEs, and public Javadoc.
 - `just test-java-snippet-shortcode`: test the Hugo shortcode against synthetic fixtures.
+- `just check-doc-fragments`: build the site and fail on a link to a heading no page emits.
 - `just lint`: lint scripts, workflows, rendered Markdown, and OpenTofu.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
@@ -76,6 +77,9 @@ green; use the clean-state procedures in that guide for such changes.
   not report. Only a public or protected field is linkable at all; where the sentence means
   internal state, write `{@code member}` rather than a link. `just check-javadoc-links` holds both,
   and its message carries the repair.
+- Renaming a heading on a docs page moves the anchor every inbound link points at, and neither
+  markdownlint nor Hugo's `relref` notices a link left behind (ADR-0126). `just check-doc-fragments`
+  holds every fragment, cross-page included, and its message carries the repair.
 - Option and metric inventories belong only in their reference/DataStream tables; use the matching
   `curate-*` skill when a checker fails.
 - Module `README.md` files are overviews: status table, minimal sample, docs link, and provenance.
