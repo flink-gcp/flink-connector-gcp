@@ -34,9 +34,9 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableRealGcpITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
-import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -121,10 +121,10 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                         .toArray(String[]::new);
         seedRows(table, expected);
         Instant end = Instant.now().plusSeconds(120);
-        ChangeStreamMutationDeserializationSchema deserializer =
-                new ChangeStreamMutationDeserializationSchema();
-        BigtableChangeStreamSource<ChangeStreamMutation> source =
-                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+        BigtableChangeStreamMutationDeserializationSchema deserializer =
+                new BigtableChangeStreamMutationDeserializationSchema();
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
+                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                         .table(table)
                         .appProfileId(APP_PROFILE)
                         .deserializer(deserializer)
@@ -175,7 +175,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         AtomicBoolean cancelledByDeadline = new AtomicBoolean();
 
         try {
-            try (CloseableIterator<ChangeStreamMutation> mutations =
+            try (CloseableIterator<BigtableChangeStreamMutation> mutations =
                     environment
                             .fromSource(source, WatermarkStrategy.noWatermarks(), "change-stream")
                             .map(new ObserveConcurrencyAndFailAfterCheckpoint())
@@ -230,14 +230,15 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
 
     /** Fails on the first mutation written after a checkpoint that included earlier mutations. */
     private static final class ObserveConcurrencyAndFailAfterCheckpoint
-            extends RichMapFunction<ChangeStreamMutation, ChangeStreamMutation>
+            extends RichMapFunction<BigtableChangeStreamMutation, BigtableChangeStreamMutation>
             implements CheckpointedFunction, CheckpointListener {
 
         private static final long serialVersionUID = 1L;
         private static final Map<Long, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
 
         @Override
-        public ChangeStreamMutation map(ChangeStreamMutation mutation) throws Exception {
+        public BigtableChangeStreamMutation map(BigtableChangeStreamMutation mutation)
+                throws Exception {
             int row = Integer.parseInt(mutation.getRowKey().toStringUtf8().substring(4));
             int tabletRange = Math.min(row / 25, 3);
             TABLET_RANGES_BY_SUBTASK

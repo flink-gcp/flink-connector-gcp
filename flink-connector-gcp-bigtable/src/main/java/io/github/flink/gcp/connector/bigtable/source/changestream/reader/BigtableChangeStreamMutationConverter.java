@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigtable.data.v2.models.AddToCell;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.DeleteCells;
 import com.google.cloud.bigtable.data.v2.models.DeleteFamily;
 import com.google.cloud.bigtable.data.v2.models.Entry;
@@ -26,8 +27,8 @@ import com.google.cloud.bigtable.data.v2.models.MergeToCell;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.cloud.bigtable.data.v2.models.SetCell;
 import com.google.cloud.bigtable.data.v2.models.Value;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 
 import javax.annotation.Nullable;
 
@@ -37,20 +38,19 @@ import java.util.List;
 
 /** Converts the pinned SDK mutation model to the connector-owned public model. */
 @Internal
-final class ChangeStreamMutationConverter {
+final class BigtableChangeStreamMutationConverter {
 
     private static final int FILTERED_ENTRY_INITIAL_CAPACITY = 16;
 
-    private ChangeStreamMutationConverter() {}
+    private BigtableChangeStreamMutationConverter() {}
 
-    static ChangeStreamMutation convert(
-            com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation mutation)
-            throws IOException {
-        List<ChangeStreamMutation.Entry> entries = new ArrayList<>(mutation.getEntries().size());
+    static BigtableChangeStreamMutation convert(ChangeStreamMutation mutation) throws IOException {
+        List<BigtableChangeStreamMutation.Entry> entries =
+                new ArrayList<>(mutation.getEntries().size());
         for (Entry entry : mutation.getEntries()) {
             entries.add(convertEntry(entry));
         }
-        return new ChangeStreamMutation(
+        return new BigtableChangeStreamMutation(
                 mutation.getRowKey(),
                 convertMutationType(mutation.getType()),
                 mutation.getSourceClusterId(),
@@ -62,11 +62,11 @@ final class ChangeStreamMutationConverter {
     }
 
     static Result convertFiltered(
-            com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation mutation,
-            BigtableChangeStreamMutationFilter filter)
+            ChangeStreamMutation mutation, BigtableChangeStreamMutationFilter filter)
             throws IOException {
-        ChangeStreamMutation.MutationType mutationType = convertMutationType(mutation.getType());
-        List<ChangeStreamMutation.Entry> entries = null;
+        BigtableChangeStreamMutation.MutationType mutationType =
+                convertMutationType(mutation.getType());
+        List<BigtableChangeStreamMutation.Entry> entries = null;
         long removedEntries = 0;
         for (Entry entry : mutation.getEntries()) {
             validateEntry(entry);
@@ -87,7 +87,7 @@ final class ChangeStreamMutationConverter {
             return Result.skipped(removedEntries);
         }
         return Result.deliver(
-                new ChangeStreamMutation(
+                new BigtableChangeStreamMutation(
                         mutation.getRowKey(),
                         mutationType,
                         mutation.getSourceClusterId(),
@@ -186,14 +186,13 @@ final class ChangeStreamMutationConverter {
         }
     }
 
-    private static ChangeStreamMutation.MutationType convertMutationType(
-            com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation.MutationType type)
-            throws IOException {
+    private static BigtableChangeStreamMutation.MutationType convertMutationType(
+            ChangeStreamMutation.MutationType type) throws IOException {
         switch (type) {
             case USER:
-                return ChangeStreamMutation.MutationType.USER;
+                return BigtableChangeStreamMutation.MutationType.USER;
             case GARBAGE_COLLECTION:
-                return ChangeStreamMutation.MutationType.GARBAGE_COLLECTION;
+                return BigtableChangeStreamMutation.MutationType.GARBAGE_COLLECTION;
             default:
                 throw new IOException(
                         "Unsupported Bigtable Change Streams mutation type: "
@@ -203,26 +202,26 @@ final class ChangeStreamMutationConverter {
         }
     }
 
-    private static ChangeStreamMutation.Entry convertEntry(Entry entry) throws IOException {
+    private static BigtableChangeStreamMutation.Entry convertEntry(Entry entry) throws IOException {
         if (entry instanceof SetCell) {
             SetCell set = (SetCell) entry;
-            return new ChangeStreamMutation.SetCellEntry(
+            return new BigtableChangeStreamMutation.SetCellEntry(
                     set.getFamilyName(), set.getQualifier(), set.getTimestamp(), set.getValue());
         }
         if (entry instanceof DeleteCells) {
             DeleteCells delete = (DeleteCells) entry;
-            return new ChangeStreamMutation.DeleteCellsEntry(
+            return new BigtableChangeStreamMutation.DeleteCellsEntry(
                     delete.getFamilyName(),
                     delete.getQualifier(),
                     convertRange(delete.getTimestampRange()));
         }
         if (entry instanceof DeleteFamily) {
-            return new ChangeStreamMutation.DeleteFamilyEntry(
+            return new BigtableChangeStreamMutation.DeleteFamilyEntry(
                     ((DeleteFamily) entry).getFamilyName());
         }
         if (entry instanceof AddToCell) {
             AddToCell add = (AddToCell) entry;
-            return new ChangeStreamMutation.AddToCellEntry(
+            return new BigtableChangeStreamMutation.AddToCellEntry(
                     add.getFamily(),
                     convertValue(add.getQualifier()),
                     convertValue(add.getTimestamp()),
@@ -230,7 +229,7 @@ final class ChangeStreamMutationConverter {
         }
         if (entry instanceof MergeToCell) {
             MergeToCell merge = (MergeToCell) entry;
-            return new ChangeStreamMutation.MergeToCellEntry(
+            return new BigtableChangeStreamMutation.MergeToCellEntry(
                     merge.getFamily(),
                     convertValue(merge.getQualifier()),
                     convertValue(merge.getTimestamp()),
@@ -239,38 +238,40 @@ final class ChangeStreamMutationConverter {
         throw unsupportedEntry(entry);
     }
 
-    private static ChangeStreamMutation.Value convertValue(Value value) throws IOException {
+    private static BigtableChangeStreamMutation.Value convertValue(Value value) throws IOException {
         if (value instanceof Value.RawValue) {
-            return new ChangeStreamMutation.RawValue(((Value.RawValue) value).getValue());
+            return new BigtableChangeStreamMutation.RawValue(((Value.RawValue) value).getValue());
         }
         if (value instanceof Value.RawTimestamp) {
-            return new ChangeStreamMutation.RawTimestamp(((Value.RawTimestamp) value).getValue());
+            return new BigtableChangeStreamMutation.RawTimestamp(
+                    ((Value.RawTimestamp) value).getValue());
         }
         if (value instanceof Value.IntValue) {
-            return new ChangeStreamMutation.Int64Value(((Value.IntValue) value).getValue());
+            return new BigtableChangeStreamMutation.Int64Value(((Value.IntValue) value).getValue());
         }
         throw unsupportedValue(value);
     }
 
-    private static ChangeStreamMutation.TimestampRange convertRange(Range.TimestampRange range) {
-        return new ChangeStreamMutation.TimestampRange(
+    private static BigtableChangeStreamMutation.TimestampRange convertRange(
+            Range.TimestampRange range) {
+        return new BigtableChangeStreamMutation.TimestampRange(
                 range.getStartBound() == Range.BoundType.UNBOUNDED
-                        ? ChangeStreamMutation.TimestampBound.unbounded()
+                        ? BigtableChangeStreamMutation.TimestampBound.unbounded()
                         : convertBound(range.getStartBound(), range.getStart()),
                 range.getEndBound() == Range.BoundType.UNBOUNDED
-                        ? ChangeStreamMutation.TimestampBound.unbounded()
+                        ? BigtableChangeStreamMutation.TimestampBound.unbounded()
                         : convertBound(range.getEndBound(), range.getEnd()));
     }
 
-    private static ChangeStreamMutation.TimestampBound convertBound(
+    private static BigtableChangeStreamMutation.TimestampBound convertBound(
             Range.BoundType type, long timestampMicros) {
         switch (type) {
             case OPEN:
-                return ChangeStreamMutation.TimestampBound.open(timestampMicros);
+                return BigtableChangeStreamMutation.TimestampBound.open(timestampMicros);
             case CLOSED:
-                return ChangeStreamMutation.TimestampBound.closed(timestampMicros);
+                return BigtableChangeStreamMutation.TimestampBound.closed(timestampMicros);
             case UNBOUNDED:
-                return ChangeStreamMutation.TimestampBound.unbounded();
+                return BigtableChangeStreamMutation.TimestampBound.unbounded();
             default:
                 throw new IllegalArgumentException("Unsupported Bigtable timestamp bound " + type);
         }
@@ -293,15 +294,15 @@ final class ChangeStreamMutationConverter {
     }
 
     static final class Result {
-        @Nullable private final ChangeStreamMutation mutation;
+        @Nullable private final BigtableChangeStreamMutation mutation;
         private final long removedEntries;
 
-        private Result(@Nullable ChangeStreamMutation mutation, long removedEntries) {
+        private Result(@Nullable BigtableChangeStreamMutation mutation, long removedEntries) {
             this.mutation = mutation;
             this.removedEntries = removedEntries;
         }
 
-        private static Result deliver(ChangeStreamMutation mutation, long removedEntries) {
+        private static Result deliver(BigtableChangeStreamMutation mutation, long removedEntries) {
             return new Result(mutation, removedEntries);
         }
 
@@ -313,7 +314,7 @@ final class ChangeStreamMutationConverter {
             return mutation == null;
         }
 
-        ChangeStreamMutation getMutation() {
+        BigtableChangeStreamMutation getMutation() {
             if (mutation == null) {
                 throw new IllegalStateException("A skipped result has no mutation");
             }

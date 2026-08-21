@@ -19,13 +19,13 @@ package io.github.flink.gcp.connector.bigtable.source;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DefaultChangeStreamRestoreResolver;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
-import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 
@@ -65,11 +65,11 @@ class BigtableSourceRuntimeCredentialsTest {
 
     @Test
     void changeStreamReaderAndEnumeratorLoadCredentialsAtRuntime() {
-        BigtableChangeStreamSource<ChangeStreamMutation> source =
-                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
+                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                         .table(TableDestination.of("p", "i", "t"))
                         .appProfileId("single-cluster")
-                        .deserializer(new ChangeStreamMutationDeserializationSchema())
+                        .deserializer(new BigtableChangeStreamMutationDeserializationSchema())
                         .serviceAccountKeyFile(MISSING_KEY)
                         .build();
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =

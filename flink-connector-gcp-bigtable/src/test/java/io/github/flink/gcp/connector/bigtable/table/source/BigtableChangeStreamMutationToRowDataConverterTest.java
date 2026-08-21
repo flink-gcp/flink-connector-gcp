@@ -24,7 +24,7 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Collector;
 
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -38,7 +38,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.entry;
 
-class ChangeStreamMutationToRowDataConverterTest {
+class BigtableChangeStreamMutationToRowDataConverterTest {
 
     @Test
     void readableMetadataHasStableTypesAndOrderWithoutProtocolState() {
@@ -56,16 +56,16 @@ class ChangeStreamMutationToRowDataConverterTest {
     void appendsSelectedMetadataInRequestedOrderAndPreservesNanoseconds() throws Exception {
         Instant commit = Instant.parse("2026-08-13T00:00:00.123456789Z");
         Instant watermark = Instant.parse("2026-08-12T23:59:00.987654321Z");
-        ChangeStreamMutation mutation =
+        BigtableChangeStreamMutation mutation =
                 mutationWithMetadata(
-                        ChangeStreamMutation.MutationType.USER,
+                        BigtableChangeStreamMutation.MutationType.USER,
                         "cluster-1",
                         commit,
                         7,
                         "private-token",
                         watermark);
-        ChangeStreamMutationRowDataDeserializationSchema schema =
-                new ChangeStreamMutationRowDataDeserializationSchema(
+        BigtableChangeStreamMutationRowDataDeserializationSchema schema =
+                new BigtableChangeStreamMutationRowDataDeserializationSchema(
                         new ChangeStreamReadableMetadata[] {
                             ChangeStreamReadableMetadata.ESTIMATED_LOW_WATERMARK,
                             ChangeStreamReadableMetadata.MUTATION_TYPE,
@@ -90,16 +90,16 @@ class ChangeStreamMutationToRowDataConverterTest {
 
     @Test
     void garbageCollectionMetadataHasNoSourceCluster() throws Exception {
-        ChangeStreamMutation mutation =
+        BigtableChangeStreamMutation mutation =
                 mutationWithMetadata(
-                        ChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
+                        BigtableChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
                         "",
                         Instant.parse("2026-08-13T00:00:00Z"),
                         3,
                         "private-token",
                         Instant.parse("2026-08-12T23:59:00Z"));
-        ChangeStreamMutationRowDataDeserializationSchema schema =
-                new ChangeStreamMutationRowDataDeserializationSchema(
+        BigtableChangeStreamMutationRowDataDeserializationSchema schema =
+                new BigtableChangeStreamMutationRowDataDeserializationSchema(
                         new ChangeStreamReadableMetadata[] {
                             ChangeStreamReadableMetadata.MUTATION_TYPE,
                             ChangeStreamReadableMetadata.SOURCE_CLUSTER_ID
@@ -116,8 +116,8 @@ class ChangeStreamMutationToRowDataConverterTest {
 
     @Test
     void preservesEveryConnectorEntryKindAndItsOrderedGenericValues() throws Exception {
-        ChangeStreamMutation mutation = mutationWithEveryEntryKind();
-        RowData envelope = new ChangeStreamMutationToRowDataConverter().convert(mutation);
+        BigtableChangeStreamMutation mutation = mutationWithEveryEntryKind();
+        RowData envelope = new BigtableChangeStreamMutationToRowDataConverter().convert(mutation);
         assertThat(envelope.getRowKind()).isEqualTo(RowKind.INSERT);
         assertThat(envelope.getBinary(0)).isEqualTo(ByteString.copyFromUtf8("row-1").toByteArray());
         ArrayData entries = envelope.getArray(1);
@@ -172,8 +172,8 @@ class ChangeStreamMutationToRowDataConverterTest {
     @Test
     void theSchemaCollectsOneConvertedMutationAndReportsItsProducedType() throws Exception {
         TypeInformation<RowData> producedType = TypeInformation.of(RowData.class);
-        ChangeStreamMutationRowDataDeserializationSchema schema =
-                new ChangeStreamMutationRowDataDeserializationSchema(producedType);
+        BigtableChangeStreamMutationRowDataDeserializationSchema schema =
+                new BigtableChangeStreamMutationRowDataDeserializationSchema(producedType);
         List<RowData> output = new ArrayList<>();
 
         schema.deserialize(mutationWithEveryEntryKind(), collectingInto(output));
@@ -181,27 +181,27 @@ class ChangeStreamMutationToRowDataConverterTest {
         assertThat(output)
                 .singleElement()
                 .isEqualTo(
-                        new ChangeStreamMutationToRowDataConverter()
+                        new BigtableChangeStreamMutationToRowDataConverter()
                                 .convert(mutationWithEveryEntryKind()));
         assertThat(schema.getProducedType()).isSameAs(producedType);
     }
 
     @Test
     void theSchemaSurvivesJavaSerialization() throws Exception {
-        ChangeStreamMutationRowDataDeserializationSchema schema =
-                new ChangeStreamMutationRowDataDeserializationSchema(
+        BigtableChangeStreamMutationRowDataDeserializationSchema schema =
+                new BigtableChangeStreamMutationRowDataDeserializationSchema(
                         new ChangeStreamReadableMetadata[] {
                             ChangeStreamReadableMetadata.ESTIMATED_LOW_WATERMARK,
                             ChangeStreamReadableMetadata.MUTATION_TYPE
                         },
                         TypeInformation.of(RowData.class));
 
-        ChangeStreamMutationRowDataDeserializationSchema copy = roundTrip(schema);
+        BigtableChangeStreamMutationRowDataDeserializationSchema copy = roundTrip(schema);
         List<RowData> output = new ArrayList<>();
         Instant watermark = Instant.parse("2026-08-12T23:59:00.987654321Z");
         copy.deserialize(
                 mutationWithMetadata(
-                        ChangeStreamMutation.MutationType.USER,
+                        BigtableChangeStreamMutation.MutationType.USER,
                         "cluster-1",
                         Instant.parse("2026-08-13T00:00:00.123456789Z"),
                         7,
@@ -222,10 +222,10 @@ class ChangeStreamMutationToRowDataConverterTest {
 
     @Test
     void theConverterSurvivesJavaSerialization() throws Exception {
-        ChangeStreamMutationToRowDataConverter converter =
-                new ChangeStreamMutationToRowDataConverter();
+        BigtableChangeStreamMutationToRowDataConverter converter =
+                new BigtableChangeStreamMutationToRowDataConverter();
 
-        ChangeStreamMutationToRowDataConverter copy = roundTrip(converter);
+        BigtableChangeStreamMutationToRowDataConverter copy = roundTrip(converter);
 
         assertThat(copy.convert(mutationWithEveryEntryKind()))
                 .isEqualTo(converter.convert(mutationWithEveryEntryKind()));
@@ -255,10 +255,11 @@ class ChangeStreamMutationToRowDataConverterTest {
         };
     }
 
-    private static ChangeStreamMutation mutationWithEntries(ChangeStreamMutation.Entry... entries) {
-        return new ChangeStreamMutation(
+    private static BigtableChangeStreamMutation mutationWithEntries(
+            BigtableChangeStreamMutation.Entry... entries) {
+        return new BigtableChangeStreamMutation(
                 ByteString.copyFromUtf8("row-1"),
-                ChangeStreamMutation.MutationType.USER,
+                BigtableChangeStreamMutation.MutationType.USER,
                 "cluster-1",
                 Instant.parse("2026-08-13T00:00:00Z"),
                 0,
@@ -267,15 +268,15 @@ class ChangeStreamMutationToRowDataConverterTest {
                 java.util.Arrays.asList(entries));
     }
 
-    private static ChangeStreamMutation mutationWithMetadata(
-            ChangeStreamMutation.MutationType type,
+    private static BigtableChangeStreamMutation mutationWithMetadata(
+            BigtableChangeStreamMutation.MutationType type,
             String sourceClusterId,
             Instant commitTime,
             int tieBreaker,
             String token,
             Instant estimatedLowWatermark) {
-        ChangeStreamMutation.Entry entry = mutationWithEveryEntryKind().getEntries().get(0);
-        return new ChangeStreamMutation(
+        BigtableChangeStreamMutation.Entry entry = mutationWithEveryEntryKind().getEntries().get(0);
+        return new BigtableChangeStreamMutation(
                 ByteString.copyFromUtf8("row-1"),
                 type,
                 sourceClusterId,
@@ -286,46 +287,46 @@ class ChangeStreamMutationToRowDataConverterTest {
                 java.util.Collections.singletonList(entry));
     }
 
-    private static ChangeStreamMutation mutationWithEveryEntryKind() {
-        return new ChangeStreamMutation(
+    private static BigtableChangeStreamMutation mutationWithEveryEntryKind() {
+        return new BigtableChangeStreamMutation(
                 ByteString.copyFromUtf8("row-1"),
-                ChangeStreamMutation.MutationType.USER,
+                BigtableChangeStreamMutation.MutationType.USER,
                 "cluster-1",
                 Instant.parse("2026-08-13T00:00:00Z"),
                 0,
                 "token",
                 Instant.parse("2026-08-12T23:59:00Z"),
                 java.util.Arrays.asList(
-                        new ChangeStreamMutation.SetCellEntry(
+                        new BigtableChangeStreamMutation.SetCellEntry(
                                 "family",
                                 ByteString.copyFromUtf8("qualifier"),
                                 123_456L,
                                 ByteString.copyFromUtf8("value")),
-                        new ChangeStreamMutation.DeleteCellsEntry(
+                        new BigtableChangeStreamMutation.DeleteCellsEntry(
                                 "family",
                                 ByteString.copyFromUtf8("qualifier"),
-                                new ChangeStreamMutation.TimestampRange(
-                                        ChangeStreamMutation.TimestampBound.closed(10L),
-                                        ChangeStreamMutation.TimestampBound.open(20L))),
-                        new ChangeStreamMutation.DeleteCellsEntry(
+                                new BigtableChangeStreamMutation.TimestampRange(
+                                        BigtableChangeStreamMutation.TimestampBound.closed(10L),
+                                        BigtableChangeStreamMutation.TimestampBound.open(20L))),
+                        new BigtableChangeStreamMutation.DeleteCellsEntry(
                                 "family",
                                 ByteString.copyFromUtf8("qualifier"),
-                                new ChangeStreamMutation.TimestampRange(
-                                        ChangeStreamMutation.TimestampBound.unbounded(),
-                                        ChangeStreamMutation.TimestampBound.unbounded())),
-                        new ChangeStreamMutation.DeleteFamilyEntry("family"),
-                        new ChangeStreamMutation.AddToCellEntry(
+                                new BigtableChangeStreamMutation.TimestampRange(
+                                        BigtableChangeStreamMutation.TimestampBound.unbounded(),
+                                        BigtableChangeStreamMutation.TimestampBound.unbounded())),
+                        new BigtableChangeStreamMutation.DeleteFamilyEntry("family"),
+                        new BigtableChangeStreamMutation.AddToCellEntry(
                                 "aggregate",
-                                new ChangeStreamMutation.RawValue(
+                                new BigtableChangeStreamMutation.RawValue(
                                         ByteString.copyFromUtf8("add-qualifier")),
-                                new ChangeStreamMutation.RawTimestamp(456_789L),
-                                new ChangeStreamMutation.Int64Value(7L)),
-                        new ChangeStreamMutation.MergeToCellEntry(
+                                new BigtableChangeStreamMutation.RawTimestamp(456_789L),
+                                new BigtableChangeStreamMutation.Int64Value(7L)),
+                        new BigtableChangeStreamMutation.MergeToCellEntry(
                                 "aggregate",
-                                new ChangeStreamMutation.RawValue(
+                                new BigtableChangeStreamMutation.RawValue(
                                         ByteString.copyFromUtf8("merge-qualifier")),
-                                new ChangeStreamMutation.RawTimestamp(987_654L),
-                                new ChangeStreamMutation.RawValue(
+                                new BigtableChangeStreamMutation.RawTimestamp(987_654L),
+                                new BigtableChangeStreamMutation.RawValue(
                                         ByteString.copyFromUtf8("fragment")))));
     }
 

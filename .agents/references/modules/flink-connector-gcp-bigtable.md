@@ -274,9 +274,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   reads to tell two partitions apart. The renderer is injective over every reachable bound shape and
   a test asserts that as a property; correctness does not rest on it, and must not be made to.
 - **The connector-owned mutation supplies its own tagged serializer.** It preserves all mutation
-  metadata and the ordered typed entries and values in the pinned 2.80.0 input model. Its `@TypeInfo`
-  annotation keeps later `TypeInformation.of(ChangeStreamMutation.class)` calls on that serializer
-  instead of reflective Kryo (#533, #586).
+  metadata and the ordered typed entries and values in the pinned 2.80.0 input model. Its
+  `@TypeInfo` annotation keeps later `TypeInformation.of(BigtableChangeStreamMutation.class)` calls
+  on that serializer instead of reflective Kryo (#533, #586).
+- **The connector-owned mutation is named for the product, and compares by value** (#921, #922). The
+  SDK owns the plain `ChangeStreamMutation` name, so every boundary between the two used to qualify
+  one of them; `BigtableChangeStreamMutation` lets both be imported. It carries `equals` and
+  `hashCode`, and **deliberately no `toString`** — the row key and cell values are the row's own
+  data, and the same rule already governs Spanner's `DataChangeRecord`. A redacting `toString`
+  rendering only sizes was considered and declined: redaction is a property of one implementation,
+  not an invariant, since no test can pin the absence of user data in a free-form string and every
+  later widening of it is individually plausible. Do not add one to either type without settling
+  both connectors together.
 - **Entry filters are output projection, not an RPC predicate.** Family and qualified-column regexes
   run on the complete SDK mutation before retained entries are converted for the user deserializer.
   Qualified columns match `family:` plus canonical padded standard Base64; family deletes bypass

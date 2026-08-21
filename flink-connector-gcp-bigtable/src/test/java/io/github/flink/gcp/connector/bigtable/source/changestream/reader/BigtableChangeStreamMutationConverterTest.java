@@ -16,14 +16,15 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecordAdapter.ChangeStreamRecordBuilder;
 import com.google.cloud.bigtable.data.v2.models.DefaultChangeStreamRecordAdapter;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.cloud.bigtable.data.v2.models.Value;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -33,7 +34,7 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class ChangeStreamMutationConverterTest {
+class BigtableChangeStreamMutationConverterTest {
 
     @Test
     void mapsEverySdkFieldEntryValueAndTimestampBound() throws Exception {
@@ -61,13 +62,13 @@ class ChangeStreamMutationConverterTest {
                 Value.rawTimestamp(16L),
                 Value.rawValue(ByteString.copyFromUtf8("input")));
 
-        ChangeStreamMutation mutation =
-                ChangeStreamMutationConverter.convert(
-                        (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
+        BigtableChangeStreamMutation mutation =
+                BigtableChangeStreamMutationConverter.convert(
+                        (ChangeStreamMutation)
                                 builder.finishChangeStreamMutation("token", lowWatermark));
 
         assertThat(mutation.getRowKey()).isEqualTo(ByteString.copyFromUtf8("row"));
-        assertThat(mutation.getType()).isEqualTo(ChangeStreamMutation.MutationType.USER);
+        assertThat(mutation.getType()).isEqualTo(BigtableChangeStreamMutation.MutationType.USER);
         assertThat(mutation.getSourceClusterId()).isEqualTo("cluster");
         assertThat(mutation.getCommitTime()).isEqualTo(commitTime);
         assertThat(mutation.getTieBreaker()).isEqualTo(7);
@@ -75,34 +76,36 @@ class ChangeStreamMutationConverterTest {
         assertThat(mutation.getEstimatedLowWatermarkTime()).isEqualTo(lowWatermark);
         assertThat(mutation.getEntries())
                 .containsExactly(
-                        new ChangeStreamMutation.SetCellEntry(
+                        new BigtableChangeStreamMutation.SetCellEntry(
                                 "set",
                                 ByteString.copyFromUtf8("q1"),
                                 11L,
                                 ByteString.copyFromUtf8("value")),
-                        new ChangeStreamMutation.DeleteCellsEntry(
+                        new BigtableChangeStreamMutation.DeleteCellsEntry(
                                 "delete",
                                 ByteString.copyFromUtf8("q2"),
-                                new ChangeStreamMutation.TimestampRange(
-                                        ChangeStreamMutation.TimestampBound.closed(12L),
-                                        ChangeStreamMutation.TimestampBound.open(13L))),
-                        new ChangeStreamMutation.DeleteCellsEntry(
+                                new BigtableChangeStreamMutation.TimestampRange(
+                                        BigtableChangeStreamMutation.TimestampBound.closed(12L),
+                                        BigtableChangeStreamMutation.TimestampBound.open(13L))),
+                        new BigtableChangeStreamMutation.DeleteCellsEntry(
                                 "delete",
                                 ByteString.copyFromUtf8("q3"),
-                                new ChangeStreamMutation.TimestampRange(
-                                        ChangeStreamMutation.TimestampBound.unbounded(),
-                                        ChangeStreamMutation.TimestampBound.unbounded())),
-                        new ChangeStreamMutation.DeleteFamilyEntry("family"),
-                        new ChangeStreamMutation.AddToCellEntry(
+                                new BigtableChangeStreamMutation.TimestampRange(
+                                        BigtableChangeStreamMutation.TimestampBound.unbounded(),
+                                        BigtableChangeStreamMutation.TimestampBound.unbounded())),
+                        new BigtableChangeStreamMutation.DeleteFamilyEntry("family"),
+                        new BigtableChangeStreamMutation.AddToCellEntry(
                                 "aggregate",
-                                new ChangeStreamMutation.RawValue(ByteString.copyFromUtf8("q4")),
-                                new ChangeStreamMutation.RawTimestamp(14L),
-                                new ChangeStreamMutation.Int64Value(15L)),
-                        new ChangeStreamMutation.MergeToCellEntry(
+                                new BigtableChangeStreamMutation.RawValue(
+                                        ByteString.copyFromUtf8("q4")),
+                                new BigtableChangeStreamMutation.RawTimestamp(14L),
+                                new BigtableChangeStreamMutation.Int64Value(15L)),
+                        new BigtableChangeStreamMutation.MergeToCellEntry(
                                 "aggregate",
-                                new ChangeStreamMutation.RawValue(ByteString.copyFromUtf8("q5")),
-                                new ChangeStreamMutation.RawTimestamp(16L),
-                                new ChangeStreamMutation.RawValue(
+                                new BigtableChangeStreamMutation.RawValue(
+                                        ByteString.copyFromUtf8("q5")),
+                                new BigtableChangeStreamMutation.RawTimestamp(16L),
+                                new BigtableChangeStreamMutation.RawValue(
                                         ByteString.copyFromUtf8("input"))));
     }
 
@@ -128,13 +131,13 @@ class ChangeStreamMutationConverterTest {
                 Value.rawTimestamp(6L),
                 Value.rawValue(ByteString.copyFromUtf8("input")));
 
-        ChangeStreamMutationConverter.Result result =
-                ChangeStreamMutationConverter.convertFiltered(
+        BigtableChangeStreamMutationConverter.Result result =
+                BigtableChangeStreamMutationConverter.convertFiltered(
                         finish(builder, lowWatermark), familyInclude("selected", false));
 
         assertThat(result.isSkipped()).isFalse();
         assertThat(result.getRemovedEntries()).isEqualTo(2);
-        ChangeStreamMutation mutation = result.getMutation();
+        BigtableChangeStreamMutation mutation = result.getMutation();
         assertThat(mutation.getRowKey()).isEqualTo(ByteString.copyFromUtf8("row"));
         assertThat(mutation.getSourceClusterId()).isEqualTo("cluster");
         assertThat(mutation.getCommitTime()).isEqualTo(commitTime);
@@ -143,18 +146,19 @@ class ChangeStreamMutationConverterTest {
         assertThat(mutation.getEstimatedLowWatermarkTime()).isEqualTo(lowWatermark);
         assertThat(mutation.getEntries())
                 .containsExactly(
-                        new ChangeStreamMutation.DeleteCellsEntry(
+                        new BigtableChangeStreamMutation.DeleteCellsEntry(
                                 "selected",
                                 ByteString.copyFromUtf8("a"),
-                                new ChangeStreamMutation.TimestampRange(
-                                        ChangeStreamMutation.TimestampBound.closed(2L),
-                                        ChangeStreamMutation.TimestampBound.open(3L))),
-                        new ChangeStreamMutation.DeleteFamilyEntry("selected"),
-                        new ChangeStreamMutation.MergeToCellEntry(
+                                new BigtableChangeStreamMutation.TimestampRange(
+                                        BigtableChangeStreamMutation.TimestampBound.closed(2L),
+                                        BigtableChangeStreamMutation.TimestampBound.open(3L))),
+                        new BigtableChangeStreamMutation.DeleteFamilyEntry("selected"),
+                        new BigtableChangeStreamMutation.MergeToCellEntry(
                                 "selected",
-                                new ChangeStreamMutation.RawValue(ByteString.copyFromUtf8("a")),
-                                new ChangeStreamMutation.RawTimestamp(6L),
-                                new ChangeStreamMutation.RawValue(
+                                new BigtableChangeStreamMutation.RawValue(
+                                        ByteString.copyFromUtf8("a")),
+                                new BigtableChangeStreamMutation.RawTimestamp(6L),
+                                new BigtableChangeStreamMutation.RawValue(
                                         ByteString.copyFromUtf8("input"))));
     }
 
@@ -164,8 +168,8 @@ class ChangeStreamMutationConverterTest {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder = builder(commitTime);
         builder.deleteFamily("excluded");
 
-        ChangeStreamMutationConverter.Result result =
-                ChangeStreamMutationConverter.convertFiltered(
+        BigtableChangeStreamMutationConverter.Result result =
+                BigtableChangeStreamMutationConverter.convertFiltered(
                         finish(builder, Instant.parse("2026-08-14T01:59:00Z")),
                         familyInclude("selected", true));
 
@@ -181,8 +185,8 @@ class ChangeStreamMutationConverterTest {
             throws Exception {
         Instant lowWatermark = Instant.parse("2026-08-14T02:14:00Z");
 
-        ChangeStreamMutationConverter.Result result =
-                ChangeStreamMutationConverter.convertFiltered(
+        BigtableChangeStreamMutationConverter.Result result =
+                BigtableChangeStreamMutationConverter.convertFiltered(
                         finish(builder(Instant.parse("2026-08-14T02:15:00Z")), lowWatermark),
                         familyInclude("selected", true));
 
@@ -214,19 +218,19 @@ class ChangeStreamMutationConverterTest {
                 Value.rawTimestamp(4L),
                 Value.rawValue(ByteString.copyFromUtf8("input")));
 
-        ChangeStreamMutationConverter.Result result =
-                ChangeStreamMutationConverter.convertFiltered(
+        BigtableChangeStreamMutationConverter.Result result =
+                BigtableChangeStreamMutationConverter.convertFiltered(
                         finish(builder, Instant.parse("2026-08-14T02:29:00Z")),
                         qualifierInclude("selected:YQ=="));
 
         assertThat(result.getRemovedEntries()).isEqualTo(1);
         assertThat(result.getMutation().getEntries())
-                .extracting(ChangeStreamMutation.Entry::getClass)
+                .extracting(BigtableChangeStreamMutation.Entry::getClass)
                 .containsExactly(
-                        ChangeStreamMutation.SetCellEntry.class,
-                        ChangeStreamMutation.DeleteCellsEntry.class,
-                        ChangeStreamMutation.DeleteFamilyEntry.class,
-                        ChangeStreamMutation.AddToCellEntry.class);
+                        BigtableChangeStreamMutation.SetCellEntry.class,
+                        BigtableChangeStreamMutation.DeleteCellsEntry.class,
+                        BigtableChangeStreamMutation.DeleteFamilyEntry.class,
+                        BigtableChangeStreamMutation.AddToCellEntry.class);
     }
 
     @Test
@@ -236,8 +240,8 @@ class ChangeStreamMutationConverterTest {
                 builder(Instant.parse("2026-08-14T03:00:00Z"));
         builder.deleteFamily("excluded");
 
-        ChangeStreamMutationConverter.Result result =
-                ChangeStreamMutationConverter.convertFiltered(
+        BigtableChangeStreamMutationConverter.Result result =
+                BigtableChangeStreamMutationConverter.convertFiltered(
                         finish(builder, lowWatermark), familyInclude("selected", false));
 
         assertThat(result.isSkipped()).isFalse();
@@ -254,10 +258,9 @@ class ChangeStreamMutationConverterTest {
         return builder;
     }
 
-    private static com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation finish(
+    private static ChangeStreamMutation finish(
             ChangeStreamRecordBuilder<ChangeStreamRecord> builder, Instant lowWatermark) {
-        return (com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation)
-                builder.finishChangeStreamMutation("token", lowWatermark);
+        return (ChangeStreamMutation) builder.finishChangeStreamMutation("token", lowWatermark);
     }
 
     private static BigtableChangeStreamMutationFilter familyInclude(String family, boolean skip) {

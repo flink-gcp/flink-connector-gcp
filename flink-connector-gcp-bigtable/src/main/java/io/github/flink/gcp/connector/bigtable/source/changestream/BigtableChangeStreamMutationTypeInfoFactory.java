@@ -26,22 +26,22 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import java.lang.reflect.Type;
 import java.util.Map;
 
-/** Supplies the connector-owned serializer for {@link ChangeStreamMutation}. */
+/** Supplies the connector-owned serializer for {@link BigtableChangeStreamMutation}. */
 @Internal
-public final class ChangeStreamMutationTypeInfoFactory
-        extends TypeInfoFactory<ChangeStreamMutation> {
+public final class BigtableChangeStreamMutationTypeInfoFactory
+        extends TypeInfoFactory<BigtableChangeStreamMutation> {
 
-    private static final TypeInformation<ChangeStreamMutation> TYPE_INFORMATION =
+    private static final TypeInformation<BigtableChangeStreamMutation> TYPE_INFORMATION =
             new MutationTypeInformation();
 
     @Override
-    public TypeInformation<ChangeStreamMutation> createTypeInfo(
+    public TypeInformation<BigtableChangeStreamMutation> createTypeInfo(
             Type type, Map<String, TypeInformation<?>> genericParameters) {
         return TYPE_INFORMATION;
     }
 
     private static final class MutationTypeInformation
-            extends TypeInformation<ChangeStreamMutation> {
+            extends TypeInformation<BigtableChangeStreamMutation> {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -65,8 +65,8 @@ public final class ChangeStreamMutationTypeInfoFactory
         }
 
         @Override
-        public Class<ChangeStreamMutation> getTypeClass() {
-            return ChangeStreamMutation.class;
+        public Class<BigtableChangeStreamMutation> getTypeClass() {
+            return BigtableChangeStreamMutation.class;
         }
 
         @Override
@@ -75,16 +75,16 @@ public final class ChangeStreamMutationTypeInfoFactory
         }
 
         @Override
-        public TypeSerializer<ChangeStreamMutation> createSerializer(
+        public TypeSerializer<BigtableChangeStreamMutation> createSerializer(
                 SerializerConfig serializerConfig) {
-            return new ChangeStreamMutationSerializer();
+            return new BigtableChangeStreamMutationSerializer();
         }
 
         /** Flink 1.20 entry point; Flink 2.x calls the SerializerConfig overload above. */
         @SuppressWarnings("deprecation")
-        public TypeSerializer<ChangeStreamMutation> createSerializer(
+        public TypeSerializer<BigtableChangeStreamMutation> createSerializer(
                 ExecutionConfig executionConfig) {
-            return new ChangeStreamMutationSerializer();
+            return new BigtableChangeStreamMutationSerializer();
         }
 
         @Override
@@ -104,7 +104,7 @@ public final class ChangeStreamMutationTypeInfoFactory
 
         @Override
         public String toString() {
-            return "ChangeStreamMutation";
+            return "BigtableChangeStreamMutation";
         }
     }
 }

@@ -20,8 +20,8 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutationSerializer;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationSerializer;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -31,7 +31,7 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class ChangeStreamMutationSerializerSnapshotTest {
+class BigtableChangeStreamMutationSerializerSnapshotTest {
 
     private static final byte[] VERSION_ONE_GOLDEN =
             Base64.getDecoder()
@@ -40,12 +40,12 @@ class ChangeStreamMutationSerializerSnapshotTest {
 
     @Test
     void roundTripsTheConnectorOwnedFormatSnapshot() throws Exception {
-        ChangeStreamMutationSerializer.Snapshot written =
-                new ChangeStreamMutationSerializer.Snapshot();
+        BigtableChangeStreamMutationSerializer.Snapshot written =
+                new BigtableChangeStreamMutationSerializer.Snapshot();
         DataOutputSerializer output = new DataOutputSerializer(32);
         written.writeSnapshot(output);
-        ChangeStreamMutationSerializer.Snapshot restored =
-                new ChangeStreamMutationSerializer.Snapshot();
+        BigtableChangeStreamMutationSerializer.Snapshot restored =
+                new BigtableChangeStreamMutationSerializer.Snapshot();
 
         restored.readSnapshot(
                 written.getCurrentVersion(),
@@ -54,15 +54,16 @@ class ChangeStreamMutationSerializerSnapshotTest {
 
         assertThat(
                         restored.resolveSchemaCompatibility(
-                                new ChangeStreamMutationSerializer.Snapshot()))
+                                new BigtableChangeStreamMutationSerializer.Snapshot()))
                 .matches(compatibility -> compatibility.isCompatibleAsIs());
-        assertThat(restored.restoreSerializer()).isInstanceOf(ChangeStreamMutationSerializer.class);
+        assertThat(restored.restoreSerializer())
+                .isInstanceOf(BigtableChangeStreamMutationSerializer.class);
     }
 
     @Test
     void rejectsAnUnknownSnapshotFormat() {
-        ChangeStreamMutationSerializer.Snapshot snapshot =
-                new ChangeStreamMutationSerializer.Snapshot();
+        BigtableChangeStreamMutationSerializer.Snapshot snapshot =
+                new BigtableChangeStreamMutationSerializer.Snapshot();
 
         assertThatThrownBy(
                         () ->
@@ -76,63 +77,60 @@ class ChangeStreamMutationSerializerSnapshotTest {
 
     @Test
     void versionOnePayloadRemainsReadableAndStable() throws Exception {
-        ChangeStreamMutation expected =
-                new ChangeStreamMutation(
+        BigtableChangeStreamMutation expected =
+                new BigtableChangeStreamMutation(
                         ByteString.copyFrom(new byte[] {0, (byte) 0xff}),
-                        ChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
+                        BigtableChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
                         "c",
                         Instant.ofEpochSecond(-1, 123),
                         -7,
                         "t",
                         Instant.ofEpochSecond(2, 456),
                         Arrays.asList(
-                                new ChangeStreamMutation.SetCellEntry(
+                                new BigtableChangeStreamMutation.SetCellEntry(
                                         "s",
                                         ByteString.copyFrom(new byte[] {1, 2}),
                                         -11L,
                                         ByteString.copyFrom(new byte[] {3, 4, 5})),
-                                new ChangeStreamMutation.DeleteCellsEntry(
+                                new BigtableChangeStreamMutation.DeleteCellsEntry(
                                         "d",
                                         ByteString.copyFrom(new byte[] {6}),
-                                        new ChangeStreamMutation.TimestampRange(
-                                                ChangeStreamMutation.TimestampBound.open(12L),
-                                                ChangeStreamMutation.TimestampBound.closed(13L))),
-                                new ChangeStreamMutation.DeleteCellsEntry(
+                                        new BigtableChangeStreamMutation.TimestampRange(
+                                                BigtableChangeStreamMutation.TimestampBound.open(
+                                                        12L),
+                                                BigtableChangeStreamMutation.TimestampBound.closed(
+                                                        13L))),
+                                new BigtableChangeStreamMutation.DeleteCellsEntry(
                                         "u",
                                         ByteString.EMPTY,
-                                        new ChangeStreamMutation.TimestampRange(
-                                                ChangeStreamMutation.TimestampBound.unbounded(),
-                                                ChangeStreamMutation.TimestampBound.unbounded())),
-                                new ChangeStreamMutation.DeleteFamilyEntry("f"),
-                                new ChangeStreamMutation.AddToCellEntry(
+                                        new BigtableChangeStreamMutation.TimestampRange(
+                                                BigtableChangeStreamMutation.TimestampBound
+                                                        .unbounded(),
+                                                BigtableChangeStreamMutation.TimestampBound
+                                                        .unbounded())),
+                                new BigtableChangeStreamMutation.DeleteFamilyEntry("f"),
+                                new BigtableChangeStreamMutation.AddToCellEntry(
                                         "a",
-                                        new ChangeStreamMutation.RawValue(
+                                        new BigtableChangeStreamMutation.RawValue(
                                                 ByteString.copyFrom(new byte[] {7})),
-                                        new ChangeStreamMutation.RawTimestamp(14L),
-                                        new ChangeStreamMutation.Int64Value(15L)),
-                                new ChangeStreamMutation.MergeToCellEntry(
+                                        new BigtableChangeStreamMutation.RawTimestamp(14L),
+                                        new BigtableChangeStreamMutation.Int64Value(15L)),
+                                new BigtableChangeStreamMutation.MergeToCellEntry(
                                         "m",
-                                        new ChangeStreamMutation.RawValue(
+                                        new BigtableChangeStreamMutation.RawValue(
                                                 ByteString.copyFrom(new byte[] {8})),
-                                        new ChangeStreamMutation.RawTimestamp(16L),
-                                        new ChangeStreamMutation.RawValue(
+                                        new BigtableChangeStreamMutation.RawTimestamp(16L),
+                                        new BigtableChangeStreamMutation.RawValue(
                                                 ByteString.copyFrom(new byte[] {9, 10})))));
-        ChangeStreamMutationSerializer serializer = new ChangeStreamMutationSerializer();
+        BigtableChangeStreamMutationSerializer serializer =
+                new BigtableChangeStreamMutationSerializer();
 
-        ChangeStreamMutation restored =
+        BigtableChangeStreamMutation restored =
                 serializer.deserialize(new DataInputDeserializer(VERSION_ONE_GOLDEN));
         DataOutputSerializer serialized = new DataOutputSerializer(VERSION_ONE_GOLDEN.length);
         serializer.serialize(expected, serialized);
 
-        assertThat(restored.getRowKey()).isEqualTo(expected.getRowKey());
-        assertThat(restored.getType()).isEqualTo(expected.getType());
-        assertThat(restored.getSourceClusterId()).isEqualTo(expected.getSourceClusterId());
-        assertThat(restored.getCommitTime()).isEqualTo(expected.getCommitTime());
-        assertThat(restored.getTieBreaker()).isEqualTo(expected.getTieBreaker());
-        assertThat(restored.getToken()).isEqualTo(expected.getToken());
-        assertThat(restored.getEstimatedLowWatermarkTime())
-                .isEqualTo(expected.getEstimatedLowWatermarkTime());
-        assertThat(restored.getEntries()).containsExactlyElementsOf(expected.getEntries());
+        assertThat(restored).isEqualTo(expected);
         assertThat(serialized.getCopyOfBuffer()).isEqualTo(VERSION_ONE_GOLDEN);
     }
 }

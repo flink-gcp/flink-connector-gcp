@@ -21,20 +21,20 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 
 final class BigtableConnectorChangeStreamTypeInformation {
 
     private BigtableConnectorChangeStreamTypeInformation() {}
 
-    static DataStream<ChangeStreamMutation> build(
+    static DataStream<BigtableChangeStreamMutation> build(
             StreamExecutionEnvironment env,
-            BigtableChangeStreamSource<ChangeStreamMutation> source) {
+            BigtableChangeStreamSource<BigtableChangeStreamMutation> source) {
         // tag::bigtable-connector-change-stream-type-information[]
-        ChangeStreamMutationDeserializationSchema mutations =
-                new ChangeStreamMutationDeserializationSchema();
-        DataStream<ChangeStreamMutation> transformed =
+        BigtableChangeStreamMutationDeserializationSchema mutations =
+                new BigtableChangeStreamMutationDeserializationSchema();
+        DataStream<BigtableChangeStreamMutation> transformed =
                 env.fromSource(source, WatermarkStrategy.noWatermarks(), "bigtable-change-stream")
                         .map(mutation -> mutation)
                         .returns(mutations.getProducedType());

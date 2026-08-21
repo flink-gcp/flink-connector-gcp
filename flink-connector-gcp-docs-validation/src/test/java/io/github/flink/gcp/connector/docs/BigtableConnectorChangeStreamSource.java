@@ -23,8 +23,8 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 
 import java.util.List;
 
@@ -32,20 +32,20 @@ final class BigtableConnectorChangeStreamSource {
 
     private BigtableConnectorChangeStreamSource() {}
 
-    static DataStream<ChangeStreamMutation> build(StreamExecutionEnvironment env) {
+    static DataStream<BigtableChangeStreamMutation> build(StreamExecutionEnvironment env) {
         // tag::bigtable-connector-change-stream-source[]
-        BigtableChangeStreamSource<ChangeStreamMutation> source =
-                BigtableChangeStreamSource.<ChangeStreamMutation>builder()
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
+                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
                         .table(TableDestination.of("my-project", "my-instance", "orders"))
                         .appProfileId("orders-change-stream")
-                        .deserializer(new ChangeStreamMutationDeserializationSchema())
+                        .deserializer(new BigtableChangeStreamMutationDeserializationSchema())
                         .startPosition(StartPosition.latest())
                         .familyIncludeList(List.of("orders", "audit"))
                         .qualifierExcludeList(List.of("orders:dGVtcG9yYXJ5"))
                         .maxConcurrentStreamsPerSubtask(4)
                         .build();
 
-        DataStream<ChangeStreamMutation> changes =
+        DataStream<BigtableChangeStreamMutation> changes =
                 env.fromSource(source, WatermarkStrategy.noWatermarks(), "bigtable-change-stream")
                         .setParallelism(3);
         // end::bigtable-connector-change-stream-source[]

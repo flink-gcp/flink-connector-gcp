@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 import org.apache.flink.annotation.Internal;
 
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
 import javax.annotation.Nullable;
 
@@ -75,14 +75,14 @@ final class SelectedCellMutationClassifier implements Serializable {
         this.sourceClusterId = Objects.requireNonNull(sourceClusterId);
     }
 
-    Result classify(ChangeStreamMutation mutation) throws IOException {
+    Result classify(BigtableChangeStreamMutation mutation) throws IOException {
         boolean deleted = false;
         @Nullable ByteString value = null;
 
-        for (ChangeStreamMutation.Entry entry : mutation.getEntries()) {
-            if (entry instanceof ChangeStreamMutation.DeleteCellsEntry) {
-                ChangeStreamMutation.DeleteCellsEntry delete =
-                        (ChangeStreamMutation.DeleteCellsEntry) entry;
+        for (BigtableChangeStreamMutation.Entry entry : mutation.getEntries()) {
+            if (entry instanceof BigtableChangeStreamMutation.DeleteCellsEntry) {
+                BigtableChangeStreamMutation.DeleteCellsEntry delete =
+                        (BigtableChangeStreamMutation.DeleteCellsEntry) entry;
                 if (!isSelected(delete.getFamilyName(), delete.getQualifier())) {
                     continue;
                 }
@@ -99,9 +99,9 @@ final class SelectedCellMutationClassifier implements Serializable {
                 deleted = true;
                 continue;
             }
-            if (entry instanceof ChangeStreamMutation.DeleteFamilyEntry) {
-                ChangeStreamMutation.DeleteFamilyEntry delete =
-                        (ChangeStreamMutation.DeleteFamilyEntry) entry;
+            if (entry instanceof BigtableChangeStreamMutation.DeleteFamilyEntry) {
+                BigtableChangeStreamMutation.DeleteFamilyEntry delete =
+                        (BigtableChangeStreamMutation.DeleteFamilyEntry) entry;
                 if (!family.equals(delete.getFamilyName())) {
                     continue;
                 }
@@ -114,8 +114,9 @@ final class SelectedCellMutationClassifier implements Serializable {
                 deleted = true;
                 continue;
             }
-            if (entry instanceof ChangeStreamMutation.SetCellEntry) {
-                ChangeStreamMutation.SetCellEntry set = (ChangeStreamMutation.SetCellEntry) entry;
+            if (entry instanceof BigtableChangeStreamMutation.SetCellEntry) {
+                BigtableChangeStreamMutation.SetCellEntry set =
+                        (BigtableChangeStreamMutation.SetCellEntry) entry;
                 if (!isSelected(set.getFamilyName(), set.getQualifier())) {
                     continue;
                 }
@@ -128,18 +129,18 @@ final class SelectedCellMutationClassifier implements Serializable {
                 value = set.getValue();
                 continue;
             }
-            if (entry instanceof ChangeStreamMutation.AddToCellEntry) {
-                ChangeStreamMutation.AddToCellEntry add =
-                        (ChangeStreamMutation.AddToCellEntry) entry;
+            if (entry instanceof BigtableChangeStreamMutation.AddToCellEntry) {
+                BigtableChangeStreamMutation.AddToCellEntry add =
+                        (BigtableChangeStreamMutation.AddToCellEntry) entry;
                 if (couldSelect(add.getFamilyName(), add.getQualifier())) {
                     validateHeader(mutation);
                     throw protocolFailure("AddToCell cannot encode a complete logical row");
                 }
                 continue;
             }
-            if (entry instanceof ChangeStreamMutation.MergeToCellEntry) {
-                ChangeStreamMutation.MergeToCellEntry merge =
-                        (ChangeStreamMutation.MergeToCellEntry) entry;
+            if (entry instanceof BigtableChangeStreamMutation.MergeToCellEntry) {
+                BigtableChangeStreamMutation.MergeToCellEntry merge =
+                        (BigtableChangeStreamMutation.MergeToCellEntry) entry;
                 if (couldSelect(merge.getFamilyName(), merge.getQualifier())) {
                     validateHeader(mutation);
                     throw protocolFailure("MergeToCell cannot encode a complete logical row");
@@ -161,21 +162,23 @@ final class SelectedCellMutationClassifier implements Serializable {
         return family.equals(entryFamily) && qualifier.equals(entryQualifier);
     }
 
-    private boolean couldSelect(String entryFamily, ChangeStreamMutation.Value entryQualifier) {
+    private boolean couldSelect(
+            String entryFamily, BigtableChangeStreamMutation.Value entryQualifier) {
         if (!family.equals(entryFamily)) {
             return false;
         }
-        return !(entryQualifier instanceof ChangeStreamMutation.RawValue)
-                || qualifier.equals(((ChangeStreamMutation.RawValue) entryQualifier).getValue());
+        return !(entryQualifier instanceof BigtableChangeStreamMutation.RawValue)
+                || qualifier.equals(
+                        ((BigtableChangeStreamMutation.RawValue) entryQualifier).getValue());
     }
 
-    private static boolean isUnbounded(ChangeStreamMutation.TimestampRange range) {
-        return range.getStart().getType() == ChangeStreamMutation.BoundType.UNBOUNDED
-                && range.getEnd().getType() == ChangeStreamMutation.BoundType.UNBOUNDED;
+    private static boolean isUnbounded(BigtableChangeStreamMutation.TimestampRange range) {
+        return range.getStart().getType() == BigtableChangeStreamMutation.BoundType.UNBOUNDED
+                && range.getEnd().getType() == BigtableChangeStreamMutation.BoundType.UNBOUNDED;
     }
 
-    private void validateHeader(ChangeStreamMutation mutation) throws IOException {
-        if (mutation.getType() != ChangeStreamMutation.MutationType.USER) {
+    private void validateHeader(BigtableChangeStreamMutation mutation) throws IOException {
+        if (mutation.getType() != BigtableChangeStreamMutation.MutationType.USER) {
             throw protocolFailure(
                     "a garbage-collection mutation affects the selected cell or family");
         }

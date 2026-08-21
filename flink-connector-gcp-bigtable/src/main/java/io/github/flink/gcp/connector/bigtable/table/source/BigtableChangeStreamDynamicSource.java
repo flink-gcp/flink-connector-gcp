@@ -201,7 +201,7 @@ public final class BigtableChangeStreamDynamicSource
                         .appProfileId(appProfileId);
         if (changelogMode == ChangeStreamChangelogMode.ENVELOPE) {
             builder.deserializer(
-                    new ChangeStreamMutationRowDataDeserializationSchema(
+                    new BigtableChangeStreamMutationRowDataDeserializationSchema(
                             selectedMetadata, typeInformation));
         } else {
             DeserializationSchema<RowData> payloadDeserializer =

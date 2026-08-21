@@ -28,7 +28,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
@@ -78,7 +78,7 @@ final class SelectedCellRowDataDeserializationSchema
     }
 
     @Override
-    public void deserialize(ChangeStreamMutation mutation, Collector<RowData> out)
+    public void deserialize(BigtableChangeStreamMutation mutation, Collector<RowData> out)
             throws IOException {
         SelectedCellMutationClassifier.Result result = classifier.classify(mutation);
         if (result.getKind() == SelectedCellMutationClassifier.Kind.UNRELATED) {

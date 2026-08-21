@@ -668,7 +668,7 @@ Adding slots or TaskManagers alone does not change partition concurrency when so
 A parallelism change takes effect through a checkpoint or savepoint restart, when Flink redistributes the checkpointed partition splits.
 
 The source converts the client library's internal record into the connector-owned immutable
-`ChangeStreamMutation` before invoking the deserializer.
+`BigtableChangeStreamMutation` before invoking the deserializer.
 With output filters, only retained SDK entries are converted; an explicitly skipped empty
 projection is not materialized as a public mutation.
 With no output filter, filter evaluation is bypassed, although the public-model conversion still
@@ -676,8 +676,14 @@ occurs.
 The model preserves the row key, mutation type, source cluster, commit timestamp, tie breaker,
 continuation token, estimated low watermark, and every ordered `SetCell`, `DeleteCells`,
 `DeleteFamily`, `AddToCell`, and `MergeToCell` entry the client returns.
+Mutations are immutable and compare by value, so two of them can be compared, put in a set, or
+asserted on directly.
+They deliberately have no `toString`: the row key and the cell values are your own table data, and a
+value type that renders them is one accidental log line away from putting that data somewhere it
+does not belong.
+Print what you choose through the accessors.
 Its Flink type information selects the connector serializer even when a later transformation asks
-for `TypeInformation.of(ChangeStreamMutation.class)`.
+for `TypeInformation.of(BigtableChangeStreamMutation.class)`.
 An explicit `.returns(...)` remains useful when a transformation erases its declared output type:
 
 {{< java-snippet file="BigtableConnectorChangeStreamTypeInformation.java" tag="bigtable-connector-change-stream-type-information" >}}

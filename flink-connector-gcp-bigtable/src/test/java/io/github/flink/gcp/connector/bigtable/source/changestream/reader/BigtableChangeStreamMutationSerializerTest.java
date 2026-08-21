@@ -23,9 +23,9 @@ import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutationSerializer;
-import io.github.flink.gcp.connector.bigtable.source.serializer.ChangeStreamMutationDeserializationSchema;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationSerializer;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -38,123 +38,115 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class ChangeStreamMutationSerializerTest {
+class BigtableChangeStreamMutationSerializerTest {
 
     @Test
     void theBuiltInSchemaRoundTripsEveryConnectorOwnedEntryAndValueKind() throws Exception {
-        ChangeStreamMutation mutation =
-                new ChangeStreamMutation(
+        BigtableChangeStreamMutation mutation =
+                new BigtableChangeStreamMutation(
                         ByteString.copyFromUtf8("row"),
-                        ChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
+                        BigtableChangeStreamMutation.MutationType.GARBAGE_COLLECTION,
                         "cluster",
                         Instant.parse("2026-08-12T00:00:00.123456789Z"),
                         7,
                         "token",
                         Instant.parse("2026-08-11T23:59:00.987654321Z"),
                         Arrays.asList(
-                                new ChangeStreamMutation.SetCellEntry(
+                                new BigtableChangeStreamMutation.SetCellEntry(
                                         "set",
                                         ByteString.copyFromUtf8("q1"),
                                         11L,
                                         ByteString.copyFromUtf8("value")),
-                                new ChangeStreamMutation.DeleteCellsEntry(
+                                new BigtableChangeStreamMutation.DeleteCellsEntry(
                                         "delete",
                                         ByteString.copyFromUtf8("q2"),
-                                        new ChangeStreamMutation.TimestampRange(
-                                                ChangeStreamMutation.TimestampBound.open(12L),
-                                                ChangeStreamMutation.TimestampBound.closed(13L))),
-                                new ChangeStreamMutation.DeleteCellsEntry(
+                                        new BigtableChangeStreamMutation.TimestampRange(
+                                                BigtableChangeStreamMutation.TimestampBound.open(
+                                                        12L),
+                                                BigtableChangeStreamMutation.TimestampBound.closed(
+                                                        13L))),
+                                new BigtableChangeStreamMutation.DeleteCellsEntry(
                                         "delete-unbounded",
                                         ByteString.EMPTY,
-                                        new ChangeStreamMutation.TimestampRange(
-                                                ChangeStreamMutation.TimestampBound.unbounded(),
-                                                ChangeStreamMutation.TimestampBound.unbounded())),
-                                new ChangeStreamMutation.DeleteFamilyEntry("family"),
-                                new ChangeStreamMutation.AddToCellEntry(
+                                        new BigtableChangeStreamMutation.TimestampRange(
+                                                BigtableChangeStreamMutation.TimestampBound
+                                                        .unbounded(),
+                                                BigtableChangeStreamMutation.TimestampBound
+                                                        .unbounded())),
+                                new BigtableChangeStreamMutation.DeleteFamilyEntry("family"),
+                                new BigtableChangeStreamMutation.AddToCellEntry(
                                         "aggregate",
-                                        new ChangeStreamMutation.RawValue(
+                                        new BigtableChangeStreamMutation.RawValue(
                                                 ByteString.copyFromUtf8("q3")),
-                                        new ChangeStreamMutation.RawTimestamp(14L),
-                                        new ChangeStreamMutation.Int64Value(15L)),
-                                new ChangeStreamMutation.MergeToCellEntry(
+                                        new BigtableChangeStreamMutation.RawTimestamp(14L),
+                                        new BigtableChangeStreamMutation.Int64Value(15L)),
+                                new BigtableChangeStreamMutation.MergeToCellEntry(
                                         "aggregate",
-                                        new ChangeStreamMutation.RawValue(
+                                        new BigtableChangeStreamMutation.RawValue(
                                                 ByteString.copyFromUtf8("q4")),
-                                        new ChangeStreamMutation.RawTimestamp(16L),
-                                        new ChangeStreamMutation.RawValue(
+                                        new BigtableChangeStreamMutation.RawTimestamp(16L),
+                                        new BigtableChangeStreamMutation.RawValue(
                                                 ByteString.copyFromUtf8("input")))));
-        TypeSerializer<ChangeStreamMutation> serializer =
-                new ChangeStreamMutationDeserializationSchema()
+        TypeSerializer<BigtableChangeStreamMutation> serializer =
+                new BigtableChangeStreamMutationDeserializationSchema()
                         .getProducedType()
                         .createSerializer(new SerializerConfigImpl());
 
-        assertThat(serializer).isInstanceOf(ChangeStreamMutationSerializer.class);
+        assertThat(serializer).isInstanceOf(BigtableChangeStreamMutationSerializer.class);
         assertThat(serializer.copy(mutation)).isSameAs(mutation);
 
         DataOutputSerializer output = new DataOutputSerializer(256);
         serializer.serialize(mutation, output);
-        ChangeStreamMutation restored =
+        BigtableChangeStreamMutation restored =
                 serializer.deserialize(new DataInputDeserializer(output.getCopyOfBuffer()));
 
-        assertThat(restored.getRowKey()).isEqualTo(mutation.getRowKey());
-        assertThat(restored.getType()).isEqualTo(mutation.getType());
+        assertThat(restored).isEqualTo(mutation);
+        // Anchored against literals rather than against `mutation`, so the round trip is pinned to
+        // the values that were meant to go on the wire and not merely to whatever was constructed.
         assertThat(restored.getSourceClusterId()).isEqualTo("cluster");
-        assertThat(restored.getCommitTime()).isEqualTo(mutation.getCommitTime());
         assertThat(restored.getTieBreaker()).isEqualTo(7);
-        assertThat(restored.getEstimatedLowWatermarkTime())
-                .isEqualTo(mutation.getEstimatedLowWatermarkTime());
         assertThat(restored.getToken()).isEqualTo("token");
-        assertThat(restored.getEntries()).containsExactlyElementsOf(mutation.getEntries());
 
         DataOutputSerializer copiedOutput = new DataOutputSerializer(256);
         serializer.copy(new DataInputDeserializer(output.getCopyOfBuffer()), copiedOutput);
-        ChangeStreamMutation copied =
+        BigtableChangeStreamMutation copied =
                 serializer.deserialize(new DataInputDeserializer(copiedOutput.getCopyOfBuffer()));
-        assertThat(copied.getEntries()).containsExactlyElementsOf(mutation.getEntries());
-        assertThat(copied.getRowKey()).isEqualTo(mutation.getRowKey());
-        assertThat(copied.getType()).isEqualTo(mutation.getType());
-        assertThat(copied.getSourceClusterId()).isEqualTo(mutation.getSourceClusterId());
-        assertThat(copied.getCommitTime()).isEqualTo(mutation.getCommitTime());
-        assertThat(copied.getTieBreaker()).isEqualTo(mutation.getTieBreaker());
-        assertThat(copied.getToken()).isEqualTo(mutation.getToken());
-        assertThat(copied.getEstimatedLowWatermarkTime())
-                .isEqualTo(mutation.getEstimatedLowWatermarkTime());
+        assertThat(copied).isEqualTo(mutation);
     }
 
     @Test
     void roundTripsAnEmptyProjectedMutation() throws Exception {
-        ChangeStreamMutation mutation =
-                new ChangeStreamMutation(
+        BigtableChangeStreamMutation mutation =
+                new BigtableChangeStreamMutation(
                         ByteString.copyFromUtf8("row"),
-                        ChangeStreamMutation.MutationType.USER,
+                        BigtableChangeStreamMutation.MutationType.USER,
                         "cluster",
                         Instant.EPOCH,
                         0,
                         "token",
                         Instant.EPOCH,
                         Collections.emptyList());
-        TypeSerializer<ChangeStreamMutation> serializer =
-                TypeInformation.of(ChangeStreamMutation.class)
+        TypeSerializer<BigtableChangeStreamMutation> serializer =
+                TypeInformation.of(BigtableChangeStreamMutation.class)
                         .createSerializer(new SerializerConfigImpl());
         DataOutputSerializer output = new DataOutputSerializer(128);
 
         serializer.serialize(mutation, output);
-        ChangeStreamMutation restored =
+        BigtableChangeStreamMutation restored =
                 serializer.deserialize(new DataInputDeserializer(output.getCopyOfBuffer()));
 
         assertThat(restored.getEntries()).isEmpty();
-        assertThat(restored.getRowKey()).isEqualTo(mutation.getRowKey());
-        assertThat(restored.getToken()).isEqualTo(mutation.getToken());
+        assertThat(restored).isEqualTo(mutation);
     }
 
     @Test
     void mutationDefensivelyCopiesAndExposesAnUnmodifiableEntryList() {
-        List<ChangeStreamMutation.Entry> entries = new ArrayList<>();
-        entries.add(new ChangeStreamMutation.DeleteFamilyEntry("original"));
-        ChangeStreamMutation mutation =
-                new ChangeStreamMutation(
+        List<BigtableChangeStreamMutation.Entry> entries = new ArrayList<>();
+        entries.add(new BigtableChangeStreamMutation.DeleteFamilyEntry("original"));
+        BigtableChangeStreamMutation mutation =
+                new BigtableChangeStreamMutation(
                         ByteString.copyFromUtf8("row"),
-                        ChangeStreamMutation.MutationType.USER,
+                        BigtableChangeStreamMutation.MutationType.USER,
                         "cluster",
                         Instant.EPOCH,
                         0,
@@ -162,10 +154,10 @@ class ChangeStreamMutationSerializerTest {
                         Instant.EPOCH,
                         entries);
 
-        entries.add(new ChangeStreamMutation.DeleteFamilyEntry("later"));
+        entries.add(new BigtableChangeStreamMutation.DeleteFamilyEntry("later"));
 
         assertThat(mutation.getEntries())
-                .extracting(ChangeStreamMutation.Entry::getFamilyName)
+                .extracting(BigtableChangeStreamMutation.Entry::getFamilyName)
                 .containsExactly("original");
         assertThatThrownBy(() -> mutation.getEntries().clear())
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -179,22 +171,23 @@ class ChangeStreamMutationSerializerTest {
         Arrays.fill(rowKey, (byte) 1);
         Arrays.fill(qualifier, (byte) 2);
         Arrays.fill(value, (byte) 3);
-        ChangeStreamMutation mutation =
-                new ChangeStreamMutation(
+        BigtableChangeStreamMutation mutation =
+                new BigtableChangeStreamMutation(
                         ByteString.copyFrom(rowKey),
-                        ChangeStreamMutation.MutationType.USER,
+                        BigtableChangeStreamMutation.MutationType.USER,
                         "cluster",
                         Instant.EPOCH,
                         0,
                         "token",
                         Instant.EPOCH,
                         Collections.singletonList(
-                                new ChangeStreamMutation.SetCellEntry(
+                                new BigtableChangeStreamMutation.SetCellEntry(
                                         "family",
                                         ByteString.copyFrom(qualifier),
                                         1L,
                                         ByteString.copyFrom(value))));
-        ChangeStreamMutationSerializer serializer = new ChangeStreamMutationSerializer();
+        BigtableChangeStreamMutationSerializer serializer =
+                new BigtableChangeStreamMutationSerializer();
         DataOutputSerializer serialized = new DataOutputSerializer(256);
         serializer.serialize(mutation, serialized);
         DataOutputSerializer copied = new DataOutputSerializer(256);
@@ -202,10 +195,9 @@ class ChangeStreamMutationSerializerTest {
         serializer.copy(new DataInputDeserializer(serialized.getCopyOfBuffer()), copied);
 
         assertThat(copied.getCopyOfBuffer()).isEqualTo(serialized.getCopyOfBuffer());
-        ChangeStreamMutation restored =
+        BigtableChangeStreamMutation restored =
                 serializer.deserialize(new DataInputDeserializer(copied.getCopyOfBuffer()));
-        assertThat(restored.getRowKey()).isEqualTo(mutation.getRowKey());
-        assertThat(restored.getEntries()).containsExactlyElementsOf(mutation.getEntries());
+        assertThat(restored).isEqualTo(mutation);
     }
 
     @Test
@@ -221,13 +213,13 @@ class ChangeStreamMutationSerializerTest {
 
         assertThatThrownBy(
                         () ->
-                                new ChangeStreamMutationSerializer()
+                                new BigtableChangeStreamMutationSerializer()
                                         .deserialize(new DataInputDeserializer(state)))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Negative byte string length");
         assertThatThrownBy(
                         () ->
-                                new ChangeStreamMutationSerializer()
+                                new BigtableChangeStreamMutationSerializer()
                                         .copy(
                                                 new DataInputDeserializer(state),
                                                 new DataOutputSerializer(64)))
@@ -244,7 +236,7 @@ class ChangeStreamMutationSerializerTest {
 
         assertThatThrownBy(
                         () ->
-                                new ChangeStreamMutationSerializer()
+                                new BigtableChangeStreamMutationSerializer()
                                         .copy(
                                                 new DataInputDeserializer(state),
                                                 new DataOutputSerializer(64)))
@@ -263,7 +255,7 @@ class ChangeStreamMutationSerializerTest {
 
         assertThatThrownBy(
                         () ->
-                                new ChangeStreamMutationSerializer()
+                                new BigtableChangeStreamMutationSerializer()
                                         .copy(
                                                 new DataInputDeserializer(state),
                                                 new DataOutputSerializer(64)))
@@ -273,21 +265,21 @@ class ChangeStreamMutationSerializerTest {
 
     @Test
     void theTypeAnnotationSelectsTheConnectorSerializerWithoutReflectiveKryo() {
-        TypeInformation<ChangeStreamMutation> builtIn =
-                new ChangeStreamMutationDeserializationSchema().getProducedType();
-        TypeInformation<ChangeStreamMutation> annotated =
-                TypeInformation.of(ChangeStreamMutation.class);
+        TypeInformation<BigtableChangeStreamMutation> builtIn =
+                new BigtableChangeStreamMutationDeserializationSchema().getProducedType();
+        TypeInformation<BigtableChangeStreamMutation> annotated =
+                TypeInformation.of(BigtableChangeStreamMutation.class);
 
         assertThat(annotated).isEqualTo(builtIn);
         assertThat(annotated.createSerializer(new SerializerConfigImpl()))
-                .isInstanceOf(ChangeStreamMutationSerializer.class);
+                .isInstanceOf(BigtableChangeStreamMutationSerializer.class);
     }
 
     private static byte[] serializedEmptyMutation() throws IOException {
-        ChangeStreamMutation mutation =
-                new ChangeStreamMutation(
+        BigtableChangeStreamMutation mutation =
+                new BigtableChangeStreamMutation(
                         ByteString.EMPTY,
-                        ChangeStreamMutation.MutationType.USER,
+                        BigtableChangeStreamMutation.MutationType.USER,
                         "cluster",
                         Instant.EPOCH,
                         0,
@@ -295,7 +287,7 @@ class ChangeStreamMutationSerializerTest {
                         Instant.EPOCH,
                         Collections.emptyList());
         DataOutputSerializer output = new DataOutputSerializer(128);
-        new ChangeStreamMutationSerializer().serialize(mutation, output);
+        new BigtableChangeStreamMutationSerializer().serialize(mutation, output);
         return output.getCopyOfBuffer();
     }
 }
