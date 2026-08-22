@@ -23,10 +23,17 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /**
- * The {@code host:port} of a Google Cloud emulator, parsed and validated once — in the builder
- * setter that accepts it, so a malformed value fails on the client rather than on a TaskManager
- * after the job has been submitted (issue #235). The exception is the Table API's lookup and
- * full-cache scan paths, which hold the option's value and parse it when the runtime opens.
+ * The {@code host:port} of a Google Cloud emulator, parsed and validated on the client rather than
+ * on a TaskManager after the job has been submitted (issue #235). A DataStream caller meets the
+ * parse in the builder setter that accepts the value. A SQL caller meets it when the statement over
+ * the table is planned — in the Bigtable and Spanner table factories, which read the option
+ * directly because those two have a lookup path that would otherwise carry the string to a
+ * TaskManager (issue #1009), and in the other three connectors through the builder setter their
+ * dynamic source or sink calls during plan-to-runtime translation.
+ *
+ * <p>Bigtable's and Spanner's lookup and full-cache runtimes parse it a second time when they open,
+ * because they take the value through {@code @Internal} constructors that nothing else validates.
+ * That call is the check behind those constructors rather than the one a SQL caller reaches.
  *
  * <p>Every setter that takes an emulator endpoint funnels through {@link #parse(String, String)},
  * and this type is the only form the value takes from there on: a client can therefore never be

@@ -96,9 +96,19 @@ record — context, evidence, declined alternatives — is the named ADR under `
   rejected, never trimmed, and the host splits at the last colon, kept verbatim. Public
   signatures stay `String`. **`parse` takes the setting's name and has no one-argument form**
   (#895): both messages name what the caller was given — the setter for a builder, the option key
-  for the three Table API runtimes that parse when they open — and a defaulted name is exactly how
-  BigQuery's two `emulatorRestEndpoint` setters spent their life naming a setter the user may not
-  have called.
+  for a table factory — and a defaulted name is exactly how BigQuery's two `emulatorRestEndpoint`
+  setters spent their life naming a setter the user may not have called.
+- **The check runs where the value is configured**, which for SQL is the factory, not the runtime
+  (#1009, #1013, `docs/adr/0127`). Only Bigtable and Spanner have a lookup path and so a factory
+  parse; the other three reach the parse through the builder setter at plan-to-runtime translation.
+  The three runtime parse sites — `BigtableDataClientRowLookup`, `BigtableFullCacheInputFormat`,
+  `SpannerDatabaseRowLookup` — still run at `open()` with the same option key, but that is the check
+  behind their `@Internal` constructors, not the one a SQL caller meets.
+- **A factory's endpoint parse goes behind every check that refuses an option outright**, in both
+  directions and both connectors. The option pre-empted need not be `emulator-endpoint` itself:
+  Spanner accepts one in every mode, and the call still follows `validateSourceMode` because that
+  refuses *other* options. Each ordering carries a test asserting the removal message and asserting
+  the shape message is absent, because a wrong order passes every build.
 - `EmulatorChannels` is split **by who owns the channel**, not by settings type (`docs/adr/0081`):
   `plaintextProvider` where the client closes its own channel, `openPlaintextChannel` +
   `fixedProvider` where the caller does — and the ownership difference is load-bearing at three

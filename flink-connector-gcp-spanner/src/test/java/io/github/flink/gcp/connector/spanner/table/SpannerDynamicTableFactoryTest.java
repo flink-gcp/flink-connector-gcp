@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
@@ -259,6 +260,81 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> source(SCHEMA, conflict))
                 .hasStackTraceContaining(
                         "service-account-key-file cannot be combined with emulator-endpoint");
+    }
+
+    /**
+     * The bounded-source arm is the lookup arm: {@code createDynamicTableSource} is the only entry
+     * point for a lookup table, because {@code SpannerDynamicSource} serves both {@code
+     * ScanTableSource} and {@code LookupTableSource}. So this covers the case issue #1013 is about
+     * — a table joined as a lookup dimension, which used to carry the value to a TaskManager and
+     * parse it there.
+     *
+     * <p>The change-stream arm is driven because the call sits before the mode branch and must stay
+     * there: pushing it into the bounded branch is what this arm fails on.
+     *
+     * <p>Two values, not a catalogue. {@code "localhost"} exercises the shape, and {@code ""} the
+     * one thing that is this layer's rather than the parser's: whether an option written {@code ''}
+     * arrives as present-and-empty rather than absent, so the check sees it at all. The rejection
+     * set itself belongs to {@code EmulatorEndpointTest}.
+     */
+    @Test
+    void rejectsAMalformedEmulatorEndpointOnEveryPath() {
+        for (String malformed : new String[] {"localhost", ""}) {
+            String message = "emulator-endpoint must be host:port, was '" + malformed + "'";
+
+            Map<String, String> bounded = options();
+            bounded.put("emulator-endpoint", malformed);
+            assertThatThrownBy(() -> sink(SCHEMA, bounded))
+                    .as("sink, '%s'", malformed)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(message);
+            assertThatThrownBy(() -> source(SCHEMA, bounded))
+                    .as("bounded scan and lookup, '%s'", malformed)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(message);
+
+            Map<String, String> changeStream = changeStreamOptions("full");
+            changeStream.put("emulator-endpoint", malformed);
+            assertThatThrownBy(() -> source(SCHEMA, changeStream))
+                    .as("change stream, '%s'", malformed)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(message);
+        }
+    }
+
+    /**
+     * Pins the endpoint parse behind every check that refuses an option outright. An emulator
+     * endpoint is itself legal in every Spanner mode, so what would be pre-empted here is another
+     * option's removal message — and a DDL told to remove {@code scan.index} is not helped by an
+     * answer about the endpoint's shape.
+     *
+     * <p>Asserted on the root cause and on a phrase, and paired with the negative: with the parse
+     * moved above {@code validateSourceMode} or {@code rejectChangeStreamOptions} the root cause
+     * becomes the {@code IllegalArgumentException}, whose message these phrases do not appear in.
+     *
+     * <p>Green on {@code origin/main} by construction. It guards the ordering, not the fix.
+     */
+    @Test
+    void refusesAnOptionOutrightBeforeReportingTheEndpointShape() {
+        Map<String, String> changeStream = changeStreamOptions("full");
+        changeStream.put("scan.index", "idx");
+        changeStream.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> source(SCHEMA, changeStream))
+                .as("a bounded-only option on a change-stream source")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("scan.index is incompatible with scan.mode=change-stream")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> written = options();
+        written.put("scan.change-stream.name", "people_changes");
+        written.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> sink(SCHEMA, written))
+                .as("a change-stream option on a sink")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("is incompatible with a sink")
+                .hasMessageNotContaining("must be host:port");
     }
 
     /**
