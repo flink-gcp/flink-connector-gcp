@@ -27,10 +27,14 @@ import java.util.Map;
  * The non-cell-value field a Bigtable table row may supply to its mutation.
  *
  * <p>A constant added here is offered to the planner on its own, because {@link #listAll()} derives
- * its listing from {@code values()}. Being offered is not enough to make it work: {@code
- * BigtableDynamicSink.applyWritableMetadata} reduces the planner's selection to one boolean, and
- * {@code RowDataSerializationSchema} reads the metadata column at the first position after the
- * physical columns, so a second constant needs both of those changed too.
+ * its listing from {@code values()}. Being offered is not being applied: {@code
+ * RowDataSerializationSchema} names {@link #TIMESTAMP} and nothing else, so a second constant needs
+ * a read site written there. Finding its column is the one part that is already answered — {@link
+ * #position(int, WritableMetadata[])} reads the position out of the selection rather than assuming
+ * one, so the read site calls it instead of deriving arithmetic that can disagree with the
+ * planner's layout. What that read site should <em>do</em> depends on the field: whether it applies
+ * to every cell as the timestamp does or to the row as a whole, and whether it may be combined with
+ * an explicit timestamp. That is why nothing further is prepared for it here.
  */
 @Internal
 enum WritableMetadata {
@@ -62,6 +66,30 @@ enum WritableMetadata {
     }
 
     /**
+     * Returns the index of this metadata's column in the consumed row, or {@code -1} when the
+     * planner did not select it.
+     *
+     * <p>Flink builds the key list it hands to {@code applyWritableMetadata} and the metadata
+     * suffix of the consumed row from one call each to the same function, ordered by {@link
+     * #listAll()}'s iteration rather than by the DDL — so a position read out of the selection is
+     * right whatever order the selection is in, where "the first column after the physical ones" is
+     * right only while this enum has one constant.
+     *
+     * <p>Position is also the <em>only</em> correlation available: the consumed row's field carries
+     * the column's name, which under {@code ts TIMESTAMP_LTZ(6) METADATA FROM 'timestamp'} is
+     * {@code ts} and not {@code timestamp}, so matching {@link #getKey()} against the row type
+     * would find nothing.
+     */
+    int position(int physicalArity, WritableMetadata[] metadata) {
+        for (int i = 0; i < metadata.length; i++) {
+            if (metadata[i] == this) {
+                return physicalArity + i;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * Returns the metadata this connector can write, in declaration order.
      *
      * <p>Derived from {@code values()} so that a constant added to the enum is offered rather than
@@ -73,5 +101,23 @@ enum WritableMetadata {
             metadata.put(value.key, value.dataType);
         }
         return metadata;
+    }
+
+    /**
+     * Returns the constant with the given metadata key.
+     *
+     * <p>No DDL reaches the throw: {@code DynamicSinkUtils.validateAndApplyMetadata} rejects a key
+     * outside {@link #listAll()} first, and with a better message. A restored compiled plan does —
+     * its {@code WritingMetadataSpec} applies the keys it was serialized with and no validation
+     * runs — so a plan compiled against a build that offered a key this one does not is what the
+     * throw is for. Naming the key beats writing the row without the column.
+     */
+    static WritableMetadata of(String key) {
+        for (WritableMetadata value : values()) {
+            if (value.key.equals(key)) {
+                return value;
+            }
+        }
+        throw new IllegalArgumentException("Unknown Bigtable writable metadata key '" + key + "'.");
     }
 }

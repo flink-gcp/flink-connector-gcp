@@ -80,18 +80,21 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
      *
      * @param schema the parsed DDL model
      * @param nullStringLiteral the cell value that stands for a null character string
-     * @param timestampMetadataSelected whether the consumed row carries timestamp metadata
+     * @param metadata the writable metadata the planner selected, in the order it laid the consumed
+     *     row out in; the timestamp's index is read out of it here rather than assumed, and only
+     *     that index is kept
      * @param truncateCellTimestampToMillis whether explicit timestamps lose their sub-millisecond
      *     part before being sent
      */
     RowDataSerializationSchema(
             BigtableTableSchema schema,
             String nullStringLiteral,
-            boolean timestampMetadataSelected,
+            WritableMetadata[] metadata,
             boolean truncateCellTimestampToMillis) {
         this.rowKeyIndex = schema.getRowKeyIndex();
         this.rowKeyName = schema.getRowKeyName();
-        this.timestampMetadataIndex = timestampMetadataSelected ? schema.getFieldCount() : -1;
+        this.timestampMetadataIndex =
+                WritableMetadata.TIMESTAMP.position(schema.getFieldCount(), metadata);
         this.truncateCellTimestampToMillis = truncateCellTimestampToMillis;
         // The plain encoder, not the nullable one: a null row key is rejected below rather than
         // encoded as an empty cell.

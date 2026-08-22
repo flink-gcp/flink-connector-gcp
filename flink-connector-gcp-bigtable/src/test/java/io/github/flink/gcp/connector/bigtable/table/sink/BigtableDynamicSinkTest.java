@@ -29,12 +29,15 @@ import org.apache.flink.types.RowKind;
 import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
 
 /**
@@ -168,6 +171,63 @@ class BigtableDynamicSinkTest {
         SupportsWritingMetadata preserving = (SupportsWritingMetadata) sink(SCHEMA);
         preserving.applyWritableMetadata(Collections.singletonList("timestamp"), DataTypes.ROW());
         assertThat(original).isNotEqualTo(preserving);
+    }
+
+    @Test
+    void twoSinksThatDifferOnlyInTheConsumedTypeAreTheSameSink() {
+        // What pins the decision to discard consumedDataType. The test above cannot: its two
+        // unequal sinks differ in their truncation policy as well, so it stays green against a
+        // consumed type that is kept, compared in equals and carried through copy() — measured,
+        // and only this test fails.
+        SupportsWritingMetadata described = (SupportsWritingMetadata) sink(SCHEMA);
+        described.applyWritableMetadata(
+                Collections.singletonList("timestamp"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                        DataTypes.FIELD(
+                                "cf1", DataTypes.ROW(DataTypes.FIELD("q1", DataTypes.STRING()))),
+                        DataTypes.FIELD("timestamp", DataTypes.TIMESTAMP_LTZ(6))));
+        SupportsWritingMetadata undescribed = (SupportsWritingMetadata) sink(SCHEMA);
+        undescribed.applyWritableMetadata(Collections.singletonList("timestamp"), DataTypes.ROW());
+
+        assertThat((DynamicTableSink) described)
+                .isEqualTo(undescribed)
+                .hasSameHashCodeAs(undescribed);
+    }
+
+    @Test
+    void theSelectionSurvivesTheCallerReusingItsList() {
+        // The list handed over is live plan state: WritingMetadataSpec passes its own field, which
+        // feeds its equals and hashCode and is what a compiled plan serializes. The planner does
+        // not mutate it, so this pins the copy against the sink doing so rather than against a
+        // behaviour anyone has seen — but without a copy the sink would be aliasing that state.
+        SupportsWritingMetadata sink = (SupportsWritingMetadata) sink(SCHEMA);
+        List<String> keys = new ArrayList<>(Collections.singletonList("timestamp"));
+        sink.applyWritableMetadata(keys, DataTypes.ROW());
+
+        keys.clear();
+
+        SupportsWritingMetadata reference = (SupportsWritingMetadata) sink(SCHEMA);
+        reference.applyWritableMetadata(Collections.singletonList("timestamp"), DataTypes.ROW());
+        assertThat((DynamicTableSink) sink).isEqualTo(reference);
+    }
+
+    @Test
+    void aMetadataKeyThePlannerCannotHaveSentIsRejectedRatherThanDropped() {
+        // Unreachable through a DDL, which DynamicSinkUtils.validateAndApplyMetadata rejects
+        // first. Reachable through a restored compiled plan, whose WritingMetadataSpec applies the
+        // keys it was serialized with and runs no validation — so a plan compiled against a build
+        // that offered a key this one does not lands here. Selecting the key out with contains(),
+        // as this sink used to, would have written every row without that column instead.
+        SupportsWritingMetadata sink = (SupportsWritingMetadata) sink(SCHEMA);
+
+        assertThatThrownBy(
+                        () ->
+                                sink.applyWritableMetadata(
+                                        Collections.singletonList("cell-visibility"),
+                                        DataTypes.ROW()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cell-visibility");
     }
 
     @Test

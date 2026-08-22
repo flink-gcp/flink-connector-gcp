@@ -38,6 +38,8 @@ import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -75,7 +77,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private final boolean keyOnlyDeletesAreSafe;
     private final InsertOnlyInputMode insertOnlyInputMode;
     private final boolean truncateCellTimestampToMillis;
-    private boolean timestampMetadataSelected;
+
+    /** Metadata keys the planner selected, in {@link WritableMetadata#listAll()} order. */
+    private List<String> metadataKeys;
 
     private BigtableDynamicSink(Builder builder) {
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
@@ -97,7 +101,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 Preconditions.checkNotNull(
                         builder.insertOnlyInputMode, "insertOnlyInputMode must not be null");
         this.truncateCellTimestampToMillis = builder.truncateCellTimestampToMillis;
-        this.timestampMetadataSelected = builder.timestampMetadataSelected;
+        this.metadataKeys =
+                Preconditions.checkNotNull(builder.metadataKeys, "metadataKeys must not be null");
     }
 
     /**
@@ -116,7 +121,11 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     @Override
     public void applyWritableMetadata(List<String> metadataKeys, DataType consumedDataType) {
-        this.timestampMetadataSelected = metadataKeys.contains(WritableMetadata.TIMESTAMP.getKey());
+        // consumedDataType is discarded: a position follows from the selection order and the
+        // physical column count the DDL model already carries, so keeping it would add a field to
+        // equals and hashCode that says nothing the schema does not.
+        metadataKeys.forEach(WritableMetadata::of);
+        this.metadataKeys = Collections.unmodifiableList(new ArrayList<>(metadataKeys));
     }
 
     @Override
@@ -146,6 +155,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
+        WritableMetadata[] selected =
+                metadataKeys.stream().map(WritableMetadata::of).toArray(WritableMetadata[]::new);
         BigtableSinkBuilder<RowData> builder =
                 BigtableSink.<RowData>builder()
                         .table(destination)
@@ -153,7 +164,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                                 new RowDataSerializationSchema(
                                         schema,
                                         nullStringLiteral,
-                                        timestampMetadataSelected,
+                                        selected,
                                         truncateCellTimestampToMillis))
                         .writerOptions(writerOptions);
         if (appProfileId != null) {
@@ -191,7 +202,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .keyOnlyDeletesAreSafe(keyOnlyDeletesAreSafe)
                 .insertOnlyInputMode(insertOnlyInputMode)
                 .truncateCellTimestampToMillis(truncateCellTimestampToMillis)
-                .timestampMetadataSelected(timestampMetadataSelected)
+                .metadataKeys(metadataKeys)
                 .build();
     }
 
@@ -222,7 +233,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && keyOnlyDeletesAreSafe == that.keyOnlyDeletesAreSafe
                 && insertOnlyInputMode == that.insertOnlyInputMode
                 && truncateCellTimestampToMillis == that.truncateCellTimestampToMillis
-                && timestampMetadataSelected == that.timestampMetadataSelected;
+                && metadataKeys.equals(that.metadataKeys);
     }
 
     @Override
@@ -241,7 +252,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 keyOnlyDeletesAreSafe,
                 insertOnlyInputMode,
                 truncateCellTimestampToMillis,
-                timestampMetadataSelected);
+                metadataKeys);
     }
 
     /** Collects the sink's values, so no caller has to keep a positional list in order. */
@@ -260,7 +271,7 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private boolean keyOnlyDeletesAreSafe;
         private InsertOnlyInputMode insertOnlyInputMode;
         private boolean truncateCellTimestampToMillis;
-        private boolean timestampMetadataSelected;
+        private List<String> metadataKeys = Collections.emptyList();
 
         private Builder() {}
 
@@ -387,11 +398,12 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         }
 
         /**
-         * @param timestampMetadataSelected whether the consumed row carries timestamp metadata
+         * @param metadataKeys the writable metadata the planner selected, in the order it laid the
+         *     consumed row out in
          * @return this builder
          */
-        Builder timestampMetadataSelected(boolean timestampMetadataSelected) {
-            this.timestampMetadataSelected = timestampMetadataSelected;
+        Builder metadataKeys(List<String> metadataKeys) {
+            this.metadataKeys = Collections.unmodifiableList(new ArrayList<>(metadataKeys));
             return this;
         }
 
