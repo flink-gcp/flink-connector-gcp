@@ -198,7 +198,7 @@ not `'topic' = 'projects/my-project/topics/orders'`.
 | `project` | String, required | the project component of `TopicDestination.of(...)` / `SubscriptionDestination.of(...)` |
 | `format` | String, required | format factory discovery, encoding or decoding as the direction needs |
 | `service-account-key-file` | String | `serviceAccountKeyFile(...)`, a service-account JSON key-file path read when each writer, reader or enumerator starts |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)`, which parses it — a malformed `host:port` fails when the planner builds the source or sink |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client in either direction. The rejection names `emulator-endpoint`, the key written in the DDL |
 
 When `service-account-key-file` is absent, the connector uses application-default credentials.
 That default already honors `GOOGLE_APPLICATION_CREDENTIALS`; set this option only when the job must select an explicit service-account JSON key path independently of its process environment.

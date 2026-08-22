@@ -26,14 +26,16 @@ import java.util.Objects;
  * The {@code host:port} of a Google Cloud emulator, parsed and validated on the client rather than
  * on a TaskManager after the job has been submitted (issue #235). A DataStream caller meets the
  * parse in the builder setter that accepts the value. A SQL caller meets it when the statement over
- * the table is planned — in the Bigtable and Spanner table factories, which read the option
- * directly because those two have a lookup path that would otherwise carry the string to a
- * TaskManager (issue #1009), and in the other three connectors through the builder setter their
- * dynamic source or sink calls during plan-to-runtime translation.
+ * the table is planned, in the table factory of every connector: Bigtable's and Spanner's because
+ * their lookup path would otherwise carry the string to a TaskManager (issue #1009), and the other
+ * three because reaching the parse through a builder setter answered a caller who had written an
+ * option key by naming a setter (issue #1019).
  *
  * <p>Bigtable's and Spanner's lookup and full-cache runtimes parse it a second time when they open,
  * because they take the value through {@code @Internal} constructors that nothing else validates.
- * That call is the check behind those constructors rather than the one a SQL caller reaches.
+ * That call is the check behind those constructors rather than the one a SQL caller reaches. Every
+ * builder setter keeps its parse for the same reason: it is the check the DataStream API meets, and
+ * there the setter's name is the name the caller wrote.
  *
  * <p>Every setter that takes an emulator endpoint funnels through {@link #parse(String, String)},
  * and this type is the only form the value takes from there on: a client can therefore never be

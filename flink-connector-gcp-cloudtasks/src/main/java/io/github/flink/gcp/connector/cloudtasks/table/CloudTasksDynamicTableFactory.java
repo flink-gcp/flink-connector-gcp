@@ -29,6 +29,7 @@ import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.SerializationFormatFactory;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.AppEngineTargetSpec;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksDynamicSink;
@@ -114,6 +115,8 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
         validateCredentials(config);
         CloudTasksTargetType targetType = config.get(CloudTasksConnectorOptions.TARGET_TYPE);
         validateTargetFamily(context, targetType);
+        // After the checks that refuse an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         TargetSpec target =
                 targetType == CloudTasksTargetType.HTTP
                         ? HttpTargetSpec.from(config, contentType)
@@ -170,6 +173,33 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                             CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
                             CloudTasksConnectorOptions.EMULATOR_ENDPOINT.key()));
         }
+    }
+
+    /**
+     * Names the option key rather than the builder setter a SQL caller never wrote (issue #1019,
+     * {@code docs/adr/0127}).
+     *
+     * <p>The value reached {@code EmulatorEndpoint.parse} before this, through {@code
+     * CloudTasksSinkBuilder.emulatorEndpoint(String)} during plan-to-runtime translation, so the
+     * failure already landed on the client — but named {@code emulatorEndpoint}. That setter keeps
+     * its parse: it is the check a DataStream caller meets, where that name is the right one.
+     *
+     * <p>Call it after every check that refuses an option outright, never before one: a DDL told to
+     * remove {@code emulator-endpoint} beside {@code service-account-key-file}, or to remove a key
+     * of the other target family, is not helped by an answer about this option's shape. {@code
+     * HttpTargetSpec.from} and {@code AppEngineTargetSpec.from} run later and refuse options too,
+     * so a DDL that trips one of those and carries a malformed endpoint reads this message first.
+     *
+     * <p>The rejection is left as the {@code IllegalArgumentException} the parse throws, which
+     * {@code FactoryUtil} wraps, rather than the {@code ValidationException} the option checks in
+     * this class raise directly.
+     */
+    private static void validateEmulatorEndpoint(ReadableConfig config) {
+        config.getOptional(CloudTasksConnectorOptions.EMULATOR_ENDPOINT)
+                .ifPresent(
+                        value ->
+                                EmulatorEndpoint.parse(
+                                        value, CloudTasksConnectorOptions.EMULATOR_ENDPOINT.key()));
     }
 
     private static void validateHeadersSyntax(

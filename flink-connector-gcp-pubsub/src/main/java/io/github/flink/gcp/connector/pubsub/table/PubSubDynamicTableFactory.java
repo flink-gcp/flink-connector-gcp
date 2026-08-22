@@ -33,6 +33,7 @@ import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.SerializationFormatFactory;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
@@ -158,6 +159,8 @@ public class PubSubDynamicTableFactory
                                                                 + " '%s' table.",
                                                         PubSubConnectorOptions.TOPIC.key(),
                                                         IDENTIFIER)));
+        // After the check that refuses an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         return new PubSubDynamicSink(
                 context.getPhysicalRowDataType(),
                 encodingFormat,
@@ -191,6 +194,8 @@ public class PubSubDynamicTableFactory
                                                                 + " '%s' table.",
                                                         PubSubConnectorOptions.SUBSCRIPTION.key(),
                                                         IDENTIFIER)));
+        // After the check that refuses an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         String project = config.get(PubSubConnectorOptions.PROJECT);
         List<SubscriptionDestination> subscriptions = new ArrayList<>(subscriptionNames.size());
         for (String name : subscriptionNames) {
@@ -248,5 +253,34 @@ public class PubSubDynamicTableFactory
                             PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
                             PubSubConnectorOptions.EMULATOR_ENDPOINT.key()));
         }
+    }
+
+    /**
+     * Names the option key rather than the builder setter a SQL caller never wrote (issue #1019,
+     * {@code docs/adr/0127}).
+     *
+     * <p>The value reached {@code EmulatorEndpoint.parse} before this, through {@code
+     * PubSubSinkBuilder.emulatorEndpoint(String)} or {@code
+     * PubSubSourceBuilder.emulatorEndpoint(String)} during plan-to-runtime translation, so the
+     * failure already landed on the client — but named {@code emulatorEndpoint}. Those setters keep
+     * their parse: it is the check a DataStream caller meets, where that name is the right one.
+     *
+     * <p>Call it after every check that refuses an option outright, never before one: a DDL told to
+     * remove {@code emulator-endpoint} beside {@code service-account-key-file} is not helped by an
+     * answer about its shape. It also follows the {@code topic} and {@code subscription}
+     * requirements, so a table that has not said where it points hears that first. The option
+     * mappers below run later and carry refusals of their own, so a DDL that trips one of those and
+     * carries a malformed endpoint reads this message first.
+     *
+     * <p>The rejection is left as the {@code IllegalArgumentException} the parse throws, which
+     * {@code FactoryUtil} wraps, matching {@code TopicDestination.of} rather than the {@code
+     * ValidationException} the option checks in this class raise directly.
+     */
+    private static void validateEmulatorEndpoint(ReadableConfig config) {
+        config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT)
+                .ifPresent(
+                        value ->
+                                EmulatorEndpoint.parse(
+                                        value, PubSubConnectorOptions.EMULATOR_ENDPOINT.key()));
     }
 }

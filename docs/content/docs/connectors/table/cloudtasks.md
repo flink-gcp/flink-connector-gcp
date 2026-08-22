@@ -503,7 +503,7 @@ An option left out leaves the corresponding DataStream setting at its existing d
 | `format` | String | **required** | serialization format discovery for physical columns; `form-urlencoded` provides the built-in form encoding described above |
 | `target.type` | `http` \| `app-engine` | `http` | selects the external HTTP or App Engine protobuf request arm |
 | `service-account-key-file` | String | application-default credentials | `CloudTasksSinkBuilder.serviceAccountKeyFile(...)` |
-| `emulator-endpoint` | String | production Cloud Tasks | `CloudTasksSinkBuilder.emulatorEndpoint(...)`; plaintext and no credentials |
+| `emulator-endpoint` | String | production Cloud Tasks | `CloudTasksSinkBuilder.emulatorEndpoint(...)` as `host:port`; plaintext and no credentials. Parsed when the statement is planned, so a malformed value fails on the client, and the rejection names `emulator-endpoint` — the key written in the DDL |
 
 `service-account-key-file` and `emulator-endpoint` are mutually exclusive.
 Service-account keys are long-lived secrets, so prefer an attached service account or Workload

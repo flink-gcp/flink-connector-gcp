@@ -380,6 +380,89 @@ class PubSubDynamicTableFactoryTest {
                 .hasStackTraceContaining("emulator-endpoint");
     }
 
+    /**
+     * Issue #1019: the rejection names {@code emulator-endpoint}, the key the DDL carried, rather
+     * than the {@code emulatorEndpoint(...)} setter the value used to reach on its way to a
+     * publisher or subscriber.
+     *
+     * <p>Asserted on the root cause. {@code FactoryUtil} dumps every {@code WITH} option into its
+     * own message, so a needle of just the key would pass with the parse deleted; the root cause is
+     * the {@code IllegalArgumentException} the parse throws and carries nothing else. The needle
+     * also discriminates the fix, since {@code emulator-endpoint must be} is not a substring of
+     * {@code emulatorEndpoint must be}.
+     *
+     * <p>Two values, not a catalogue. {@code "localhost"} exercises the shape, and {@code ""} the
+     * one thing that is this layer's rather than the parser's: whether an option written {@code ''}
+     * arrives as present-and-empty rather than absent, so the check sees it at all. The rejection
+     * set itself belongs to {@code EmulatorEndpointTest}.
+     */
+    @Test
+    void rejectsAMalformedEmulatorEndpointInBothDirections() {
+        for (String malformed : new String[] {"localhost", ""}) {
+            String message = "emulator-endpoint must be host:port, was '" + malformed + "'";
+
+            Map<String, String> sinkOptions = minimalSinkOptions();
+            sinkOptions.put("emulator-endpoint", malformed);
+            assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, sinkOptions))
+                    .as("sink, '%s'", malformed)
+                    .isInstanceOf(ValidationException.class)
+                    .rootCause()
+                    .hasMessage(message);
+
+            Map<String, String> sourceOptions = minimalSourceOptions();
+            sourceOptions.put("emulator-endpoint", malformed);
+            assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, sourceOptions))
+                    .as("source, '%s'", malformed)
+                    .isInstanceOf(ValidationException.class)
+                    .rootCause()
+                    .hasMessage(message);
+        }
+    }
+
+    /**
+     * Pins the endpoint parse behind every check this factory makes that refuses an option outright
+     * — a DDL told to remove an option is not helped by an answer about that option's shape.
+     *
+     * <p>Asserted on the root cause and paired with the negative: with the parse moved above {@code
+     * validateCredentialsMode} or {@code validateAutoCreateTopicsSyntax} the root cause becomes the
+     * {@code IllegalArgumentException}, whose message these phrases do not appear in.
+     *
+     * <p>Green on {@code origin/main} by construction. It guards the ordering, not the fix.
+     */
+    @Test
+    void refusesAnOptionOutrightBeforeReportingTheEndpointShape() {
+        Map<String, String> credentials = minimalSinkOptions();
+        credentials.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
+        credentials.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, credentials))
+                .as("an emulator endpoint beside a key file")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("cannot be combined: an emulator uses a plaintext")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> bothSyntaxes = minimalSourceOptions();
+        bothSyntaxes.put("scan.auto-create.topics", "my-sub:my-topic");
+        bothSyntaxes.put("scan.auto-create.topics.my-sub", "my-topic");
+        bothSyntaxes.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, bothSyntaxes))
+                .as("both map syntaxes on a source")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("must use either the packed map syntax")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> noTopic = minimalSinkOptions();
+        noTopic.remove("topic");
+        noTopic.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, noTopic))
+                .as("a sink that has not said where it points")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("is required to write to a 'pubsub' table")
+                .hasMessageNotContaining("must be host:port");
+    }
+
     @Test
     void rejectsABlankServiceAccountKeyFile() {
         Map<String, String> options = minimalSinkOptions();
