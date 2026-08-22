@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0133: A Table option value the builder rejects is renamed to its option key
 
 - Status: Accepted
-- Date: 2026-08-22
-- Issues: [#1030], [#1019], [#895], [#235]
+- Date: 2026-08-22, revised by [#1027] (2026-08-22)
+- Issues: [#1030], [#1019], [#895], [#235], [#1027]
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner (table layers)
 - Current behavior: each module's `table.OptionSetters` and the mapper javadocs that cite it
 
@@ -52,14 +52,27 @@ the detail and the original exception as the cause —
 rename covers the plan-to-runtime translation points that hold raw values
 (`BigQueryDynamicSource`, `SpannerDynamicSource`, `SpannerChangeStreamDynamicSource`), keyed from
 the `ConfigOption` constants. A two-value call is split so each value's rejection is attributable
-to its own key; the mirror case — one value fed by either of two options, the BigQuery source's
-`parentProject` from `source.parent-project` or `project` — is left alone, because attributing it
-would add a plan-state field whose only job is an error message's noun, and `parentProject` is
-legible against both keys.
+to its own key.
+
+The mirror case — one value fed by either of two options, the BigQuery source's `parentProject`
+from `source.parent-project` or `project` — was first left alone, on the grounds that attributing
+it at the seam would add a plan-state field whose only job is an error message's noun, and that
+`parentProject` is legible against both keys. [#1027] falsified the second ground for the arm that
+matters: a caller who wrote only `project` was answered `parentProject must not contain '/'` —
+under the name of an option their DDL does not contain, which is precisely why the fallback ran.
+The first ground stands, so the fix moves the rename rather than adding the field: the factory's
+`parentProject(ReadableConfig)` is the point that still knows which key supplied the value, and it
+applies the builder's own component check there through `OptionSetters.accept` under that key. The
+rule this refines to: **a value with more than one supplying option is renamed where the supplier
+is resolved, because the seam cannot attribute what resolution has already erased.**
 
 What this replaces is the *translation judgment*, not ADR-0068's decision: no bound moved, no
 bound is restated, and the builders remain the single home of every check — the failure is
-renamed at the seam, not re-implemented. The legibility test survives where per-case judgment is
+renamed at the seam, not re-implemented. The `parentProject` rename above is the one place a check
+*runs* twice rather than once, and it is a second call to the same shared
+`ResourceNames.checkComponent`, not a second statement of the bound — the shape ADR-0127 already
+blesses for the emulator endpoints, where the factory makes the same call the runtime makes so the
+sentence is identical wherever it lands. The legibility test survives where per-case judgment is
 still the right tool: **cross-field `build()` checks are not renamed**, because a message naming
 two knobs has no single key, and the Bigtable mapper's spelling test (with the Pub/Sub mapper's
 one restatement as the counter-example) remains their rule.
@@ -93,7 +106,14 @@ method parameter rather than their setter — `absentRetentionFallback`, `heartb
 
 - A SQL caller's out-of-bounds value now fails with the key they wrote, at the same time and
   place it failed before; the cause chain still carries the original `IllegalArgumentException`,
-  so root-cause assertions are unaffected.
+  so root-cause assertions are unaffected. The `parentProject` rename is the one exception on
+  timing: its check moves from `getScanRuntimeProvider` to factory creation — both on the client,
+  and earlier is the direction ADR-0127 asks for. The measurable consequence is the same
+  degenerate shape [#1026] recorded for the emulator endpoints: a streaming statement whose scan
+  the planner eliminates never called `getScanRuntimeProvider`, so a malformed billing project on
+  it planned before and is refused at planning now (measured 2026-08-22, `EXPLAIN SELECT * FROM t
+  WHERE FALSE` over a query source with `'project' = 'a/b'`: planned on `bef08373`, refused with
+  this change). Nothing connected either way.
 - [ADR-0068]'s "What a SQL user is shown" blocks predate this record: the same probes now show
   the `Option '…' is invalid` line first. Its decision — the bound lives at the setter, nowhere
   else — stands unchanged, and both records now say so.
@@ -108,6 +128,7 @@ method parameter rather than their setter — `absentRetentionFallback`, `heartb
 [#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895
 [#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019
 [#1026]: https://github.com/flink-gcp/flink-connector-gcp/pull/1026
+[#1027]: https://github.com/flink-gcp/flink-connector-gcp/issues/1027
 [#1030]: https://github.com/flink-gcp/flink-connector-gcp/issues/1030
 [ADR-0007]: 0007-the-publisher-teardown-is-two-phase-and-its-bound-is-real.md
 [ADR-0068]: 0068-duration-budgets-are-bounded-at-the-setter-by-what-a-nanosecond-clock-can-express.md

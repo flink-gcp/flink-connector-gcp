@@ -31,6 +31,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
@@ -752,6 +753,15 @@ public class BigQueryDynamicTableFactory
      * did not name {@code project} has already been rejected by {@code destination(config,
      * "source")}, so only a query source can reach the failure below.
      *
+     * <p>This is the one value fed by either of two options, so its rejection cannot be renamed at
+     * the setter seam the way ADR-0133 renames everything else: by the time the dynamic source
+     * applies the value, which key supplied it is gone. It is known here, so the rename happens
+     * here, under the supplying key — the fallback arm otherwise answered a caller who wrote only
+     * {@code project} under the name of an option their DDL does not contain (issue #1027). The
+     * check is the builder's own {@code ResourceNames.checkComponent} with the builder's noun, so
+     * the detail sentence is byte-identical wherever it lands, and the builder keeps its check as
+     * the one behind the DataStream API.
+     *
      * @param config the table options
      * @return the billing project
      */
@@ -760,9 +770,17 @@ public class BigQueryDynamicTableFactory
         Optional<String> parent =
                 config.getOptional(BigQueryConnectorOptions.SOURCE_PARENT_PROJECT);
         if (parent.isPresent()) {
+            OptionSetters.accept(
+                    BigQueryConnectorOptions.SOURCE_PARENT_PROJECT.key(),
+                    parent.get(),
+                    value -> ResourceNames.checkComponent(value, "parentProject"));
             return parent.get();
         }
         if (project.isPresent()) {
+            OptionSetters.accept(
+                    BigQueryConnectorOptions.PROJECT.key(),
+                    project.get(),
+                    value -> ResourceNames.checkComponent(value, "parentProject"));
             return project.get();
         }
         throw new ValidationException(

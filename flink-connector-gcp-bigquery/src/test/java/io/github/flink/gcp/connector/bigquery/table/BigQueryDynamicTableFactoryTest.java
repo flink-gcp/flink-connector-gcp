@@ -1247,4 +1247,35 @@ class BigQueryDynamicTableFactoryTest {
                 .hasMessageContaining("Option 'sink.location' is invalid")
                 .hasMessageContaining("location must not be blank");
     }
+
+    /**
+     * The billing project is the one value fed by either of two options, so its rename happens in
+     * the factory at the point that knows which key supplied it, not at the setter seam. Both arms
+     * are driven because the fallback is the one the seam could never attribute: a caller who wrote
+     * only {@code project} must be answered about {@code project}, not about the {@code
+     * source.parent-project} their DDL does not contain — which is exactly why the fallback ran.
+     *
+     * <p>Fires at the factory rather than at {@code getScanRuntimeProvider}, so {@code source} is
+     * enough; the builder's own check remains behind it for the DataStream API.
+     */
+    @Test
+    void namesTheSupplyingOptionKeyWhenTheBillingProjectIsRejected() {
+        Map<String, String> parent = minimalOptions();
+        parent.put("source.query", "SELECT 1");
+        parent.put("source.parent-project", "a/b");
+        assertThatThrownBy(() -> source(parent))
+                .as("source.parent-project supplied it")
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option 'source.parent-project' is invalid")
+                .hasStackTraceContaining("parentProject must not contain '/': 'a/b'");
+
+        Map<String, String> fallback = minimalOptions();
+        fallback.put("source.query", "SELECT 1");
+        fallback.put("project", "a/b");
+        assertThatThrownBy(() -> source(fallback))
+                .as("project supplied it, as the fallback")
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option 'project' is invalid")
+                .hasStackTraceContaining("parentProject must not contain '/': 'a/b'");
+    }
 }
