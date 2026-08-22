@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-26
-- Issues: [#66] (Avro half); the shared holder extracted by [#828] (2026-08-18)
+- Issues: [#66] (Avro half); the shared holder extracted by [#828] (2026-08-18); the
+  compatibility record corrected by [#998] (2026-08-22)
 - Modules: bigquery (`sink.serializer.avro`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Avro records
 
@@ -72,16 +73,27 @@ conversions enabled carries the latter and assuming the former would be a per-ro
   own constructor, and its own private conversion-state class: the triple is where the formats
   differ, and the JSON serializer has no row converter to put in one (ADR-0025). The serialized
   form of the four changed — a `transient` field became a non-transient holder whose contents are
-  transient — at unchanged `serialVersionUID`: a job graph written by an earlier build restores
-  with nothing where the holder belongs and fails on first use, and one written by this build does
-  not restore against an earlier build at all, the holder's class being unknown there. Neither
-  crosses in practice, since a job graph is written and read by one jar and no checkpoint carries a
-  serializer.
+  transient — at unchanged `serialVersionUID`.
+  A job graph written by an earlier build restores with nothing where the holder belongs and fails
+  on first use.
+  The reverse direction restores: Java deserialization ignores the holder field because the older
+  local class has no serializable field by that name, and the older serializer rebuilds its own
+  transient conversion state.
+  Persisted job graphs can cross connector versions during recovery, including the Kubernetes
+  Operator's `last-state` upgrade path that ADR-0125 records.
+  The old-to-new incompatibility was accepted for [#828] because the change landed before 1.0.0,
+  the last release boundary at which ADR-0125 permits that choice.
+  An analogous serialized-form change after 1.0.0 requires an upgrade path.
 
 ## Evidence
 
-Two things caught in self-review and worth not re-deriving:
+Evidence caught in self-review and worth not re-deriving:
 
+- The serialized-form directions above were measured on 2026-08-22 with the actual
+  `JsonDocumentSerializer` compiled at `bd7a76f5` (immediately before [#828]) and `113981fd`.
+  Reading the old stream with the new class reached the first descriptor use and threw because
+  `rowDescriptor` was null; reading the new stream with the old class restored and serialized a
+  row successfully.
 - BigQuery bounds a parameterized decimal by its **integer** digits (`NUMERIC(P,S)` needs
   `S ≤ 9` and `P - S ≤ 29`, `BIGNUMERIC` `S ≤ 38` and `P - S ≤ 38`), not by total precision, so
   `decimal(35,2)` is BIGNUMERIC and `decimal(77,38)` is rejected.
@@ -93,3 +105,4 @@ Two things caught in self-review and worth not re-deriving:
 
 [#66]: https://github.com/laughingman7743/flink-connector-gcp/issues/66
 [#828]: https://github.com/flink-gcp/flink-connector-gcp/issues/828
+[#998]: https://github.com/flink-gcp/flink-connector-gcp/issues/998

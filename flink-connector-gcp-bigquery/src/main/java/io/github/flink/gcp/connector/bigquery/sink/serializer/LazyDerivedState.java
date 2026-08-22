@@ -34,10 +34,11 @@ import java.util.function.Function;
  *
  * <p>The holder itself is <em>not</em> transient: only its contents are, so an owner read back from
  * a stream comes with an empty holder rather than a null one, and the null check stays out of the
- * owner. That holds for a stream a build carrying this field wrote — deserialization assigns the
- * fields the stream carries and runs no initializer, so an owner restored from an older stream
- * would find null here. Nothing crosses builds: a job graph is written and read by one jar, and no
- * checkpoint carries a serializer.
+ * owner. That guarantee applies only to streams written with the holder field. Java deserialization
+ * assigns the fields the stream carries and runs no initializer, so an older stream leaves the
+ * holder {@code null}. Persisted job graphs can cross connector versions during recovery
+ * (ADR-0125); the old-to-new incompatibility was accepted before 1.0.0, and an analogous later form
+ * change requires an upgrade path.
  *
  * <p>Reading the state costs one volatile read once it exists, and derivation happens once even
  * under concurrent first calls (the owner may be shared by several writers). The value is published
