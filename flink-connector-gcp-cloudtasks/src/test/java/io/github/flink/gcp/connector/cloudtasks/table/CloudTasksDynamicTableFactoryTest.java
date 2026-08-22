@@ -269,6 +269,7 @@ class CloudTasksDynamicTableFactoryTest {
     void mapsEveryWriterOptionWithoutReplacingUnspecifiedDefaults() {
         Map<String, String> options = minimalOptions();
         options.put("sink.max-in-flight-tasks", "17");
+        options.put("sink.channel-pool-size", "4");
         options.put("sink.retry.initial-backoff", "200 ms");
         options.put("sink.retry.max-backoff", "4 s");
         options.put("sink.retry.max-attempts", "5");
@@ -280,6 +281,7 @@ class CloudTasksDynamicTableFactoryTest {
         CloudTasksWriterOptions mapped = runtimeSink(options).getConfig().getWriterOptions();
 
         assertThat(mapped.getMaxInFlightTasks()).isEqualTo(17);
+        assertThat(mapped.getChannelPoolSize()).isEqualTo(4);
         assertThat(mapped.getRetryInitialBackoff()).isEqualTo(Duration.ofMillis(200));
         assertThat(mapped.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(4));
         assertThat(mapped.getRetryMaxAttempts()).isEqualTo(5);
@@ -381,6 +383,17 @@ class CloudTasksDynamicTableFactoryTest {
                 .rootCause()
                 .hasMessageContaining("does not belong to target.type")
                 .hasMessageNotContaining("must be host:port");
+    }
+
+    @Test
+    void rejectsAChannelPoolAlongsideAnEmulator() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.channel-pool-size", "8");
+        options.put("emulator-endpoint", "localhost:8123");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("cannot be combined");
     }
 
     @Test

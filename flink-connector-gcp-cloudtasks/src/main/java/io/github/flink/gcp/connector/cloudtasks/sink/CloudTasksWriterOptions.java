@@ -23,12 +23,15 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Tuning options for the sink's writer: the in-flight cap and the two retry budgets.
+ * Tuning options for the sink's writer: the in-flight cap, the transport channel pool and the two
+ * retry budgets.
  *
  * <p>Set via {@link CloudTasksSinkBuilder#writerOptions(CloudTasksWriterOptions)}; optional — every
  * knob is defaulted, so {@link #defaults()} is equivalent to not setting options at all.
@@ -36,7 +39,9 @@ import java.util.Objects;
  * <p>There are deliberately <em>no</em> rate knobs. Cloud Tasks paces dispatch on the queue ({@code
  * maxDispatchesPerSecond}, {@code maxConcurrentDispatches}, the retry configuration), which is
  * queue configuration applied by whoever creates the queue. What this sink bounds is how many task
- * creations it keeps outstanding, not how fast the tasks execute.
+ * creations it keeps outstanding, not how fast the tasks execute. The channel pool is not a rate
+ * knob either: it sizes how much of the in-flight cap the transport can actually carry
+ * concurrently.
  *
  * <p>Retries are the sink's own because the generated client does not retry {@code CreateTask}: its
  * retryable-code set is empty and its total timeout is 20 seconds, while the read-only methods do
@@ -55,6 +60,7 @@ public final class CloudTasksWriterOptions implements Serializable {
     private static final CloudTasksWriterOptions DEFAULTS = builder().build();
 
     private final int maxInFlightTasks;
+    @Nullable private final Integer channelPoolSize;
     private final Duration retryInitialBackoff;
     private final Duration retryMaxBackoff;
     private final int retryMaxAttempts;
@@ -65,6 +71,7 @@ public final class CloudTasksWriterOptions implements Serializable {
 
     private CloudTasksWriterOptions(Builder builder) {
         this.maxInFlightTasks = builder.maxInFlightTasks;
+        this.channelPoolSize = builder.channelPoolSize;
         this.retryInitialBackoff = builder.retryInitialBackoff;
         this.retryMaxBackoff = builder.retryMaxBackoff;
         this.retryMaxAttempts = builder.retryMaxAttempts;
@@ -84,9 +91,9 @@ public final class CloudTasksWriterOptions implements Serializable {
     }
 
     /**
-     * Returns the default options: an in-flight cap of 1000, a transient-failure budget of 100 ms
-     * doubling to 10 s over 8 attempts, and a {@code NOT_FOUND} budget of 500 ms doubling to 2 s
-     * over 3 attempts.
+     * Returns the default options: an in-flight cap of 1000, the client's default transport (one
+     * gRPC channel), a transient-failure budget of 100 ms doubling to 10 s over 8 attempts, and a
+     * {@code NOT_FOUND} budget of 500 ms doubling to 2 s over 3 attempts.
      *
      * @return the default options
      */
@@ -97,6 +104,15 @@ public final class CloudTasksWriterOptions implements Serializable {
     /** Returns the writer's cap on outstanding task creations. */
     public int getMaxInFlightTasks() {
         return maxInFlightTasks;
+    }
+
+    /**
+     * Returns the configured gRPC channel-pool size, or {@code null} when the client's default
+     * transport is left alone.
+     */
+    @Nullable
+    public Integer getChannelPoolSize() {
+        return channelPoolSize;
     }
 
     /** Returns the first backoff of the transient-failure retry. */
@@ -172,6 +188,7 @@ public final class CloudTasksWriterOptions implements Serializable {
         }
         CloudTasksWriterOptions that = (CloudTasksWriterOptions) o;
         return maxInFlightTasks == that.maxInFlightTasks
+                && Objects.equals(channelPoolSize, that.channelPoolSize)
                 && perDestinationMetrics == that.perDestinationMetrics
                 && retryMaxAttempts == that.retryMaxAttempts
                 && notFoundMaxAttempts == that.notFoundMaxAttempts
@@ -185,6 +202,7 @@ public final class CloudTasksWriterOptions implements Serializable {
     public int hashCode() {
         return Objects.hash(
                 maxInFlightTasks,
+                channelPoolSize,
                 retryInitialBackoff,
                 retryMaxBackoff,
                 retryMaxAttempts,
@@ -198,6 +216,8 @@ public final class CloudTasksWriterOptions implements Serializable {
     public String toString() {
         return "CloudTasksWriterOptions{maxInFlightTasks="
                 + maxInFlightTasks
+                + ", channelPoolSize="
+                + channelPoolSize
                 + ", retryInitialBackoff="
                 + retryInitialBackoff
                 + ", retryMaxBackoff="
@@ -220,6 +240,7 @@ public final class CloudTasksWriterOptions implements Serializable {
     public static final class Builder {
 
         private int maxInFlightTasks = 1000;
+        @Nullable private Integer channelPoolSize;
         private Duration retryInitialBackoff = Duration.ofMillis(100);
         private Duration retryMaxBackoff = Duration.ofSeconds(10);
         private int retryMaxAttempts = 8;
@@ -241,6 +262,27 @@ public final class CloudTasksWriterOptions implements Serializable {
         public Builder maxInFlightTasks(int maxInFlightTasks) {
             Preconditions.checkArgument(maxInFlightTasks > 0, "maxInFlightTasks must be positive");
             this.maxInFlightTasks = maxInFlightTasks;
+            return this;
+        }
+
+        /**
+         * Sizes the client's gRPC channel pool. Unset by default, leaving the client's own
+         * transport configuration — one channel — alone.
+         *
+         * <p>One HTTP/2 channel carries about 100 concurrent streams, so the default transport
+         * delivers only ~100 of the in-flight cap's nominal concurrency no matter how high the cap
+         * is set; a subtask that needs more concurrent creates than that needs more channels, about
+         * one per 100 concurrent creates. Raising it can push a single subtask past the queue's
+         * recommended ~1,000 TPS ceiling — mind the documented ramp guidance before doing so.
+         * Rejected in combination with an emulator endpoint when the sink is built: the emulator
+         * always uses one plaintext channel, so the pool would be silently ignored.
+         *
+         * @param channelPoolSize the number of gRPC channels, positive
+         * @return this builder
+         */
+        public Builder channelPoolSize(int channelPoolSize) {
+            Preconditions.checkArgument(channelPoolSize > 0, "channelPoolSize must be positive");
+            this.channelPoolSize = channelPoolSize;
             return this;
         }
 

@@ -209,6 +209,26 @@ class CloudTasksSinkBuilderTest {
     }
 
     @Test
+    void rejectsAChannelPoolAlongsideAnEmulatorEndpoint() {
+        // The emulator arm always uses one plaintext channel (ADR-0081), so a configured pool
+        // would be silently ignored — the same loud refusal the credential conflict gets.
+        assertThatThrownBy(
+                        () ->
+                                CloudTasksSink.<String>builder()
+                                        .queue(QUEUE)
+                                        .serializer(SERIALIZER)
+                                        .writerOptions(
+                                                CloudTasksWriterOptions.builder()
+                                                        .channelPoolSize(8)
+                                                        .build())
+                                        .emulatorEndpoint("localhost:8123")
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("channelPoolSize(...)")
+                .hasMessageContaining("emulatorEndpoint(...)");
+    }
+
+    @Test
     void rejectsAnEmulatorEndpointFollowedByAServiceAccountKeyFile() {
         assertThatThrownBy(
                         () ->

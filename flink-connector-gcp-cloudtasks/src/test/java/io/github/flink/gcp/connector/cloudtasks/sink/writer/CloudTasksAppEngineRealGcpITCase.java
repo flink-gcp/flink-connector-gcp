@@ -286,7 +286,7 @@ class CloudTasksAppEngineRealGcpITCase {
         try (CloudTasksWriter<String> writer =
                 new CloudTasksWriter<>(
                         TestSinkConfigs.config(builder),
-                        new DefaultTaskCreatorFactory().create(),
+                        new DefaultTaskCreatorFactory(null, null, null).create(),
                         new FakeMailboxExecutor(),
                         TestSinkWriterMetricGroup.create())) {
             for (String record : records) {

@@ -134,7 +134,9 @@ abstract class AbstractCloudTasksEmulatorITCase {
         return new CloudTasksWriter<>(
                 TestSinkConfigs.config(builder),
                 new DefaultTaskCreatorFactory(
-                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
+                                null,
+                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"),
+                                null)
                         .create(),
                 new FakeMailboxExecutor(),
                 TestSinkWriterMetricGroup.create());

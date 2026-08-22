@@ -202,6 +202,11 @@ public class CloudTasksSinkBuilder<T> {
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
                         + " emulator uses a plaintext channel with no credentials. Remove one of"
                         + " the two settings.");
+        Preconditions.checkState(
+                writerOptions.getChannelPoolSize() == null || emulatorEndpoint == null,
+                "channelPoolSize(...) cannot be combined with emulatorEndpoint(...): an emulator"
+                        + " always uses one plaintext channel, so the pool would be silently"
+                        + " ignored. Remove one of the two settings.");
         return new CloudTasksCreateTaskSink<>(
                 new CloudTasksSinkConfig<>(
                         destinationResolver,

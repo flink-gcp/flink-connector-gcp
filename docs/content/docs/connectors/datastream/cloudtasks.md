@@ -347,6 +347,23 @@ completed checkpoint, so the restart replays their records.
 [configuration reference]({{< relref "docs/reference/cloudtasks" >}}#cloudtaskswriteroptions).
 There are deliberately no rate knobs among them — that is the queue's job.
 
+`channelPoolSize` is the one transport knob, and it is not a rate knob either: it sizes how much
+of the in-flight cap the transport can actually carry. The client's default transport opens a
+single gRPC channel, and one HTTP/2 channel carries ~100 concurrent streams, so at the default one
+subtask runs about 100 concurrent creates no matter how high `maxInFlightTasks` is set — measured
+in [#937]({{< param BookRepo >}}/issues/937) as ~210 creates/s per subtask at the default against
+1,271/s with an 8-channel pool. Throughput is concurrency divided by a per-RPC latency that itself
+grows with load — queueing took the measured p50 from ~50 ms at low concurrency to ~280 ms at
+100-way — which is why eight channels bought ~6× rather than 8×; expect the pool to scale
+sub-linearly. The default deliberately stays at the client's single channel
+([ADR-0134]({{< param BookRepo >}}/blob/main/docs/adr/0134-the-cloud-tasks-channel-pool-is-an-explicit-knob-defaulting-to-the-clients-single-channel.md)):
+a pool sized from the cap would have silently pushed jobs toward the queue's [recommended
+~1,000 TPS ceiling](#queues-rate-limits-and-sink-concurrency), which that 8-channel figure already
+exceeds. Raising it is therefore a deliberate act — size the pool at about one channel per 100
+concurrent creates you actually want, and mind the 500/50/5 ramp rule below. Beside
+`emulatorEndpoint` the knob is rejected at `build()`: the emulator always uses one plaintext
+channel, so a configured pool would otherwise be silently ignored.
+
 One shape in that table needs the reasoning that used to sit in its own row. `NOT_FOUND` has a
 **separate, short budget** because a queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may
 return `NOT_FOUND`" meanwhile, so it is not proof of a misconfigured queue — but a mistyped queue
@@ -379,11 +396,12 @@ What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a 
 creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
 completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
 write at the cap yielding until completions bring the count down.
-Create throughput is then bounded by sink parallelism × the in-flight cap, against a per-RPC
-latency that naming increases — though the [#937]({{< param BookRepo >}}/issues/937) measurement
-found the default transport saturates first: a single gRPC channel carries ~100 concurrent
-streams, so one subtask tops out well below the cap's nominal concurrency
-([#1015]({{< param BookRepo >}}/issues/1015) tracks whether the client should pool channels).
+Create throughput is then bounded by sink parallelism × min(the in-flight cap, `channelPoolSize`
+× ~100) concurrent creates, against a per-RPC latency that naming increases. The transport term is
+the one the [#937]({{< param BookRepo >}}/issues/937) measurement surfaced: a single gRPC channel
+carries ~100 concurrent streams, so once the cap sits at or above ~100, a subtask at the default
+single channel tops out around ~210 creates/s however much higher the cap is raised. [#1015]({{< param BookRepo >}}/issues/1015) routed that ceiling
+into the `channelPoolSize` knob under [Tuning](#tuning), whose default keeps the single channel.
 
 What the sink does **not** provide is pacing. Two numbers bound the queue instead:
 

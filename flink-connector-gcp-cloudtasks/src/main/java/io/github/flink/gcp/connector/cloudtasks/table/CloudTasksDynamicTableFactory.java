@@ -85,6 +85,7 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         CloudTasksConnectorOptions.EMULATOR_ENDPOINT,
                         CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS,
+                        CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE,
                         CloudTasksConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
                         CloudTasksConnectorOptions.SINK_RETRY_MAX_BACKOFF,
                         CloudTasksConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
@@ -113,6 +114,7 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
 
         ReadableConfig config = helper.getOptions();
         validateCredentials(config);
+        validateTransport(config);
         CloudTasksTargetType targetType = config.get(CloudTasksConnectorOptions.TARGET_TYPE);
         validateTargetFamily(context, targetType);
         // After the checks that refuse an option outright; see validateEmulatorEndpoint.
@@ -171,6 +173,18 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                             "Options '%s' and '%s' cannot be combined: an emulator uses a"
                                     + " plaintext channel with no credentials.",
                             CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
+                            CloudTasksConnectorOptions.EMULATOR_ENDPOINT.key()));
+        }
+    }
+
+    private static void validateTransport(ReadableConfig config) {
+        if (config.getOptional(CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE).isPresent()
+                && config.getOptional(CloudTasksConnectorOptions.EMULATOR_ENDPOINT).isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Options '%s' and '%s' cannot be combined: an emulator always uses one"
+                                    + " plaintext channel, so the pool would be silently ignored.",
+                            CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE.key(),
                             CloudTasksConnectorOptions.EMULATOR_ENDPOINT.key()));
         }
     }

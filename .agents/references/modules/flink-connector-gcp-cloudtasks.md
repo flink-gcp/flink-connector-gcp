@@ -5,7 +5,7 @@ Module-scoped guidance, read when working in this module. Repository-wide rules
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
-## Sink (`docs/adr/0048`, `docs/adr/0129`)
+## Sink (`docs/adr/0048`, `docs/adr/0129`, `docs/adr/0134`)
 
 - **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
   (`docs/adr/0129`) — do not adopt a batch create without superseding that record.
@@ -17,6 +17,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Retries are the sink's one owned loop in the writer**, never gax `createTaskSettings`;
   `NOT_FOUND` keeps its separate short budget. A failed create parks with a due time; parked
   creates count against `maxInFlightTasks` and drop on close.
+- **Transport sizing is the one gax setting the sink configures** (`docs/adr/0134`): an explicit
+  `channelPoolSize` resizes the production channel pool; unset leaves the client's default single
+  channel, it is never derived from `maxInFlightTasks`, and beside `emulatorEndpoint` it is
+  rejected — the emulator arm keeps its caller-owned single channel (`docs/adr/0081`). gax retry
+  and batching policy stay untouched.
 - Task naming: unnamed by default; `taskIdExtractor(...)` on the **sink builder**, key hashed
   SHA-256, `ALREADY_EXISTS` = success; design against the 1 h dedup window (Google's own
   sources contradict each other). `httpTarget(url)` uses the existing two-stage immutable schema

@@ -41,7 +41,7 @@ execute. That inversion is the connector's whole reason for existing, and it is 
 | `destinationResolver` | — | Resolves the queue per record. One client serves every queue, so routing allocates no per-queue service-client state |
 | `serializer` | **required** | Builds the `Task` — HTTP URL or App Engine relative URI/routing, method, headers, body, schedule, authorization — or returns `null` to skip the record. It must carry no name |
 | `taskIdExtractor` | — | Opts into named tasks, deduplicating by the extracted key. The sink hashes it with SHA-256 |
-| `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap and the two retry budgets |
+| `writerOptions` | [defaults](#cloudtaskswriteroptions) | The in-flight cap, the transport channel pool and the two retry budgets |
 | `failedTaskHandler` | `FailureHandler.failJob()` | What happens to a task that terminally fails — fail, drop, or dead-letter. The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key on each TaskManager when the writer starts. Every eligible TaskManager must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/cloudtasks" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
@@ -88,6 +88,7 @@ is under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning)
 | Option | Default | What it does |
 |---|---|---|
 | `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap `write()` yields to the task mailbox |
+| `channelPoolSize` | *unset ⇒ the client's single channel* | Sizes the client's gRPC channel pool, which bounds how much of the in-flight cap the transport actually carries; the sizing rule and ramp caution are under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning). Rejected beside `emulatorEndpoint` |
 | `retryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
 | `retryMaxBackoff` | 10 s | Cap that backoff doubles up to, before ±25% jitter |
 | `retryMaxAttempts` | 8 | Total attempts, the first create included. Exhausting the budget fails the job |
