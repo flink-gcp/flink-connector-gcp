@@ -185,3 +185,6 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | `skipMessagesWithoutChange` | `false` | Skips deserialization when filtering removes every entry. The default delivers the mutation with an empty entry list |
 
 There is no emulator option because the Bigtable emulator implements neither change-stream RPC.
+
+There is no heartbeat-interval option either, because the five-second service heartbeat is also what
+paces the reader's rotation of queued partitions.

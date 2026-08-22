@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0103: The Bigtable Change Streams reader bounds asynchronous partition reads
 
 - Status: Accepted
-- Date: 2026-08-13
-- Issues: [#553](https://github.com/laughingman7743/flink-connector-gcp/issues/553)
+- Date: 2026-08-13 (revised 2026-08-22)
+- Issues: [#553](https://github.com/laughingman7743/flink-connector-gcp/issues/553),
+  [#980](https://github.com/flink-gcp/flink-connector-gcp/issues/980)
 - Modules: bigtable (`source.changestream`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/bigtable.md#change-streams-source)
 
@@ -60,6 +61,9 @@ The queued head then opens, which gives every queued partition a rotation point 
 Cancellation retains the physical stream slot until its terminal callback so a slow cancellation cannot exceed the configured bound.
 Completion without a `CloseStream` is a failure; connector-initiated rotation, topology completion, and reader close are distinguished from it.
 
+That five seconds is an internal protocol constant rather than a builder or Table option.
+One value is the request's heartbeat duration, the pace of the rotation above, and the unit of the `missedHeartbeatIntervals` gauge.
+
 Reader metrics report opened and active RPCs, queued partitions and their oldest-position lag, missed heartbeat intervals, record variants, and the minimum checkpointed low watermark across active and queued assignments.
 Enumerator metrics report initial and successor partitions, split and merge transitions, and oldest unassigned-position lag.
 Lag calculations return zero for future positions and saturate on subtraction overflow.
@@ -89,11 +93,19 @@ The emulator cannot provide that evidence because it does not implement Change S
   A stable partition may not close, which allows queued partitions to starve indefinitely.
 - **Treat the concurrency default as a Bigtable limit.**
   No cited service contract publishes that limit, and the configured value bounds connector resources regardless of service topology.
+- **Expose the heartbeat interval as a builder and Table option, as the Spanner Change Streams source does.**
+  Spanner justifies its option by event time: its heartbeats advance a quiet partition's watermark, so the interval bounds how long that watermark can stand still.
+  ADR-0109 gives this source no connector-native watermark, so that reason does not reach Bigtable.
+  What a Bigtable value would change is rotation, because a stream that no service topology change closes is rotated out only at a heartbeat.
+  A longer interval delays every such rotation, and a partition behind others in the FIFO waits several of them; a shorter one buys that freshness with one more cancel and reopen per interval per active read, each holding its physical slot until the cancelled RPC terminates.
+  The service also publishes no accepted range: the [`ReadChangeStream` reference](https://cloud.google.com/bigtable/docs/reference/data/rpc/google.bigtable.v2#readchangestreamrequest) states only that `heartbeat_duration` defaults to five seconds, and `ReadChangeStreamQuery.heartbeatDuration` sets the field without checking it.
+  A client-side bound would therefore rest on no measurement, and a value the service rejects would fail at stream-open time on a TaskManager.
 
 ## Consequences
 
 - Increasing the option spends one active RPC, callback observer, and one entry of handover-queue capacity per additional slot in each subtask.
-- A rotation reopens from the emitted continuation token and can replay responses received after that position, preserving at-least-once delivery.
+- A rotation reopens from the continuation token the task thread has just emitted, and no response is outstanding when it cancels, so the replay that at-least-once delivery permits comes from a checkpoint restore rather than from rotation.
+- The heartbeat interval reaches no public surface, so a builder setter and its Table option stay additive and non-breaking if a measured need for them appears.
 - A parallelism or bound reduction preserves excess splits in checkpoint state and trades per-partition freshness for a lower resource ceiling.
 - The connector exposes capacity and lag but does not change Flink operator parallelism automatically.
 - Operators must combine connector lag with Bigtable CPU-load and Change Streams log-volume metrics; Bigtable streaming-request latency measures RPC lifetime rather than change-processing delay.

@@ -56,6 +56,8 @@ class BigtableChangeStreamReaderMetricsTest {
         assertThat(gauge("queuedChangeStreamPartitionLagMillis")).isEqualTo(12_000L);
         assertThat(gauge("partitionLowWatermarkMillis")).isEqualTo(5_000L);
 
+        // 11 s elapsed over the opener's five-second HEARTBEAT_INTERVAL is 2 whole intervals, so
+        // this expectation belongs to that constant: raise it and the arithmetic below changes.
         now.set(31_000L);
         assertThat(gauge("missedHeartbeatIntervals")).isEqualTo(2);
         metrics.recordReturned(first);

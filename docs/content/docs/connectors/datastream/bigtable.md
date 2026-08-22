@@ -740,6 +740,8 @@ Each subtask uses asynchronous `ReadChangeStream` calls with manual inbound flow
 Callbacks may receive a continuation token before the task thread consumes its record, but checkpoints retain only the position the task thread has emitted.
 When assigned partitions outnumber the subtask limit, the reader queues the excess and rotates stable streams at service heartbeats so every queued partition can open or reopen from its checkpointed position.
 Connector-initiated rotation and shutdown cancellation do not complete or fail a partition.
+Every request asks for a five-second heartbeat, so a partition queued behind others waits several rotations, and a stream still draining responses rotates only once its next heartbeat reaches the task thread.
+That interval is not configurable, and the `heartbeatInterval` of the Spanner Change Streams source has no counterpart here; [ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md) records why.
 
 The coordinator also compares the live service keyspace with its checkpointed assigned,
 unassigned, and pending-merge ledger every 10 seconds. A missing partition is checkpointed with

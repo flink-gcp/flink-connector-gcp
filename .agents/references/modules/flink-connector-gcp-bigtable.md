@@ -297,7 +297,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   successor splits in FIFO order and rotates at emitted heartbeats. Each active read has at most
   one outstanding response, and the shared handover queue has the same bound as active reads.
   Remove a response before requesting the next one, and keep the physical read slot occupied until
-  a cancelled RPC actually terminates.
+  a cancelled RPC actually terminates. The five-second heartbeat that paces those rotations is an
+  internal constant, deliberately not the builder option Spanner's is (#980); it is also the unit of
+  `missedHeartbeatIntervals`, so read `docs/adr/0103` before exposing or changing it.
 - **Delivered and emitted positions remain separate for every active Change Streams partition.**
   Only the task thread advances checkpointed state. An RPC failure retains the emitted split and
   fails the task without reporting a transition; connector cancellation can rotate or close a read
