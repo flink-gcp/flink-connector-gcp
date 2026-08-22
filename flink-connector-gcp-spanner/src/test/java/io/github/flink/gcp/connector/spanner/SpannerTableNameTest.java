@@ -117,6 +117,48 @@ class SpannerTableNameTest {
     }
 
     @Test
+    void rejectsWhitespaceThatTrimDoesNotStrip() {
+        // U+2028 is the value that tells the two blank idioms apart: Character.isWhitespace calls
+        // it whitespace, and String.trim() leaves it alone because it sits above U+0020. The ASCII
+        // assertions elsewhere in this class pass under either idiom; these two fail if the check
+        // each of them reaches returns to trim().isEmpty().
+        //
+        // The second one passes a null schema deliberately. accessPath's own blank check runs only
+        // on the unqualified branch: with a schema configured it delegates to SpannerIdentifier
+        // instead, which is how an earlier revision of this test pinned SpannerIdentifier twice and
+        // SpannerTableName's own check not at all.
+        assertThatThrownBy(
+                        () -> SpannerTableName.of("\u2028", "orders", Dialect.GOOGLE_STANDARD_SQL))
+                .as("SpannerIdentifier, reached through a configured schema")
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("schema");
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableName.of(null, "orders", Dialect.POSTGRESQL)
+                                        .accessPath("\u2028", "scan.index"))
+                .as("accessPath's own check, on the unqualified branch")
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("scan.index must not be blank.");
+    }
+
+    @Test
+    void rejectsABlankNativeApiTableName() {
+        // nativeApiKey's blank branch had no test at all; it is the mutation-side entry point.
+        // The third value is U+2028, which trim() leaves in place and only isBlank() rejects.
+        assertThatThrownBy(() -> SpannerTableName.nativeApiKey(null, Dialect.GOOGLE_STANDARD_SQL))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("The native API table name is blank.");
+        assertThatThrownBy(() -> SpannerTableName.nativeApiKey("  ", Dialect.POSTGRESQL))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("The native API table name is blank.");
+        assertThatThrownBy(
+                        () -> SpannerTableName.nativeApiKey("\u2028", Dialect.GOOGLE_STANDARD_SQL))
+                .as("U+2028 is blank to isBlank() but survives trim()")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("The native API table name is blank.");
+    }
+
+    @Test
     void rejectsBlankMultipartAndDialectMismatchedIdentifiers() {
         assertThatThrownBy(() -> SpannerTableName.of(" ", "orders", Dialect.GOOGLE_STANDARD_SQL))
                 .isInstanceOf(ValidationException.class)

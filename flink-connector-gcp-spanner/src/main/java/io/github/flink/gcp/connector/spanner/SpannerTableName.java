@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.spanner.Dialect;
 
@@ -90,7 +91,7 @@ public final class SpannerTableName implements Serializable {
     /** Resolves an unqualified access-path option in this table's schema. */
     public AccessPathName accessPath(String value, String option) {
         if (!explicitlyQualified) {
-            if (value.trim().isEmpty()) {
+            if (value.isBlank()) {
                 throw new ValidationException(option + " must not be blank.");
             }
             return new AccessPathName(value, value);
@@ -109,7 +110,7 @@ public final class SpannerTableName implements Serializable {
 
     /** Returns a dialect-aware key for a table name carried by a mutation. */
     public static String nativeApiKey(String apiName, Dialect dialect) {
-        if (apiName == null || apiName.trim().isEmpty()) {
+        if (StringUtils.isNullOrWhitespaceOnly(apiName)) {
             throw new IllegalArgumentException("The native API table name is blank.");
         }
         int separator = apiName.indexOf('.');

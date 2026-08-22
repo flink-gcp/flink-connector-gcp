@@ -271,13 +271,12 @@ public final class SpannerDynamicTableFactory
     private static void validateCredentialsMode(ReadableConfig config) {
         String keyFile =
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null);
-        if (keyFile != null && keyFile.trim().isEmpty()) {
-            throw new org.apache.flink.table.api.ValidationException(
-                    "service-account-key-file must not be blank.");
+        if (keyFile != null && keyFile.isBlank()) {
+            throw new ValidationException("service-account-key-file must not be blank.");
         }
         if (keyFile != null
                 && config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).isPresent()) {
-            throw new org.apache.flink.table.api.ValidationException(
+            throw new ValidationException(
                     "service-account-key-file cannot be combined with emulator-endpoint.");
         }
     }
