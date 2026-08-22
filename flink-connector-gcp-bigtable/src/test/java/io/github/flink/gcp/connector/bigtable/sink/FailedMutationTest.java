@@ -67,8 +67,38 @@ class FailedMutationTest {
         assertThat(failed.getDestination()).isEqualTo(TABLE);
         assertThat(failed)
                 .hasToString(
-                        "FailedMutation{destination=p.i.orders, rowKey=null,"
+                        "FailedMutation{destination=p.i.orders, mutation=null,"
                                 + " errorMessage=not serializable}");
+    }
+
+    @Test
+    void rendersThePayloadSizeAndKeepsTheRowKeyOutOfTheLine() {
+        // The shape the siblings share: FailedTask, FailedRow and FailedMessage all print the size
+        // of the failed payload, and Spanner's FailedMutation carries no key at all. It is the
+        // whole mutation that is measured, not the row key -- a key's length is nearly constant
+        // and answers nothing, where the mutation's size is what an operator asks after an
+        // INVALID_ARGUMENT on a batch. A handler that wants the row calls getRowKey().
+        FailedMutation failed = failureFor(ByteString.copyFromUtf8("row-1"));
+        int payload = failed.getPayloadBytes().size();
+
+        assertThat(failed)
+                .hasToString(
+                        "FailedMutation{destination=p.i.orders, mutation="
+                                + payload
+                                + " bytes, errorMessage=rejected}");
+        assertThat(payload).isGreaterThan("row-1".length());
+        assertThat(failed.toString()).doesNotContain("row-1");
+        assertThat(failed.getRowKey()).isEqualTo(ByteString.copyFromUtf8("row-1"));
+    }
+
+    @Test
+    void keepsABinaryRowKeyOutOfTheLineToo() {
+        // The case toStringUtf8() served worst: it decoded invalid UTF-8 to U+FFFD rather than
+        // failing, so 0xFE and 0xFF arrived as one character that identified neither, while a key
+        // that was valid UTF-8 went into the line exactly.
+        String rendered = failureFor(ByteString.copyFrom(new byte[] {(byte) 0xFE})).toString();
+
+        assertThat(rendered).doesNotContain("�").contains("mutation=").contains(" bytes");
     }
 
     @Test
@@ -77,5 +107,13 @@ class FailedMutationTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> FailedMutation.of(TABLE, null, null, null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    private static FailedMutation failureFor(ByteString rowKey) {
+        return FailedMutation.of(
+                TABLE,
+                RowMutationEntry.create(rowKey).setCell("cf", "q", 1_000L, "value"),
+                "rejected",
+                null);
     }
 }

@@ -24,6 +24,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
@@ -32,7 +33,6 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTrans
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
@@ -503,7 +503,14 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         Duration.ofDays(7), Collections.singletonList(WHOLE));
         BigtableChangeStreamSplitEnumerator enumerator =
                 new BigtableChangeStreamSplitEnumerator(
-                        context, client, StartPosition.latest(), StartPosition.latest(), restored);
+                        context,
+                        client,
+                        StartPosition.latest(),
+                        StartPosition.latest(),
+                        restored,
+                        false,
+                        false,
+                        Clock.systemUTC());
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -713,7 +720,9 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         StartPosition.latest(),
                         null,
                         null,
-                        true);
+                        true,
+                        false,
+                        Clock.systemUTC());
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -943,7 +952,9 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         StartPosition.latest(),
                         null,
                         null,
-                        true);
+                        true,
+                        false,
+                        Clock.systemUTC());
         enumerator.start();
         context.runAsyncCalls();
         assertThat(context.readersToldNoMoreSplits()).isEmpty();
@@ -1112,6 +1123,32 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.close();
     }
 
+    @Test
+    void thePublicConstructorTurnsReconciliationOn() throws Exception {
+        // The only case here that goes through the constructor production takes. Every other one
+        // uses the package-private seam and passes the flag explicitly, so without this the
+        // hardcoded true could be flipped to false -- every job silently stops reconciling -- and
+        // no test in the module would notice.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedChangeStreamCoordinatorClient client =
+                ScriptedChangeStreamCoordinatorClient.with(WHOLE);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context, client, StartPosition.latest(), null, null, false);
+        enumerator.start();
+        context.runAsyncCalls();
+        int beforeScan = client.retentionCalls();
+
+        context.runPeriodicAsyncCalls();
+        context.runAsyncCalls();
+
+        // A scan reads retention before it can decide anything, so the count moving is the scan
+        // having run. With reconciliation off nothing is registered for runPeriodicAsyncCalls to
+        // run at all, and the count stands still. No clock assertion, so no wall-clock coupling.
+        assertThat(client.retentionCalls()).isGreaterThan(beforeScan);
+        enumerator.close();
+    }
+
     private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
                 new FakeSplitEnumeratorContext<>(parallelism);
@@ -1126,7 +1163,14 @@ class BigtableChangeStreamSplitEnumeratorTest {
             ScriptedChangeStreamCoordinatorClient client,
             BigtableChangeStreamEnumeratorState restored) {
         return new BigtableChangeStreamSplitEnumerator(
-                context, client, StartPosition.latest(), null, restored);
+                context,
+                client,
+                StartPosition.latest(),
+                null,
+                restored,
+                false,
+                false,
+                Clock.systemUTC());
     }
 
     private static BigtableChangeStreamSplitEnumerator reconciling(

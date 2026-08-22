@@ -33,8 +33,8 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

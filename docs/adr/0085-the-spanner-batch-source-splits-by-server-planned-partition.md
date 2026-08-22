@@ -103,7 +103,7 @@ ADR-0080 reached, by a different mechanism.
 | `maxPartitions = 10` | 2 partitions — the hint is ignored |
 | `partitionSizeBytes = 1024` | 2 partitions — the hint is ignored |
 | `partitionRead`, `KeySet.all()` | 2 partitions |
-| Rows per partition | partition[0] **0 rows**, partition[1] 4,000 rows |
+| Rows per partition | `partition[0]` **0 rows**, `partition[1]` 4,000 rows |
 | Union of the partitions | 4,000 rows, 4,000 distinct — complete and disjoint |
 | `Options.dataBoostEnabled(true)` | accepted, no error, no change |
 | Re-executing one partition token twice | same size, same order, and **not** primary-key order |

@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 
 import javax.annotation.Nullable;
 

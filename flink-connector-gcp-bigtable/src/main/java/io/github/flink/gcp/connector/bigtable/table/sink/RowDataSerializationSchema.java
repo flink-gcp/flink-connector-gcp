@@ -23,6 +23,7 @@ import org.apache.flink.types.RowKind;
 
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
@@ -149,7 +150,7 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
                                     + " nor the reason, so it is refused here instead. A row with"
                                     + " nothing but a key is not a Bigtable row; write at least"
                                     + " one column family, or filter the record out upstream.",
-                            entry.toProto().getRowKey().toStringUtf8()));
+                            RowRanges.format(entry.toProto().getRowKey())));
         }
         return entry;
     }

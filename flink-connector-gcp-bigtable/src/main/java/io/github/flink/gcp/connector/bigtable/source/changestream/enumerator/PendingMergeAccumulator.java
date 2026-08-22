@@ -21,8 +21,8 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
 import java.time.Instant;
 import java.util.ArrayList;

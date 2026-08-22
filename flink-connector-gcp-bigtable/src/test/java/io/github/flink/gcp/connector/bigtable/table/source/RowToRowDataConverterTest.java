@@ -314,6 +314,11 @@ class RowToRowDataConverterTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("row key")
                 .hasMessageContaining("4 byte(s)")
+                // Escaped rather than decoded as UTF-8. The message asks whether the row was
+                // written under a different encoding, and these four bytes are control characters:
+                // read as UTF-8 they went into the message raw, where a terminal swallows them, so
+                // the question arrived without the evidence it is asking about.
+                .hasMessageContaining("'\\x00\\x00\\x00\\x07'")
                 .hasCauseInstanceOf(ArrayIndexOutOfBoundsException.class);
     }
 

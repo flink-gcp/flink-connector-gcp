@@ -44,11 +44,10 @@ public interface ChangeStreamCoordinatorClient extends AutoCloseable {
      *
      * <p>Every returned range must be normalised — an absent bound spelled {@code UNBOUNDED} rather
      * than as an empty key, which is what {@link
-     * io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges#copyOf(ByteStringRange)}
-     * produces. {@link ChangeStreamPartitionReconciler} reads bound types, so an implementation
-     * that passed the service's own spelling through would make a table's last partition read as an
-     * empty range and its first fail to match itself across scans, and neither failure is reported
-     * anywhere.
+     * io.github.flink.gcp.connector.bigtable.RowRanges#copyOf(ByteStringRange)} produces. {@link
+     * ChangeStreamPartitionReconciler} reads bound types, so an implementation that passed the
+     * service's own spelling through would make a table's last partition read as an empty range and
+     * its first fail to match itself across scans, and neither failure is reported anywhere.
      *
      * @return the current partitions, normalised
      * @throws Exception if the partitions cannot be discovered

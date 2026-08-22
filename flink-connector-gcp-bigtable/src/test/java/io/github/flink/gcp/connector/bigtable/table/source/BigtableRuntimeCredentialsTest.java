@@ -101,7 +101,8 @@ class BigtableRuntimeCredentialsTest {
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
                         MISSING_KEY,
-                        (String) null);
+                        null,
+                        null);
 
         assertSanitized(() -> input.open(new GenericInputSplit(0, 1)));
     }
@@ -142,7 +143,8 @@ class BigtableRuntimeCredentialsTest {
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
                         null,
-                        "localhost");
+                        "localhost",
+                        null);
 
         assertThatThrownBy(() -> input.open(new GenericInputSplit(0, 1)))
                 .isInstanceOf(IllegalArgumentException.class)

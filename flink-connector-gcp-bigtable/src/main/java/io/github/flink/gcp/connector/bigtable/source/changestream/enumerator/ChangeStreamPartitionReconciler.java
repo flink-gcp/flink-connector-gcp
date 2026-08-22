@@ -21,10 +21,10 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -96,9 +96,11 @@ final class ChangeStreamPartitionReconciler {
     private static MissingPartition find(
             ByteStringRange partition, List<MissingPartition> missingPartitions) {
         for (MissingPartition missing : missingPartitions) {
-            // Exact range equality, not RowRanges.format(): that renderer prints "*" both for an
-            // unbounded bound and for a bound at the row key "*" (0x2A), so comparing renderings
-            // could hand a partition another one's grace timer and low watermark.
+            // Exact range equality, not RowRanges.format(): a rendering is for a reader and
+            // never an identity (#910), so comparing renderings could hand a partition another
+            // one's grace timer and low watermark. The collision this comment used to cite --
+            // "*" for both an unbounded bound and a bound at the row key "*" -- was closed by
+            // #947, which escapes 0x2A; the reason to compare ranges is the rule, not that bug.
             if (partition.equals(missing.getPartition())) {
                 return missing;
             }

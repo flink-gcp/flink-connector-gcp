@@ -187,6 +187,7 @@ class BigtableLookupCacheTest {
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
                         null,
+                        null,
                         rowStreams);
         ScriptedCacheLoader loader = new ScriptedCacheLoader(inputFormat);
         ControllableReloadTrigger trigger = new ControllableReloadTrigger();

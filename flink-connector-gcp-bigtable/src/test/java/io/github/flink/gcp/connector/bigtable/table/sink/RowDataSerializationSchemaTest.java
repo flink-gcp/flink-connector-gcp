@@ -313,6 +313,32 @@ class RowDataSerializationSchemaTest {
     }
 
     @Test
+    void theRejectedRowNamesABinaryKeyEscaped() {
+        // The row-key column need not be a character string. A BIGINT key encodes to eight raw
+        // bytes, and toStringUtf8() put those into the message as control characters a terminal
+        // swallows — so the one row this message exists to name arrived unreadable, in the very
+        // message that tells a user which row to go and fix.
+        BigtableTableSchema schema =
+                BigtableTableSchema.of(
+                        (RowType)
+                                DataTypes.ROW(
+                                                DataTypes.FIELD("k", DataTypes.BIGINT()),
+                                                DataTypes.FIELD(
+                                                        "cf",
+                                                        DataTypes.ROW(
+                                                                DataTypes.FIELD(
+                                                                        "q", DataTypes.STRING()))))
+                                        .getLogicalType());
+
+        assertThatThrownBy(
+                        () ->
+                                new RowDataSerializationSchema(schema, "NULL", NO_METADATA, false)
+                                        .serialize(GenericRowData.of(1L, null), null))
+                .hasMessageContaining("'\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x01'")
+                .hasMessageContaining("would carry no cell");
+    }
+
+    @Test
     void aNullColumnFamilyWritesNoCellsForThatFamily() throws Exception {
         MutateRowsRequest.Entry entry =
                 serialize(

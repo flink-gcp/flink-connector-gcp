@@ -141,7 +141,7 @@ its leads as unverified; this is what checking them established:
   boundary, where Arrow is a *serialization format* crossing JVM↔Python rather than something the
   runtime computes over. It is not on the table-API classpath, so a connector could not reuse it
   even for the Table API case.
-- The dev@ thread [*[DISCUSS] Add support for Apache Arrow format*][discuss] (March 2023) proposed a
+- The dev@ thread [*\[DISCUSS\] Add support for Apache Arrow format*][discuss] (March 2023) proposed a
   `flink-arrow` **format** module converting `VectorSchemaRoot` ↔ `RowData`. Its proposer said it
   "solely aims to introduce flink-arrow as a new format" and "will not impact the internal data
   structure representation in Flink"; the thread went on to question whether the demand for it

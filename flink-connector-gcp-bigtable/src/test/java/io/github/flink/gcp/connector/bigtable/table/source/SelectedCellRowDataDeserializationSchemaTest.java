@@ -117,6 +117,43 @@ class SelectedCellRowDataDeserializationSchemaTest {
     }
 
     @Test
+    void aMalformedRowKeyIsReportedWithTheKeyEscaped() {
+        // The guard RowToRowDataConverter's row-key decode carries, on this path: a BIGINT primary
+        // key meeting the four-byte key an external writer stored used to surface as a bare
+        // ArrayIndexOutOfBoundsException naming nothing. The delete path, so no value format runs.
+        // A raw-byte key rather than delete()'s "row-1": these four bytes are control characters,
+        // so the assertion below can tell escaping from a toStringUtf8() rendering.
+        DataType type =
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                        DataTypes.FIELD("score", DataTypes.INT()));
+        SelectedCellRowDataDeserializationSchema schema =
+                new SelectedCellRowDataDeserializationSchema(
+                        payload(
+                                (bytes, out) -> {
+                                    throw new AssertionError(
+                                            "delete must not invoke the value format");
+                                }),
+                        new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
+                        SelectedCellTableSchema.of(type, new int[] {0}),
+                        new ChangeStreamReadableMetadata[0],
+                        InternalTypeInfo.of((RowType) type.getLogicalType()));
+        BigtableChangeStreamMutation delete =
+                mutation(
+                        ByteString.copyFrom(new byte[] {0, 0, 0, 7}),
+                        builder ->
+                                builder.deleteCells(
+                                        FAMILY, QUALIFIER, Range.TimestampRange.unbounded()));
+
+        assertThatThrownBy(() -> schema.deserialize(delete, collectingInto(new ArrayList<>())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(
+                        "The row key of the row '\\x00\\x00\\x00\\x07' holds 4 byte(s)")
+                .hasMessageContaining("primary-key column type cannot decode")
+                .hasCauseInstanceOf(ArrayIndexOutOfBoundsException.class);
+    }
+
+    @Test
     void emitsNothingForAnUnrelatedMutation() throws Exception {
         SelectedCellRowDataDeserializationSchema schema =
                 schema(
@@ -182,31 +219,32 @@ class SelectedCellRowDataDeserializationSchemaTest {
 
     private static SelectedCellRowDataDeserializationSchema schema(
             CollectorDeserializer payload, ChangeStreamReadableMetadata[] metadata) {
-        return schema(
-                new DeserializationSchema<RowData>() {
-                    @Override
-                    public RowData deserialize(byte[] message) {
-                        throw new UnsupportedOperationException();
-                    }
+        return schema(payload(payload), metadata);
+    }
 
-                    @Override
-                    public void deserialize(byte[] message, Collector<RowData> out)
-                            throws IOException {
-                        payload.deserialize(message, out);
-                    }
+    private static DeserializationSchema<RowData> payload(CollectorDeserializer deserializer) {
+        return new DeserializationSchema<RowData>() {
+            @Override
+            public RowData deserialize(byte[] message) {
+                throw new UnsupportedOperationException();
+            }
 
-                    @Override
-                    public boolean isEndOfStream(RowData nextElement) {
-                        return false;
-                    }
+            @Override
+            public void deserialize(byte[] message, Collector<RowData> out) throws IOException {
+                deserializer.deserialize(message, out);
+            }
 
-                    @Override
-                    public TypeInformation<RowData> getProducedType() {
-                        return InternalTypeInfo.of(
-                                (RowType) TABLE_SCHEMA.getPayloadDataType().getLogicalType());
-                    }
-                },
-                metadata);
+            @Override
+            public boolean isEndOfStream(RowData nextElement) {
+                return false;
+            }
+
+            @Override
+            public TypeInformation<RowData> getProducedType() {
+                return InternalTypeInfo.of(
+                        (RowType) TABLE_SCHEMA.getPayloadDataType().getLogicalType());
+            }
+        };
     }
 
     private static DeserializationSchema<RowData> oneRow(Object... fields) {
@@ -251,13 +289,15 @@ class SelectedCellRowDataDeserializationSchemaTest {
 
     private static BigtableChangeStreamMutation mutation(
             java.util.function.Consumer<ChangeStreamRecordBuilder<ChangeStreamRecord>> entries) {
+        return mutation(ByteString.copyFromUtf8("row-1"), entries);
+    }
+
+    private static BigtableChangeStreamMutation mutation(
+            ByteString rowKey,
+            java.util.function.Consumer<ChangeStreamRecordBuilder<ChangeStreamRecord>> entries) {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
                 new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
-        builder.startUserMutation(
-                ByteString.copyFromUtf8("row-1"),
-                "cluster-1",
-                Instant.parse("2026-08-13T00:00:00Z"),
-                0);
+        builder.startUserMutation(rowKey, "cluster-1", Instant.parse("2026-08-13T00:00:00Z"), 0);
         entries.accept(builder);
         return TestBigtableChangeStreamMutations.convert(
                 (ChangeStreamMutation)

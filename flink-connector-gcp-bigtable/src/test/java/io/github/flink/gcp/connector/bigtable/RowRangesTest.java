@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.source.readrows;
+package io.github.flink.gcp.connector.bigtable;
 
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
@@ -367,6 +367,19 @@ class RowRangesTest {
         assertThat(RowRanges.format(ByteStringRange.unbounded())).isEqualTo("(*, *)");
         assertThat(RowRanges.format(ByteStringRange.unbounded().startClosed(bytes(0x00, 0xFF))))
                 .isEqualTo("[\\x00\\xff, *)");
+    }
+
+    @Test
+    void rendersOneKeyTheWayItRendersABound() {
+        assertThat(RowRanges.format(ByteString.copyFromUtf8("row-1"))).isEqualTo("row-1");
+        assertThat(RowRanges.format(bytes(0x00, 0xFF))).isEqualTo("\\x00\\xff");
+        // Escaping only, no sentinel: the empty key renders empty, which reads correctly where the
+        // caller quotes the value -- as every message naming a row does. A caller that does not
+        // quote supplies its own marker; RowKeySample is the one that needs to.
+        assertThat(RowRanges.format(ByteString.EMPTY)).isEmpty();
+        // A key that really holds a '*' is escaped, which is what leaves that byte free to be a
+        // marker for a caller that wants one.
+        assertThat(RowRanges.format(ByteString.copyFromUtf8("*"))).isEqualTo("\\x2a");
     }
 
     @Test

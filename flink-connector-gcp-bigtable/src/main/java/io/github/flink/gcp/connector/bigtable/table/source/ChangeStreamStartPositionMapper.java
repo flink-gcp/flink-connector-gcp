@@ -73,8 +73,16 @@ public final class ChangeStreamStartPositionMapper {
                             modeOption.key(),
                             ChangeStreamStartMode.TIMESTAMP));
         }
-        return mode.get() == ChangeStreamStartMode.EARLIEST
-                ? StartPosition.earliest()
-                : StartPosition.latest();
+        switch (mode.get()) {
+            case EARLIEST:
+                return StartPosition.earliest();
+            case LATEST:
+                return StartPosition.latest();
+            default:
+                // TIMESTAMP returned above, so nothing reaches this arm until the enum grows. That
+                // is what it is for: the two-way ternary it replaces would have made a fourth mode
+                // silently mean LATEST.
+                throw new IllegalStateException("Unknown start mode " + mode.get() + ".");
+        }
     }
 }

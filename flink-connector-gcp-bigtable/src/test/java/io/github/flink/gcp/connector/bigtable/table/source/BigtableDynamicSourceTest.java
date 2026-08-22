@@ -44,10 +44,10 @@ import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import org.junit.jupiter.api.Test;
