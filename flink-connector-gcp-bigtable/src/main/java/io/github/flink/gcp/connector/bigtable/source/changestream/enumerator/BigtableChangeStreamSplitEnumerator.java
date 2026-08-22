@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
@@ -71,6 +72,31 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private static final Logger LOG =
             LoggerFactory.getLogger(BigtableChangeStreamSplitEnumerator.class);
+
+    /**
+     * How often the reconciliation scan asks the service for the current keyspace, and how long it
+     * waits before the first one. The grace periods a recovery must outlast live on {@link
+     * ChangeStreamPartitionReconciler}; this is only how often the ledger is compared against the
+     * service at all, so it is short next to those.
+     */
+    private static final Duration RECONCILIATION_SCAN_INTERVAL = Duration.ofSeconds(10);
+
+    /**
+     * How long a fetched change-stream retention is reused before the scan asks for it again.
+     * Retention is a table property an operator changes by hand, so re-reading it on every scan
+     * would be a table-admin call every {@code RECONCILIATION_SCAN_INTERVAL} for a value that
+     * almost never moves.
+     */
+    private static final Duration RETENTION_REFRESH_INTERVAL = Duration.ofMinutes(5);
+
+    /**
+     * How far inside the retention window a clamped low watermark is placed. The service answers no
+     * request for a position it no longer retains, and the window moves: a watermark clamped
+     * exactly to its edge has left it again before the read starts, so the clamp lands a minute
+     * inside instead. The connector's documentation carries the user-visible half — a clamped
+     * restart skips the changes between the position it tracked and the one it starts from.
+     */
+    private static final Duration RETENTION_CLAMP_MARGIN = Duration.ofSeconds(60);
 
     private final SplitEnumeratorContext<ChangeStreamPartitionSplit> context;
     private final ChangeStreamCoordinatorClient client;
@@ -292,8 +318,8 @@ public final class BigtableChangeStreamSplitEnumerator
             context.callAsync(
                     this::reconciliationScan,
                     this::onReconciled,
-                    Duration.ofSeconds(10).toMillis(),
-                    Duration.ofSeconds(10).toMillis());
+                    RECONCILIATION_SCAN_INTERVAL.toMillis(),
+                    RECONCILIATION_SCAN_INTERVAL.toMillis());
         }
     }
 
@@ -303,7 +329,7 @@ public final class BigtableChangeStreamSplitEnumerator
         Instant now = Instant.now(clock);
         if (retention == null
                 || fetchedAt == null
-                || fetchedAt.plus(Duration.ofMinutes(5)).isBefore(now)) {
+                || fetchedAt.plus(RETENTION_REFRESH_INTERVAL).isBefore(now)) {
             retention = client.retention();
             reconciliationRetention = retention;
             reconciliationRetentionFetchedAt = now;
@@ -380,7 +406,7 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private static Instant clampToRetention(Instant lowWatermark, Duration retention, Instant now) {
-        Instant earliest = now.minus(retention).plusSeconds(60);
+        Instant earliest = now.minus(retention).plus(RETENTION_CLAMP_MARGIN);
         return lowWatermark.isBefore(earliest) ? earliest : lowWatermark;
     }
 
@@ -657,6 +683,8 @@ public final class BigtableChangeStreamSplitEnumerator
         return snapshot;
     }
 
+    /** Sums what the accumulators counted, so a test can hold the whole enumerator to the bound. */
+    @VisibleForTesting
     long pendingMergeMaterializations() {
         long materializations = 0;
         for (PendingMergeAccumulator merge : pendingMerges.values()) {
