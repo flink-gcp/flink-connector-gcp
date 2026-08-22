@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
@@ -29,6 +30,7 @@ import javax.annotation.Nullable;
 import java.io.Serializable;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -60,41 +62,35 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     private final ReadSessionCreator sessionCreator;
     private final RowStreamOpener rowStreamOpener;
 
-    BigQuerySourceConfig(
-            @Nullable TableDestination table,
-            @Nullable String query,
-            @Nullable String queryLocation,
-            @Nullable String queryResultDataset,
-            @Nullable Duration reuseQueryResultWithin,
-            boolean materializeViews,
-            @Nullable QueryRunner queryRunner,
-            String parentProject,
-            BigQueryRowDeserializer<T> deserializer,
-            List<String> selectedFields,
-            @Nullable String rowRestriction,
-            @Nullable Instant snapshotTime,
-            int maxStreamCount,
-            int preferredMinStreamCount,
-            int maxRecordsPerFetch,
-            ReadSessionCreator sessionCreator,
-            RowStreamOpener rowStreamOpener) {
-        this.table = table;
-        this.query = query;
-        this.queryLocation = queryLocation;
-        this.queryResultDataset = queryResultDataset;
-        this.reuseQueryResultWithin = reuseQueryResultWithin;
-        this.materializeViews = materializeViews;
-        this.queryRunner = queryRunner;
-        this.parentProject = parentProject;
-        this.deserializer = deserializer;
-        this.selectedFields = selectedFields;
-        this.rowRestriction = rowRestriction;
-        this.snapshotTime = snapshotTime;
-        this.maxStreamCount = maxStreamCount;
-        this.preferredMinStreamCount = preferredMinStreamCount;
-        this.maxRecordsPerFetch = maxRecordsPerFetch;
-        this.sessionCreator = sessionCreator;
-        this.rowStreamOpener = rowStreamOpener;
+    private BigQuerySourceConfig(Builder<T> builder) {
+        this.table = builder.table;
+        this.query = builder.query;
+        this.queryLocation = builder.queryLocation;
+        this.queryResultDataset = builder.queryResultDataset;
+        this.reuseQueryResultWithin = builder.reuseQueryResultWithin;
+        this.materializeViews = builder.materializeViews;
+        this.queryRunner = builder.queryRunner;
+        this.parentProject = builder.parentProject;
+        this.deserializer = builder.deserializer;
+        this.selectedFields = builder.selectedFields;
+        this.rowRestriction = builder.rowRestriction;
+        this.snapshotTime = builder.snapshotTime;
+        this.maxStreamCount = builder.maxStreamCount;
+        this.preferredMinStreamCount = builder.preferredMinStreamCount;
+        this.maxRecordsPerFetch = builder.maxRecordsPerFetch;
+        this.sessionCreator = builder.sessionCreator;
+        this.rowStreamOpener = builder.rowStreamOpener;
+    }
+
+    /**
+     * Returns a builder for a configuration made of values {@link BigQuerySourceBuilder} has
+     * already validated.
+     *
+     * @param <T> type of the records produced by the source
+     * @return the builder
+     */
+    static <T> Builder<T> builder() {
+        return new Builder<>();
     }
 
     /**
@@ -220,5 +216,162 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     /** Returns the seam opening read streams. */
     public RowStreamOpener getRowStreamOpener() {
         return rowStreamOpener;
+    }
+
+    /**
+     * Collects what {@link BigQuerySourceBuilder#build()} resolved, so that seventeen values reach
+     * the configuration by name rather than by position.
+     *
+     * <p>Validation stays where the message belongs, in {@code BigQuerySourceBuilder}: every check
+     * there names a <em>user-facing</em> setter, and restating one here would either duplicate that
+     * message or invent a second wording for the same rule. What {@link #build()} does check is the
+     * thing a positional list could not get wrong and a builder can — a value nobody set at all.
+     *
+     * @param <T> type of the records produced by the source
+     */
+    static final class Builder<T> {
+
+        @Nullable private TableDestination table;
+        @Nullable private String query;
+        @Nullable private String queryLocation;
+        @Nullable private String queryResultDataset;
+        @Nullable private Duration reuseQueryResultWithin;
+        private boolean materializeViews;
+        @Nullable private QueryRunner queryRunner;
+        private String parentProject;
+        private BigQueryRowDeserializer<T> deserializer;
+        private List<String> selectedFields = Collections.emptyList();
+        @Nullable private String rowRestriction;
+        @Nullable private Instant snapshotTime;
+        private int maxStreamCount;
+        private int preferredMinStreamCount;
+        private int maxRecordsPerFetch;
+        private ReadSessionCreator sessionCreator;
+        private RowStreamOpener rowStreamOpener;
+
+        private Builder() {}
+
+        /** Sets the table being read, or {@code null} when a query decides it. */
+        Builder<T> table(@Nullable TableDestination table) {
+            this.table = table;
+            return this;
+        }
+
+        /** Sets the query whose result is read, or {@code null} when a table is named directly. */
+        Builder<T> query(@Nullable String query) {
+            this.query = query;
+            return this;
+        }
+
+        /** Sets the location the query job runs in, or {@code null} to let BigQuery infer it. */
+        Builder<T> queryLocation(@Nullable String queryLocation) {
+            this.queryLocation = queryLocation;
+            return this;
+        }
+
+        /** Sets the dataset the query's result is written to, or {@code null} for the anonymous. */
+        Builder<T> queryResultDataset(@Nullable String queryResultDataset) {
+            this.queryResultDataset = queryResultDataset;
+            return this;
+        }
+
+        /** Sets the window a previous attempt's query job may be reused in, or {@code null}. */
+        Builder<T> reuseQueryResultWithin(@Nullable Duration reuseQueryResultWithin) {
+            this.reuseQueryResultWithin = reuseQueryResultWithin;
+            return this;
+        }
+
+        /** Sets whether a name that turns out to be a view is read by materializing it. */
+        Builder<T> materializeViews(boolean materializeViews) {
+            this.materializeViews = materializeViews;
+            return this;
+        }
+
+        /** Sets the seam running the query, or {@code null} when no query job runs. */
+        Builder<T> queryRunner(@Nullable QueryRunner queryRunner) {
+            this.queryRunner = queryRunner;
+            return this;
+        }
+
+        /** Sets the project the read session belongs to and is billed to. */
+        Builder<T> parentProject(String parentProject) {
+            this.parentProject = parentProject;
+            return this;
+        }
+
+        /** Sets the deserializer converting rows into records. */
+        Builder<T> deserializer(BigQueryRowDeserializer<T> deserializer) {
+            this.deserializer = deserializer;
+            return this;
+        }
+
+        /** Sets the columns read, or an empty list for every column. */
+        Builder<T> selectedFields(List<String> selectedFields) {
+            this.selectedFields = selectedFields;
+            return this;
+        }
+
+        /** Sets the server-side row filter, or {@code null} for no filter. */
+        Builder<T> rowRestriction(@Nullable String rowRestriction) {
+            this.rowRestriction = rowRestriction;
+            return this;
+        }
+
+        /** Sets the instant the table is read as of, or {@code null} for its current contents. */
+        Builder<T> snapshotTime(@Nullable Instant snapshotTime) {
+            this.snapshotTime = snapshotTime;
+            return this;
+        }
+
+        /** Sets the upper bound on read streams, or {@code 0} to let BigQuery decide. */
+        Builder<T> maxStreamCount(int maxStreamCount) {
+            this.maxStreamCount = maxStreamCount;
+            return this;
+        }
+
+        /** Sets the preferred lower bound on read streams, or {@code 0} for none. */
+        Builder<T> preferredMinStreamCount(int preferredMinStreamCount) {
+            this.preferredMinStreamCount = preferredMinStreamCount;
+            return this;
+        }
+
+        /** Sets the most rows one fetch hands to the task thread. */
+        Builder<T> maxRecordsPerFetch(int maxRecordsPerFetch) {
+            this.maxRecordsPerFetch = maxRecordsPerFetch;
+            return this;
+        }
+
+        /** Sets the seam creating the read session. */
+        Builder<T> sessionCreator(ReadSessionCreator sessionCreator) {
+            this.sessionCreator = sessionCreator;
+            return this;
+        }
+
+        /** Sets the seam opening read streams. */
+        Builder<T> rowStreamOpener(RowStreamOpener rowStreamOpener) {
+            this.rowStreamOpener = rowStreamOpener;
+            return this;
+        }
+
+        /**
+         * Builds the configuration.
+         *
+         * @return the configuration
+         */
+        BigQuerySourceConfig<T> build() {
+            Preconditions.checkNotNull(parentProject, "parentProject must not be null");
+            Preconditions.checkNotNull(deserializer, "deserializer must not be null");
+            Preconditions.checkNotNull(selectedFields, "selectedFields must not be null");
+            Preconditions.checkNotNull(sessionCreator, "sessionCreator must not be null");
+            Preconditions.checkNotNull(rowStreamOpener, "rowStreamOpener must not be null");
+            // Zero is not a "let the service decide" value here, as it is for the two stream
+            // counts: a reader fetching no rows never finishes a split. Only an unset value can
+            // produce it, since the source builder's own setter refuses anything below one.
+            Preconditions.checkArgument(
+                    maxRecordsPerFetch > 0,
+                    "maxRecordsPerFetch must be positive: %s",
+                    maxRecordsPerFetch);
+            return new BigQuerySourceConfig<>(this);
+        }
     }
 }

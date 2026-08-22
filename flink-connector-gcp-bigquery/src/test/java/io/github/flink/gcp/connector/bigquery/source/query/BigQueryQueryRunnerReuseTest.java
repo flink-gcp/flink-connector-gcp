@@ -147,7 +147,7 @@ class BigQueryQueryRunnerReuseTest {
     @Test
     void givesUpWhenEveryRetryIdHoldsAFailedJob() {
         StubBigQuery client = new StubBigQuery();
-        JobAnswer[] allFailed = new JobAnswer[BigQueryQueryRunner.MAX_RETRY_PROBES + 1];
+        JobAnswer[] allFailed = new JobAnswer[QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1];
         for (int i = 0; i < allFailed.length; i++) {
             allFailed[i] = JobAnswer.withStatus(FAILED);
         }
@@ -162,7 +162,7 @@ class BigQueryQueryRunnerReuseTest {
         assertThat(client.created).isEmpty();
         // The whole budget was spent before giving up — the message's "all" is counted, not
         // assumed.
-        assertThat(client.getJobCalls).hasSize(BigQueryQueryRunner.MAX_RETRY_PROBES + 1);
+        assertThat(client.getJobCalls).hasSize(QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1);
     }
 
     @Test
@@ -343,7 +343,7 @@ class BigQueryQueryRunnerReuseTest {
     @Test
     void givesUpNamingTheVanishedTableWhenEveryRetryIdsResultTableIsGone() {
         StubBigQuery client = new StubBigQuery();
-        int probes = BigQueryQueryRunner.MAX_RETRY_PROBES + 1;
+        int probes = QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1;
         JobAnswer[] allDone = new JobAnswer[probes];
         TableAnswer[] allGone = new TableAnswer[probes];
         for (int i = 0; i < probes; i++) {
@@ -365,7 +365,7 @@ class BigQueryQueryRunnerReuseTest {
         assertThat(client.created).isEmpty();
         // The whole budget was spent before giving up — the message's "all" is counted, not
         // assumed.
-        assertThat(client.getJobCalls).hasSize(BigQueryQueryRunner.MAX_RETRY_PROBES + 1);
+        assertThat(client.getJobCalls).hasSize(QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1);
     }
 
     @Test

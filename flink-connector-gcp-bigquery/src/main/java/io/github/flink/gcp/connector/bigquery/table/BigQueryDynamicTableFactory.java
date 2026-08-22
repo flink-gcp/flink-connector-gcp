@@ -384,32 +384,52 @@ public class BigQueryDynamicTableFactory
         String parentProject = parentProject(config);
         boolean runsQuery = query.isPresent() || materializeViews;
 
-        return new BigQueryDynamicSource(
-                physicalDataType,
-                table,
-                query.orElse(null),
-                parentProject,
-                materializeViews,
-                config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_LOCATION).orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET)
-                        .orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN)
-                        .orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION).orElse(null),
-                snapshotTime(config),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT).orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT)
-                        .orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH)
-                        .orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS).orElse(null),
-                config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
-                config.getOptional(BigQueryConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
-                runsQuery
-                        ? config.getOptional(BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT)
-                                .orElse(null)
-                        : null,
-                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+        return BigQueryDynamicSource.builder()
+                .physicalDataType(physicalDataType)
+                .table(table)
+                .query(query.orElse(null))
+                .parentProject(parentProject)
+                .materializeViews(materializeViews)
+                .queryLocation(
+                        config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_LOCATION)
+                                .orElse(null))
+                .queryResultDataset(
+                        config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET)
+                                .orElse(null))
+                .reuseQueryResultWithin(
+                        config.getOptional(
+                                        BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN)
+                                .orElse(null))
+                .rowRestriction(
+                        config.getOptional(BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION)
+                                .orElse(null))
+                .snapshotTime(snapshotTime(config))
+                .maxStreamCount(
+                        config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT)
+                                .orElse(null))
+                .preferredMinStreamCount(
+                        config.getOptional(
+                                        BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT)
+                                .orElse(null))
+                .maxRecordsPerFetch(
+                        config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH)
+                                .orElse(null))
+                .retryMaxAttempts(
+                        config.getOptional(BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS)
+                                .orElse(null))
+                .serviceAccountKeyFile(
+                        config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                                .orElse(null))
+                .emulatorEndpoint(
+                        config.getOptional(BigQueryConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
+                .emulatorRestEndpoint(
+                        runsQuery
+                                ? config.getOptional(
+                                                BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT)
+                                        .orElse(null)
+                                : null)
+                .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
+                .build();
     }
 
     private static TableDestination destination(ReadableConfig config, String direction) {

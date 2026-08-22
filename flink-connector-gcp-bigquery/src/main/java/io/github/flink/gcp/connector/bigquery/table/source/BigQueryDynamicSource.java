@@ -42,7 +42,15 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
-/** A bounded Table API source mapped onto {@link BigQuerySource}. */
+/**
+ * A bounded Table API source mapped onto {@link BigQuerySource}.
+ *
+ * <p>Built through {@link #builder()} rather than a constructor, for the reason its sibling {@link
+ * io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink the sink} states: the
+ * resolved option families and the planner-applied projection would otherwise form a positional
+ * list of eighteen mostly nullable values, repeated by construction, {@link #copy()} and the
+ * factory's call site — and a transposition among the adjacent same-typed values compiles.
+ */
 @Internal
 public final class BigQueryDynamicSource implements ScanTableSource, SupportsProjectionPushDown {
 
@@ -69,50 +77,38 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
 
-    /** Creates a source from values already resolved by the table factory. */
-    public BigQueryDynamicSource(
-            DataType physicalDataType,
-            @Nullable TableDestination table,
-            @Nullable String query,
-            String parentProject,
-            boolean materializeViews,
-            @Nullable String queryLocation,
-            @Nullable String queryResultDataset,
-            @Nullable Duration reuseQueryResultWithin,
-            @Nullable String rowRestriction,
-            @Nullable Instant snapshotTime,
-            @Nullable Integer maxStreamCount,
-            @Nullable Integer preferredMinStreamCount,
-            @Nullable Integer maxRecordsPerFetch,
-            @Nullable Integer retryMaxAttempts,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable String emulatorEndpoint,
-            @Nullable String emulatorRestEndpoint,
-            @Nullable Integer parallelism) {
-        this.physicalDataType =
-                Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
-        this.producedDataType = physicalDataType;
+    private BigQueryDynamicSource(Builder builder) {
+        this.physicalDataType = builder.physicalDataType;
+        this.producedDataType =
+                builder.producedDataType == null ? physicalDataType : builder.producedDataType;
         this.physicalRowType = (RowType) physicalDataType.getLogicalType();
-        Preconditions.checkArgument(
-                (table == null) != (query == null), "exactly one of table and query must be set");
-        this.table = table;
-        this.query = query;
-        this.parentProject =
-                Preconditions.checkNotNull(parentProject, "parentProject must not be null");
-        this.materializeViews = materializeViews;
-        this.queryLocation = queryLocation;
-        this.queryResultDataset = queryResultDataset;
-        this.reuseQueryResultWithin = reuseQueryResultWithin;
-        this.rowRestriction = rowRestriction;
-        this.snapshotTime = snapshotTime;
-        this.maxStreamCount = maxStreamCount;
-        this.preferredMinStreamCount = preferredMinStreamCount;
-        this.maxRecordsPerFetch = maxRecordsPerFetch;
-        this.retryMaxAttempts = retryMaxAttempts;
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
-        this.emulatorEndpoint = emulatorEndpoint;
-        this.emulatorRestEndpoint = emulatorRestEndpoint;
-        this.parallelism = parallelism;
+        this.table = builder.table;
+        this.query = builder.query;
+        this.parentProject = builder.parentProject;
+        this.materializeViews = builder.materializeViews;
+        this.queryLocation = builder.queryLocation;
+        this.queryResultDataset = builder.queryResultDataset;
+        this.reuseQueryResultWithin = builder.reuseQueryResultWithin;
+        this.rowRestriction = builder.rowRestriction;
+        this.snapshotTime = builder.snapshotTime;
+        this.maxStreamCount = builder.maxStreamCount;
+        this.preferredMinStreamCount = builder.preferredMinStreamCount;
+        this.maxRecordsPerFetch = builder.maxRecordsPerFetch;
+        this.retryMaxAttempts = builder.retryMaxAttempts;
+        this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
+        this.emulatorEndpoint = builder.emulatorEndpoint;
+        this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
+        this.parallelism = builder.parallelism;
+        this.projectedFields = builder.projectedFields;
+    }
+
+    /**
+     * Returns a builder for a source made of fully resolved values.
+     *
+     * @return the builder
+     */
+    public static Builder builder() {
+        return new Builder();
     }
 
     @Override
@@ -213,29 +209,28 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
 
     @Override
     public DynamicTableSource copy() {
-        BigQueryDynamicSource copy =
-                new BigQueryDynamicSource(
-                        physicalDataType,
-                        table,
-                        query,
-                        parentProject,
-                        materializeViews,
-                        queryLocation,
-                        queryResultDataset,
-                        reuseQueryResultWithin,
-                        rowRestriction,
-                        snapshotTime,
-                        maxStreamCount,
-                        preferredMinStreamCount,
-                        maxRecordsPerFetch,
-                        retryMaxAttempts,
-                        serviceAccountKeyFile,
-                        emulatorEndpoint,
-                        emulatorRestEndpoint,
-                        parallelism);
-        copy.producedDataType = producedDataType;
-        copy.projectedFields = projectedFields == null ? null : projectedFields.clone();
-        return copy;
+        return builder()
+                .physicalDataType(physicalDataType)
+                .table(table)
+                .query(query)
+                .parentProject(parentProject)
+                .materializeViews(materializeViews)
+                .queryLocation(queryLocation)
+                .queryResultDataset(queryResultDataset)
+                .reuseQueryResultWithin(reuseQueryResultWithin)
+                .rowRestriction(rowRestriction)
+                .snapshotTime(snapshotTime)
+                .maxStreamCount(maxStreamCount)
+                .preferredMinStreamCount(preferredMinStreamCount)
+                .maxRecordsPerFetch(maxRecordsPerFetch)
+                .retryMaxAttempts(retryMaxAttempts)
+                .serviceAccountKeyFile(serviceAccountKeyFile)
+                .emulatorEndpoint(emulatorEndpoint)
+                .emulatorRestEndpoint(emulatorRestEndpoint)
+                .parallelism(parallelism)
+                .producedDataType(producedDataType)
+                .projectedFields(projectedFields)
+                .build();
     }
 
     @Override
@@ -297,5 +292,268 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 parallelism,
                 producedDataType,
                 Arrays.hashCode(projectedFields));
+    }
+
+    /**
+     * Collects the source's fully resolved values.
+     *
+     * <p>Every <em>optional</em> setter takes {@code null} to mean "leave the connector's own
+     * default alone", which is exactly what {@code config.getOptional(...).orElse(null)} hands the
+     * factory, so an absent DDL option needs no branch on the way here.
+     *
+     * <p>Three values are not of that kind, and {@link #build()} is where each is checked rather
+     * than the setter, so a caller may set them in any order. {@link #physicalDataType(DataType)}
+     * and {@link #parentProject(String)} are required. {@link #table(TableDestination)} and {@link
+     * #query(String)} are <b>alternatives</b>, not optional values: {@code null} there does not
+     * select a default, it says the other one decides what is read, and exactly one of them must.
+     */
+    @Internal
+    public static final class Builder {
+
+        private DataType physicalDataType;
+        @Nullable private TableDestination table;
+        @Nullable private String query;
+        private String parentProject;
+        private boolean materializeViews;
+        @Nullable private String queryLocation;
+        @Nullable private String queryResultDataset;
+        @Nullable private Duration reuseQueryResultWithin;
+        @Nullable private String rowRestriction;
+        @Nullable private Instant snapshotTime;
+        @Nullable private Integer maxStreamCount;
+        @Nullable private Integer preferredMinStreamCount;
+        @Nullable private Integer maxRecordsPerFetch;
+        @Nullable private Integer retryMaxAttempts;
+        @Nullable private String serviceAccountKeyFile;
+        @Nullable private String emulatorEndpoint;
+        @Nullable private String emulatorRestEndpoint;
+        @Nullable private Integer parallelism;
+        @Nullable private DataType producedDataType;
+        @Nullable private int[] projectedFields;
+
+        private Builder() {}
+
+        /**
+         * Sets the physical columns of the table. Required.
+         *
+         * @param physicalDataType the physical row type
+         * @return this builder
+         */
+        public Builder physicalDataType(DataType physicalDataType) {
+            this.physicalDataType = physicalDataType;
+            return this;
+        }
+
+        /**
+         * Sets the table being read, or {@code null} when a query decides it.
+         *
+         * @param table the table, or {@code null}
+         * @return this builder
+         */
+        public Builder table(@Nullable TableDestination table) {
+            this.table = table;
+            return this;
+        }
+
+        /**
+         * Sets the query whose result is read, or {@code null} when a table is named directly.
+         *
+         * @param query the query, or {@code null}
+         * @return this builder
+         */
+        public Builder query(@Nullable String query) {
+            this.query = query;
+            return this;
+        }
+
+        /**
+         * Sets the project the query job and the read session are billed to. Required.
+         *
+         * @param parentProject the project
+         * @return this builder
+         */
+        public Builder parentProject(String parentProject) {
+            this.parentProject = parentProject;
+            return this;
+        }
+
+        /** Sets whether a name that turns out to be a view is read by materializing it. */
+        public Builder materializeViews(boolean materializeViews) {
+            this.materializeViews = materializeViews;
+            return this;
+        }
+
+        /**
+         * Sets the location the query job runs in, or {@code null} to let BigQuery infer it.
+         *
+         * @param queryLocation the location, or {@code null}
+         * @return this builder
+         */
+        public Builder queryLocation(@Nullable String queryLocation) {
+            this.queryLocation = queryLocation;
+            return this;
+        }
+
+        /**
+         * Sets the dataset the query's result is written to, or {@code null} for BigQuery's own
+         * anonymous dataset.
+         *
+         * @param queryResultDataset the dataset, or {@code null}
+         * @return this builder
+         */
+        public Builder queryResultDataset(@Nullable String queryResultDataset) {
+            this.queryResultDataset = queryResultDataset;
+            return this;
+        }
+
+        /**
+         * Sets how long a re-planned job may reuse a previous attempt's query job, or {@code null}
+         * to reuse nothing.
+         *
+         * @param reuseQueryResultWithin the window, or {@code null}
+         * @return this builder
+         */
+        public Builder reuseQueryResultWithin(@Nullable Duration reuseQueryResultWithin) {
+            this.reuseQueryResultWithin = reuseQueryResultWithin;
+            return this;
+        }
+
+        /**
+         * Sets the server-side row filter, or {@code null} for no filter.
+         *
+         * @param rowRestriction the filter, or {@code null}
+         * @return this builder
+         */
+        public Builder rowRestriction(@Nullable String rowRestriction) {
+            this.rowRestriction = rowRestriction;
+            return this;
+        }
+
+        /**
+         * Sets the instant the table is read as of, or {@code null} for its current contents.
+         *
+         * @param snapshotTime the instant, or {@code null}
+         * @return this builder
+         */
+        public Builder snapshotTime(@Nullable Instant snapshotTime) {
+            this.snapshotTime = snapshotTime;
+            return this;
+        }
+
+        /**
+         * Sets the upper bound on read streams, or {@code null} to leave it at the connector's
+         * default.
+         *
+         * @param maxStreamCount the bound, or {@code null}
+         * @return this builder
+         */
+        public Builder maxStreamCount(@Nullable Integer maxStreamCount) {
+            this.maxStreamCount = maxStreamCount;
+            return this;
+        }
+
+        /**
+         * Sets the preferred lower bound on read streams, or {@code null} to leave it at the
+         * connector's default.
+         *
+         * @param preferredMinStreamCount the bound, or {@code null}
+         * @return this builder
+         */
+        public Builder preferredMinStreamCount(@Nullable Integer preferredMinStreamCount) {
+            this.preferredMinStreamCount = preferredMinStreamCount;
+            return this;
+        }
+
+        /**
+         * Sets the most rows one fetch hands to the task thread, or {@code null} to leave it at the
+         * connector's default.
+         *
+         * @param maxRecordsPerFetch the bound, or {@code null}
+         * @return this builder
+         */
+        public Builder maxRecordsPerFetch(@Nullable Integer maxRecordsPerFetch) {
+            this.maxRecordsPerFetch = maxRecordsPerFetch;
+            return this;
+        }
+
+        /**
+         * Sets how many attempts a read stream makes, or {@code null} to leave it at the
+         * connector's default.
+         *
+         * @param retryMaxAttempts the attempts, or {@code null}
+         * @return this builder
+         */
+        public Builder retryMaxAttempts(@Nullable Integer retryMaxAttempts) {
+            this.retryMaxAttempts = retryMaxAttempts;
+            return this;
+        }
+
+        /** Sets the runtime service-account key-file path, or {@code null} for ADC. */
+        public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
+            return this;
+        }
+
+        /**
+         * Sets the emulator's gRPC endpoint, or {@code null} for the real service.
+         *
+         * @param emulatorEndpoint the endpoint, or {@code null}
+         * @return this builder
+         */
+        public Builder emulatorEndpoint(@Nullable String emulatorEndpoint) {
+            this.emulatorEndpoint = emulatorEndpoint;
+            return this;
+        }
+
+        /**
+         * Sets the emulator's REST endpoint, or {@code null} for the real service.
+         *
+         * @param emulatorRestEndpoint the endpoint, or {@code null}
+         * @return this builder
+         */
+        public Builder emulatorRestEndpoint(@Nullable String emulatorRestEndpoint) {
+            this.emulatorRestEndpoint = emulatorRestEndpoint;
+            return this;
+        }
+
+        /**
+         * Sets the source parallelism, or {@code null} for the planner's own.
+         *
+         * @param parallelism the parallelism, or {@code null}
+         * @return this builder
+         */
+        public Builder parallelism(@Nullable Integer parallelism) {
+            this.parallelism = parallelism;
+            return this;
+        }
+
+        /**
+         * Restores the produced type when a source is copied, or {@code null} to derive it from the
+         * physical one as an uncopied source does.
+         */
+        Builder producedDataType(@Nullable DataType producedDataType) {
+            this.producedDataType = producedDataType;
+            return this;
+        }
+
+        /** Restores the applied projection when a source is copied. */
+        Builder projectedFields(@Nullable int[] projectedFields) {
+            this.projectedFields = projectedFields == null ? null : projectedFields.clone();
+            return this;
+        }
+
+        /**
+         * Builds the source.
+         *
+         * @return the source
+         */
+        public BigQueryDynamicSource build() {
+            Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
+            Preconditions.checkArgument(
+                    (table == null) != (query == null),
+                    "exactly one of table and query must be set");
+            Preconditions.checkNotNull(parentProject, "parentProject must not be null");
+            return new BigQueryDynamicSource(this);
+        }
     }
 }
