@@ -220,3 +220,12 @@ on a shipped path breaks if it waits.
   Desktop for macOS is itself VM-backed and is measured working without it; colima and a tunnelled
   daemon are **not measured here**, which is why the escape is documented rather than the topology
   being claimed either way.
+- **The opt-out's source precedence is asserted, and it costs one line of build configuration.**
+  A test can set a system property but cannot set an environment variable in its own process, so
+  with the variable unset the two sources never disagree and swapping them at the call site is
+  invisible to every in-process assertion. This module's surefire configuration therefore exports
+  `FLINK_GCP_TESTS_LOOPBACK_PUBLISH=true` — a value that disables nothing, so every other test
+  behaves as if it were unset — purely so a test can set the property to `false` and observe which
+  one wins. The accepted cost is that this one assertion depends on the build: running it from an
+  IDE without that variable leaves it asserting nothing, so it fails loudly on the export's absence
+  rather than passing quietly.

@@ -238,6 +238,36 @@ class LoopbackPortPublisherTest {
     }
 
     @Test
+    void theSystemPropertyIsReadAsTheSystemPropertyAndNotTheOtherWayRound() {
+        // The only assertion that can tell the two sources apart, and it needs the build's help:
+        // no test can set an environment variable in its own process, so with the variable unset a
+        // swapped pair of arguments still lets the property through and nothing fails. This
+        // module's surefire configuration exports the variable as `true` — which disables nothing
+        // — purely so the two can disagree here.
+        assertThat(System.getenv(LoopbackPortPublisher.LOOPBACK_PUBLISH_ENV))
+                .as(
+                        "surefire must export %s; without it this test asserts nothing",
+                        LoopbackPortPublisher.LOOPBACK_PUBLISH_ENV)
+                .isEqualTo("true");
+
+        System.setProperty(LoopbackPortPublisher.LOOPBACK_PUBLISH_PROPERTY, "false");
+        try {
+            // Reading the environment first would answer `true` here and leave the rewrite on,
+            // silently ignoring an opt-out the developer did set.
+            assertThat(LoopbackPortPublisher.isDisabled()).isTrue();
+        } finally {
+            System.clearProperty(LoopbackPortPublisher.LOOPBACK_PUBLISH_PROPERTY);
+        }
+    }
+
+    @Test
+    void withNoPropertySetTheEnvironmentIsWhatIsRead() {
+        // The other half of the same wiring: the exported `true` has to arrive, and has to be the
+        // value that leaves the rewrite on.
+        assertThat(LoopbackPortPublisher.isDisabled()).isFalse();
+    }
+
+    @Test
     void theServicesFileRegistersThisModifier() {
         // The registration is the whole mechanism: without this file the class above is dead code
         // and every container goes back to the wildcard publish, silently and with nothing failing.

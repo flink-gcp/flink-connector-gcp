@@ -180,4 +180,29 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The one thing a test cannot do for itself: set an environment variable in
+                         its own process. LoopbackPortPublisher reads its opt-out from a system
+                         property first and from this variable second, and with the variable unset
+                         the two sources never disagree - so swapping the two arguments at the call
+                         site is invisible to every in-process assertion. That is the mutant that
+                         survived #1025's review, and this export is what kills it.
+
+                         `true` disables nothing (only the literal `false` does), so every other
+                         test behaves exactly as if this were unset; its only job is to differ from
+                         the `false` a test sets on the property. Scoped to this module because
+                         this is the only module that asserts the precedence. -->
+                    <environmentVariables>
+                        <FLINK_GCP_TESTS_LOOPBACK_PUBLISH>true</FLINK_GCP_TESTS_LOOPBACK_PUBLISH>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

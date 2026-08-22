@@ -100,17 +100,29 @@ public final class LoopbackPortPublisher implements CreateContainerCmdModifier {
     public CreateContainerCmd modify(CreateContainerCmd createContainerCmd) {
         // Before the Docker host is resolved, so the opt-out costs nothing and — the reason it is
         // here rather than inside the seam — so a test can drive this very method: with the
-        // property set it returns without touching testcontainers' provider strategy, which pins
-        // both constant spellings and the property-beats-environment order that no assertion on
-        // isDisabled alone can reach.
-        if (isDisabled(
-                System.getProperty(LOOPBACK_PUBLISH_PROPERTY),
-                System.getenv(LOOPBACK_PUBLISH_ENV))) {
+        // property set it returns without touching testcontainers' provider strategy.
+        if (isDisabled()) {
             return createContainerCmd;
         }
         // The strategy is resolved before any container is created, so this neither initialises
         // nor re-enters anything: testcontainers has already logged the address by this point.
         return modify(createContainerCmd, DockerClientFactory.instance().dockerHostIpAddress());
+    }
+
+    /**
+     * Whether an explicit opt-out is in force, reading both sources.
+     *
+     * <p>Separate from the two-argument overload so that <em>which</em> system source feeds
+     * <em>which</em> parameter is itself assertable. It is not reachable from the overload's own
+     * tests: a test can set a system property but cannot set an environment variable in its own
+     * process, so with the variable unset a swapped pair of arguments still lets the property
+     * through and nothing fails. This module's surefire configuration exports {@code
+     * FLINK_GCP_TESTS_LOOPBACK_PUBLISH=true} — a value that disables nothing — purely so that the
+     * two sources disagree and the order becomes observable here.
+     */
+    static boolean isDisabled() {
+        return isDisabled(
+                System.getProperty(LOOPBACK_PUBLISH_PROPERTY), System.getenv(LOOPBACK_PUBLISH_ENV));
     }
 
     /**
