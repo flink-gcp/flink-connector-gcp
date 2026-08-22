@@ -52,6 +52,9 @@ public final class BigtableChangeStreamMutationSerializer
     private static final int RAW_TIMESTAMP = 2;
     private static final int INT64 = 3;
 
+    private static final EntryWriter ENTRY_WRITER = new EntryWriter();
+    private static final ValueWriter VALUE_WRITER = new ValueWriter();
+
     @Override
     public boolean isImmutableType() {
         return true;
@@ -102,52 +105,81 @@ public final class BigtableChangeStreamMutationSerializer
 
     private static void writeEntry(BigtableChangeStreamMutation.Entry entry, DataOutputView target)
             throws IOException {
-        if (entry instanceof BigtableChangeStreamMutation.SetCellEntry) {
-            BigtableChangeStreamMutation.SetCellEntry set =
-                    (BigtableChangeStreamMutation.SetCellEntry) entry;
+        // Through the dispatcher rather than calling the package-private accept directly, which
+        // this package could: the dispatcher's call sites are then the complete list of places
+        // that branch on an entry subtype, which is the list whoever adds one needs.
+        ChangeStreamMutationDispatcher.dispatchEntry(entry, ENTRY_WRITER, target);
+    }
+
+    /**
+     * Writes each entry subtype behind its wire tag.
+     *
+     * <p>The tags this writes are the ones {@link
+     * BigtableChangeStreamMutationSerializer#readEntry(DataInputView)} and {@link
+     * BigtableChangeStreamMutationSerializer#copyEntry(DataInputView, DataOutputView, byte[])}
+     * decode, and those two stay {@code switch}es over a byte rather than becoming visitors: they
+     * dispatch on what arrived on the wire, which is not a Java type yet.
+     *
+     * <p>Stateless and shared, because the serializer's {@code duplicate()} returns {@code this}
+     * and task threads therefore share one instance — the same reason {@code COPY_BUFFER} is a
+     * {@link ThreadLocal}.
+     */
+    private static final class EntryWriter
+            implements ChangeStreamMutationDispatcher.EntryVisitor<Void, DataOutputView> {
+
+        @Override
+        public Void visit(BigtableChangeStreamMutation.SetCellEntry entry, DataOutputView target)
+                throws IOException {
             target.writeByte(SET_CELL);
-            writeString(set.getFamilyName(), target);
-            writeBytes(set.getQualifier(), target);
-            target.writeLong(set.getTimestampMicros());
-            writeBytes(set.getValue(), target);
-            return;
+            writeString(entry.getFamilyName(), target);
+            writeBytes(entry.getQualifier(), target);
+            target.writeLong(entry.getTimestampMicros());
+            writeBytes(entry.getValue(), target);
+            return null;
         }
-        if (entry instanceof BigtableChangeStreamMutation.DeleteCellsEntry) {
-            BigtableChangeStreamMutation.DeleteCellsEntry delete =
-                    (BigtableChangeStreamMutation.DeleteCellsEntry) entry;
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.DeleteCellsEntry entry, DataOutputView target)
+                throws IOException {
             target.writeByte(DELETE_CELLS);
-            writeString(delete.getFamilyName(), target);
-            writeBytes(delete.getQualifier(), target);
-            writeRange(delete.getTimestampRange(), target);
-            return;
+            writeString(entry.getFamilyName(), target);
+            writeBytes(entry.getQualifier(), target);
+            writeRange(entry.getTimestampRange(), target);
+            return null;
         }
-        if (entry instanceof BigtableChangeStreamMutation.DeleteFamilyEntry) {
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.DeleteFamilyEntry entry, DataOutputView target)
+                throws IOException {
             target.writeByte(DELETE_FAMILY);
             writeString(entry.getFamilyName(), target);
-            return;
+            return null;
         }
-        if (entry instanceof BigtableChangeStreamMutation.AddToCellEntry) {
-            BigtableChangeStreamMutation.AddToCellEntry add =
-                    (BigtableChangeStreamMutation.AddToCellEntry) entry;
+
+        @Override
+        public Void visit(BigtableChangeStreamMutation.AddToCellEntry entry, DataOutputView target)
+                throws IOException {
             target.writeByte(ADD_TO_CELL);
-            writeString(add.getFamilyName(), target);
-            writeValue(add.getQualifier(), target);
-            writeValue(add.getTimestamp(), target);
-            writeValue(add.getInput(), target);
-            return;
+            writeString(entry.getFamilyName(), target);
+            writeValue(entry.getQualifier(), target);
+            writeValue(entry.getTimestamp(), target);
+            writeValue(entry.getInput(), target);
+            return null;
         }
-        if (entry instanceof BigtableChangeStreamMutation.MergeToCellEntry) {
-            BigtableChangeStreamMutation.MergeToCellEntry merge =
-                    (BigtableChangeStreamMutation.MergeToCellEntry) entry;
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.MergeToCellEntry entry, DataOutputView target)
+                throws IOException {
             target.writeByte(MERGE_TO_CELL);
-            writeString(merge.getFamilyName(), target);
-            writeValue(merge.getQualifier(), target);
-            writeValue(merge.getTimestamp(), target);
-            writeValue(merge.getInput(), target);
-            return;
+            writeString(entry.getFamilyName(), target);
+            writeValue(entry.getQualifier(), target);
+            writeValue(entry.getTimestamp(), target);
+            writeValue(entry.getInput(), target);
+            return null;
         }
-        throw new IOException(
-                "Unsupported Bigtable Change Streams entry type: " + entry.getClass().getName());
     }
 
     private static void writeMutationType(
@@ -167,23 +199,39 @@ public final class BigtableChangeStreamMutationSerializer
 
     private static void writeValue(BigtableChangeStreamMutation.Value value, DataOutputView target)
             throws IOException {
-        if (value instanceof BigtableChangeStreamMutation.RawValue) {
+        ChangeStreamMutationDispatcher.dispatchValue(value, VALUE_WRITER, target);
+    }
+
+    /**
+     * Writes each aggregate value subtype behind its wire tag; stateless, for {@link EntryWriter}'s
+     * reason.
+     */
+    private static final class ValueWriter
+            implements ChangeStreamMutationDispatcher.ValueVisitor<Void, DataOutputView> {
+
+        @Override
+        public Void visit(BigtableChangeStreamMutation.RawValue value, DataOutputView target)
+                throws IOException {
             target.writeByte(RAW_VALUE);
-            writeBytes(((BigtableChangeStreamMutation.RawValue) value).getValue(), target);
-            return;
+            writeBytes(value.getValue(), target);
+            return null;
         }
-        if (value instanceof BigtableChangeStreamMutation.RawTimestamp) {
+
+        @Override
+        public Void visit(BigtableChangeStreamMutation.RawTimestamp value, DataOutputView target)
+                throws IOException {
             target.writeByte(RAW_TIMESTAMP);
-            target.writeLong(((BigtableChangeStreamMutation.RawTimestamp) value).getValue());
-            return;
+            target.writeLong(value.getValue());
+            return null;
         }
-        if (value instanceof BigtableChangeStreamMutation.Int64Value) {
+
+        @Override
+        public Void visit(BigtableChangeStreamMutation.Int64Value value, DataOutputView target)
+                throws IOException {
             target.writeByte(INT64);
-            target.writeLong(((BigtableChangeStreamMutation.Int64Value) value).getValue());
-            return;
+            target.writeLong(value.getValue());
+            return null;
         }
-        throw new IOException(
-                "Unsupported Bigtable Change Streams value type: " + value.getClass().getName());
     }
 
     private static void writeRange(
@@ -338,6 +386,14 @@ public final class BigtableChangeStreamMutationSerializer
         target.writeByte(tag);
     }
 
+    /**
+     * Copies one entry by its wire tag.
+     *
+     * <p>The visitor over {@link BigtableChangeStreamMutation.Entry} does not reach here, and the
+     * bound below is the one thing an added subtype has to be given by hand: a tag outside {@code
+     * SET_CELL..MERGE_TO_CELL} is rejected, so a sixth tag is refused until this names it. That
+     * refusal is loud rather than silent, but it arrives in a running job.
+     */
     private static void copyEntry(DataInputView source, DataOutputView target, byte[] buffer)
             throws IOException {
         int tag = source.readUnsignedByte();

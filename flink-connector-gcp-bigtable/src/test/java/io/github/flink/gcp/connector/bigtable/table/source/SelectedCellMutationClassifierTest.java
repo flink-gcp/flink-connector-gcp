@@ -163,6 +163,45 @@ class SelectedCellMutationClassifierTest {
     }
 
     @Test
+    void judgesAnAggregateEntryByWhetherItsQualifierCouldBeTheSelectedOne() throws Exception {
+        // Only a raw qualifier can be compared against the selected one. An aggregate naming a
+        // different column is not this row's business and is ignored, while one whose qualifier is
+        // computed cannot be ruled out and is reported rather than passed through. Neither arm had
+        // a test before this: with the aggregate cases above all naming the selected qualifier,
+        // making the raw comparison return a constant — either constant — changed nothing that the
+        // suite observed.
+        BigtableChangeStreamMutation anotherColumn =
+                mutation(
+                        builder ->
+                                builder.addToCell(
+                                        FAMILY,
+                                        Value.rawValue(ByteString.copyFromUtf8("other")),
+                                        Value.rawTimestamp(1L),
+                                        Value.intValue(1L)));
+        assertThat(classifier.classify(anotherColumn).getKind())
+                .isEqualTo(SelectedCellMutationClassifier.Kind.UNRELATED);
+
+        assertProtocolFailure(
+                mutation(
+                        builder ->
+                                builder.addToCell(
+                                        FAMILY,
+                                        Value.rawTimestamp(1L),
+                                        Value.rawTimestamp(1L),
+                                        Value.intValue(1L))),
+                "AddToCell");
+        assertProtocolFailure(
+                mutation(
+                        builder ->
+                                builder.mergeToCell(
+                                        FAMILY,
+                                        Value.intValue(1L),
+                                        Value.rawTimestamp(1L),
+                                        Value.rawValue(ByteString.copyFromUtf8("aggregate")))),
+                "MergeToCell");
+    }
+
+    @Test
     void rejectsGarbageCollectionThatAffectsTheSelectedCell() {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
                 new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();

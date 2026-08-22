@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
 
+import java.io.IOException;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -155,7 +156,14 @@ public final class BigtableChangeStreamMutation implements Serializable {
         GARBAGE_COLLECTION
     }
 
-    /** One ordered mutation entry. */
+    /**
+     * One ordered mutation entry.
+     *
+     * <p>The constructor is private, so the subtypes below are the complete set. Branch on {@link
+     * Entry#getKind()} rather than on the concrete type; the connector's own dispatch goes through
+     * a package-private visitor instead, so that a subtype added here cannot compile until every
+     * handler states what it does with it.
+     */
     @Public
     public abstract static class Entry implements Serializable {
         private static final long serialVersionUID = 1L;
@@ -163,6 +171,23 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private Entry() {}
 
         public abstract String getFamilyName();
+
+        /** Which of the entry subtypes this is. */
+        public abstract EntryKind getKind();
+
+        abstract <R, A> R accept(
+                ChangeStreamMutationDispatcher.EntryVisitor<R, A> visitor, A argument)
+                throws IOException;
+    }
+
+    /** Which subtype an {@link Entry} is. */
+    @Public
+    public enum EntryKind {
+        SET_CELL,
+        DELETE_CELLS,
+        DELETE_FAMILY,
+        ADD_TO_CELL,
+        MERGE_TO_CELL
     }
 
     /** Writes one cell version. */
@@ -198,6 +223,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         public ByteString getValue() {
             return value;
+        }
+
+        @Override
+        public EntryKind getKind() {
+            return EntryKind.SET_CELL;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.EntryVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
         }
 
         @Override
@@ -252,6 +288,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
         }
 
         @Override
+        public EntryKind getKind() {
+            return EntryKind.DELETE_CELLS;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.EntryVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
+        }
+
+        @Override
         public boolean equals(Object other) {
             if (this == other) {
                 return true;
@@ -285,6 +332,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
         @Override
         public String getFamilyName() {
             return familyName;
+        }
+
+        @Override
+        public EntryKind getKind() {
+            return EntryKind.DELETE_FAMILY;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.EntryVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
         }
 
         @Override
@@ -331,6 +389,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         public Value getInput() {
             return input;
+        }
+
+        @Override
+        public EntryKind getKind() {
+            return EntryKind.ADD_TO_CELL;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.EntryVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
         }
 
         @Override
@@ -389,6 +458,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
         }
 
         @Override
+        public EntryKind getKind() {
+            return EntryKind.MERGE_TO_CELL;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.EntryVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
+        }
+
+        @Override
         public boolean equals(Object other) {
             if (this == other) {
                 return true;
@@ -409,7 +489,12 @@ public final class BigtableChangeStreamMutation implements Serializable {
         }
     }
 
-    /** One typed value used by an aggregate entry. */
+    /**
+     * One typed value used by an aggregate entry.
+     *
+     * <p>The constructor is private, so the subtypes below are the complete set. Branch on {@link
+     * Value#getType()} rather than on the concrete type, for the reason {@link Entry} gives.
+     */
     @Public
     public abstract static class Value implements Serializable {
         private static final long serialVersionUID = 1L;
@@ -417,6 +502,10 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private Value() {}
 
         public abstract ValueType getType();
+
+        abstract <R, A> R accept(
+                ChangeStreamMutationDispatcher.ValueVisitor<R, A> visitor, A argument)
+                throws IOException;
     }
 
     @Public
@@ -444,6 +533,12 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         public ByteString getValue() {
             return value;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.ValueVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
         }
 
         @Override
@@ -478,6 +573,12 @@ public final class BigtableChangeStreamMutation implements Serializable {
         }
 
         @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.ValueVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
+        }
+
+        @Override
         public boolean equals(Object other) {
             return other instanceof RawTimestamp && value == ((RawTimestamp) other).value;
         }
@@ -506,6 +607,12 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         public long getValue() {
             return value;
+        }
+
+        @Override
+        <R, A> R accept(ChangeStreamMutationDispatcher.ValueVisitor<R, A> visitor, A argument)
+                throws IOException {
+            return visitor.visit(this, argument);
         }
 
         @Override

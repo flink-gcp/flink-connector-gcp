@@ -234,8 +234,29 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `@BetaApi`. The reader inspects complete SDK mutations, converts only retained entries to the
   connector-owned public model, and exposes no public raw-SDK escape. With no entry filters it
   bypasses filter evaluation but still performs the public-model conversion. Reread the input
-  surface on every client upgrade and extend the fail-closed converter for every new entry or value
+  surface on every client upgrade and extend `BigtableChangeStreamMutationConverter` — the one
+  fail-closed `instanceof` chain over the SDK's own types — for every new SDK entry or value
   subtype before accepting it.
+- **The connector's own entries dispatch through a visitor, not `instanceof`** (ADR-0126).
+  `BigtableChangeStreamMutation.Entry` and `Value` declare package-private `accept` methods and
+  `ChangeStreamMutationDispatcher` carries the two `@Internal` visitor contracts, so adding a
+  subtype fails to compile at every handler — the serializer's write half, the table envelope
+  converter, and the selected-cell classifier — rather than reaching a runtime message. Callers
+  outside the connector branch on `Entry.getKind()` or `Value.getType()`. Three things the visitor
+  does **not** hold, all of which an added subtype still needs by hand: the serializer's
+  `readEntry`/`readValue`/`copyEntry`/`copyValue` stay `switch`es over a wire tag, the copy path's
+  `tag < SET_CELL || tag > MERGE_TO_CELL` bound refuses a sixth tag until it is widened, and the
+  SDK-side converter above still needs editing — though not finding: see the next rule.
+- **The client's own entry and value sets are pinned where the bump lands, not where the job runs.**
+  `BigtableChangeStreamSdkEntrySurfaceTest` asserts `Value.ValueType`'s constants and the method set
+  of `ChangeStreamRecordAdapter.ChangeStreamRecordBuilder` — the surface a `ChangeStreamMutation` is
+  assembled through, so every entry kind the client can build is a method on it. That is what makes
+  the SDK's method-less `Entry` marker interface pinnable without a classpath scan. It is the
+  reader's half of the libraries-bom bump `BigtableWriterMutationCaseTest` covers for the sink, and
+  the two additions it would have caught, `addToCell` and `mergeToCell`, arrived in the same client
+  release that grew `Mutation.MutationCase`.
+  A `mvn compile` without `clean` can miss the breakage — measured, an incremental build reported
+  success while a clean one named all three handlers.
 - **The application profile is required and single-cluster.** Preflight rejects a visible
   multi-cluster policy; missing permission to read profile metadata does not add a new requirement,
   and the reader translates the service rejection instead. Start-position and restore-expiry
