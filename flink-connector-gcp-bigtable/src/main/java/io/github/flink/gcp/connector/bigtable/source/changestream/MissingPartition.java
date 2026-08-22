@@ -62,14 +62,14 @@ public final class MissingPartition {
     }
 
     @Override
-    public boolean equals(Object object) {
-        if (this == object) {
+    public boolean equals(Object o) {
+        if (this == o) {
             return true;
         }
-        if (!(object instanceof MissingPartition)) {
+        if (!(o instanceof MissingPartition)) {
             return false;
         }
-        MissingPartition other = (MissingPartition) object;
+        MissingPartition other = (MissingPartition) o;
         return partition.equals(other.partition)
                 && firstObserved.equals(other.firstObserved)
                 && lowWatermark.equals(other.lowWatermark);

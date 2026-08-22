@@ -27,6 +27,24 @@ import java.util.Set;
 /** Classifies whether a point-read failure is transient and eligible for another client call. */
 final class BigtableLookupErrorClassifier {
 
+    /**
+     * Statuses a point read is issued again on. They are exactly the statuses the client itself
+     * retries {@code ReadRow} on, and they are listed in the order its own {@code
+     * EnhancedBigtableStubSettings.readRowSettings()} documentation lists them (checked against
+     * google-cloud-bigtable 2.81.0). What {@code lookup.max-retries} adds is therefore budget on
+     * top of the vendor's, not a policy of the connector's own.
+     *
+     * <p>{@code RESOURCE_EXHAUSTED} is absent, which is the opposite decision from the constant of
+     * the same name in {@code BigtableErrorClassifier}, where it is present. The reason is not that
+     * one of the two has fallen behind the other. The two sets gate opposite actions on the same
+     * status: the writer's decides that a failure is never the record's fault, so a mutation
+     * refused for capacity is never dead-lettered, while this one decides that a call is worth
+     * issuing again. Bigtable documents the status as an exhausted project-level admin API quota, a
+     * node limit or a node storage limit, and another point read clears none of the three. Because
+     * the client does not retry the status either, each attempt here returns without the client's
+     * backoff in front of it, and this loop re-issues immediately, so including it would spend the
+     * whole budget in quick succession against a service already refusing for capacity.
+     */
     private static final Set<StatusCode.Code> TRANSIENT_CODES =
             EnumSet.of(
                     StatusCode.Code.DEADLINE_EXCEEDED,

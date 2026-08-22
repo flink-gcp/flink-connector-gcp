@@ -57,8 +57,11 @@ Point lookups make one exception to the connector-wide rule that client librarie
 `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `ABORTED`, and counts attempts after the initial read. The
 lookup contract exposes this option and users expect it to control the lookup call; delegating only
 to opaque SDK retry settings would accept the key while not giving it the promised meaning.
-Permanent failures and an exhausted retry budget surface unchanged. Cache loads remain scans and
-retain the scan client's retry behavior.
+Those three are the set the client itself retries `ReadRow` on
+(`EnhancedBigtableStubSettings.readRowSettings()`, google-cloud-bigtable 2.81.0), so the option
+adds budget on top of the vendor's rather than a retry policy of the connector's own. Permanent
+failures and an exhausted retry budget surface unchanged. Cache loads remain scans and retain the
+scan client's retry behavior.
 
 No connector metrics are added. Flink's cache implementations and the Bigtable client retain
 ownership of their metrics.
@@ -94,4 +97,9 @@ operation, correcting the prior rejection of a closed-start key.
   is worse than rejecting the unsupported combination.
 - Retrying every failure: authentication, permission and invalid-argument failures do not become
   valid with another point read.
+- Retrying `RESOURCE_EXHAUSTED`, which the sink's classifier does treat as transient: the client
+  excludes it from `readRowSettings()`'s retryable set, Bigtable raises it for an exhausted admin
+  API quota or a node or storage limit, and this loop carries no backoff of its own, so the whole
+  budget would be spent in quick succession on a refusal no point read clears. The sink's set gates
+  a dead letter rather than another call, which is why the same status belongs in it.
 - Lookup-specific metrics: they would duplicate the cache and client layers' ownership.

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
@@ -25,7 +26,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Objects;
 
 /** Recognizes the deliberately narrow producer protocol for one selected Bigtable cell. */
 @Internal
@@ -70,9 +70,10 @@ final class SelectedCellMutationClassifier implements Serializable {
     private final String sourceClusterId;
 
     SelectedCellMutationClassifier(String family, ByteString qualifier, String sourceClusterId) {
-        this.family = Objects.requireNonNull(family);
-        this.qualifier = Objects.requireNonNull(qualifier);
-        this.sourceClusterId = Objects.requireNonNull(sourceClusterId);
+        this.family = Preconditions.checkNotNull(family, "family must not be null");
+        this.qualifier = Preconditions.checkNotNull(qualifier, "qualifier must not be null");
+        this.sourceClusterId =
+                Preconditions.checkNotNull(sourceClusterId, "sourceClusterId must not be null");
     }
 
     Result classify(BigtableChangeStreamMutation mutation) throws IOException {

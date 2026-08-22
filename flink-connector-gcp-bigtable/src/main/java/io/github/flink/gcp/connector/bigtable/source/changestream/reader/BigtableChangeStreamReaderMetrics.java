@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricValues;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
@@ -169,7 +170,7 @@ public final class BigtableChangeStreamReaderMetrics {
         oldestQueuedPositionMillis.set(oldestQueued);
     }
 
-    void progress(String splitId, java.time.Instant lowWatermark) {
+    void progress(String splitId, Instant lowWatermark) {
         activeLowWatermarks.computeIfPresent(
                 splitId, (ignored, previous) -> lowWatermark.toEpochMilli());
     }

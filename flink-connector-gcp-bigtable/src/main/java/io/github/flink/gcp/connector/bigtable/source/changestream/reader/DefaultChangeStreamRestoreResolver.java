@@ -28,6 +28,8 @@ import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 
 /** Retention-aware reader restore resolution backed by Bigtable table metadata. */
@@ -60,11 +62,11 @@ public final class DefaultChangeStreamRestoreResolver implements ChangeStreamRes
             try (DefaultChangeStreamCoordinatorClient client =
                     new DefaultChangeStreamCoordinatorClient(
                             table, appProfileId, serviceAccountKeyFile, credentialsOverride)) {
-                java.time.Duration retention = client.retention();
+                Duration retention = client.retention();
                 resolver = StartPositionResolver.create(getClass(), () -> retention);
             }
         }
-        Optional<java.time.Instant> restart =
+        Optional<Instant> restart =
                 resolver.resolveRestored(
                         RowRanges.format(split.getPartition()), split.getLowWatermark(), fallback);
         return restart.map(split::restartAt).orElse(split);

@@ -22,6 +22,7 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.util.Preconditions;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,7 +50,7 @@ public final class SelectedCellTableSchema {
 
     /** Derives the format payload by removing the one declared primary-key field. */
     public static SelectedCellTableSchema of(DataType physicalDataType, int[] primaryKeyIndexes) {
-        Objects.requireNonNull(physicalDataType, "physicalDataType must not be null");
+        Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
         if (primaryKeyIndexes.length != 1) {
             throw new ValidationException(
                     "A 'bigtable' selected-cell Change Streams source requires exactly one"

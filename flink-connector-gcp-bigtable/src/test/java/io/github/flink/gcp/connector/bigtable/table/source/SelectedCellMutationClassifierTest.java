@@ -42,6 +42,22 @@ class SelectedCellMutationClassifierTest {
             new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1");
 
     @Test
+    void namesTheFieldItRefusesToConstructWithout() {
+        // What the house null-check idiom buys is the message. A bare requireNonNull raises an NPE
+        // naming nothing, which is what these three checks did until they were converted, and
+        // nothing else in the module would notice them going back.
+        assertThatThrownBy(() -> new SelectedCellMutationClassifier(null, QUALIFIER, "cluster-1"))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("family must not be null");
+        assertThatThrownBy(() -> new SelectedCellMutationClassifier(FAMILY, null, "cluster-1"))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("qualifier must not be null");
+        assertThatThrownBy(() -> new SelectedCellMutationClassifier(FAMILY, QUALIFIER, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("sourceClusterId must not be null");
+    }
+
+    @Test
     void recognizesCanonicalColumnAndFamilyUpserts() throws Exception {
         BigtableChangeStreamMutation columnUpsert =
                 mutation(

@@ -22,6 +22,7 @@ import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
+import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
 
@@ -31,7 +32,6 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 
 /** Serializes the connector-owned mutation model without reflective collection access. */
 @Internal
@@ -86,7 +86,7 @@ public final class BigtableChangeStreamMutationSerializer
     @Override
     public void serialize(BigtableChangeStreamMutation record, DataOutputView target)
             throws IOException {
-        Objects.requireNonNull(record, "record");
+        Preconditions.checkNotNull(record, "record must not be null");
         writeBytes(record.getRowKey(), target);
         writeMutationType(record.getType(), target);
         writeString(record.getSourceClusterId(), target);

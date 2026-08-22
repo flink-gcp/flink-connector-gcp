@@ -27,6 +27,7 @@ import com.google.cloud.bigtable.data.v2.models.MergeToCell;
 import com.google.cloud.bigtable.data.v2.models.Range;
 import com.google.cloud.bigtable.data.v2.models.SetCell;
 import com.google.cloud.bigtable.data.v2.models.Value;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 
@@ -34,6 +35,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /** Converts the pinned SDK mutation model to the connector-owned public model. */
@@ -95,7 +97,7 @@ final class BigtableChangeStreamMutationConverter {
                         mutation.getTieBreaker(),
                         mutation.getToken(),
                         mutation.getEstimatedLowWatermarkTime(),
-                        entries == null ? java.util.Collections.emptyList() : entries),
+                        entries == null ? Collections.emptyList() : entries),
                 removedEntries);
     }
 
@@ -130,7 +132,7 @@ final class BigtableChangeStreamMutationConverter {
         throw unsupportedEntry(entry);
     }
 
-    private static com.google.protobuf.ByteString qualifier(Entry entry) throws IOException {
+    private static ByteString qualifier(Entry entry) throws IOException {
         if (entry instanceof SetCell) {
             return ((SetCell) entry).getQualifier();
         }
