@@ -32,8 +32,8 @@ import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSo
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
-import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
-import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DefaultRowKeySamplerFactory;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSplitReader;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.DataClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
@@ -64,7 +64,7 @@ public class BigtableSourceBuilder<T> {
     private @Nullable String appProfileId;
     private @Nullable String serviceAccountKeyFile;
     private @Nullable EmulatorEndpoint emulatorEndpoint;
-    private @Nullable RowKeySampler sampler;
+    private @Nullable RowKeySamplerFactory samplerFactory;
     private @Nullable RowStreamOpener opener;
     private int maxRowsPerFetch = BigtableSplitReader.DEFAULT_MAX_ROWS_PER_FETCH;
 
@@ -257,10 +257,13 @@ public class BigtableSourceBuilder<T> {
         return this;
     }
 
-    /** Replaces the sampler the enumerator plans with. For tests that must not reach a service. */
+    /**
+     * Replaces the factory the source mints the enumerator's sampler from. For tests that must not
+     * reach a service.
+     */
     @VisibleForTesting
-    BigtableSourceBuilder<T> sampler(RowKeySampler sampler) {
-        this.sampler = sampler;
+    BigtableSourceBuilder<T> samplerFactory(RowKeySamplerFactory samplerFactory) {
+        this.samplerFactory = samplerFactory;
         return this;
     }
 
@@ -310,9 +313,9 @@ public class BigtableSourceBuilder<T> {
                         filter,
                         appProfileId,
                         serviceAccountKeyFile,
-                        sampler != null
-                                ? sampler
-                                : new DataClientRowKeySampler(appProfileId, emulatorEndpoint),
+                        samplerFactory != null
+                                ? samplerFactory
+                                : new DefaultRowKeySamplerFactory(appProfileId, emulatorEndpoint),
                         opener != null
                                 ? opener
                                 : new DataClientRowStreamOpener(appProfileId, emulatorEndpoint),

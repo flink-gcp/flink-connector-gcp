@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import com.google.api.gax.grpc.GrpcStatusCode;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.ApiExceptionFactory;
@@ -109,5 +111,29 @@ class ReadClientSessionCreatorTest {
                 new IllegalStateException(message),
                 GrpcStatusCode.of(Status.Code.INVALID_ARGUMENT),
                 false);
+    }
+
+    /**
+     * The <em>factory</em> travels; the creator does not, and must not.
+     *
+     * <p>A creator that could be serialized could be parked on the source configuration, which is
+     * how one creator came to be shared by every enumerator of a job and refused after the first
+     * teardown ({@code docs/adr/0128}). The second assertion is the one that would notice that
+     * coming back.
+     */
+    @Test
+    void theFactoryTravelsInTheJobGraphAndTheCreatorDoesNot() throws Exception {
+        DefaultReadSessionCreatorFactory factory =
+                new DefaultReadSessionCreatorFactory(
+                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
+
+        DefaultReadSessionCreatorFactory back =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(factory), getClass().getClassLoader());
+
+        assertThat(back.create()).isInstanceOf(ReadClientSessionCreator.class);
+        assertThat(java.io.Serializable.class.isAssignableFrom(ReadSessionCreator.class))
+                .as("a serializable creator could be parked on the configuration again")
+                .isFalse();
     }
 }

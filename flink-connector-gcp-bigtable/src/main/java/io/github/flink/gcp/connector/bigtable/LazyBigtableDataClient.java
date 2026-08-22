@@ -41,13 +41,16 @@ import java.io.Serializable;
  * <p>No key-file path travels here. The runtime component that owns the seam loads one provider for
  * every client family it owns and pushes it in, so this holder never loads a second one.
  *
- * <p>The client is {@code transient} because the holder is serialized into the job graph, {@code
- * volatile} because the thread that builds it is not the thread that closes it, and built under
- * this object's monitor rather than a lock field, because a lock field would have to travel in the
- * job graph too. Which threads those are depends on the seam: a reader's split fetchers open
- * streams from their own threads while {@code close()} runs on the task thread once the fetchers
- * are down, and an enumerator samples from the executor {@code SplitEnumeratorContext#callAsync}
- * hands the work to while {@code close()} runs on the coordinator thread.
+ * <p>The client is {@code transient} because the reader-side holder, {@code
+ * DataClientRowStreamOpener}, is serialized into the job graph — the enumerator-side holder is not
+ * any more, since {@code docs/adr/0128} mints one sampler per enumerator, so for that owner the
+ * marker is inert rather than load-bearing. It is {@code volatile} because the thread that builds
+ * it is not the thread that closes it, and built under this object's monitor rather than a lock
+ * field, because a lock field would have to travel in the job graph too. Which threads those are
+ * depends on the seam: a reader's split fetchers open streams from their own threads while {@code
+ * close()} runs on the task thread once the fetchers are down, and an enumerator samples from the
+ * executor {@code SplitEnumeratorContext#callAsync} hands the work to while {@code close()} runs on
+ * the coordinator thread.
  */
 @Internal
 public final class LazyBigtableDataClient implements Serializable {
@@ -60,7 +63,14 @@ public final class LazyBigtableDataClient implements Serializable {
 
     @Nullable private transient volatile BigtableDataClient client;
 
-    @Nullable private transient CredentialsProvider credentials;
+    /**
+     * What the owning component loaded and pushed in.
+     *
+     * <p>{@code volatile} for the same reason as the client above: it is written on the thread that
+     * creates the reader or the enumerator and read on the one that builds the client, and the
+     * happens-before edge between those two is the caller's rather than this class's.
+     */
+    @Nullable private transient volatile CredentialsProvider credentials;
 
     private transient volatile boolean closed;
 

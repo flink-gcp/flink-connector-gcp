@@ -22,7 +22,7 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
-import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
@@ -66,7 +66,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     private final BigtableChangeStreamMutationFilter mutationFilter;
     private final ChangeStreamOpener opener;
     private final ChangeStreamRestoreResolver restoreResolver;
-    @Nullable private final ChangeStreamCoordinatorClient coordinatorClient;
+    private final ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
 
     BigtableChangeStreamSourceConfig(
             TableDestination table,
@@ -80,7 +80,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             BigtableChangeStreamMutationFilter mutationFilter,
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
-            @Nullable ChangeStreamCoordinatorClient coordinatorClient) {
+            ChangeStreamCoordinatorClientFactory coordinatorClientFactory) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
@@ -101,7 +101,9 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         this.restoreResolver =
                 Preconditions.checkNotNull(restoreResolver, "restoreResolver must not be null");
-        this.coordinatorClient = coordinatorClient;
+        this.coordinatorClientFactory =
+                Preconditions.checkNotNull(
+                        coordinatorClientFactory, "coordinatorClientFactory must not be null");
     }
 
     /** Returns the table whose change stream is read. */
@@ -167,11 +169,13 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     }
 
     /**
-     * Returns the coordinator client the enumerator plans with, or {@code null} to build the
-     * default one from the table, application profile and credentials configured above.
+     * Returns the factory the source mints one coordinator client per enumerator from.
+     *
+     * <p>A factory rather than a client because the JobManager holds one source object for a job's
+     * whole life, so a client here would be shared by every enumerator a coordinator reset builds
+     * ({@code docs/adr/0128}).
      */
-    @Nullable
-    public ChangeStreamCoordinatorClient getCoordinatorClient() {
-        return coordinatorClient;
+    public ChangeStreamCoordinatorClientFactory getCoordinatorClientFactory() {
+        return coordinatorClientFactory;
     }
 }

@@ -23,7 +23,8 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
-import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClientFactory;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
@@ -62,7 +63,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     private boolean skipMessagesWithoutChange;
     @Nullable private ChangeStreamOpener opener;
     @Nullable private ChangeStreamRestoreResolver restoreResolver;
-    @Nullable private ChangeStreamCoordinatorClient coordinatorClient;
+    @Nullable private ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
 
     BigtableChangeStreamSourceBuilder() {}
 
@@ -225,10 +226,14 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Replaces the factory the source mints the enumerator's coordinator client from. For tests
+     * that must not reach a service.
+     */
     @VisibleForTesting
-    BigtableChangeStreamSourceBuilder<T> coordinatorClient(
-            ChangeStreamCoordinatorClient coordinatorClient) {
-        this.coordinatorClient = coordinatorClient;
+    BigtableChangeStreamSourceBuilder<T> coordinatorClientFactory(
+            ChangeStreamCoordinatorClientFactory coordinatorClientFactory) {
+        this.coordinatorClientFactory = coordinatorClientFactory;
         return this;
     }
 
@@ -264,7 +269,10 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         restoreResolver != null
                                 ? restoreResolver
                                 : new DefaultChangeStreamRestoreResolver(table, appProfileId),
-                        coordinatorClient));
+                        coordinatorClientFactory != null
+                                ? coordinatorClientFactory
+                                : new DefaultChangeStreamCoordinatorClientFactory(
+                                        table, appProfileId, serviceAccountKeyFile)));
     }
 
     private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {

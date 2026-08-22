@@ -25,6 +25,7 @@ import javax.annotation.Nullable;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -32,18 +33,21 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>The call count is the point of it as much as the answer is: a restore that sampled again would
  * renumber every split, and counting calls is the only way to see that it did not.
+ *
+ * <p>Refusing after {@link #close()} mirrors {@link DataClientRowKeySampler}: without it a sampler
+ * shared between two enumerators behaves exactly like a fresh one, which is why nothing caught
+ * issue #990. A test that hands one to a source goes through {@link Factory}, which is the
+ * serializable half.
  */
 public final class ScriptedRowKeySampler implements RowKeySampler {
-
-    private static final long serialVersionUID = 1L;
 
     /**
      * The script, held as bytes and longs rather than as {@link RowKeySample}s.
      *
      * <p>{@code RowKeySample} is deliberately not serializable — nothing in production carries one
      * across the job graph, since the enumerator both takes the samples and consumes them on the
-     * coordinator — while this double <em>is</em> serialized, because the configuration it sits in
-     * travels to a MiniCluster job.
+     * coordinator — and neither is this double. What travels is {@link Factory}, which holds the
+     * same two arrays.
      */
     private final byte[][] keys;
 
@@ -52,6 +56,8 @@ public final class ScriptedRowKeySampler implements RowKeySampler {
 
     private final AtomicInteger calls = new AtomicInteger();
     private final AtomicInteger closes = new AtomicInteger();
+
+    private volatile boolean closed;
 
     private ScriptedRowKeySampler(
             byte[][] keys, long[] offsets, @Nullable RuntimeException failure) {
@@ -78,6 +84,12 @@ public final class ScriptedRowKeySampler implements RowKeySampler {
 
     @Override
     public List<RowKeySample> sample(TableDestination table) throws IOException {
+        if (closed) {
+            throw new IOException(
+                    "The Bigtable row key sampler for "
+                            + table
+                            + " was closed before it was used.");
+        }
         calls.incrementAndGet();
         if (failure != null) {
             throw failure;
@@ -95,7 +107,13 @@ public final class ScriptedRowKeySampler implements RowKeySampler {
 
     @Override
     public void close() {
+        closed = true;
         closes.incrementAndGet();
+    }
+
+    /** Returns whether this sampler refuses further sampling. */
+    public boolean isClosed() {
+        return closed;
     }
 
     /** Returns how many times the table was sampled. */
@@ -106,5 +124,73 @@ public final class ScriptedRowKeySampler implements RowKeySampler {
     /** Returns how many times this sampler was closed. */
     public int closeCalls() {
         return closes.get();
+    }
+
+    /**
+     * Mints scripted samplers, and is what a test hands to a source builder.
+     *
+     * <p>Serializable, as the seam on the configuration now is; the samplers it mints are not, and
+     * the list of them is {@code transient} so a copy deserialized inside a MiniCluster job records
+     * its own rather than pretending to share the test's.
+     */
+    public static final class Factory implements RowKeySamplerFactory {
+
+        private static final long serialVersionUID = 1L;
+
+        private final byte[][] keys;
+        private final long[] offsets;
+
+        /**
+         * The seams minted here.
+         *
+         * <p>{@code transient} because a copy of this factory deserialized inside a MiniCluster job
+         * records its own; concurrent because {@code create()} may run on a coordinator worker
+         * thread while a test reads the list on its own.
+         */
+        @Nullable private transient volatile List<ScriptedRowKeySampler> minted;
+
+        private Factory(byte[][] keys, long[] offsets) {
+            this.keys = keys;
+            this.offsets = offsets;
+        }
+
+        /** Returns a factory minting samplers that answer with the given samples. */
+        public static Factory answering(RowKeySample... samples) {
+            ScriptedRowKeySampler scripted = ScriptedRowKeySampler.answering(samples);
+            return new Factory(scripted.keys, scripted.offsets);
+        }
+
+        @Override
+        public RowKeySampler create() {
+            ScriptedRowKeySampler sampler = new ScriptedRowKeySampler(keys, offsets, null);
+            recorded().add(sampler);
+            return sampler;
+        }
+
+        /** Returns the samplers minted here, in the order they were minted. */
+        public List<ScriptedRowKeySampler> minted() {
+            return new ArrayList<>(recorded());
+        }
+
+        private synchronized List<ScriptedRowKeySampler> recorded() {
+            if (minted == null) {
+                minted = new CopyOnWriteArrayList<>();
+            }
+            return minted;
+        }
+
+        /**
+         * Returns the one sampler minted, failing when there was not exactly one.
+         *
+         * <p>The count is half of what a caller asserts: one enumerator mints one sampler, and a
+         * source that minted two would otherwise pass every count assertion.
+         */
+        public ScriptedRowKeySampler only() {
+            if (recorded().size() != 1) {
+                throw new AssertionError(
+                        "expected exactly one minted sampler but was " + recorded().size());
+            }
+            return recorded().get(0);
+        }
     }
 }

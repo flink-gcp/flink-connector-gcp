@@ -27,13 +27,21 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** A {@link ReadSessionCreator} answering with a canned session, and counting the calls. */
+/**
+ * A {@link ReadSessionCreator} answering with a canned session, and counting the calls.
+ *
+ * <p>Refusing after {@link #close()} mirrors {@link ReadClientSessionCreator}: without it a creator
+ * shared between two enumerators behaves exactly like a fresh one, which is why nothing caught
+ * issue #990. A test that hands one to a source goes through {@link Factory}, which is the
+ * serializable half.
+ */
 public final class ScriptedReadSessionCreator implements ReadSessionCreator {
-
-    private static final long serialVersionUID = 1L;
 
     public static final String SESSION = "projects/p/locations/l/sessions/s";
 
@@ -43,6 +51,8 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
     private final AtomicInteger creations = new AtomicInteger();
     private final AtomicInteger closes = new AtomicInteger();
     private final AtomicReference<CreateReadSessionRequest> lastRequest = new AtomicReference<>();
+
+    private volatile boolean closed;
 
     /** The expiry the canned session carries, and therefore the one its splits do. */
     public static final Instant EXPIRE_TIME = Instant.parse("2026-08-09T12:00:00Z");
@@ -69,6 +79,10 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
 
     @Override
     public ReadSession create(CreateReadSessionRequest request) throws IOException {
+        if (closed) {
+            throw new IOException(
+                    "The BigQuery read session creator was closed; the source is shutting down.");
+        }
         creations.incrementAndGet();
         lastRequest.set(request);
         if (failure != null) {
@@ -88,10 +102,16 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
 
     @Override
     public void close() {
+        closed = true;
         closes.incrementAndGet();
     }
 
-    int creations() {
+    /** Returns whether this creator refuses further session creation. */
+    public boolean isClosed() {
+        return closed;
+    }
+
+    public int creations() {
         return creations.get();
     }
 
@@ -101,7 +121,72 @@ public final class ScriptedReadSessionCreator implements ReadSessionCreator {
         return lastRequest.get();
     }
 
-    int closes() {
+    public int closes() {
         return closes.get();
+    }
+
+    /**
+     * Mints scripted creators, and is what a test hands to a source builder.
+     *
+     * <p>Serializable, as the seam on the configuration now is; the creators it mints are not, and
+     * the list of them is {@code transient} so a copy deserialized inside a MiniCluster job records
+     * its own rather than pretending to share the test's.
+     */
+    public static final class Factory implements ReadSessionCreatorFactory {
+
+        private static final long serialVersionUID = 1L;
+
+        private final int streamCount;
+
+        /**
+         * The seams minted here.
+         *
+         * <p>{@code transient} because a copy of this factory deserialized inside a MiniCluster job
+         * records its own; concurrent because {@code create()} may run on a coordinator worker
+         * thread while a test reads the list on its own.
+         */
+        @Nullable private transient volatile List<ScriptedReadSessionCreator> minted;
+
+        private Factory(int streamCount) {
+            this.streamCount = streamCount;
+        }
+
+        /** A factory minting creators answering with a session of the given stream count. */
+        public static Factory withStreams(int streamCount) {
+            return new Factory(streamCount);
+        }
+
+        @Override
+        public ReadSessionCreator create() {
+            ScriptedReadSessionCreator creator = new ScriptedReadSessionCreator(streamCount, null);
+            recorded().add(creator);
+            return creator;
+        }
+
+        /** Returns the creators minted here, in the order they were minted. */
+        public List<ScriptedReadSessionCreator> minted() {
+            return new ArrayList<>(recorded());
+        }
+
+        private synchronized List<ScriptedReadSessionCreator> recorded() {
+            if (minted == null) {
+                minted = new CopyOnWriteArrayList<>();
+            }
+            return minted;
+        }
+
+        /**
+         * Returns the one creator minted, failing when there was not exactly one.
+         *
+         * <p>The count is half of what a caller asserts: one enumerator mints one creator, and a
+         * source that minted two would otherwise pass every count assertion.
+         */
+        public ScriptedReadSessionCreator only() {
+            if (recorded().size() != 1) {
+                throw new AssertionError(
+                        "expected exactly one minted creator but was " + recorded().size());
+            }
+            return recorded().get(0);
+        }
     }
 }

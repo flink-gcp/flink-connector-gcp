@@ -128,6 +128,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   repository's one exception to "a checkpointed split owns its own byte format" and is forced: the
   partition token is opaque, the accessors are package-private and there is no public factory.
   The exposure is bounded by the snapshot, not by the format.
+- **One planner belongs to one enumerator** (`docs/adr/0128`). `SpannerSourceConfig` carries a
+  `PartitionPlannerFactory`, not a planner, and `SpannerBatchReadSource` mints one in both
+  `createEnumerator` and `restoreEnumerator`, closing it itself if the enumerator's constructor
+  throws before taking it. `PartitionPlanner` is deliberately not `Serializable`, so a field of
+  that type on the configuration fails to serialize the job graph rather than reappearing as a
+  restart loop. `StructStreamOpener` stays an instance on the configuration: a reader's copy is
+  deserialized per task attempt, so its identical one-way `closed` flag starts false each time.
 - **The enumerator owns `cleanup()`**, wrapped with the client into the one `AutoCloseable` the
   base closes. Readers close their own transaction handle and never call it — releasing the session
   would end every other reader's read. Against the pinned client the call is a no-op (multiplexed
@@ -159,6 +166,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   would not compile. Abstract narrows the silent substitution rather than removing it: an
   implementation may still discard what it is handed and reach Spanner as the process's ADC, which
   nothing logs or counts, so keep that cost in the declaring javadoc.
+  `PartitionPlanner` reaches the component through a factory, so what travels is the factory and
+  the push is unchanged; the factory carries no key-file path either.
   A seam that builds its own client reads the path itself at the same boundary:
   the two Change Streams client factories load in `create()`, and `SpannerDatabaseRowLookup` loads
   in `open()`. Restored components reload independently, emulator endpoints are mutually exclusive,

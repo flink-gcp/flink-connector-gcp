@@ -19,16 +19,24 @@ package io.github.flink.gcp.connector.spanner.source.batch;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.ScriptedPartitionPlanner;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Verifies the source loads key files in every runtime process that opens a client. */
 class SpannerBatchReadSourceCredentialsTest {
 
     private static final String MISSING_KEY = "/missing/spanner-service-account.json";
+
+    @AfterEach
+    void forgetRecordings() {
+        ScriptedPartitionPlanner.reset();
+    }
 
     @Test
     void freshEnumeratorLoadsCredentialsOnTheJobManager() {
@@ -43,6 +51,33 @@ class SpannerBatchReadSourceCredentialsTest {
     @Test
     void readerLoadsCredentialsOnTheTaskManager() {
         assertCredentialFailure(() -> source().createReader(null));
+    }
+
+    /**
+     * Pins the ordering the source's own javadoc claims: the key is loaded <em>before</em> the
+     * planner is minted, so a key file that cannot be read leaves nothing built to release.
+     *
+     * <p>Without this, moving the load below the mint would keep every assertion above green while
+     * stranding one planner per failed attempt on the JobManager.
+     */
+    @Test
+    void nothingIsMintedWhenTheKeyFileCannotBeRead() {
+        ScriptedPartitionPlanner.Factory planner =
+                ScriptedPartitionPlanner.planning("credentials", "a");
+        SpannerBatchReadSource<Long> source =
+                (SpannerBatchReadSource<Long>)
+                        TestSources.withPlannerFactory(
+                                        SpannerSource.<Long>builder()
+                                                .database(SpannerDatabase.of("p", "i", "d"))
+                                                .readOperation(TestSources.OPERATION)
+                                                .deserializer(new TestSources.IdDeserializer())
+                                                .serviceAccountKeyFile(MISSING_KEY),
+                                        planner)
+                                .build();
+
+        assertCredentialFailure(() -> source.createEnumerator(null));
+
+        assertThat(planner.minted()).as("the load failed before anything was minted").isEmpty();
     }
 
     private static SpannerBatchReadSource<Long> source() {

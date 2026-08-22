@@ -41,10 +41,10 @@ import java.io.Serializable;
  * BigQueryReadClient}, which owns a gRPC channel and an executor that leak if nothing releases
  * them; this one wraps the REST client, and {@code com.google.cloud.bigquery.BigQuery} extends
  * {@code com.google.cloud.Service} and nothing else — there is no {@code close} to call (verified
- * against google-cloud-bigquery 2.68.0, the version {@code libraries-bom} resolves). {@code
- * TableAdmin} on the sink side holds the same client and is not closeable for the same reason. A
- * closeable seam here would be one the enumerator has to compose into its single planner for no
- * released resource.
+ * against google-cloud-bigquery 2.69.0 on 2026-08-22, the version {@code libraries-bom} resolves).
+ * {@code TableAdmin} on the sink side holds the same client and is not closeable for the same
+ * reason. A closeable seam here would be one the enumerator has to compose into its single planner
+ * for no released resource.
  */
 @Internal
 public interface QueryRunner extends Serializable {

@@ -49,13 +49,19 @@ class BigtableScanSplitEnumeratorTest {
         return RowKeySample.of(ByteString.copyFromUtf8(key), offsetBytes);
     }
 
-    private static BigtableSourceConfig<String> configWith(ScriptedRowKeySampler sampler) {
-        return TestSources.config(builder -> TestSources.withSampler(builder, sampler));
+    /**
+     * The configuration these tests plan against.
+     *
+     * <p>It carries the default sampler factory and never reaches it: the enumerator is handed its
+     * sampler directly, which is what the source does too. Nothing here mints a real one.
+     */
+    private static BigtableSourceConfig<String> config() {
+        return TestSources.config();
     }
 
     private BigtableScanSplitEnumerator enumerator(
             FakeSplitEnumeratorContext<RowRangeSplit> context, ScriptedRowKeySampler sampler) {
-        return new BigtableScanSplitEnumerator(context, configWith(sampler), null);
+        return new BigtableScanSplitEnumerator(context, config(), sampler, null);
     }
 
     @Test
@@ -115,7 +121,7 @@ class BigtableScanSplitEnumeratorTest {
                         Collections.singletonList(
                                 new RowRangeSplit("7", ByteStringRange.unbounded())));
         BigtableScanSplitEnumerator enumerator =
-                new BigtableScanSplitEnumerator(context, configWith(sampler), restored);
+                new BigtableScanSplitEnumerator(context, config(), sampler, restored);
         context.registerReader(0);
 
         enumerator.start();
@@ -139,7 +145,8 @@ class BigtableScanSplitEnumeratorTest {
         BigtableScanSplitEnumerator enumerator =
                 new BigtableScanSplitEnumerator(
                         context,
-                        configWith(sampler),
+                        config(),
+                        sampler,
                         new BigtableScanEnumeratorState(true, Collections.emptyList()));
         context.registerReader(0);
 

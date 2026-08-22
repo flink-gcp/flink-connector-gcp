@@ -135,7 +135,7 @@ class BigQuerySourceFailoverITCase {
                 .table(TestSources.TABLE)
                 .deserializer(BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON))
                 .maxRecordsPerFetch(50)
-                .sessionCreator(ScriptedReadSessionCreator.withStreams(STREAMS))
+                .sessionCreatorFactory(ScriptedReadSessionCreator.Factory.withStreams(STREAMS))
                 // Ten milliseconds a block, so the job spends long enough reading for checkpoints
                 // to
                 // complete while rows flow; without that the whole table is read before the

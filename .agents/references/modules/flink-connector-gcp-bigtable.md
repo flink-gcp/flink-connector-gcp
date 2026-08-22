@@ -170,6 +170,24 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Scan source (`docs/adr/0080`, `0083`)
 
+- **One coordinator client belongs to one Change Streams enumerator** (`docs/adr/0128`).
+  `BigtableChangeStreamSourceConfig` carries a `ChangeStreamCoordinatorClientFactory`, not a client,
+  and it is not `@Nullable` any more: the source used to mint inline only when the configuration
+  held none, which left a test-injected client shared by every enumerator. `DefaultChangeStreamCoordinatorClient`'s three lazy
+  accessors are now guarded by its monitor behind a one-way closed flag, as its sibling seams were:
+  they were a check-then-create against fields `close()` nulls, so a teardown between a check and
+  its assignment closed nothing and left the client the reconciliation scan then assigned owned by
+  no one, reaching Bigtable as ADC because `close()` nulls the credentials too. `volatile` does not
+  make a compound operation atomic.
+
+- **One sampler belongs to one enumerator** (`docs/adr/0128`). `BigtableSourceConfig` carries a
+  `RowKeySamplerFactory`, not a sampler, and `BigtableReadRowsSource` mints one in both
+  `createEnumerator` and `restoreEnumerator`, closing it itself if the enumerator's constructor
+  throws before taking it. `RowKeySampler` is deliberately not `Serializable`. The sticky flag is a
+  level down, in `LazyBigtableDataClient`, whose other holder — the reader-side
+  `DataClientRowStreamOpener` — is unaffected, because a reader's copy is deserialized per task
+  attempt.
+
 - **The assignment protocol is the base module's** (`docs/adr/0083`): `BigtableScanSplitEnumerator`
   extends `PullAssignmentSplitEnumerator` and supplies the sampling — `restore`, the sampling call,
   the plan and its report, the counters, its own `snapshotState`. What the bullets below say about

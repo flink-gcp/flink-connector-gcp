@@ -46,22 +46,48 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
-/** Native java-bigtable implementation of the coordinator operations. */
+/**
+ * Native java-bigtable implementation of the coordinator operations.
+ *
+ * <p>One client belongs to one enumerator: {@link DefaultChangeStreamCoordinatorClientFactory}
+ * mints it, and the source mints one per {@code createEnumerator} and {@code restoreEnumerator}
+ * ({@code docs/adr/0128}). The three client families are built on first use, so minting one opens
+ * nothing.
+ *
+ * <p><b>What that does not settle.</b> Per-enumerator ownership removes the sharing between
+ * enumerators; it does not order this object's own two threads. The enumerator's reconciliation
+ * scan runs on the executor {@code SplitEnumeratorContext#callAsync} hands the work to, on an
+ * interval, while {@link #close()} runs on the coordinator thread — and {@code
+ * SourceCoordinator.close()} closes the enumerator before it shuts that executor down.
+ *
+ * <p>Building a client and closing one are therefore guarded by this object's monitor, and a
+ * one-way {@code closed} flag makes a scan that overtakes the teardown refuse rather than build.
+ * {@code volatile} alone would not have done it: the lazy accessors are a check-then-create, so a
+ * teardown that ran between the check and the assignment saw {@code null}, closed nothing, and left
+ * the client the scan then assigned owned by no one — a leaked JobManager-side channel and
+ * executor, and with the credentials already nulled, one reaching Bigtable as the process's
+ * application default credentials. The flag is one-way because this client belongs to one
+ * enumerator ({@code docs/adr/0128}) and ends with it.
+ *
+ * <p>The monitor is held across the client's construction, as the module's other lazy holder does,
+ * so a teardown racing a first use waits for it rather than racing it. Nothing here makes an RPC
+ * under the monitor.
+ */
 @Internal
 public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamCoordinatorClient {
 
     private static final Logger LOG =
             LoggerFactory.getLogger(DefaultChangeStreamCoordinatorClient.class);
 
-    private static final long serialVersionUID = 1L;
-
     private final TableDestination table;
     private final String appProfileId;
 
-    @Nullable private transient BigtableDataClient dataClient;
-    @Nullable private transient BigtableTableAdminClient tableAdminClient;
-    @Nullable private transient BigtableInstanceAdminClient instanceAdminClient;
-    @Nullable private transient CredentialsProvider credentials;
+    private volatile boolean closed;
+
+    @Nullable private volatile BigtableDataClient dataClient;
+    @Nullable private volatile BigtableTableAdminClient tableAdminClient;
+    @Nullable private volatile BigtableInstanceAdminClient instanceAdminClient;
+    @Nullable private volatile CredentialsProvider credentials;
 
     public DefaultChangeStreamCoordinatorClient(TableDestination table, String appProfileId) {
         this(table, appProfileId, null);
@@ -172,25 +198,37 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         return partitions;
     }
 
-    private BigtableDataClient dataClient() throws Exception {
+    private synchronized BigtableDataClient dataClient() throws Exception {
+        checkOpen();
         if (dataClient == null) {
             dataClient = BigtableDataClient.create(dataSettings());
         }
         return dataClient;
     }
 
-    private BigtableTableAdminClient tableAdmin() throws Exception {
+    private synchronized BigtableTableAdminClient tableAdmin() throws Exception {
+        checkOpen();
         if (tableAdminClient == null) {
             tableAdminClient = BigtableTableAdminClient.create(tableAdminSettings());
         }
         return tableAdminClient;
     }
 
-    private BigtableInstanceAdminClient instanceAdmin() throws Exception {
+    private synchronized BigtableInstanceAdminClient instanceAdmin() throws Exception {
+        checkOpen();
         if (instanceAdminClient == null) {
             instanceAdminClient = BigtableInstanceAdminClient.create(instanceAdminSettings());
         }
         return instanceAdminClient;
+    }
+
+    private void checkOpen() throws IOException {
+        if (closed) {
+            throw new IOException(
+                    "The Bigtable Change Streams coordinator for "
+                            + table
+                            + " was closed before it was used.");
+        }
     }
 
     BigtableDataSettings dataSettings() throws IOException {
@@ -219,10 +257,21 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     @Override
     public void close() throws Exception {
-        Closers.closeAll(dataClient, tableAdminClient, instanceAdminClient);
-        dataClient = null;
-        tableAdminClient = null;
-        instanceAdminClient = null;
-        credentials = null;
+        BigtableDataClient data;
+        BigtableTableAdminClient tableAdmin;
+        BigtableInstanceAdminClient instanceAdmin;
+        synchronized (this) {
+            closed = true;
+            data = dataClient;
+            tableAdmin = tableAdminClient;
+            instanceAdmin = instanceAdminClient;
+            dataClient = null;
+            tableAdminClient = null;
+            instanceAdminClient = null;
+            credentials = null;
+        }
+        // Released outside the monitor: a lazy build in flight holds it, and the flag above has
+        // already stopped anything new, so waiting here would only delay a teardown.
+        Closers.closeAll(data, tableAdmin, instanceAdmin);
     }
 }

@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.DefaultPartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.BatchClientStructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSplitReader;
 import org.junit.jupiter.api.Test;
@@ -130,12 +131,16 @@ class SpannerSourceBuilderTest {
     }
 
     @Test
-    void theRealSeamsAreUsedWhenNoneIsInjected() {
+    void theRealSeamsAreUsedWhenNoneIsInjected() throws Exception {
         // The production path, and the only test that asserts it: everything else here injects a
         // scripted seam, which would hide a builder that stopped wiring the real one.
         SpannerSourceConfig<Long> config = configOf(builder());
 
-        assertThat(config.getPlanner()).isInstanceOf(BatchClientPartitionPlanner.class);
+        assertThat(config.getPlannerFactory()).isInstanceOf(DefaultPartitionPlannerFactory.class);
+        // What the factory answers with, not only which factory it is: a factory wired correctly
+        // but minting something else would pass the line above and reach no service.
+        assertThat(config.getPlannerFactory().create())
+                .isInstanceOf(BatchClientPartitionPlanner.class);
         assertThat(config.getOpener()).isInstanceOf(BatchClientStructStreamOpener.class);
     }
 

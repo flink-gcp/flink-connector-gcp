@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlan;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStream;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
@@ -44,6 +45,8 @@ import org.junit.jupiter.api.io.TempDir;
 import javax.annotation.Nullable;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,26 +67,26 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
     @Test
     void theReaderHandsItsOpenerTheConfiguredKey() throws Exception {
         CapturingOpener opener = new CapturingOpener();
-        CapturingPlanner planner = new CapturingPlanner();
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
 
-        source(opener, planner).createReader(readerContext()).close();
+        source(opener, planners).createReader(readerContext()).close();
 
         assertConfiguredKey(opener.credentials);
         assertThat(opener.pushes).isOne();
-        assertThat(planner.pushes)
-                .as("the reader must not push onto the enumerator's seam")
-                .isZero();
+        assertThat(planners.minted())
+                .as("the reader must not reach the enumerator's seam at all")
+                .isEmpty();
     }
 
     @Test
     void theFreshEnumeratorHandsItsPlannerTheConfiguredKey() throws Exception {
         CapturingOpener opener = new CapturingOpener();
-        CapturingPlanner planner = new CapturingPlanner();
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
 
-        source(opener, planner).createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
+        source(opener, planners).createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
 
-        assertConfiguredKey(planner.credentials);
-        assertThat(planner.pushes).isOne();
+        assertConfiguredKey(planners.only().credentials);
+        assertThat(planners.only().pushes).isOne();
         assertThat(opener.pushes)
                 .as("the enumerator must not push onto the reader's seam")
                 .isZero();
@@ -92,14 +95,14 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
     @Test
     void theRestoredEnumeratorHandsItsPlannerTheConfiguredKey() throws Exception {
         CapturingOpener opener = new CapturingOpener();
-        CapturingPlanner planner = new CapturingPlanner();
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
 
-        source(opener, planner)
+        source(opener, planners)
                 .restoreEnumerator(new FakeSplitEnumeratorContext<>(1), null)
                 .close();
 
-        assertConfiguredKey(planner.credentials);
-        assertThat(planner.pushes).isOne();
+        assertConfiguredKey(planners.only().credentials);
+        assertThat(planners.only().pushes).isOne();
         assertThat(opener.pushes)
                 .as("the enumerator must not push onto the reader's seam")
                 .isZero();
@@ -116,15 +119,15 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
     @Test
     void theReaderAndTheEnumeratorEachLoadTheirOwn() throws Exception {
         CapturingOpener opener = new CapturingOpener();
-        CapturingPlanner planner = new CapturingPlanner();
-        SpannerBatchReadSource<Long> source = source(opener, planner);
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
+        SpannerBatchReadSource<Long> source = source(opener, planners);
 
         source.createReader(readerContext()).close();
         source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
 
         assertConfiguredKey(opener.credentials);
-        assertConfiguredKey(planner.credentials);
-        assertThat(opener.credentials).isNotSameAs(planner.credentials);
+        assertConfiguredKey(planners.only().credentials);
+        assertThat(opener.credentials).isNotSameAs(planners.only().credentials);
     }
 
     /**
@@ -152,8 +155,8 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
      * started — and a change that made {@code createReader} build one eagerly would have to keep
      * that true.
      */
-    private SpannerBatchReadSource<Long> source(CapturingOpener opener, CapturingPlanner planner)
-            throws Exception {
+    private SpannerBatchReadSource<Long> source(
+            CapturingOpener opener, CapturingPlannerFactory planners) throws Exception {
         SpannerSourceBuilder<Long> builder =
                 SpannerSource.<Long>builder()
                         .database(SpannerDatabase.of("p", "i", "d"))
@@ -161,7 +164,8 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
                         .deserializer(new TestSources.IdDeserializer())
                         .serviceAccountKeyFile(ServiceAccountKeyFiles.create(tempDir).toString());
         TestSources.withOpener(builder, opener);
-        return (SpannerBatchReadSource<Long>) TestSources.withPlanner(builder, planner).build();
+        return (SpannerBatchReadSource<Long>)
+                TestSources.withPlannerFactory(builder, planners).build();
     }
 
     private static FakeSourceReaderContext readerContext() {
@@ -192,10 +196,41 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
         public void close() {}
     }
 
-    /** Records what the enumerator handed it, and how often, while reaching no service. */
-    private static final class CapturingPlanner implements PartitionPlanner {
+    /** Mints capturing planners and records them, so a test can assert how many were minted. */
+    private static final class CapturingPlannerFactory implements PartitionPlannerFactory {
 
         private static final long serialVersionUID = 1L;
+
+        // Transient because the seams it records are no longer serializable. No test round-trips
+        // this factory; one that did would need the lazy accessor the Scripted* doubles use,
+        // because a transient field deserializes to null.
+        private final transient List<CapturingPlanner> minted = new ArrayList<>();
+
+        @Override
+        public PartitionPlanner create() {
+            CapturingPlanner planner = new CapturingPlanner();
+            minted.add(planner);
+            return planner;
+        }
+
+        private List<CapturingPlanner> minted() {
+            return minted;
+        }
+
+        /**
+         * Returns the one planner minted, failing when there was not exactly one.
+         *
+         * <p>The count is half of what each test asserts: one enumerator must mint one planner, and
+         * a source that minted two would otherwise pass every credential assertion below.
+         */
+        private CapturingPlanner only() {
+            assertThat(minted).as("one enumerator mints exactly one planner").hasSize(1);
+            return minted.get(0);
+        }
+    }
+
+    /** Records what the enumerator handed it, and how often, while reaching no service. */
+    private static final class CapturingPlanner implements PartitionPlanner {
 
         @Nullable private GoogleCredentials credentials;
         private int pushes;

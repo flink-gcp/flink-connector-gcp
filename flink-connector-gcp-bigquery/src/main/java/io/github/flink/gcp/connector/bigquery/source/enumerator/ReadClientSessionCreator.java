@@ -37,28 +37,32 @@ import java.util.Locale;
  * Creates read sessions through a {@link BigQueryReadClient}.
  *
  * <p>Named after the SDK resource its {@link #close()} releases, as this repository's other client
- * wrappers are. The client is opened on first use rather than in the constructor: this object is
- * built where the job graph is, and a client built there would demand credentials on the submitting
- * machine.
+ * wrappers are. The client is opened on first use rather than in the constructor, so that minting
+ * one costs nothing: a restore whose checkpoint already records an initialized session mints a
+ * creator and opens no client.
+ *
+ * <p>One creator belongs to one enumerator: {@link DefaultReadSessionCreatorFactory} mints it, and
+ * the source mints one per {@code createEnumerator} and {@code restoreEnumerator}. That is what
+ * makes the one-way {@code closed} flag below correct — it ends this object rather than poisoning
+ * one the next enumerator will also be handed ({@code docs/adr/0128}).
  *
  * <p>Creation and release are guarded, and not for tidiness: {@link #create} runs on a coordinator
  * worker thread while {@link #close} runs on the scheduler thread, and the two race whenever a job
  * is cancelled during session creation. Unguarded, {@code close} reads a field the worker has not
  * yet written, closes nothing, and the client — a gRPC channel and its executor — is leaked in the
  * JobManager with nothing left to reach it. The lock is held for the client's construction only,
- * never for the call itself. The monitor is this object's own: a lock field would be one more thing
- * to serialize into the job graph, and {@code Object} is not serializable.
+ * never for the call itself. The monitor is this object's own rather than a lock field: one creator
+ * belongs to one enumerator, so the only contention is between that enumerator's session creation
+ * and its teardown, and a separate lock would name nothing this object does not.
  */
 @Internal
 public final class ReadClientSessionCreator implements ReadSessionCreator {
 
-    private static final long serialVersionUID = 1L;
-
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
-    private transient BigQueryReadClient client;
-    private transient boolean closed;
+    private BigQueryReadClient client;
+    private boolean closed;
 
     /**
      * Creates the session creator.

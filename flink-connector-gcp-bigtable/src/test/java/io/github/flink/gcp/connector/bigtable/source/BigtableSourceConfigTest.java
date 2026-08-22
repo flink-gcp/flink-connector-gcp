@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.source;
 
 import com.google.cloud.bigtable.data.v2.models.Query;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DefaultRowKeySamplerFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -63,7 +64,9 @@ class BigtableSourceConfigTest {
     void carriesTheSeamsTheEnumeratorAndTheReadersUse() {
         BigtableSourceConfig<String> config = TestSources.config();
 
-        assertThat(config.getSampler()).isNotNull();
+        // The type, and what it mints: a factory wired correctly but minting something else
+        // would pass an isNotNull() and reach no service.
+        assertThat(config.getSamplerFactory()).isInstanceOf(DefaultRowKeySamplerFactory.class);
         assertThat(config.getOpener()).isNotNull();
     }
 

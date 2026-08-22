@@ -24,7 +24,6 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.Serializable;
 import java.util.List;
 
 /**
@@ -35,17 +34,21 @@ import java.util.List;
  * the table's final key plus a scattering of random ones, which is enough to prove the wiring and
  * not nearly enough to prove a plan.
  *
- * <p>{@link Serializable} because the source configuration this travels in goes into the job graph.
- * An implementation creates its client on first use rather than in its constructor, so that
- * building a job needs no credentials. It carries no service-account key-file path either: the
- * enumerator that owns it loads one provider and hands it over through {@link
+ * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
+ * RowKeySamplerFactory}, and the source mints one sampler per enumerator from it. The JobManager
+ * holds one source object for a job's whole life, so a sampler parked on the source configuration
+ * would be shared by every enumerator a coordinator reset builds, and the first teardown would
+ * refuse every later one (issue #990, {@code docs/adr/0128}). An implementation still creates its
+ * client on first use rather than in its constructor, so that minting one needs no credentials and
+ * a restore that re-uses a checkpointed plan opens nothing. It carries no service-account key-file
+ * path either: the enumerator that owns it loads one provider and hands it over through {@link
  * #useCredentials(CredentialsProvider)}.
  *
  * <p>{@code close()} releases whatever the implementation built. The enumerator owns the sampler
  * and closes it once, so nothing here has to tolerate being closed twice by different owners.
  */
 @Internal
-public interface RowKeySampler extends Serializable, AutoCloseable {
+public interface RowKeySampler extends AutoCloseable {
 
     /**
      * Returns the sampled section boundaries of a table.

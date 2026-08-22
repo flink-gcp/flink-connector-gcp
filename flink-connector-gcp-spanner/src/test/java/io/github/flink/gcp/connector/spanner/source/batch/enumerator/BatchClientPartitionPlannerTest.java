@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Statement;
@@ -146,5 +148,29 @@ class BatchClientPartitionPlannerTest {
     private static BatchClientPartitionPlanner planner() {
         return new BatchClientPartitionPlanner(
                 DATABASE, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
+    }
+
+    /**
+     * The <em>factory</em> travels; the planner does not, and must not.
+     *
+     * <p>A planner that could be serialized could be parked on the source configuration, which is
+     * how one planner came to be shared by every enumerator of a job and refused after the first
+     * teardown ({@code docs/adr/0128}). The second assertion is the one that would notice that
+     * coming back.
+     */
+    @Test
+    void theFactoryTravelsInTheJobGraphAndThePlannerDoesNot() throws Exception {
+        DefaultPartitionPlannerFactory factory =
+                new DefaultPartitionPlannerFactory(
+                        DATABASE, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
+
+        DefaultPartitionPlannerFactory back =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(factory), getClass().getClassLoader());
+
+        assertThat(back.create()).isInstanceOf(BatchClientPartitionPlanner.class);
+        assertThat(java.io.Serializable.class.isAssignableFrom(PartitionPlanner.class))
+                .as("a serializable planner could be parked on the configuration again")
+                .isFalse();
     }
 }

@@ -70,32 +70,36 @@ public class BigtableScanSplitEnumerator
      *
      * @param context the enumerator context
      * @param config the source configuration
+     * @param sampler the sampler this enumerator owns and closes; the source mints one per
+     *     enumerator, so it is never one an earlier enumerator already closed
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      */
     public BigtableScanSplitEnumerator(
             SplitEnumeratorContext<RowRangeSplit> context,
             BigtableSourceConfig<?> config,
+            RowKeySampler sampler,
             @Nullable BigtableScanEnumeratorState restoredState) {
         super(
                 context,
-                sampler(config),
+                checkedSampler(config, sampler),
                 "scan split",
                 samplingFailureMessage(config),
                 "Failed to close the Bigtable row key sampler.");
         this.config = config;
-        this.sampler = config.getSampler();
+        this.sampler = sampler;
         this.restoredState = restoredState;
     }
 
     /**
-     * Takes the sampler out of the configuration, checking the configuration on the way.
+     * Checks both arguments the {@code super(...)} call needs.
      *
      * <p>Static because it is evaluated as a {@code super(...)} argument, and first among them, so
      * a null configuration is named here rather than thrown from the message below.
      */
-    private static RowKeySampler sampler(BigtableSourceConfig<?> config) {
+    private static RowKeySampler checkedSampler(
+            BigtableSourceConfig<?> config, RowKeySampler sampler) {
         Preconditions.checkNotNull(config, "config must not be null");
-        return config.getSampler();
+        return Preconditions.checkNotNull(sampler, "sampler must not be null");
     }
 
     private static String samplingFailureMessage(BigtableSourceConfig<?> config) {

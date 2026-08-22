@@ -23,7 +23,7 @@ import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
-import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 
@@ -54,7 +54,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
     private final boolean dataBoostEnabled;
     @Nullable private final SpannerRpcPriority rpcPriority;
     @Nullable private final String serviceAccountKeyFile;
-    private final PartitionPlanner planner;
+    private final PartitionPlannerFactory plannerFactory;
     private final StructStreamOpener opener;
     private final int maxRecordsPerFetch;
 
@@ -67,7 +67,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
             boolean dataBoostEnabled,
             @Nullable SpannerRpcPriority rpcPriority,
             @Nullable String serviceAccountKeyFile,
-            PartitionPlanner planner,
+            PartitionPlannerFactory plannerFactory,
             StructStreamOpener opener,
             int maxRecordsPerFetch) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
@@ -82,7 +82,8 @@ public final class SpannerSourceConfig<T> implements Serializable {
         this.dataBoostEnabled = dataBoostEnabled;
         this.rpcPriority = rpcPriority;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
-        this.planner = Preconditions.checkNotNull(planner, "planner must not be null");
+        this.plannerFactory =
+                Preconditions.checkNotNull(plannerFactory, "plannerFactory must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         Preconditions.checkArgument(
                 maxRecordsPerFetch > 0,
@@ -164,12 +165,16 @@ public final class SpannerSourceConfig<T> implements Serializable {
     }
 
     /**
-     * Returns the seam the enumerator plans through.
+     * Returns the factory the source mints one planner per enumerator from.
      *
-     * @return the planner
+     * <p>A factory rather than a planner because the JobManager holds one source object for a job's
+     * whole life, so a planner here would be shared by every enumerator a coordinator reset builds
+     * and the first teardown would refuse every later one ({@code docs/adr/0128}).
+     *
+     * @return the planner factory
      */
-    public PartitionPlanner getPlanner() {
-        return planner;
+    public PartitionPlannerFactory getPlannerFactory() {
+        return plannerFactory;
     }
 
     /**

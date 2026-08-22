@@ -29,6 +29,7 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 
 import com.google.api.gax.core.CredentialsProvider;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
@@ -37,8 +38,9 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPa
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.BigtableChangeStreamSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
-import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.BigtableChangeStreamReader;
+
+import javax.annotation.Nullable;
 
 /** FLIP-27 source for Bigtable Change Streams. */
 @Public
@@ -98,28 +100,38 @@ public final class BigtableChangeStreamSource<T>
         return enumerator(context, checkpoint);
     }
 
+    /**
+     * Builds one enumerator and the one coordinator client it owns.
+     *
+     * @param context the enumerator context
+     * @param restored the checkpointed ledger, or {@code null} for a fresh enumerator
+     * @return the enumerator
+     * @throws Exception if the client cannot be created
+     */
     private BigtableChangeStreamSplitEnumerator enumerator(
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
-            BigtableChangeStreamEnumeratorState restored)
+            @Nullable BigtableChangeStreamEnumeratorState restored)
             throws Exception {
-        ChangeStreamCoordinatorClient client = config.getCoordinatorClient();
-        if (client == null) {
-            // One provider for the coordinator's three client families: data for partition
-            // discovery, table admin for retention, instance admin for the app profile.
-            client =
-                    new DefaultChangeStreamCoordinatorClient(
-                            config.getTable(),
-                            config.getAppProfileId(),
-                            BigtableCredentials.loadAll(config.getServiceAccountKeyFile()));
+        // A client per enumerator, minted here rather than carried on the configuration: this
+        // object is what the JobManager keeps for a job's whole life, and a coordinator reset
+        // builds the next enumerator from it (docs/adr/0128). The factory loads one provider for
+        // the coordinator's three client families: data for partition discovery, table admin for
+        // retention, instance admin for the app profile.
+        ChangeStreamCoordinatorClient client = config.getCoordinatorClientFactory().create();
+        try {
+            return new BigtableChangeStreamSplitEnumerator(
+                    context,
+                    client,
+                    config.getStartPosition(),
+                    config.getResumeFallback(),
+                    restored,
+                    config.getEndTime() != null,
+                    true);
+        } catch (Throwable e) {
+            // The enumerator never took ownership, so nothing else will close what was just minted.
+            Closers.closeAllSuppressing(e, client);
+            throw e;
         }
-        return new BigtableChangeStreamSplitEnumerator(
-                context,
-                client,
-                config.getStartPosition(),
-                config.getResumeFallback(),
-                restored,
-                config.getEndTime() != null,
-                true);
     }
 
     @Override

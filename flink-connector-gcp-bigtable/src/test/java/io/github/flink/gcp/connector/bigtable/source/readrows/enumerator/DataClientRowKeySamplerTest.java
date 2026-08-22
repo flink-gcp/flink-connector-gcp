@@ -59,18 +59,30 @@ class DataClientRowKeySamplerTest {
         assertThat(settings.getStubSettings().getEndpoint()).isEqualTo("bigtable.example:9035");
     }
 
+    /**
+     * The <em>factory</em> travels; the sampler does not, and must not.
+     *
+     * <p>A sampler that could be serialized could be parked on the source configuration, which is
+     * how one sampler came to be shared by every enumerator of a job and refused after the first
+     * teardown ({@code docs/adr/0128}). The second assertion is the one that would notice that
+     * coming back.
+     */
     @Test
-    void travelsInTheJobGraph() throws Exception {
-        DataClientRowKeySampler sampler =
-                new DataClientRowKeySampler(
+    void theFactoryTravelsInTheJobGraphAndTheSamplerDoesNot() throws Exception {
+        DefaultRowKeySamplerFactory factory =
+                new DefaultRowKeySamplerFactory(
                         "boost-profile",
                         EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"));
 
-        DataClientRowKeySampler back =
+        DefaultRowKeySamplerFactory back =
                 InstantiationUtil.deserializeObject(
-                        InstantiationUtil.serializeObject(sampler), getClass().getClassLoader());
+                        InstantiationUtil.serializeObject(factory), getClass().getClassLoader());
 
-        assertThat(back.settings(TABLE).getAppProfileId()).isEqualTo("boost-profile");
+        DataClientRowKeySampler sampler = (DataClientRowKeySampler) back.create();
+        assertThat(sampler.settings(TABLE).getAppProfileId()).isEqualTo("boost-profile");
+        assertThat(java.io.Serializable.class.isAssignableFrom(RowKeySampler.class))
+                .as("a serializable sampler could be parked on the configuration again")
+                .isFalse();
     }
 
     @Test
@@ -81,7 +93,8 @@ class DataClientRowKeySamplerTest {
         DataClientRowKeySampler sampler =
                 (DataClientRowKeySampler)
                         TestSources.config(builder -> builder.appProfileId("boost-profile"))
-                                .getSampler();
+                                .getSamplerFactory()
+                                .create();
 
         assertThat(sampler.settings(TABLE).getAppProfileId()).isEqualTo("boost-profile");
     }

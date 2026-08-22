@@ -751,6 +751,21 @@ connector gets its own module file rather than a section here.
 
 ## Cross-connector contracts (rules here; full records in `docs/adr/`)
 
+- **A seam the enumerator closes is minted per enumerator; a seam with no teardown may stay on the
+  configuration** (#990; `docs/adr/0128`): the JobManager holds one `Source` object for a job's
+  whole life — `RecreateOnResetOperatorCoordinator` rebuilds the coordinator from the same
+  `Provider`, and `SourceCoordinatorProvider` holds one `Source` — so a closeable seam on the
+  source configuration is shared by every enumerator a global restore builds, and the first
+  teardown refuses every later one. The configuration carries a serializable factory with a no-arg
+  `create()`, the source mints in both `createEnumerator` and `restoreEnumerator` and closes what
+  it could not hand over, and the seam interface is **not** `Serializable`, so a field of that type
+  on a configuration fails to serialize the job graph rather than merely being absent — which is
+  why each connector's tripwire asserts the property of the *interface*, the type the field would
+  have to be declared as, rather than of a concrete seam that could opt back in. A seam that is not `AutoCloseable`
+  (BigQuery's `QueryRunner`) stays on the configuration and says in its javadoc why it has no
+  teardown. Which failures rebuild an enumerator at all — not a task failure, under `region` or
+  `full` alike — is measured by `BigQueryQueryJobIdentityITCase`. The declined repairs and the
+  60-second window that rules out clearing the flag are in the ADR.
 - **A serializer returning `null` skips the record** (#230; `docs/adr/0001`): every connector
   serialization SPI is `@Nullable` on `serialize`, and a `null` means filter, only filter — the
   record is written nowhere, is not a failure, never reaches the `FailureHandler`, and

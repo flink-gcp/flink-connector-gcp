@@ -26,8 +26,8 @@ import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
-import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
-import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.DefaultReadSessionCreatorFactory;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreatorFactory;
 import io.github.flink.gcp.connector.bigquery.source.query.BigQueryQueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
@@ -98,7 +98,7 @@ public class BigQuerySourceBuilder<T> {
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private EmulatorEndpoint emulatorRestEndpoint;
-    @Nullable private ReadSessionCreator sessionCreator;
+    @Nullable private ReadSessionCreatorFactory sessionCreatorFactory;
     @Nullable private RowStreamOpener rowStreamOpener;
     @Nullable private QueryRunner queryRunner;
 
@@ -531,8 +531,9 @@ public class BigQuerySourceBuilder<T> {
     }
 
     @VisibleForTesting
-    BigQuerySourceBuilder<T> sessionCreator(ReadSessionCreator sessionCreator) {
-        this.sessionCreator = sessionCreator;
+    BigQuerySourceBuilder<T> sessionCreatorFactory(
+            ReadSessionCreatorFactory sessionCreatorFactory) {
+        this.sessionCreatorFactory = sessionCreatorFactory;
         return this;
     }
 
@@ -642,10 +643,11 @@ public class BigQuerySourceBuilder<T> {
                             ? new BigQueryQueryRunner(serviceAccountKeyFile, emulatorRestEndpoint)
                             : queryRunner);
         }
-        config.sessionCreator(
-                sessionCreator == null
-                        ? new ReadClientSessionCreator(serviceAccountKeyFile, emulatorEndpoint)
-                        : sessionCreator);
+        config.sessionCreatorFactory(
+                sessionCreatorFactory == null
+                        ? new DefaultReadSessionCreatorFactory(
+                                serviceAccountKeyFile, emulatorEndpoint)
+                        : sessionCreatorFactory);
         config.rowStreamOpener(
                 rowStreamOpener == null
                         ? new ReadClientRowStreamOpener(

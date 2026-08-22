@@ -62,6 +62,7 @@ public class SpannerPartitionSplitEnumerator
             LoggerFactory.getLogger(SpannerPartitionSplitEnumerator.class);
 
     private final SpannerSourceConfig<?> config;
+    private final PartitionPlanner planner;
     @Nullable private final SpannerBatchEnumeratorState restoredState;
 
     /**
@@ -69,31 +70,36 @@ public class SpannerPartitionSplitEnumerator
      *
      * @param context the enumerator context
      * @param config the source configuration
+     * @param planner the planner this enumerator owns and closes; the source mints one per
+     *     enumerator, so it is never one an earlier enumerator already closed
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      */
     public SpannerPartitionSplitEnumerator(
             SplitEnumeratorContext<PartitionSplit> context,
             SpannerSourceConfig<?> config,
+            PartitionPlanner planner,
             @Nullable SpannerBatchEnumeratorState restoredState) {
         super(
                 context,
-                planner(config),
+                checkedPlanner(config, planner),
                 "partition split",
                 planningFailureMessage(config),
                 "Failed to close the Spanner partition planner.");
         this.config = config;
+        this.planner = planner;
         this.restoredState = restoredState;
     }
 
     /**
-     * Takes the planner out of the configuration, checking the configuration on the way.
+     * Checks both arguments the {@code super(...)} call needs.
      *
      * <p>Static because it is evaluated as a {@code super(...)} argument, and first among them, so
      * a null configuration is named here rather than thrown from the message below.
      */
-    private static PartitionPlanner planner(SpannerSourceConfig<?> config) {
+    private static PartitionPlanner checkedPlanner(
+            SpannerSourceConfig<?> config, PartitionPlanner planner) {
         Preconditions.checkNotNull(config, "config must not be null");
-        return config.getPlanner();
+        return Preconditions.checkNotNull(planner, "planner must not be null");
     }
 
     private static String planningFailureMessage(SpannerSourceConfig<?> config) {
@@ -136,13 +142,12 @@ public class SpannerPartitionSplitEnumerator
         // Not softened into a single unpartitioned read when it fails. A query Spanner will not
         // partition comes back as INVALID_ARGUMENT naming what it could not distribute, and a
         // fallback would turn that into a job quietly reading everything on one subtask.
-        return config.getPlanner()
-                .plan(
-                        config.getReadOperation(),
-                        config.getTimestampBound(),
-                        config.getPartitionOptions(),
-                        config.isDataBoostEnabled(),
-                        config.getRpcPriority());
+        return planner.plan(
+                config.getReadOperation(),
+                config.getTimestampBound(),
+                config.getPartitionOptions(),
+                config.isDataBoostEnabled(),
+                config.getRpcPriority());
     }
 
     @Override

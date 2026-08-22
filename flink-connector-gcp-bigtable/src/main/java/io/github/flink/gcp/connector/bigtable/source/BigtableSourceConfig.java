@@ -23,7 +23,7 @@ import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
-import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
 
@@ -63,7 +63,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
     @Nullable private final Filters.Filter filter;
     @Nullable private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
-    private final RowKeySampler sampler;
+    private final RowKeySamplerFactory samplerFactory;
     private final RowStreamOpener opener;
     private final int maxRowsPerFetch;
 
@@ -74,7 +74,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
             @Nullable Filters.Filter filter,
             @Nullable String appProfileId,
             @Nullable String serviceAccountKeyFile,
-            RowKeySampler sampler,
+            RowKeySamplerFactory samplerFactory,
             RowStreamOpener opener,
             int maxRowsPerFetch) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
@@ -89,7 +89,8 @@ public final class BigtableSourceConfig<T> implements Serializable {
         this.filter = filter;
         this.appProfileId = appProfileId;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
-        this.sampler = Preconditions.checkNotNull(sampler, "sampler must not be null");
+        this.samplerFactory =
+                Preconditions.checkNotNull(samplerFactory, "samplerFactory must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         Preconditions.checkArgument(
                 maxRowsPerFetch > 0, "maxRowsPerFetch must be positive: %s", maxRowsPerFetch);
@@ -134,9 +135,15 @@ public final class BigtableSourceConfig<T> implements Serializable {
         return serviceAccountKeyFile;
     }
 
-    /** Returns the sampler the enumerator plans with; the enumerator owns and closes it. */
-    public RowKeySampler getSampler() {
-        return sampler;
+    /**
+     * Returns the factory the source mints one sampler per enumerator from.
+     *
+     * <p>A factory rather than a sampler because the JobManager holds one source object for a job's
+     * whole life, so a sampler here would be shared by every enumerator a coordinator reset builds
+     * and the first teardown would refuse every later one ({@code docs/adr/0128}).
+     */
+    public RowKeySamplerFactory getSamplerFactory() {
+        return samplerFactory;
     }
 
     /** Returns the opener the readers read through; a reader owns and closes it. */

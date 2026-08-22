@@ -32,10 +32,12 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableRecordEmitter;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSourceReader;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSourceReaderMetrics;
@@ -113,21 +115,46 @@ public class BigtableReadRowsSource<T>
     @Override
     public SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> createEnumerator(
             SplitEnumeratorContext<RowRangeSplit> context) throws Exception {
-        useEnumeratorCredentials();
-        return new BigtableScanSplitEnumerator(context, config, null);
+        return enumerator(context, null);
     }
 
     @Override
     public SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<RowRangeSplit> context, BigtableScanEnumeratorState checkpoint)
             throws Exception {
-        useEnumeratorCredentials();
-        return new BigtableScanSplitEnumerator(context, config, checkpoint);
+        return enumerator(context, checkpoint);
     }
 
-    /** Hands the sampler the provider before the enumerator makes its one planning call. */
-    private void useEnumeratorCredentials() throws IOException {
-        config.getSampler().useCredentials(dataCredentials());
+    /**
+     * Builds one enumerator and the one sampler it owns.
+     *
+     * <p>A sampler per enumerator, minted here rather than carried on the configuration: this
+     * object is what the JobManager keeps for a job's whole life, and a coordinator reset builds
+     * the next enumerator from it. A shared sampler would already be closed by then, and would
+     * refuse this enumerator and every retry after it ({@code docs/adr/0128}).
+     *
+     * <p>The provider is loaded <em>before</em> the sampler is minted, so a key file that cannot be
+     * read still fails here with nothing built to release.
+     *
+     * @param context the enumerator context
+     * @param checkpoint the state to restore, or {@code null} for a fresh enumerator
+     * @return the enumerator
+     * @throws Exception if the provider cannot be loaded or the sampler cannot be created
+     */
+    private BigtableScanSplitEnumerator enumerator(
+            SplitEnumeratorContext<RowRangeSplit> context,
+            @Nullable BigtableScanEnumeratorState checkpoint)
+            throws Exception {
+        CredentialsProvider credentials = dataCredentials();
+        RowKeySampler sampler = config.getSamplerFactory().create();
+        try {
+            sampler.useCredentials(credentials);
+            return new BigtableScanSplitEnumerator(context, config, sampler, checkpoint);
+        } catch (Throwable e) {
+            // The enumerator never took ownership, so nothing else will close what was just minted.
+            Closers.closeAllSuppressing(e, sampler);
+            throw e;
+        }
     }
 
     /**

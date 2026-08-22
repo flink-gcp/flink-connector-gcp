@@ -24,6 +24,8 @@ import org.apache.flink.util.InstantiationUtil;
 import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.DefaultReadSessionCreatorFactory;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
@@ -192,9 +194,16 @@ class BigQuerySourceBuilderTest {
             BigQuerySourceConfig<GenericRecord> config =
                     InstantiationUtil.clone(source).getConfig();
 
+            // The production factory, and what it mints: a builder that stopped wiring the real
+            // one would still fail the credential assertion below through whatever it wired.
+            assertThat(config.getSessionCreatorFactory())
+                    .isInstanceOf(DefaultReadSessionCreatorFactory.class);
+            assertThat(config.getSessionCreatorFactory().create())
+                    .isInstanceOf(ReadClientSessionCreator.class);
             assertSanitizedCredentialFailure(
                     () ->
-                            config.getSessionCreator()
+                            config.getSessionCreatorFactory()
+                                    .create()
                                     .create(CreateReadSessionRequest.getDefaultInstance()),
                     missingPath);
             assertSanitizedCredentialFailure(

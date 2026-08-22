@@ -32,9 +32,11 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadSplitEnumerator;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.reader.BigQueryRecordEmitter;
 import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySourceReader;
 import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySourceReaderMetrics;
@@ -44,6 +46,8 @@ import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeser
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitSerializer;
 import org.apache.avro.generic.GenericRecord;
+
+import javax.annotation.Nullable;
 
 import java.util.function.Supplier;
 
@@ -114,17 +118,48 @@ public class BigQueryStorageReadSource<T>
 
     @Override
     public SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> createEnumerator(
-            SplitEnumeratorContext<BigQueryReadStreamSplit> context) {
-        return new BigQueryReadSplitEnumerator(
-                context, config, config.getSessionCreator(), config.getQueryRunner(), null);
+            SplitEnumeratorContext<BigQueryReadStreamSplit> context) throws Exception {
+        return enumerator(context, null);
     }
 
     @Override
     public SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<BigQueryReadStreamSplit> context,
-            BigQueryReadEnumeratorState checkpoint) {
-        return new BigQueryReadSplitEnumerator(
-                context, config, config.getSessionCreator(), config.getQueryRunner(), checkpoint);
+            BigQueryReadEnumeratorState checkpoint)
+            throws Exception {
+        return enumerator(context, checkpoint);
+    }
+
+    /**
+     * Builds one enumerator and the one session creator it owns.
+     *
+     * <p>A creator per enumerator, minted here rather than carried on the configuration: this
+     * object is what the JobManager keeps for a job's whole life, and a coordinator reset builds
+     * the next enumerator from it. A shared creator would already be closed by then, and would
+     * refuse this enumerator and every retry after it ({@code docs/adr/0128}).
+     *
+     * <p>The query runner is not minted alongside it. It is not {@code AutoCloseable} — the REST
+     * client it wraps has nothing to release — so no teardown makes reusing it unsafe, and it stays
+     * on the configuration where its own first-use guard already expects a second enumerator.
+     *
+     * @param context the enumerator context
+     * @param checkpoint the state to restore, or {@code null} for a fresh enumerator
+     * @return the enumerator
+     * @throws Exception if the session creator cannot be created
+     */
+    private BigQueryReadSplitEnumerator enumerator(
+            SplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            @Nullable BigQueryReadEnumeratorState checkpoint)
+            throws Exception {
+        ReadSessionCreator sessionCreator = config.getSessionCreatorFactory().create();
+        try {
+            return new BigQueryReadSplitEnumerator(
+                    context, config, sessionCreator, config.getQueryRunner(), checkpoint);
+        } catch (Throwable e) {
+            // The enumerator never took ownership, so nothing else will close what was just minted.
+            Closers.closeAllSuppressing(e, sessionCreator);
+            throw e;
+        }
     }
 
     @Override
