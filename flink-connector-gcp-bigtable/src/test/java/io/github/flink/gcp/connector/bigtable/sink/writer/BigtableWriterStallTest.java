@@ -38,7 +38,10 @@ import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -221,7 +224,16 @@ class BigtableWriterStallTest {
         writer.write("row-1", TestContexts.NO_OP);
 
         try (LogCapture capture = LogCapture.of(BigtableWriter.class)) {
-            onceTheWaitHasBegun(() -> answerTheRest(0));
+            // Paused before the answer, like the other two negatives here: the anchor proves the
+            // baseline was read, not that any pass measured against it, and answering on the same
+            // millisecond can end the wait through tryYield before one ever does — which is a pass
+            // for the mutant that measures from the completion stamp alone, the very thing this
+            // case exists to kill.
+            onceTheWaitHasBegun(
+                    () -> {
+                        pause();
+                        answerTheRest(0);
+                    });
 
             writer.flush(false);
 
@@ -336,21 +348,20 @@ class BigtableWriterStallTest {
      * busy enough to miss that guess turns a stall the test staged into one warning fewer, not into
      * a slower test. The appender is a {@code CopyOnWriteArrayList}, so reading it from here while
      * the task thread writes to it is safe.
+     *
+     * <p>What this deadline cannot rescue is a stall staged before the wait read its baseline: that
+     * stall is never measured at all, so no amount of waiting here turns it into a warning, and
+     * this fails having spent the whole thirty seconds. Ruling that out is {@link
+     * #onceTheWaitHasBegun(Runnable)}'s job, not this one's (#1005).
      */
     private void awaitStallWarnings(LogCapture capture, int count) {
-        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-        while (stallWarnings(capture).size() < count) {
-            if (System.nanoTime() - deadlineNanos > 0) {
-                throw new AssertionError(
+        awaitOrFail(
+                () -> stallWarnings(capture).size() >= count,
+                () ->
                         "the wait logged "
                                 + stallWarnings(capture).size()
                                 + " stall warnings, expected "
                                 + count);
-            }
-            // Sleeping rather than spinning: the thread this waits for is the one under test, and
-            // on a machine with no spare core a spin here starves the very wait it is waiting for.
-            pause(Duration.ofMillis(1));
-        }
     }
 
     /** Completes the outstanding mutation at the given index, as the client answering it. */
@@ -369,25 +380,54 @@ class BigtableWriterStallTest {
     }
 
     /**
-     * Runs the given steps once the writer is actually inside a wait, which its first {@code
-     * sendOutstanding} marks — both waits send before they wait, and the fake answers nothing while
-     * {@code autoComplete} is off.
+     * Runs the given steps once the writer is inside a wait <em>and</em> that wait has read the
+     * baseline it measures idleness from.
      *
-     * <p>Anchored on that rather than on a delay, because a delay races the test thread reaching
-     * the wait at all: a pause longer than it between scheduling and {@code flush()} would let
-     * every step run first, and the assertions would then hold for the wrong reason.
+     * <p>The wait beginning is marked by its first {@code sendOutstanding}, which the fake leaves
+     * unanswered while {@code autoComplete} is off. Anchored on that rather than on a delay,
+     * because a delay races the test thread reaching the wait at all: a pause longer than it
+     * between scheduling and {@code flush()} would let every step run first, and the assertions
+     * would then hold for the wrong reason.
+     *
+     * <p>That mark alone is not enough, and #1005 is what it cost: {@code drainInFlight} reads its
+     * baseline one statement <em>after</em> {@code sendEveryBatcher} returns, so a {@code
+     * clock.advance} landing in between becomes the baseline rather than moving the clock past it.
+     * Every later pass then measures zero idle nanoseconds, and the wait says nothing at all — not
+     * one warning fewer, none — until the staged step gives up thirty seconds later. Waiting for a
+     * clock read after the send is what closes that window, and all a staged step needs is that the
+     * baseline <em>exists</em> by the time it runs.
+     *
+     * <p>The two waits reach that from opposite directions, so neither is the other's special case.
+     * {@code drainInFlight} sends and then reads its baseline, so the first read after the send is
+     * the baseline itself. {@code awaitCapacity} reads its baseline before its loop and sends
+     * inside it a pass later, so by the time a send is observable the baseline is already taken and
+     * the read this waits for is an ordinary idle-time one. Either way the advance lands after the
+     * baseline, which is the whole requirement.
+     *
+     * <p>What that rests on is not "this fake does not auto-complete" but the wider fact that <b>no
+     * completion may read the clock between the observed send and the baseline</b>. It holds today
+     * because each case here leaves a single live batcher with {@code autoComplete} off. It would
+     * not hold for a case with a second destination completing inline: {@code sendEveryBatcher}
+     * walks every batcher, and a completion callback takes a clock reading of its own, which would
+     * satisfy this wait with the wrong read and reopen #1005 with no test saying so.
      */
     private void onceTheWaitHasBegun(Runnable steps) {
         scheduler.execute(
                 () -> {
                     try {
-                        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-                        while (batcher.sendOutstandingCalls == 0) {
-                            if (System.nanoTime() - deadlineNanos > 0) {
-                                throw new AssertionError("the writer never reached a wait");
-                            }
-                            pause(Duration.ofMillis(1));
-                        }
+                        awaitOrFail(
+                                () -> batcher.sendOutstandingCalls != 0,
+                                () -> "the writer never reached a wait");
+                        int readsAtTheSend = clock.reads();
+                        awaitOrFail(
+                                () -> clock.reads() != readsAtTheSend,
+                                () ->
+                                        "the wait never read the baseline it measures idleness"
+                                                + " from ("
+                                                + batcher.sendOutstandingCalls
+                                                + " sends, "
+                                                + clock.reads()
+                                                + " clock reads, none of them after the send)");
                         steps.run();
                     } catch (Throwable failure) {
                         // Not when the teardown interrupted this thread: that is the test ending,
@@ -401,6 +441,30 @@ class BigtableWriterStallTest {
                         batcher.answerEverythingOutstanding();
                     }
                 });
+    }
+
+    /**
+     * Polls until the condition holds, failing with {@code whatNeverHappened} if it never does.
+     *
+     * <p>Not {@code Awaits.await}, which is this repository's poller for exactly this shape: it
+     * sleeps 100 ms where a wait polling at a millisecond needs finer, and {@code Thread.sleep}
+     * clears the interrupt flag that {@link #onceTheWaitHasBegun(Runnable)}'s {@code catch} reads
+     * to tell a teardown interrupt from a staged step that actually saw something. {@link
+     * #pause(Duration)} restores that flag, which is why this loop uses it.
+     *
+     * <p>The message is a supplier because the useful part of it — what the count actually was —
+     * has to be read at the moment the deadline expires, not when the wait was set up.
+     */
+    private static void awaitOrFail(BooleanSupplier condition, Supplier<String> whatNeverHappened) {
+        long deadlineNanos = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() - deadlineNanos > 0) {
+                throw new AssertionError(whatNeverHappened.get());
+            }
+            // Sleeping rather than spinning: the thread this waits for is the one under test, and
+            // on a machine with no spare core a spin here starves the very wait it is waiting for.
+            pause(Duration.ofMillis(1));
+        }
     }
 
     /**
@@ -464,9 +528,23 @@ class BigtableWriterStallTest {
 
         private volatile long nanos;
 
+        /**
+         * How many times the clock has been read, which is how {@link
+         * BigtableWriterStallTest#onceTheWaitHasBegun(Runnable)} knows a wait has taken its
+         * baseline. Atomic rather than {@code volatile}: the same two threads that read the clock
+         * would race a plain increment, and a lost one leaves a staged step waiting out its
+         * deadline for a read that has already happened.
+         */
+        private final AtomicInteger reads = new AtomicInteger();
+
         @Override
         public long getAsLong() {
+            reads.incrementAndGet();
             return nanos;
+        }
+
+        int reads() {
+            return reads.get();
         }
 
         void advance(Duration by) {

@@ -95,7 +95,12 @@ final class FakeMutationBatcher implements MutationBatcher {
      */
     int tableMissingAfterSends = Integer.MAX_VALUE;
 
-    int sendOutstandingCalls;
+    /**
+     * {@code volatile} because {@code BigtableWriterStallTest} polls it from its scheduler thread
+     * while the task thread under test increments it, and nothing else orders those two.
+     */
+    volatile int sendOutstandingCalls;
+
     int shutdownCalls;
     int closeCalls;
     RuntimeException addFailure;
