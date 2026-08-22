@@ -540,6 +540,12 @@ public final class BigtableChangeStreamSplitEnumerator
 
     @Override
     public void addReader(int subtaskId) {
+        // The drain-time broadcast reaches only readers already registered. Flink registers a
+        // later reader in the context before calling this method, so replay the terminal signal.
+        if (boundedComplete) {
+            context.signalNoMoreSplits(subtaskId);
+            return;
+        }
         // Readers request their first partition when they start.
     }
 
