@@ -61,8 +61,8 @@ import static org.testcontainers.Testcontainers.exposeHostPorts;
 /**
  * Shared harness for integration tests against the Cloud Tasks emulator (the shared {@code
  * testutils.cloudtasks} fixture — aertje's community image, since Google publishes no official
- * emulator): the container, a harness-owned {@link CloudTasksClient} for queue administration and
- * task inspection, and an HTTP server the emulator dispatches tasks to.
+ * emulator): the container, a harness-owned {@link CloudTasksTestClients} holder for queue
+ * administration and task inspection, and an HTTP server the emulator dispatches tasks to.
  *
  * <p>Writers under test are wired through the production {@code DefaultTaskCreatorFactory} in its
  * emulator-endpoint mode, so these tests exercise the client construction that ships. They
