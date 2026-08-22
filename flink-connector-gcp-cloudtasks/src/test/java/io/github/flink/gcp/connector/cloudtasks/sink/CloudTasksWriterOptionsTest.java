@@ -36,6 +36,7 @@ class CloudTasksWriterOptionsTest {
                 .isEqualTo(CloudTasksWriterOptions.builder().build())
                 .hasSameHashCodeAs(CloudTasksWriterOptions.builder().build());
         assertThat(defaults.getMaxInFlightTasks()).isEqualTo(1000);
+        assertThat(defaults.getChannelPoolSize()).isNull();
         assertThat(defaults.getRetryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
         assertThat(defaults.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
         assertThat(defaults.getRetryMaxAttempts()).isEqualTo(8);
@@ -72,6 +73,8 @@ class CloudTasksWriterOptionsTest {
     @Test
     void rejectsNonPositiveCounts() {
         assertThatThrownBy(() -> CloudTasksWriterOptions.builder().maxInFlightTasks(0))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().channelPoolSize(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> CloudTasksWriterOptions.builder().retryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -127,22 +130,36 @@ class CloudTasksWriterOptionsTest {
     @Test
     void everyKnobIsPartOfTheIdentity() {
         // One variation per knob, so a knob missing from equals fails here by name rather than as
-        // one opaque assertion over a fully-populated pair.
+        // one opaque assertion over a fully-populated pair. Each variation also checks the hash:
+        // isNotEqualTo never consults hashCode, so a knob dropped from hashCode alone would
+        // otherwise stay invisible — the fixed knob values make the inequality deterministic.
         assertThat(variedBy(builder -> builder.maxInFlightTasks(18)))
-                .isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
+        assertThat(variedBy(builder -> builder.channelPoolSize(5)))
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.retryInitialBackoff(Duration.ofMillis(300))))
-                .isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.retryMaxBackoff(Duration.ofSeconds(30))))
-                .isNotEqualTo(fullyPopulated());
-        assertThat(variedBy(builder -> builder.retryMaxAttempts(9))).isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
+        assertThat(variedBy(builder -> builder.retryMaxAttempts(9)))
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.notFoundInitialBackoff(Duration.ofMillis(700))))
-                .isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.notFoundMaxBackoff(Duration.ofSeconds(4))))
-                .isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.notFoundMaxAttempts(5)))
-                .isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.perDestinationMetrics(false)))
-                .isNotEqualTo(fullyPopulated());
+                .isNotEqualTo(fullyPopulated())
+                .doesNotHaveSameHashCodeAs(fullyPopulated());
     }
 
     /** The fully populated knob set with one knob overridden, which is what varies the identity. */
@@ -158,6 +175,7 @@ class CloudTasksWriterOptionsTest {
     private static CloudTasksWriterOptions.Builder fullyPopulatedBuilder() {
         return CloudTasksWriterOptions.builder()
                 .maxInFlightTasks(17)
+                .channelPoolSize(2)
                 .retryInitialBackoff(Duration.ofMillis(200))
                 .retryMaxBackoff(Duration.ofSeconds(20))
                 .retryMaxAttempts(4)

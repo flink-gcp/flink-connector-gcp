@@ -190,6 +190,14 @@ public final class CloudTasksConnectorOptions {
                     .noDefaultValue()
                     .withDescription("The cap on outstanding task creations per sink subtask.");
 
+    public static final ConfigOption<Integer> SINK_CHANNEL_POOL_SIZE =
+            ConfigOptions.key("sink.channel-pool-size")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The number of gRPC channels the client opens; unset leaves the"
+                                    + " client's default single channel.");
+
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.retry.initial-backoff")
                     .durationType()

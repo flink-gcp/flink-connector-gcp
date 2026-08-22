@@ -545,6 +545,7 @@ explains why `NOT_FOUND` has a separate short budget and why no setting controls
 | Option | Type | Default | Maps to |
 |---|---|---|---|
 | `sink.max-in-flight-tasks` | Integer | 1000 | `maxInFlightTasks` |
+| `sink.channel-pool-size` | Integer | the client's single channel | `channelPoolSize`; rejected beside `emulator-endpoint` |
 | `sink.retry.initial-backoff` | Duration | 100 ms | `retryInitialBackoff` |
 | `sink.retry.max-backoff` | Duration | 10 s | `retryMaxBackoff` |
 | `sink.retry.max-attempts` | Integer | 8 | `retryMaxAttempts` |

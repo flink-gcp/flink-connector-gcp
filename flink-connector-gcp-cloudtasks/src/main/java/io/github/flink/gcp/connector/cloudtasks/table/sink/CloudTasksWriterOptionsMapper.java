@@ -32,6 +32,8 @@ public final class CloudTasksWriterOptionsMapper {
         CloudTasksWriterOptions.Builder builder = CloudTasksWriterOptions.builder();
         config.getOptional(CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS)
                 .ifPresent(builder::maxInFlightTasks);
+        config.getOptional(CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE)
+                .ifPresent(builder::channelPoolSize);
         config.getOptional(CloudTasksConnectorOptions.SINK_RETRY_INITIAL_BACKOFF)
                 .ifPresent(builder::retryInitialBackoff);
         config.getOptional(CloudTasksConnectorOptions.SINK_RETRY_MAX_BACKOFF)
