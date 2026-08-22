@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Public;
 
-import io.github.flink.gcp.connector.base.failure.FailureHandler;
-
 /**
  * Entry point for building a BigQuery sink.
  *

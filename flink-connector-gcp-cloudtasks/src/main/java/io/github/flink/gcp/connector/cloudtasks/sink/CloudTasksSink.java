@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.cloudtasks.sink;
 
 import org.apache.flink.annotation.Public;
 
-import io.github.flink.gcp.connector.base.failure.FailureHandler;
-
 /**
  * Entry point for building a Cloud Tasks sink.
  *
