@@ -678,6 +678,12 @@ continuation token, estimated low watermark, and every ordered `SetCell`, `Delet
 `DeleteFamily`, `AddToCell`, and `MergeToCell` entry the client returns.
 Mutations are immutable and compare by value, so two of them can be compared, put in a set, or
 asserted on directly.
+Each entry reports which of those five it is through `Entry.getKind()`, and the `Value` an
+`AddToCell` or `MergeToCell` entry carries reports its own through `Value.getType()`, so a
+deserializer can tell them apart without a chain of `instanceof` checks — reading a subtype's own
+fields still needs the cast that the kind has just made safe.
+Both hierarchies have private constructors, so the subtypes listed above are the complete set and
+no entry arrives that is none of them.
 They deliberately have no `toString`: the row key and the cell values are your own table data, and a
 value type that renders them is one accidental log line away from putting that data somewhere it
 does not belong.

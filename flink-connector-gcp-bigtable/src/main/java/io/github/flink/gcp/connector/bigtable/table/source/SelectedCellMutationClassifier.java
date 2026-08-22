@@ -21,6 +21,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutationDispatcher;
 
 import javax.annotation.Nullable;
 
@@ -32,6 +33,8 @@ import java.io.Serializable;
 final class SelectedCellMutationClassifier implements Serializable {
 
     private static final long serialVersionUID = 1L;
+
+    private static final QualifierMatcher QUALIFIER_MATCHER = new QualifierMatcher();
 
     enum Kind {
         UNRELATED,
@@ -77,86 +80,114 @@ final class SelectedCellMutationClassifier implements Serializable {
     }
 
     Result classify(BigtableChangeStreamMutation mutation) throws IOException {
-        boolean deleted = false;
-        @Nullable ByteString value = null;
-
+        ProtocolFold fold = new ProtocolFold();
         for (BigtableChangeStreamMutation.Entry entry : mutation.getEntries()) {
-            if (entry instanceof BigtableChangeStreamMutation.DeleteCellsEntry) {
-                BigtableChangeStreamMutation.DeleteCellsEntry delete =
-                        (BigtableChangeStreamMutation.DeleteCellsEntry) entry;
-                if (!isSelected(delete.getFamilyName(), delete.getQualifier())) {
-                    continue;
-                }
-                validateHeader(mutation);
-                if (!isUnbounded(delete.getTimestampRange())) {
-                    throw protocolFailure(
-                            "a timestamp-bounded delete cannot represent the selected logical"
-                                    + " row");
-                }
-                if (deleted || value != null) {
-                    throw protocolFailure(
-                            "the selected cell is deleted more than once or after it is set");
-                }
-                deleted = true;
-                continue;
+            ChangeStreamMutationDispatcher.dispatchEntry(entry, fold, mutation);
+        }
+        return fold.result();
+    }
+
+    /**
+     * Folds one mutation's entries into a verdict.
+     *
+     * <p>The running state is held here rather than returned per entry because the arms read it —
+     * whether the selected cell is already deleted decides both what a later {@code SetCell} means
+     * and which of two differently worded failures a second delete raises. One instance per
+     * mutation, so the arms can throw where they detect the violation.
+     */
+    private final class ProtocolFold
+            implements ChangeStreamMutationDispatcher.EntryVisitor<
+                    Void, BigtableChangeStreamMutation> {
+
+        private boolean deleted;
+        @Nullable private ByteString value;
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.DeleteCellsEntry entry,
+                BigtableChangeStreamMutation mutation)
+                throws IOException {
+            if (!isSelected(entry.getFamilyName(), entry.getQualifier())) {
+                return null;
             }
-            if (entry instanceof BigtableChangeStreamMutation.DeleteFamilyEntry) {
-                BigtableChangeStreamMutation.DeleteFamilyEntry delete =
-                        (BigtableChangeStreamMutation.DeleteFamilyEntry) entry;
-                if (!family.equals(delete.getFamilyName())) {
-                    continue;
-                }
-                validateHeader(mutation);
-                if (deleted || value != null) {
-                    throw protocolFailure(
-                            "the selected family is deleted more than once or after the cell is"
-                                    + " set");
-                }
-                deleted = true;
-                continue;
+            validateHeader(mutation);
+            if (!isUnbounded(entry.getTimestampRange())) {
+                throw protocolFailure(
+                        "a timestamp-bounded delete cannot represent the selected logical row");
             }
-            if (entry instanceof BigtableChangeStreamMutation.SetCellEntry) {
-                BigtableChangeStreamMutation.SetCellEntry set =
-                        (BigtableChangeStreamMutation.SetCellEntry) entry;
-                if (!isSelected(set.getFamilyName(), set.getQualifier())) {
-                    continue;
-                }
-                validateHeader(mutation);
-                if (!deleted || value != null) {
-                    throw protocolFailure(
-                            "a selected SetCell must follow exactly one full selected-column or"
-                                    + " selected-family delete");
-                }
-                value = set.getValue();
-                continue;
+            if (deleted || value != null) {
+                throw protocolFailure(
+                        "the selected cell is deleted more than once or after it is set");
             }
-            if (entry instanceof BigtableChangeStreamMutation.AddToCellEntry) {
-                BigtableChangeStreamMutation.AddToCellEntry add =
-                        (BigtableChangeStreamMutation.AddToCellEntry) entry;
-                if (couldSelect(add.getFamilyName(), add.getQualifier())) {
-                    validateHeader(mutation);
-                    throw protocolFailure("AddToCell cannot encode a complete logical row");
-                }
-                continue;
-            }
-            if (entry instanceof BigtableChangeStreamMutation.MergeToCellEntry) {
-                BigtableChangeStreamMutation.MergeToCellEntry merge =
-                        (BigtableChangeStreamMutation.MergeToCellEntry) entry;
-                if (couldSelect(merge.getFamilyName(), merge.getQualifier())) {
-                    validateHeader(mutation);
-                    throw protocolFailure("MergeToCell cannot encode a complete logical row");
-                }
-                continue;
-            }
-            throw protocolFailure(
-                    "the connector returned an unknown mutation entry type "
-                            + entry.getClass().getName());
+            deleted = true;
+            return null;
         }
 
-        if (value != null) {
-            return Result.upsert(value);
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.DeleteFamilyEntry entry,
+                BigtableChangeStreamMutation mutation)
+                throws IOException {
+            if (!family.equals(entry.getFamilyName())) {
+                return null;
+            }
+            validateHeader(mutation);
+            if (deleted || value != null) {
+                throw protocolFailure(
+                        "the selected family is deleted more than once or after the cell is set");
+            }
+            deleted = true;
+            return null;
         }
-        return deleted ? Result.DELETE : Result.UNRELATED;
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.SetCellEntry entry,
+                BigtableChangeStreamMutation mutation)
+                throws IOException {
+            if (!isSelected(entry.getFamilyName(), entry.getQualifier())) {
+                return null;
+            }
+            validateHeader(mutation);
+            if (!deleted || value != null) {
+                throw protocolFailure(
+                        "a selected SetCell must follow exactly one full selected-column or"
+                                + " selected-family delete");
+            }
+            value = entry.getValue();
+            return null;
+        }
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.AddToCellEntry entry,
+                BigtableChangeStreamMutation mutation)
+                throws IOException {
+            if (couldSelect(entry.getFamilyName(), entry.getQualifier())) {
+                validateHeader(mutation);
+                throw protocolFailure("AddToCell cannot encode a complete logical row");
+            }
+            return null;
+        }
+
+        @Override
+        public Void visit(
+                BigtableChangeStreamMutation.MergeToCellEntry entry,
+                BigtableChangeStreamMutation mutation)
+                throws IOException {
+            if (couldSelect(entry.getFamilyName(), entry.getQualifier())) {
+                validateHeader(mutation);
+                throw protocolFailure("MergeToCell cannot encode a complete logical row");
+            }
+            return null;
+        }
+
+        Result result() {
+            if (value != null) {
+                return Result.upsert(value);
+            }
+            return deleted ? Result.DELETE : Result.UNRELATED;
+        }
     }
 
     private boolean isSelected(String entryFamily, ByteString entryQualifier) {
@@ -164,13 +195,38 @@ final class SelectedCellMutationClassifier implements Serializable {
     }
 
     private boolean couldSelect(
-            String entryFamily, BigtableChangeStreamMutation.Value entryQualifier) {
+            String entryFamily, BigtableChangeStreamMutation.Value entryQualifier)
+            throws IOException {
         if (!family.equals(entryFamily)) {
             return false;
         }
-        return !(entryQualifier instanceof BigtableChangeStreamMutation.RawValue)
-                || qualifier.equals(
-                        ((BigtableChangeStreamMutation.RawValue) entryQualifier).getValue());
+        return ChangeStreamMutationDispatcher.dispatchValue(
+                entryQualifier, QUALIFIER_MATCHER, qualifier);
+    }
+
+    /**
+     * Decides whether an aggregate entry's qualifier could be the selected one.
+     *
+     * <p>Only a raw qualifier can be compared; a computed one is treated as possibly selected, so
+     * the caller reports the protocol violation rather than silently passing the mutation through.
+     */
+    private static final class QualifierMatcher
+            implements ChangeStreamMutationDispatcher.ValueVisitor<Boolean, ByteString> {
+
+        @Override
+        public Boolean visit(BigtableChangeStreamMutation.RawValue value, ByteString selected) {
+            return selected.equals(value.getValue());
+        }
+
+        @Override
+        public Boolean visit(BigtableChangeStreamMutation.RawTimestamp value, ByteString selected) {
+            return true;
+        }
+
+        @Override
+        public Boolean visit(BigtableChangeStreamMutation.Int64Value value, ByteString selected) {
+            return true;
+        }
     }
 
     private static boolean isUnbounded(BigtableChangeStreamMutation.TimestampRange range) {

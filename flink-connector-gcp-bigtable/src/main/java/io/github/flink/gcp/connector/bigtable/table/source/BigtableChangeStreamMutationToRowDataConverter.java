@@ -22,6 +22,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.StringData;
 
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamMutationDispatcher;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -45,6 +46,9 @@ final class BigtableChangeStreamMutationToRowDataConverter implements Serializab
     private static final StringData CLOSED = stringData("CLOSED");
     private static final StringData UNBOUNDED = stringData("UNBOUNDED");
 
+    private static final EntryConverter ENTRY_CONVERTER = new EntryConverter();
+    private static final ValueConverter VALUE_CONVERTER = new ValueConverter();
+
     GenericRowData convert(BigtableChangeStreamMutation mutation) throws IOException {
         List<BigtableChangeStreamMutation.Entry> entries = mutation.getEntries();
         Object[] converted = new Object[entries.size()];
@@ -61,63 +65,83 @@ final class BigtableChangeStreamMutationToRowDataConverter implements Serializab
 
     private static GenericRowData convertEntry(int index, BigtableChangeStreamMutation.Entry entry)
             throws IOException {
-        if (entry instanceof BigtableChangeStreamMutation.SetCellEntry) {
-            BigtableChangeStreamMutation.SetCellEntry set =
-                    (BigtableChangeStreamMutation.SetCellEntry) entry;
+        return ChangeStreamMutationDispatcher.dispatchEntry(entry, ENTRY_CONVERTER, index);
+    }
+
+    /**
+     * Renders each entry subtype as one envelope row.
+     *
+     * <p>The {@code kind} strings stay separate constants rather than deriving from {@link
+     * BigtableChangeStreamMutation.EntryKind}: they are the envelope's SQL-visible output, and
+     * binding them to the enum would let renaming a constant change what a query returns. Nothing
+     * is lost by keeping them apart, because a new subtype cannot reach here without adding the
+     * visitor method that names its string.
+     *
+     * <p>Stateless and shared; the index arrives as the argument. Boxing it costs nothing new — the
+     * row it lands in already holds it as an {@code Object}.
+     */
+    private static final class EntryConverter
+            implements ChangeStreamMutationDispatcher.EntryVisitor<GenericRowData, Integer> {
+
+        @Override
+        public GenericRowData visit(
+                BigtableChangeStreamMutation.SetCellEntry entry, Integer index) {
             return entry(
                     index,
                     SET_CELL,
-                    set.getFamilyName(),
-                    rawValue(set.getQualifier().toByteArray()),
-                    rawTimestamp(set.getTimestampMicros()),
-                    rawValue(set.getValue().toByteArray()),
+                    entry.getFamilyName(),
+                    rawValue(entry.getQualifier().toByteArray()),
+                    rawTimestamp(entry.getTimestampMicros()),
+                    rawValue(entry.getValue().toByteArray()),
                     null);
         }
-        if (entry instanceof BigtableChangeStreamMutation.DeleteCellsEntry) {
-            BigtableChangeStreamMutation.DeleteCellsEntry delete =
-                    (BigtableChangeStreamMutation.DeleteCellsEntry) entry;
+
+        @Override
+        public GenericRowData visit(
+                BigtableChangeStreamMutation.DeleteCellsEntry entry, Integer index) {
             return entry(
                     index,
                     DELETE_CELLS,
-                    delete.getFamilyName(),
-                    rawValue(delete.getQualifier().toByteArray()),
+                    entry.getFamilyName(),
+                    rawValue(entry.getQualifier().toByteArray()),
                     null,
                     null,
-                    deleteRange(delete.getTimestampRange()));
+                    deleteRange(entry.getTimestampRange()));
         }
-        if (entry instanceof BigtableChangeStreamMutation.DeleteFamilyEntry) {
-            BigtableChangeStreamMutation.DeleteFamilyEntry delete =
-                    (BigtableChangeStreamMutation.DeleteFamilyEntry) entry;
-            return entry(index, DELETE_FAMILY, delete.getFamilyName(), null, null, null, null);
+
+        @Override
+        public GenericRowData visit(
+                BigtableChangeStreamMutation.DeleteFamilyEntry entry, Integer index) {
+            return entry(index, DELETE_FAMILY, entry.getFamilyName(), null, null, null, null);
         }
-        if (entry instanceof BigtableChangeStreamMutation.AddToCellEntry) {
-            BigtableChangeStreamMutation.AddToCellEntry add =
-                    (BigtableChangeStreamMutation.AddToCellEntry) entry;
+
+        @Override
+        public GenericRowData visit(
+                BigtableChangeStreamMutation.AddToCellEntry entry, Integer index)
+                throws IOException {
             return entry(
                     index,
                     ADD_TO_CELL,
-                    add.getFamilyName(),
-                    value(add.getQualifier()),
-                    value(add.getTimestamp()),
-                    value(add.getInput()),
+                    entry.getFamilyName(),
+                    value(entry.getQualifier()),
+                    value(entry.getTimestamp()),
+                    value(entry.getInput()),
                     null);
         }
-        if (entry instanceof BigtableChangeStreamMutation.MergeToCellEntry) {
-            BigtableChangeStreamMutation.MergeToCellEntry merge =
-                    (BigtableChangeStreamMutation.MergeToCellEntry) entry;
+
+        @Override
+        public GenericRowData visit(
+                BigtableChangeStreamMutation.MergeToCellEntry entry, Integer index)
+                throws IOException {
             return entry(
                     index,
                     MERGE_TO_CELL,
-                    merge.getFamilyName(),
-                    value(merge.getQualifier()),
-                    value(merge.getTimestamp()),
-                    value(merge.getInput()),
+                    entry.getFamilyName(),
+                    value(entry.getQualifier()),
+                    value(entry.getTimestamp()),
+                    value(entry.getInput()),
                     null);
         }
-        throw new IOException(
-                "Unsupported Bigtable Change Streams entry type: "
-                        + entry.getClass().getName()
-                        + ". Upgrade the table envelope converter before accepting this type.");
     }
 
     private static GenericRowData entry(
@@ -140,21 +164,28 @@ final class BigtableChangeStreamMutationToRowDataConverter implements Serializab
 
     private static GenericRowData value(BigtableChangeStreamMutation.Value value)
             throws IOException {
-        if (value instanceof BigtableChangeStreamMutation.RawValue) {
-            return rawValue(
-                    ((BigtableChangeStreamMutation.RawValue) value).getValue().toByteArray());
+        return ChangeStreamMutationDispatcher.dispatchValue(value, VALUE_CONVERTER, null);
+    }
+
+    /** Renders each aggregate value subtype as one envelope row; stateless, needing no argument. */
+    private static final class ValueConverter
+            implements ChangeStreamMutationDispatcher.ValueVisitor<GenericRowData, Void> {
+
+        @Override
+        public GenericRowData visit(BigtableChangeStreamMutation.RawValue value, Void argument) {
+            return rawValue(value.getValue().toByteArray());
         }
-        if (value instanceof BigtableChangeStreamMutation.RawTimestamp) {
-            return rawTimestamp(((BigtableChangeStreamMutation.RawTimestamp) value).getValue());
+
+        @Override
+        public GenericRowData visit(
+                BigtableChangeStreamMutation.RawTimestamp value, Void argument) {
+            return rawTimestamp(value.getValue());
         }
-        if (value instanceof BigtableChangeStreamMutation.Int64Value) {
-            return GenericRowData.of(
-                    INT64, null, ((BigtableChangeStreamMutation.Int64Value) value).getValue());
+
+        @Override
+        public GenericRowData visit(BigtableChangeStreamMutation.Int64Value value, Void argument) {
+            return GenericRowData.of(INT64, null, value.getValue());
         }
-        throw new IOException(
-                "Unsupported Bigtable Change Streams value type: "
-                        + value.getClass().getName()
-                        + ". Upgrade the table envelope converter before accepting this type.");
     }
 
     private static GenericRowData rawValue(byte[] value) {
