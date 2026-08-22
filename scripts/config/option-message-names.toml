@@ -1,0 +1,350 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Which setting each check that names one is allowed to name (ADR-0127, #1028).
+#
+# One [[sites]] entry per call to ResourceNames.checkComponent,
+# ResourceNames.checkNotBlank or EmulatorEndpoint.parse whose name argument is a
+# string literal. The entry is identified by module, class, member and literal,
+# and carries one of three verdicts:
+#
+#   same         the literal IS the DDL key, so the message already names what a
+#                SQL caller typed. Held by comparing them; needs no keys.
+#   restated     the table layer checks the value again under its own key(s),
+#                listed in `keys`. Held by looking for them there.
+#   unreachable  no SQL caller reaches this check. `reason` is required, and is
+#                the only claim in this file the sources do not settle.
+#
+# A call site with no entry fails, and an entry with no call site fails. Adding
+# an entry is never a way to quieten something: if the check passes without it,
+# it has to go.
+#
+# `.agents/skills/curate-option-message-names/` is the procedure for every
+# failure this file can produce, including which verdict an entry belongs under.
+
+# --- same: a resource-path component whose setter name is already the DDL key ---
+#
+# Every one of these is a `*Destination.of` / `SpannerDatabase.of` component. The
+# literal is the parameter's own name, and each connector's DDL spells the same
+# option with the same word, so a DataStream caller and a SQL caller are both
+# answered in the vocabulary they used. The check is the comparison, not this
+# comment: rename either side and the entry fails.
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "TableDestination"
+member = "of"
+literal = "project"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "TableDestination"
+member = "of"
+literal = "dataset"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "TableDestination"
+member = "of"
+literal = "table"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-bigtable"
+class = "TableDestination"
+member = "of"
+literal = "project"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-bigtable"
+class = "TableDestination"
+member = "of"
+literal = "instance"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-bigtable"
+class = "TableDestination"
+member = "of"
+literal = "table"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-cloudtasks"
+class = "QueueDestination"
+member = "of"
+literal = "project"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-cloudtasks"
+class = "QueueDestination"
+member = "of"
+literal = "location"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-cloudtasks"
+class = "QueueDestination"
+member = "of"
+literal = "queue"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "TopicDestination"
+member = "of"
+literal = "project"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "TopicDestination"
+member = "of"
+literal = "topic"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "SubscriptionDestination"
+member = "of"
+literal = "project"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "SubscriptionDestination"
+member = "of"
+literal = "subscription"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-spanner"
+class = "SpannerDatabase"
+member = "of"
+literal = "project"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-spanner"
+class = "SpannerDatabase"
+member = "of"
+literal = "instance"
+verdict = "same"
+
+[[sites]]
+module = "flink-connector-gcp-spanner"
+class = "SpannerDatabase"
+member = "of"
+literal = "database"
+verdict = "same"
+
+# --- restated: the setter names itself, and the table layer names the DDL key ---
+#
+# The setter is right to name itself — a DataStream caller wrote that setter — so
+# these literals stay. What makes them safe is the second check under the option
+# key, which is what #1019 and #1027 added and what these entries hold in place.
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySinkBuilder"
+member = "location"
+literal = "location"
+verdict = "restated"
+keys = ["sink.location"]
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySinkBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySinkBuilder"
+member = "emulatorRestEndpoint"
+literal = "emulatorRestEndpoint"
+verdict = "restated"
+keys = ["emulator-rest-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySourceBuilder"
+member = "queryResultDataset"
+literal = "queryResultDataset"
+verdict = "restated"
+keys = ["source.query-result-dataset"]
+
+# Two keys because the value has two sources: `source.parent-project`, and
+# `project` when that is unset. The name has to follow whichever supplied it,
+# which is the measurement #1027 added to ADR-0127.
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySourceBuilder"
+member = "parentProject"
+literal = "parentProject"
+verdict = "restated"
+keys = ["source.parent-project", "project"]
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySourceBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "BigQuerySourceBuilder"
+member = "emulatorRestEndpoint"
+literal = "emulatorRestEndpoint"
+verdict = "restated"
+keys = ["emulator-rest-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "FileLoadsOptions"
+member = "tempDataset"
+literal = "tempDataset"
+verdict = "restated"
+keys = ["sink.file-loads.temp-dataset"]
+
+[[sites]]
+module = "flink-connector-gcp-bigtable"
+class = "BigtableSinkBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-bigtable"
+class = "BigtableSourceBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-cloudtasks"
+class = "CloudTasksSinkBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "PubSubDeadLetterQueue"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "PubSubSinkBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-pubsub"
+class = "PubSubSourceBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-spanner"
+class = "SpannerSinkBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-spanner"
+class = "SpannerSourceBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+[[sites]]
+module = "flink-connector-gcp-spanner"
+class = "SpannerChangeStreamSourceBuilder"
+member = "emulatorEndpoint"
+literal = "emulatorEndpoint"
+verdict = "restated"
+keys = ["emulator-endpoint"]
+
+# --- unreachable: the four literals no SQL caller can arrive at ---
+#
+# The only verdict this file asserts on its own authority, so each says what was
+# measured. All four were measured on #1027 rather than assumed.
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "AvroSchemaOptions"
+member = "jsonFieldPath"
+literal = "path"
+verdict = "unreachable"
+reason = """
+No SQL path reaches this setter: nothing in the main tree calls the singular
+`jsonFieldPath(String)` at all. The table layer routes `sink.json-field-paths` —
+an `.asList()` option Flink splits — into
+`RowDataSchemaOptions.Builder.jsonFieldPaths(Collection)`, which does
+`json.addAll(paths)` and checks nothing, which is why #1027 measured a blank
+value producing no throwable. So `path` answers a DataStream caller only, and it
+is the parameter they passed."""
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "AvroSchemaOptions"
+member = "geographyFieldPath"
+literal = "path"
+verdict = "unreachable"
+reason = """
+`sink.geography-field-paths` through
+`RowDataSchemaOptions.Builder.geographyFieldPaths(Collection)`: the same shape,
+the same absent check and the same measurement as jsonFieldPath above."""
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "ProtoSchemaOptions"
+member = "jsonFieldPath"
+literal = "path"
+verdict = "unreachable"
+reason = """
+The proto serializer's counterpart of AvroSchemaOptions.jsonFieldPath. Uncalled
+in the main tree for the same reason, and measured with it."""
+
+[[sites]]
+module = "flink-connector-gcp-bigquery"
+class = "ProtoSchemaOptions"
+member = "geographyFieldPath"
+literal = "path"
+verdict = "unreachable"
+reason = """
+The proto serializer's counterpart of AvroSchemaOptions.geographyFieldPath.
+Uncalled in the main tree for the same reason, and measured with it."""

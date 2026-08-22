@@ -48,8 +48,9 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
   symlink.
-- `just check-option-docs`, `just check-metric-docs`, `just check-javadoc-links`, and
-  `just check-flink-api-tiers`: run the repository-specific source/documentation audits.
+- `just check-option-docs`, `just check-metric-docs`, `just check-option-message-names`,
+  `just check-javadoc-links`, and `just check-flink-api-tiers`: run the repository-specific
+  source/documentation audits.
 - `just e2e`: run credential-gated real-GCP suites. A fresh worktree first needs
   `just worktree-env` to link the main checkout's uncommitted `.env`.
 
@@ -107,7 +108,9 @@ green; use the clean-state procedures in that guide for such changes.
   parses is checked against that grammar, and a value whose service-side failure would be silent or
   per-record is checked too. Everything else gets presence and blankness, and its validity is the
   service's (ADR-0127). A new character check names which of those three it is; "the service might
-  reject it" is not one of them.
+  reject it" is not one of them. Where the check runs decides what it can name, so a value a `WITH`
+  clause supplies is checked again in the table layer under the option key; `just
+  check-option-message-names` holds that, and `$curate-option-message-names` is its procedure.
 - Tests that call a production `createWriter` path must configure an emulator endpoint.
 - `*Test` is a unit test; `*ITCase` runs in the integration-test execution. Credential-gated
   real-GCP tests also carry `@Tag("gated")` and are run only by `just e2e`.

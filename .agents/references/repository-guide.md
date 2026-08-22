@@ -135,6 +135,17 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   prose or the event/state naming judgment, so a rename still sweeps those by hand. Its own
   `verify.yaml` job is recorded in ADR-0058; the checker design is ADR-0117, and every failure
   routes through `.agents/skills/curate-metric-docs/`
+- `just check-option-message-names` — holds ADR-0127's rule that a rejection names what the caller
+  typed (#1028). Every call to `ResourceNames.checkComponent`, `ResourceNames.checkNotBlank` or
+  `EmulatorEndpoint.parse` whose name argument is a string literal carries a verdict in
+  `scripts/config/option-message-names.toml`: the literal already is the DDL key (`same`), the table
+  layer restates the check under its key (`restated`), or no SQL caller reaches it (`unreachable`).
+  The first two are checked against the sources and the third is a written reason, which is the
+  asymmetry to keep in mind when adding an entry. It reads those three validators and not every
+  rejection that names something, `same` compares against the module's whole key set rather than the
+  key that reaches the setter, and `restated` finds the check rather than the path to it — so a
+  green run is narrower than it looks, and ADR-0127 carries the boundary with the measurements
+  behind it. Every failure routes through `.agents/skills/curate-option-message-names/`
 - `just check-javadoc-links` — holds every `{@link}`, `{@linkplain}` and `@see` member reference in
   the main sources to a member Javadoc can actually reach (#897, #930, #931). Three shapes fail:
   one bound by a field that shadows the method it names, which renders no anchor at all; one naming

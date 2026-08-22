@@ -299,7 +299,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, build, api_tiers, option_docs, metric_docs, javadoc_links, gated_tags, skill_frontmatter]
+    needs: [changes, build, api_tiers, option_docs, metric_docs, option_message_names, javadoc_links, gated_tags, skill_frontmatter]
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -480,6 +480,35 @@ jobs:
 
       - name: Check every metric is documented, and every documented metric exists
         run: just check-metric-docs
+
+  # The rejection-name check (issue #1028): fails when a check that names a
+  # setting is added without a verdict saying whether a SQL caller could have
+  # typed that name, or when a table-layer restatement a verdict depends on is
+  # removed (see .agents/skills/curate-option-message-names/ for how to respond
+  # to each failure). ADR-0127 stated the rule and nothing enforced it, so the
+  # same defect was found by hand three more times after it was written.
+  #
+  # A job here for option_docs's reasons, minus the docs half: its inputs are
+  # every Java main source, which lint.yaml's paths filter would have had to
+  # grow to cover. Not behind the changes job, for the reason metric_docs gives.
+  option_message_names:
+    name: Check the names in configuration rejections
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # tomllib again; keep in step with mise.toml's python.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
+        with:
+          tool: just
+
+      - name: Check every check that names a setting names one its caller typed
+        run: just check-option-message-names
 
   # The Javadoc reference check (issue #897): fails when a `{@link}`,
   # `{@linkplain}` or `@see` reference written without a parameter list binds a

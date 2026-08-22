@@ -1,0 +1,4 @@
+interface:
+  display_name: "Curate Option Message Names"
+  short_description: "Decide what a configuration rejection may name"
+  default_prompt: "Use $curate-option-message-names to resolve this rejection-name audit failure."

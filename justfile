@@ -471,6 +471,25 @@ check-option-docs:
 check-metric-docs:
     scripts/check-metric-docs.py
 
+# Holds ADR-0127's rule that a rejection names what the caller typed (issue
+# #1028). Every call to ResourceNames.checkComponent, ResourceNames.checkNotBlank
+# or EmulatorEndpoint.parse whose name argument is a string literal carries a
+# verdict in scripts/config/option-message-names.toml: the literal already is the
+# DDL key (`same`), the table layer restates the check under its key
+# (`restated`), or no SQL caller reaches it (`unreachable`). The first two are
+# held against the sources; only the third is the entry's own word.
+#
+# The rule was written down and then broken three more times — #1009/#1013,
+# #1019, #1027 — because nothing enforced it and the only detector was someone
+# grepping the call sites by hand. This is that grep. Offline and stdlib-only,
+# but a verify.yaml job rather than part of `just lint`, for check-option-docs's
+# reason: its inputs include every Java main source, which lint.yaml's paths
+# filter would have had to grow to cover.
+#
+# Does every check that names a setting name one its caller could have typed?
+check-option-message-names:
+    scripts/check-option-message-names.py
+
 # Fails on a Javadoc member reference written without a parameter list that gets
 # something other than the member it names (issues #897, #930, #931): one
 # shadowed by a field renders no anchor at all, one naming an overloaded method

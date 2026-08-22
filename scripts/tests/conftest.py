@@ -65,6 +65,11 @@ def check_metric_docs():
 
 
 @pytest.fixture(scope="session")
+def check_option_message_names():
+    return load_script("check-option-message-names.py")
+
+
+@pytest.fixture(scope="session")
 def check_skill_frontmatter():
     return load_script("check-skill-frontmatter.py")
 

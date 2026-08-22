@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22), then by
-  [#1019] and [#1027] (2026-08-22)
-- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019], [#1027]
+  [#1019] and [#1027], then by [#1028] (2026-08-22)
+- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019], [#1027], [#1028]
 - Modules: base (`base.options`), bigquery, bigtable, cloudtasks, pubsub, spanner
 - Current behavior: `docs/content/docs/connectors/_index.md`, "What a builder checks"
 
@@ -317,8 +317,44 @@ the number wrong: the first version of this paragraph said "one configuration", 
 review named `source.query-result-dataset` as a second. Nothing connected in any of them. Every
 value outside that set was already refused a moment later by the builder, under a different name.
 
-Nothing enforces any of this yet, which is why the same defect has now been found six times by
-reading. [#1028] carries the checker.
+The same defect was found six times by reading, three of them after this record existed, because
+nothing enforced it. [#1028] is what does now: `scripts/check-option-message-names.py` requires
+every check that names a setting with a string literal to carry a verdict — the literal already is
+the DDL key, the table layer restates the check under that key, or no SQL caller reaches the check
+at all. The first two are held against the sources; the third is a written reason, because it is
+the only one a script cannot settle. Run against the sources as they stood before [#1026], it
+reports thirteen problems across twelve call sites in BigQuery, Pub/Sub and Cloud Tasks — the whole
+of what [#1019] and [#1027] repaired, less one. Bigtable and Spanner are absent because [#1014] had
+already moved their checks to the factory before that commit.
+
+That one is what the checker does not reach, and its boundary belongs here rather than only in the
+script, because a green run is narrower than it looks. Four limits, each measured:
+
+- **Its population is the three validators that take the name as an argument**, so
+  `TopicCreateOptions.Builder.kmsKeyName` — which rejects with a raw
+  `Preconditions.checkArgument(…, "kmsKeyName must not be blank")` — is invisible to it. Widening to
+  any rejection whose message opens with a bare identifier was measured and declined: **735 sites**
+  across the main trees as of this change, of which **90% name a parameter of the enclosing method**
+  rather than a setting a caller chose, and 75% are raised by `checkNotNull`. Those are argument
+  checks between this project's own methods, and a guard over them would be answering a different
+  question. Routing a new check through `ResourceNames` or `EmulatorEndpoint` is what puts it inside
+  this one.
+- **`same` compares the literal against the module's whole key set**, not against the key that
+  reaches that setter — which key reaches which setter is the reachability the checker does not
+  compute. A module that grew a second, differently-scoped key spelled like an existing one would
+  satisfy it wrongly; only a test catches that.
+- **`restated` finds the check, not the path to it.** A restatement left in place but no longer
+  reached still counts: reverting `.location(sinkLocation(config))` to a raw read reads clean while
+  the orphaned helper remains, and deleting the helper with it is what fails.
+- **The population is call sites, not options**, so a new `ConfigOption` routed into an
+  already-classified setter does not fail.
+
+The middle two were found by reviewing the checker rather than by using it, and both were false
+passes it carried in draft: a same-named method in a sibling class donated its argument as a key,
+and an earlier "every constant named anywhere in the enclosing method" fallback meant deleting the
+factory's own `sink.location` check left the run green. Each now resolves to a named option or is
+reported — which is what this record asks of a rejection in the first place: name the thing, or say
+you cannot.
 
 [#1028]: https://github.com/flink-gcp/flink-connector-gcp/issues/1028
 
@@ -331,3 +367,5 @@ reading. [#1028] carries the checker.
 [#1013]: https://github.com/flink-gcp/flink-connector-gcp/issues/1013
 [#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019
 [#1027]: https://github.com/flink-gcp/flink-connector-gcp/issues/1027
+[#1026]: https://github.com/flink-gcp/flink-connector-gcp/pull/1026
+[#1014]: https://github.com/flink-gcp/flink-connector-gcp/pull/1014
