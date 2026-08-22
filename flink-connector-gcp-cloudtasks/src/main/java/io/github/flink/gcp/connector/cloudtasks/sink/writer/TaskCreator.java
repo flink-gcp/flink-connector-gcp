@@ -29,9 +29,11 @@ import com.google.cloud.tasks.v2.Task;
  * unit-tested against fakes. One instance serves every destination queue: Cloud Tasks has no
  * per-queue connection or stream, so there is nothing to key by destination.
  *
- * <p>There is deliberately no batch method. {@code BatchCreateTasks} and {@code BufferTask} are
- * REST-only and absent from {@code google-cloud-tasks} 2.94.0, and no method in its settings is
- * configured with batching, so the writer owns batching, backpressure and concurrency outright.
+ * <p>There is deliberately no batch method. {@code BufferTask} is absent from the Java client;
+ * {@code BatchCreateTasks} exists on the v2beta3 surface only — a long-running, non-atomic call —
+ * and was measured and declined (ADR-0129, which carries the client version and the numbers). No
+ * method in the client's settings is configured with batching, so the writer owns batching,
+ * backpressure and concurrency outright.
  */
 @Internal
 public interface TaskCreator extends AutoCloseable {

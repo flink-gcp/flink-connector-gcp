@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-20 ([#63], applied to BigQuery first); the layer and naming rules settled
-  2026-07-26 ([#119], [#121], [#125])
-- Issues: [#63], [#119], [#121], [#125], [#280]
+  2026-07-26 ([#119], [#121], [#125]); the Cloud Tasks example's premise updated 2026-08-22
+  ([#937], see ADR-0129)
+- Issues: [#63], [#119], [#121], [#125], [#280], [#937]
 - Modules: all connector modules
 - Current behavior: root `AGENTS.md` § Package layout convention (the imperative form)
 
@@ -77,9 +78,12 @@ packages — which is also what lets package-private coupling stay package-priva
 **One family, with no second one in prospect, means no layer** ([#119]): the module goes
 straight to `sink` + `sink.writer` (`sink.committer`, … as the topology requires). Decided
 where Cloud Tasks' `sink.createtask` was named after the `CreateTask` RPC rather than after a
-design and no sibling can arrive at all — `BatchCreateTasks` and `BufferTask` are REST-only
+design and no sibling could arrive at all — `BatchCreateTasks` and `BufferTask` were REST-only
 and absent from the Java client. Pub/Sub's `sink.publisher` went with it so the two
-single-family modules stay alike. Adding the layer back is what a second family costs, and it
+single-family modules stay alike. A batch sibling later became expressible (`google-cloud-tasks`
+2.95.0 exposed `BatchCreateTasks` on v2beta3) and ADR-0129 declined it, so the test's outcome
+stands; adopting one would be exactly the second-family event that costs the layer back.
+Adding the layer back is what a second family costs, and it
 is a mechanical move — the two layers [#119] removed held nothing public, though a family
 layer generally may (BigQuery's `BufferedStreamOptions` and `FileLoadsOptions` are
 `@PublicEvolving` in theirs). The rule is a **test, not a count**. This ADR is the canonical
@@ -141,4 +145,5 @@ share one FQCN on purpose.
 [#121]: https://github.com/laughingman7743/flink-connector-gcp/issues/121
 [#125]: https://github.com/laughingman7743/flink-connector-gcp/issues/125
 [#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
+[#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280

@@ -39,11 +39,11 @@ import java.util.Objects;
  * creations it keeps outstanding, not how fast the tasks execute.
  *
  * <p>Retries are the sink's own because the generated client does not retry {@code CreateTask}: its
- * retryable-code set is empty and its total timeout is 20 seconds (verified in {@code
- * CloudTasksStubSettings} for {@code google-cloud-tasks} 2.94.0, where the read-only methods do
- * retry). {@code NOT_FOUND} has a budget of its own because a queue idle for 30 days takes a few
- * minutes to re-activate and returns {@code NOT_FOUND} meanwhile, while a mistyped queue name must
- * not burn the full retry budget on every record before the job fails.
+ * retryable-code set is empty and its total timeout is 20 seconds, while the read-only methods do
+ * retry (verified in {@code CloudTasksStubSettings}; the dated verification record is ADR-0048).
+ * {@code NOT_FOUND} has a budget of its own because a queue idle for 30 days takes a few minutes to
+ * re-activate and returns {@code NOT_FOUND} meanwhile, while a mistyped queue name must not burn
+ * the full retry budget on every record before the job fails.
  *
  * <p>Instances are immutable and serializable.
  */

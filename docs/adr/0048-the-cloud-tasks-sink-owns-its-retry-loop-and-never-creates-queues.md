@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-25 ([#23] design, [#24] implementation via PR
   [#107](https://github.com/laughingman7743/flink-connector-gcp/pull/107)); revised 2026-08-12
-  ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632])
-- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632]
+  ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
+  updated 2026-08-22 ([#937], see ADR-0129)
+- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -46,7 +47,8 @@ limitations under the License.
   The dedup window is **contradicted in Google's own sources — REST says up to 24 h, the v2
   proto says ~1 h — so design against 1 h**.
 - **Retries are the sink's responsibility**: the generated client gives `CreateTask` an empty
-  retryable-code set and a 20 s timeout (verified in `CloudTasksStubSettings` 2.94.0), as it
+  retryable-code set and a 20 s timeout (verified in `CloudTasksStubSettings` 2.94.0, unchanged
+  at 2.95.0), as it
   does every mutating method. Retrying is **one sink-owned loop in the writer**, not gax
   `createTaskSettings` retry — gax has a single retryable-code set and schedule per method,
   which cannot express the separate short `NOT_FOUND` budget (a 30-day-idle queue re-activates
@@ -55,9 +57,11 @@ limitations under the License.
   re-dispatched unchanged from the next `write()`/`flush()`; parked creates count against
   `maxInFlightTasks` (records the service has not accepted) and are dropped on close (not
   covered by a checkpoint, so the restart replays them).
-- `BatchCreateTasks` and `BufferTask` are **both REST-only and absent from the Java client**,
-  and no method is configured with batching, so one RPC per record with a mailbox-based
-  in-flight cap. Queue-level `httpTarget.uriOverride` can silently override per-task URLs and
+- One RPC per record with a mailbox-based in-flight cap. When this was decided,
+  `BatchCreateTasks` and `BufferTask` were both REST-only and absent from the Java client;
+  `google-cloud-tasks` 2.95.0 later exposed `BatchCreateTasks` on v2beta3 and ADR-0129 measured
+  and declined it — `BufferTask` remains absent, and no method is configured with gax batching.
+  Queue-level `httpTarget.uriOverride` can silently override per-task URLs and
   **cannot be detected through the v2 client at all** (the field does not exist in the v2
   proto).
 - The external HTTP serializer uses a two-stage immutable API: `httpTarget(url)` returns a
@@ -98,3 +102,4 @@ limitations under the License.
 [#608]: https://github.com/laughingman7743/flink-connector-gcp/issues/608
 [#628]: https://github.com/laughingman7743/flink-connector-gcp/issues/628
 [#632]: https://github.com/laughingman7743/flink-connector-gcp/issues/632
+[#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
