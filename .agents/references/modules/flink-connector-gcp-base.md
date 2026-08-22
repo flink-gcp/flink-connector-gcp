@@ -98,17 +98,29 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (#895): both messages name what the caller was given — the setter for a builder, the option key
   for a table factory — and a defaulted name is exactly how BigQuery's two `emulatorRestEndpoint`
   setters spent their life naming a setter the user may not have called.
-- **The check runs where the value is configured**, which for SQL is the factory, not the runtime
-  (#1009, #1013, `docs/adr/0127`). Only Bigtable and Spanner have a lookup path and so a factory
-  parse; the other three reach the parse through the builder setter at plan-to-runtime translation.
-  The three runtime parse sites — `BigtableDataClientRowLookup`, `BigtableFullCacheInputFormat`,
-  `SpannerDatabaseRowLookup` — still run at `open()` with the same option key, but that is the check
-  behind their `@Internal` constructors, not the one a SQL caller meets.
-- **A factory's endpoint parse goes behind every check that refuses an option outright**, in both
-  directions and both connectors. The option pre-empted need not be `emulator-endpoint` itself:
+- **The check runs where the value is configured**, which for SQL is the factory — not the runtime,
+  and not a builder setter (#1009, #1013, #1019, `docs/adr/0127`). **All five table factories parse**,
+  through a private `validateEmulatorEndpoint(ReadableConfig)` passing `EMULATOR_ENDPOINT.key()` —
+  `validateEmulatorEndpoints` on BigQuery, which covers `emulator-rest-endpoint` too under its own
+  key, in both directions, even on a direct-table source that leaves the value unused (measured:
+  before this nothing parsed it there at all). Being on the client is not enough on its own:
+  Pub/Sub, BigQuery and Cloud Tasks already failed during plan-to-runtime translation, but through
+  the builder setter, so the message named `emulatorEndpoint` to a caller who had written a DDL key.
+  The later parse sites all stay — `BigtableDataClientRowLookup`, `BigtableFullCacheInputFormat` and
+  `SpannerDatabaseRowLookup` at `open()`, and every builder setter — because they are the checks
+  behind `@Internal` constructors and behind the DataStream API, not the ones a SQL caller meets.
+- **A factory's endpoint parse goes behind every check that refuses an option outright**, in every
+  direction of all five connectors. The option pre-empted need not be `emulator-endpoint` itself:
   Spanner accepts one in every mode, and the call still follows `validateSourceMode` because that
   refuses *other* options. Each ordering carries a test asserting the removal message and asserting
-  the shape message is absent, because a wrong order passes every build.
+  the shape message is absent, because a wrong order passes every build. It goes behind the
+  **required-option** checks too, so a table that has not said where it points hears that first:
+  three connectors get that from `helper.validate()`, while Pub/Sub and BigQuery declare their
+  destination options conditionally and check them as ordinary statements. **The limit is assembly**:
+  an option mapper that refuses an option while a source or sink is being built —
+  `TopicCreateOptionsMapper`, `PublisherOptionsMapper`, `SubscriptionCreateOptionsMapper`,
+  `TableCreateOptionsMapper` — runs after the parse and is pre-empted by it, which `docs/adr/0127`
+  records rather than fixes.
 - `EmulatorChannels` is split **by who owns the channel**, not by settings type (`docs/adr/0081`):
   `plaintextProvider` where the client closes its own channel, `openPlaintextChannel` +
   `fixedProvider` where the caller does — and the ownership difference is load-bearing at three

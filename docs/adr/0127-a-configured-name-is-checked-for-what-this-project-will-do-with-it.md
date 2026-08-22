@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0127: A configured name is checked for what this project will do with it
 
 - Status: Accepted
-- Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22)
-- Issues: [#984], [#920], [#976], [#1009], [#1013]
+- Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22), then by
+  [#1019] (2026-08-22)
+- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019]
 - Modules: base (`base.options`), bigquery, bigtable, cloudtasks, pubsub, spanner
 - Current behavior: `docs/content/docs/connectors/_index.md`, "What a builder checks"
 
@@ -116,17 +117,28 @@ is named under shape 2, yet the Bigtable and Spanner lookup runtimes held the op
 string and parsed it on a TaskManager, so a malformed endpoint on a table joined as a lookup
 dimension survived planning and job submission. For a DataStream caller the configuring point is the
 builder setter, which is where [#235] put it. For a SQL caller it is the table factory reading the
-option, and the two connectors whose lookup runtimes held the value now parse there. The other three
-have no lookup path, so their factory hands the string to a dynamic source or sink that reaches the
-builder setter during plan-to-runtime translation — later than a factory check, still on the client.
+option, and the two connectors whose lookup runtimes held the value now parse there.
+
+The other three were left alone at that point, because their factory hands the string to a dynamic
+source or sink that reaches the builder setter during plan-to-runtime translation — later than a
+factory check, but still on the client, so no job was ever submitted over an endpoint nothing had
+looked at. [#1019] is what that reasoning missed: where a check runs decides what it can name. A
+parse reached through `emulatorEndpoint(String)` answers a caller who wrote `emulator-endpoint` by
+naming a setter they never called, which is the failure [#235] set out to remove — it names *a*
+setting, and it is the wrong one — and the one [#895] had already fixed once, for BigQuery's two
+`emulatorRestEndpoint` setters against DataStream callers. Being early enough is therefore not the
+whole rule: the value is configured in the `WITH` clause, so the factory is where it is checked, and
+all five now parse there.
 
 A later re-check is not a contradiction, and two shapes of it appear here. One is a value that does
 not exist until later: a Cloud Tasks target URL an extractor produced cannot be checked at the
 builder, which is why `serialize` checks again. The other is an `@Internal` constructor a check
 would otherwise sit in front of rather than behind — the lookup runtimes keep their parse for that
-reason, passing the same option key, so the sentence is identical wherever it lands. What is ruled
-out is a value that *is* known at configuration time and is checked only at runtime, because that
-buys nothing and costs a submitted job.
+reason, passing the same option key, so the sentence is identical wherever it lands. Every builder
+setter keeps its own parse on the same footing: it is the check behind the DataStream API, where the
+setter's name is the name the caller wrote. What is ruled out is a value that *is* known at
+configuration time and is checked only at runtime, because that buys nothing and costs a submitted
+job.
 
 **A shape check goes behind every check that refuses an option outright, never in front of one.** A
 DDL being told to remove an option is not helped by an answer about that option's shape, and the
@@ -136,6 +148,23 @@ follows `validateSourceMode`, because that call refuses *other* options. Both co
 sit behind their change-stream-option refusal for the same reason. Getting this wrong is invisible
 in a passing build, so each ordering carries a test that asserts the removal message and asserts the
 shape message is absent.
+
+"Every check" means every check the factory method makes before it starts assembling a source or
+sink. Where an option mapper evaluated during assembly refuses an option too — `TopicCreateOptionsMapper`,
+`PublisherOptionsMapper`, `SubscriptionCreateOptionsMapper` and `TableCreateOptionsMapper` all carry
+"remove the options" refusals — a DDL that trips one of those *and* carries a malformed endpoint
+reads the shape message first. Moving behind them would mean hoisting five mapper calls out of
+Pub/Sub's constructor arguments and three out of BigQuery's builder chain, the latter inverting the
+ordering `BigQueryDynamicTableFactory` deliberately documents, that the checks the class owns run
+ahead of the first mapper. The endpoint parse sits with those checks, which is where the sibling
+shape checks each factory already had sit too.
+
+It goes behind the checks that report a *required* option missing as well, for a different reason:
+a table that has not said where it points should hear that first. Three connectors get this from
+`helper.validate()`, which reports a missing `requiredOptions()` entry before any connector check
+runs. Pub/Sub and BigQuery declare theirs conditionally instead — one factory serves directions
+that need different options — so their `orElseThrow` and `destination(...)` checks are ordinary
+statements, and the parse follows them so that all five answer alike.
 
 ## Evidence
 
@@ -167,6 +196,21 @@ naming it.
 modules (bigquery 16, bigtable 9, cloudtasks 9, pubsub 9, spanner 11) in 37 files, sharing no helper
 across modules before this change: 30 `String.isBlank()` and 24 `StringUtils.isNullOrWhitespaceOnly`.
 A predicate encoding *which characters* a service accepts would have had to reach all of them.
+
+**What a SQL caller read before [#1019].** Measured 2026-08-22 on `7e1a13c4` with the new factory
+parses removed, by driving each dynamic source or sink to its runtime provider with
+`'…' = 'localhost'` and reporting the root cause. Every arm is the setter name, not the DDL key:
+
+| Path | Root cause |
+|---|---|
+| Pub/Sub sink and source, `emulator-endpoint` | `IllegalArgumentException: emulatorEndpoint must be host:port, was 'localhost'` |
+| Cloud Tasks sink, `emulator-endpoint` | the same sentence |
+| BigQuery sink, direct-table source and query source, `emulator-endpoint` | the same sentence |
+| BigQuery sink and query source, `emulator-rest-endpoint` | `IllegalArgumentException: emulatorRestEndpoint must be host:port, was 'localhost'` |
+| BigQuery **direct-table source**, `emulator-rest-endpoint` | *no throwable* — the value is dropped before any parse |
+
+The last row is the one that could not be read off the code with confidence, and it is the only
+configuration this change refuses that nothing refused before.
 
 ## Alternatives declined
 
@@ -216,9 +260,34 @@ never reached `getScanRuntimeProvider`, so a malformed endpoint on it planned an
 runs before that rule fires, so it is now refused. Nothing connected either way, and the stricter
 answer is the intended one, but the claim that no working configuration is refused would be false.
 
+On Pub/Sub, BigQuery and Cloud Tasks the same move is a rename rather than a reprieve. Every one of
+those paths already failed on the client, so what changes is the sentence: `emulator-endpoint must
+be host:port` and `emulator-rest-endpoint must be host:port` where a SQL caller previously read
+`emulatorEndpoint` and `emulatorRestEndpoint`. The pruned-scan case above transfers to one of the
+three rather than to all, which reading the code would not have told either way. Measured 2026-08-22
+with `EXPLAIN SELECT * FROM t WHERE FALSE`: on a Pub/Sub source in streaming execution it planned
+before and is refused now, exactly as on Bigtable; on a BigQuery source in batch execution the
+planner asked for the scan runtime provider anyway, so it was already refused and only the sentence
+changes. Cloud Tasks is sink-only, and a sink is not eliminated.
+
+BigQuery adds a newly-refused case of its own. Its source drops `emulator-rest-endpoint` unless the
+statement runs a query, deliberately — one `WITH` clause serves both directions, and a table read as
+a source must tolerate the endpoint its sink half needs — so nothing parsed the value on a
+direct-table read at all, which the table above measured rather than inferred. A well-formed one is
+still accepted and still unused; a malformed one is now refused where it was ignored. A value that
+cannot be an endpoint at all is a typo wherever it sits, and the same DDL used as a sink was already
+refused.
+
+What that leaves untouched is the asymmetry underneath: `BigQuerySourceBuilder.build()` *rejects*
+`emulatorRestEndpoint(...)` without `query(...)` or `materializeViews()`, while the table factory
+silently ignores the key. That is a separate defect about which options a direction accepts, not
+about what a rejection names, and it is not decided here.
+
 [#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
+[#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895
 [#920]: https://github.com/flink-gcp/flink-connector-gcp/issues/920
 [#976]: https://github.com/flink-gcp/flink-connector-gcp/issues/976
 [#984]: https://github.com/flink-gcp/flink-connector-gcp/issues/984
 [#1009]: https://github.com/flink-gcp/flink-connector-gcp/issues/1009
 [#1013]: https://github.com/flink-gcp/flink-connector-gcp/issues/1013
+[#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019

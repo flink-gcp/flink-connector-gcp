@@ -1031,6 +1031,134 @@ class BigQueryDynamicTableFactoryTest {
         }
     }
 
+    /**
+     * Issue #1019: the rejection names the option key the DDL carried rather than the {@code
+     * emulatorEndpoint(...)} or {@code emulatorRestEndpoint(...)} setter the value used to reach.
+     * Each key names itself, which is why the factory makes two calls rather than one.
+     *
+     * <p>Asserted on the root cause. {@code FactoryUtil} dumps every {@code WITH} option into its
+     * own message, so a needle of just the key would pass with the parse deleted; the root cause is
+     * the {@code IllegalArgumentException} the parse throws and carries nothing else. The needle
+     * also discriminates the fix, since {@code emulator-endpoint must be} is not a substring of
+     * {@code emulatorEndpoint must be}.
+     *
+     * <p>The direct-table source arm is the one that changes most: it leaves {@code
+     * emulator-rest-endpoint} unused, so before this nothing parsed that value at all. A
+     * well-formed one is still accepted and still unused, which {@code
+     * directTableSourceLeavesTheSinkRestEndpointUnused} holds.
+     *
+     * <p>Two values, not a catalogue. {@code "localhost"} exercises the shape, and {@code ""} the
+     * one thing that is this layer's rather than the parser's: whether an option written {@code ''}
+     * arrives as present-and-empty rather than absent, so the check sees it at all. The rejection
+     * set itself belongs to {@code EmulatorEndpointTest}.
+     */
+    @Test
+    void rejectsAMalformedEmulatorEndpointByKeyNameOnEveryPath() {
+        for (String key : new String[] {"emulator-endpoint", "emulator-rest-endpoint"}) {
+            for (String malformed : new String[] {"localhost", ""}) {
+                String message = key + " must be host:port, was '" + malformed + "'";
+
+                Map<String, String> sinkOptions = minimalOptions();
+                sinkOptions.put(key, malformed);
+                assertThatThrownBy(() -> sink(sinkOptions))
+                        .as("sink, '%s' = '%s'", key, malformed)
+                        .isInstanceOf(ValidationException.class)
+                        .rootCause()
+                        .hasMessage(message);
+
+                Map<String, String> tableSource = minimalOptions();
+                tableSource.put(key, malformed);
+                assertThatThrownBy(() -> source(tableSource))
+                        .as("direct-table source, '%s' = '%s'", key, malformed)
+                        .isInstanceOf(ValidationException.class)
+                        .rootCause()
+                        .hasMessage(message);
+
+                Map<String, String> querySource = minimalOptions();
+                querySource.put("source.query", "SELECT id, amount FROM `p.d.t`");
+                querySource.put(key, malformed);
+                assertThatThrownBy(() -> source(querySource))
+                        .as("query source, '%s' = '%s'", key, malformed)
+                        .isInstanceOf(ValidationException.class)
+                        .rootCause()
+                        .hasMessage(message);
+            }
+        }
+    }
+
+    /**
+     * Pins the endpoint parse behind every check this factory makes that refuses an option outright
+     * — a DDL told to remove an option is not helped by an answer about that option's shape. The
+     * option pre-empted need not be an endpoint: the source arm here is refused for combining a
+     * query with view materialization.
+     *
+     * <p>The last two arms pin something else: this is the one factory that declares no required
+     * options, because one factory serves a sink, a direct table source and a query source, which
+     * need different ones. Everywhere else {@code helper.validate()} reports a missing required
+     * option before any connector check runs, so the parse follows {@code destination(...)} and
+     * {@code parentProject(...)} here to keep that answer the same.
+     *
+     * <p>Asserted on the root cause and paired with the negative: with the parse moved above {@code
+     * checkEmulatorEndpointsAreSupported}, {@code checkCredentials}, the query checks or the
+     * destination checks, the root cause becomes the {@code IllegalArgumentException}, whose
+     * message these phrases do not appear in.
+     *
+     * <p>Green on {@code origin/main} by construction. It guards the ordering, not the fix.
+     */
+    @Test
+    void refusesAnOptionOutrightBeforeReportingTheEndpointShape() {
+        Map<String, String> fileLoads = optionsFor(WriteMethod.FILE_LOADS);
+        fileLoads.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> sink(fileLoads))
+                .as("an emulator endpoint under file-loads")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("point at a BigQuery emulator")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> credentials = minimalOptions();
+        credentials.put("service-account-key-file", "/var/run/secrets/bigquery-key.json");
+        credentials.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> sink(credentials))
+                .as("an emulator endpoint beside a key file")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("emulator connections are credential-free")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> queriedView = minimalOptions();
+        queriedView.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        queriedView.put("source.materialize-views", "true");
+        queriedView.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> source(queriedView))
+                .as("a query beside view materialization")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("a query is already materialized")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> sinkWithoutTable = minimalOptions();
+        sinkWithoutTable.remove("table");
+        sinkWithoutTable.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> sink(sinkWithoutTable))
+                .as("a sink that has not said where it points")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("A 'bigquery' sink requires options")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> queryWithoutProject = minimalOptions();
+        queryWithoutProject.remove("project");
+        queryWithoutProject.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        queryWithoutProject.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> source(queryWithoutProject))
+                .as("a query source with no billing project")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("query source requires option")
+                .hasMessageNotContaining("must be host:port");
+    }
+
     @Test
     void schemaUpdateKeysReachTheBuiltSinkAndTheirAbsenceLeavesTheDefault() {
         BigQueryDefaultStreamSink<?> defaults =

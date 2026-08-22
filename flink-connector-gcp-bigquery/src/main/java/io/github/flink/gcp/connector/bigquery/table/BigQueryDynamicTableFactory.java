@@ -31,6 +31,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -214,6 +215,9 @@ public class BigQueryDynamicTableFactory
         checkEmulatorEndpointsAreSupported(config, writeMethod);
         checkCredentials(config);
         TableDestination destination = destination(config, "sink");
+        // After the checks that refuse an option outright, and after the one that reports a
+        // required option missing; see validateEmulatorEndpoints.
+        validateEmulatorEndpoints(config);
 
         // Built from the write method rather than from key presence, unlike the default-stream
         // family: the builder requires each of these for its write method, so a DDL that selects
@@ -382,6 +386,9 @@ public class BigQueryDynamicTableFactory
         }
         TableDestination table = query.isPresent() ? null : destination(config, "source");
         String parentProject = parentProject(config);
+        // After the checks that refuse an option outright, and after the ones that report a
+        // required option missing; see validateEmulatorEndpoints.
+        validateEmulatorEndpoints(config);
         boolean runsQuery = query.isPresent() || materializeViews;
 
         return BigQueryDynamicSource.builder()
@@ -492,6 +499,50 @@ public class BigQueryDynamicTableFactory
                             + "' or '"
                             + BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT.key()
                             + "': emulator connections are credential-free.");
+        }
+    }
+
+    /**
+     * Names the option keys rather than the builder setters a SQL caller never wrote (issue #1019,
+     * {@code docs/adr/0127}).
+     *
+     * <p>Both values reached {@code EmulatorEndpoint.parse} before this, through {@code
+     * emulatorEndpoint(String)} and {@code emulatorRestEndpoint(String)} on {@code
+     * BigQuerySinkBuilder} or {@code BigQuerySourceBuilder} during plan-to-runtime translation, so
+     * the failure already landed on the client — but named the setter. Those setters keep their
+     * parse: it is the check a DataStream caller meets, where those names are the right ones.
+     *
+     * <p>Two keys and two calls rather than one shared call: {@code emulator-endpoint} and {@code
+     * emulator-rest-endpoint} are separate options on separate transports, and naming the one the
+     * DDL carried is the whole point.
+     *
+     * <p>{@code emulator-rest-endpoint} is checked in both directions even where nothing reads it.
+     * A direct-table source leaves it unused — one {@code WITH} clause serves both directions, and
+     * a table read as a source must tolerate the endpoint its sink half needs — but a value that
+     * cannot be an endpoint at all is a typo wherever it sits, and a well-formed one is still
+     * accepted and still unused.
+     *
+     * <p>Call it after every check that refuses an option outright, never before one: {@code
+     * checkEmulatorEndpointsAreSupported} refuses both keys under {@code file-loads} and {@code
+     * checkCredentials} refuses them beside {@code service-account-key-file}, and a DDL told to
+     * remove an option is not helped by an answer about that option's shape. {@code
+     * TableCreateOptionsMapper} runs later and refuses options too, so a DDL that trips it and
+     * carries a malformed endpoint reads this message first.
+     *
+     * <p>It also follows {@code destination(...)} and {@code parentProject(...)}, which report a
+     * required option missing. On the other four connectors those options are declared in {@code
+     * requiredOptions()} and {@code helper.validate()} reports them before any check here runs;
+     * this factory declares none, because one factory serves a sink, a direct table source and a
+     * query source, which need different ones. Calling it here keeps the answer the same: a table
+     * that has not said where it points hears that first.
+     */
+    private static void validateEmulatorEndpoints(ReadableConfig config) {
+        for (ConfigOption<String> option :
+                Arrays.asList(
+                        BigQueryConnectorOptions.EMULATOR_ENDPOINT,
+                        BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT)) {
+            config.getOptional(option)
+                    .ifPresent(value -> EmulatorEndpoint.parse(value, option.key()));
         }
     }
 

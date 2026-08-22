@@ -318,6 +318,71 @@ class CloudTasksDynamicTableFactoryTest {
                 .hasStackTraceContaining("cannot be combined");
     }
 
+    /**
+     * Issue #1019: the rejection names {@code emulator-endpoint}, the key the DDL carried, rather
+     * than the {@code emulatorEndpoint(...)} setter the value used to reach on its way to a client.
+     *
+     * <p>Asserted on the root cause. {@code FactoryUtil} dumps every {@code WITH} option into its
+     * own message, so a needle of just the key would pass with the parse deleted; the root cause is
+     * the {@code IllegalArgumentException} the parse throws and carries nothing else. The needle
+     * also discriminates the fix, since {@code emulator-endpoint must be} is not a substring of
+     * {@code emulatorEndpoint must be}.
+     *
+     * <p>Two values, not a catalogue. {@code "localhost"} exercises the shape, and {@code ""} the
+     * one thing that is this layer's rather than the parser's: whether an option written {@code ''}
+     * arrives as present-and-empty rather than absent, so the check sees it at all. The rejection
+     * set itself belongs to {@code EmulatorEndpointTest}.
+     */
+    @Test
+    void rejectsAMalformedEmulatorEndpoint() {
+        for (String malformed : new String[] {"localhost", ""}) {
+            Map<String, String> options = minimalOptions();
+            options.put("emulator-endpoint", malformed);
+
+            assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                    .as("'%s'", malformed)
+                    .isInstanceOf(ValidationException.class)
+                    .rootCause()
+                    .hasMessage("emulator-endpoint must be host:port, was '" + malformed + "'");
+        }
+    }
+
+    /**
+     * Pins the endpoint parse behind every check this factory makes that refuses an option outright
+     * — a DDL told to remove an option is not helped by an answer about that option's shape. The
+     * option pre-empted need not be {@code emulator-endpoint} itself: an endpoint is legal under
+     * either target type, and {@code validateTargetFamily} refuses <em>other</em> options.
+     *
+     * <p>Asserted on the root cause and paired with the negative: with the parse moved above {@code
+     * validateCredentials} or {@code validateTargetFamily} the root cause becomes the {@code
+     * IllegalArgumentException}, whose message these phrases do not appear in.
+     *
+     * <p>Green on {@code origin/main} by construction. It guards the ordering, not the fix.
+     */
+    @Test
+    void refusesAnOptionOutrightBeforeReportingTheEndpointShape() {
+        Map<String, String> credentials = minimalOptions();
+        credentials.put("service-account-key-file", "/var/run/secrets/gcp/key.json");
+        credentials.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, credentials))
+                .as("an emulator endpoint beside a key file")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("cannot be combined")
+                .hasMessageNotContaining("must be host:port");
+
+        Map<String, String> foreignFamily = minimalOptions();
+        foreignFamily.put("target.type", "app-engine");
+        foreignFamily.put("app-engine.relative-uri", "/tasks");
+        foreignFamily.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, foreignFamily))
+                .as("an http option under the App Engine target")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("does not belong to target.type")
+                .hasMessageNotContaining("must be host:port");
+    }
+
     @Test
     void rejectsOidcAndOAuthTogether() {
         Map<String, String> options = minimalOptions();
