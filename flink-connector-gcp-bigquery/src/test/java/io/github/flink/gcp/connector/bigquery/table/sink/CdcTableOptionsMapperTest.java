@@ -85,4 +85,14 @@ class CdcTableOptionsMapperTest {
         assertThat(CdcTableOptionsMapper.policy(config))
                 .isEqualTo(CdcTableReconciliationPolicy.RECONCILE);
     }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Configuration config = new Configuration();
+        config.set(BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS, Duration.ZERO);
+
+        assertThatThrownBy(() -> CdcTableOptionsMapper.map(config, Arrays.asList("id")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.cdc.max-staleness' is invalid");
+    }
 }

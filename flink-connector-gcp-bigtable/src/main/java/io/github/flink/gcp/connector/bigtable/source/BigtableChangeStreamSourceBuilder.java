@@ -148,7 +148,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
      * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> maxConcurrentStreamsPerSubtask(int maximum) {
-        Preconditions.checkArgument(maximum > 0, "maximum must be positive");
+        Preconditions.checkArgument(maximum > 0, "maxConcurrentStreamsPerSubtask must be positive");
         this.maxConcurrentStreamsPerSubtask = maximum;
         return this;
     }

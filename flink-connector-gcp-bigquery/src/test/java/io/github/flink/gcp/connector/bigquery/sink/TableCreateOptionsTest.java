@@ -88,7 +88,7 @@ class TableCreateOptionsTest {
                                 TableCreateOptions.builder()
                                         .timePartitioningExpiration(Duration.ofNanos(500_000)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("expiration must be at least 1 millisecond");
+                .hasMessageContaining("timePartitioningExpiration must be at least 1 millisecond");
     }
 
     @Test

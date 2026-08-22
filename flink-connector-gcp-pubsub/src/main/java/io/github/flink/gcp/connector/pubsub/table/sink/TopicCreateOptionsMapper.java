@@ -23,6 +23,7 @@ import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
+import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 import javax.annotation.Nullable;
@@ -34,11 +35,11 @@ import java.util.List;
 /**
  * Builds {@link TopicCreateOptions} from the table options.
  *
- * <p>Under the same contract as {@code PublisherOptionsMapper}: every knob is applied with {@code
- * getOptional(...).ifPresent(...)}, no default is introduced, and value validation is left to the
- * builder so a SQL user gets the message a DataStream user gets. The two rules owned here — the
- * disposition cross-check and the storage-policy pair — are owned because their messages must name
- * option keys rather than builder methods.
+ * <p>Under the same contract as {@code PublisherOptionsMapper}: every knob is applied through
+ * {@link OptionSetters}, no default is introduced, and each bound stays in the builder — a value it
+ * rejects is renamed to the option key (issue #1030). The two rules owned here — the disposition
+ * cross-check and the storage-policy pair — are owned because their messages must name option keys
+ * rather than builder methods.
  *
  * <p><b>Unlike the source's {@code scan.auto-create.*}, these options do not authorize creation</b>
  * — {@code sink.create-disposition} does, and it defaults to {@code create-if-needed}, so the
@@ -111,15 +112,20 @@ public final class TopicCreateOptionsMapper {
         }
 
         TopicCreateOptions.Builder builder = TopicCreateOptions.builder();
-        config.getOptional(PubSubConnectorOptions.SINK_AUTO_CREATE_MESSAGE_RETENTION)
-                .ifPresent(builder::messageRetention);
-        config.getOptional(PubSubConnectorOptions.SINK_AUTO_CREATE_KMS_KEY_NAME)
-                .ifPresent(builder::kmsKeyName);
-        config.getOptional(PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS)
-                .ifPresent(builder::allowedPersistenceRegions);
-        config.getOptional(
-                        PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ENFORCE_IN_TRANSIT)
-                .ifPresent(builder::enforceInTransit);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_AUTO_CREATE_MESSAGE_RETENTION,
+                builder::messageRetention);
+        OptionSetters.apply(
+                config, PubSubConnectorOptions.SINK_AUTO_CREATE_KMS_KEY_NAME, builder::kmsKeyName);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS,
+                builder::allowedPersistenceRegions);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ENFORCE_IN_TRANSIT,
+                builder::enforceInTransit);
         return builder.build();
     }
 }

@@ -65,12 +65,13 @@ import java.util.Set;
  * Creates the {@code bigquery} table source or sink from a {@code CREATE TABLE} statement's
  * options.
  *
- * <p>This is the only place a DDL option becomes a value. Value validation stays in the connector's
- * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
- * are the checks whose message has to name <em>option keys</em>, which a builder's cannot. Most are
- * cross-checks against the selected write method, decided from the {@code WITH} clause alone: a
- * tuning family belonging to another one, an emulator endpoint under {@code file-loads}, and — in
- * {@code FileLoadsOptionsMapper} — a missing staging path.
+ * <p>This is the only place a DDL option becomes a value. Value bounds stay in the connector's own
+ * builders, and a value they reject is renamed to its option key ({@code OptionSetters}, issue
+ * #1030); what this class owns are the checks whose message has to name <em>option keys</em>
+ * outright, which a builder's cannot. Most are cross-checks against the selected write method,
+ * decided from the {@code WITH} clause alone: a tuning family belonging to another one, an emulator
+ * endpoint under {@code file-loads}, and — in {@code FileLoadsOptionsMapper} — a missing staging
+ * path.
  *
  * <p>{@code checkFileLoadsStreamingRules} is the exception, and the only place this class reads the
  * <em>session</em> configuration rather than the table's own options: a non-append write

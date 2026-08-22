@@ -234,6 +234,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Table API / SQL (`docs/adr/0031`–`0033`, `0035`; shared rules `docs/adr/0014`)
 
+- A single option value a DataStream builder rejects is renamed to its option key through the
+  module's `table.OptionSetters` (`docs/adr/0133`); a new mapper line goes through it, and
+  cross-field checks keep the restate-in-DDL-keys judgment (`docs/adr/0007`).
 - The factory serves both directions.
   A sink and direct table source require `project`, `dataset`, and `table`; `source.query` requires
   either `project` or `source.parent-project` and is mutually exclusive with

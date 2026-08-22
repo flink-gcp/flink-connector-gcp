@@ -186,16 +186,23 @@ class SpannerChangeStreamSourceBuilderTest {
 
     @Test
     void invalidBoundsFailAtTheSetter() {
+        // The messages name the setters, not their parameters: a DataStream caller wrote
+        // heartbeatInterval(...), never "interval" (#1030).
         assertThatThrownBy(() -> builder().heartbeatInterval(Duration.ofMillis(999)))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("heartbeatInterval must be between");
         assertThatThrownBy(() -> builder().heartbeatInterval(Duration.ofMillis(300_001)))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder().heartbeatInterval(Duration.ofSeconds(1).plusNanos(1)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("whole milliseconds");
+                .hasMessageContaining(
+                        "heartbeatInterval must be expressible as whole milliseconds");
+        assertThatThrownBy(() -> builder().absentRetentionFallback(Duration.ofSeconds(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("absentRetentionFallback must be longer than");
         assertThatThrownBy(() -> builder().maxConcurrentQueriesPerSubtask(0))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("positive");
+                .hasMessageContaining("maxConcurrentQueriesPerSubtask must be positive");
         assertThatThrownBy(() -> builder().absentRetentionFallback(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retention safety margin");

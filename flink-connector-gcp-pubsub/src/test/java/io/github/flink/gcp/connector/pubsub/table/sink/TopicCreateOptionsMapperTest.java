@@ -164,4 +164,15 @@ class TopicCreateOptionsMapperTest {
 
         assertThat(map(options)).isEqualTo(TopicCreateOptions.builder().build());
     }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.auto-create.message-retention", "0 s");
+
+        assertThatThrownBy(() -> TopicCreateOptionsMapper.map(Configuration.fromMap(options)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.auto-create.message-retention' is invalid")
+                .hasMessageContaining("messageRetention must be positive");
+    }
 }

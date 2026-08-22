@@ -398,26 +398,43 @@ class TableCreateOptionsMapperTest {
         // "use one semicolon" rule, which does not read string literals.
         blankInAList.put(CLUSTERED, "region;" + ";name");
         assertThatThrownBy(() -> map(blankInAList))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.table-create.clustered-fields' is invalid")
                 .hasMessageContaining("clustering columns must not be blank");
 
         Map<String, String> blankField = new HashMap<>();
         blankField.put(TYPE, "day");
         blankField.put(FIELD, "   ");
         assertThatThrownBy(() -> map(blankField))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Option 'sink.table-create.time-partitioning.field' is invalid")
                 .hasMessageContaining("field must not be blank");
     }
 
     @Test
-    void aValueTheBuilderRejectsKeepsTheBuildersOwnMessage() {
-        // Value validation is not this mapper's: a fifth clustering column is the builder's
-        // message, naming its own limit, so a SQL user and a DataStream user read the same thing.
+    void aValueTheBuilderRejectsIsRenamedToItsOptionKey() {
+        // The bound is the builder's; the mapper renames its rejection to the key the SQL caller
+        // wrote and keeps the builder's sentence as the detail (#1030).
         Map<String, String> options = new HashMap<>();
         options.put(CLUSTERED, "name;event_ts;region;name;event_ts");
 
         assertThatThrownBy(() -> map(options))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.table-create.clustered-fields' is invalid")
                 .hasMessageContaining("at most 4 clustering columns");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.table-create.time-partitioning.type", "DAY");
+        options.put("sink.table-create.time-partitioning.expiration", "0 ms");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Option 'sink.table-create.time-partitioning.expiration' is invalid")
+                .hasMessageContaining("timePartitioningExpiration must be at least 1 millisecond");
     }
 }

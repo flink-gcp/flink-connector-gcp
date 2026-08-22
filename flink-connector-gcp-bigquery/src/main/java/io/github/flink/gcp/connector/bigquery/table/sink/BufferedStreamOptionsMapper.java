@@ -18,11 +18,11 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,8 +32,8 @@ import java.util.List;
  * Maps the {@code sink.buffered-stream.*} options onto {@link BufferedStreamOptions}.
  *
  * <p>Under the same contract as {@code DefaultStreamOptionsMapper}: every knob is applied through
- * the builder, no default is introduced, and value validation stays with that builder so a SQL user
- * gets the message a DataStream user gets.
+ * {@link OptionSetters}, no default is introduced, each bound stays with the builder, and a value
+ * it rejects is renamed to the option key (issue #1030).
  *
  * <p><b>Unlike that mapper, this one always builds</b>, and the difference is not a stylistic one.
  * {@code defaultStreamOptions(...)} is optional on {@code BigQuerySinkBuilder}; {@code
@@ -86,29 +86,48 @@ public final class BufferedStreamOptionsMapper {
     public static BufferedStreamOptions map(ReadableConfig config) {
         BufferedStreamOptions.Builder builder = BufferedStreamOptions.builder();
 
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::maxAppendRequestBytes);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT)
-                .ifPresent(builder::destinationIdleTimeout);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES,
+                size -> builder.maxAppendRequestBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT,
+                builder::destinationIdleTimeout);
 
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF)
-                .ifPresent(builder::recoveryInitialBackoff);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_BACKOFF)
-                .ifPresent(builder::recoveryMaxBackoff);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_ATTEMPTS)
-                .ifPresent(builder::recoveryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF,
+                builder::recoveryInitialBackoff);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_BACKOFF,
+                builder::recoveryMaxBackoff);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_MAX_ATTEMPTS,
+                builder::recoveryMaxAttempts);
 
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_INITIAL_DELAY)
-                .ifPresent(builder::retryInitialDelay);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_DELAY_MULTIPLIER)
-                .ifPresent(builder::retryDelayMultiplier);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DELAY)
-                .ifPresent(builder::retryMaxDelay);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_ATTEMPTS)
-                .ifPresent(builder::retryMaxAttempts);
-        config.getOptional(BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DURATION)
-                .ifPresent(builder::maxRetryDuration);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_INITIAL_DELAY,
+                builder::retryInitialDelay);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_DELAY_MULTIPLIER,
+                builder::retryDelayMultiplier);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DELAY,
+                builder::retryMaxDelay);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_ATTEMPTS,
+                builder::retryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RETRY_MAX_DURATION,
+                builder::maxRetryDuration);
 
         return builder.build();
     }

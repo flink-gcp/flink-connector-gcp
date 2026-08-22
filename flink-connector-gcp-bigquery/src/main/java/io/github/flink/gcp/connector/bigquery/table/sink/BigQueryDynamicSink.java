@@ -45,6 +45,8 @@ import io.github.flink.gcp.connector.bigquery.sink.cdc.TiCdcSequenceNumberEncode
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
@@ -231,9 +233,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         if (cdcTableReconciliationPolicy != null) {
             builder.cdcTableReconciliationPolicy(cdcTableReconciliationPolicy);
         }
-        if (location != null) {
-            builder.location(location);
-        }
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SINK_LOCATION.key(), location, builder::location);
         if (schemaUpdateOptions != null) {
             builder.schemaUpdateOptions(schemaUpdateOptions);
         }

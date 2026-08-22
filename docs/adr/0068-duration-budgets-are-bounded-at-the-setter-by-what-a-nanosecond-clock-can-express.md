@@ -83,7 +83,9 @@ ValidationException: Unable to create a sink for writing table 'default.default.
 
 The actionable sentence reaches the user in the cause, and `shutdownTimeout` maps onto
 `sink.shutdown-timeout` readably — which is what settles the "restate it in DDL keys" question
-below, and it is also what showed the raw `Duration` to be unreadable on its own.
+below, and it is also what showed the raw `Duration` to be unreadable on its own. (Since
+[ADR-0133] the mapper renames such a rejection to its option key before `FactoryUtil` wraps it;
+the bound itself still lives only at the setter, which is this record's decision.)
 
 ## Alternatives declined
 
@@ -291,17 +293,21 @@ the failure.**
     (it is applied at millisecond granularity): PT0.0005S
   ```
 
-  So the floor is **not** restated in DDL keys, on the same measurement the ceiling was: the
+  So the floor is **not** restated in DDL keys ([ADR-0133] later renames the rejection to the
+  option key at the mapper seam, which restates nothing), on the same measurement the ceiling
+  was: the
   actionable sentence reaches the user in the cause, and `recoveryInitialBackoff` is legible as
   `…recovery.initial-backoff`, unlike ADR-0007's `retryTotalTimeout`. The probe also settled that
   the floor is reachable from SQL at all — Flink's duration parser rejects `us` but accepts
   `micros`, `µs` and `nanos`, so a sub-millisecond value is expressible in a `WITH` clause. The
   one knob whose builder name `TableCreateOptionsMapper` already judges unactionable in DDL,
-  `timePartitioningExpiration`, is covered by accident rather than by exception: its floor message
-  names `expiration`, which is its option key's own last segment.
+  `timePartitioningExpiration`, was covered by accident rather than by exception — its floor
+  message named `expiration`, its option key's own last segment — until [ADR-0133], which renamed
+  the message to the setter and the mapper's rejection to the full option key.
 
 [#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
 [#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
 [#381]: https://github.com/laughingman7743/flink-connector-gcp/issues/381
 [#413]: https://github.com/laughingman7743/flink-connector-gcp/issues/413
+[ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

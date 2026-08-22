@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ReadableConfig;
 
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.table.CloudTasksConnectorOptions;
+import io.github.flink.gcp.connector.cloudtasks.table.OptionSetters;
 
 /** Maps Table API options onto the DataStream writer options. */
 @Internal
@@ -30,24 +31,42 @@ public final class CloudTasksWriterOptionsMapper {
 
     public static CloudTasksWriterOptions map(ReadableConfig config) {
         CloudTasksWriterOptions.Builder builder = CloudTasksWriterOptions.builder();
-        config.getOptional(CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS)
-                .ifPresent(builder::maxInFlightTasks);
-        config.getOptional(CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE)
-                .ifPresent(builder::channelPoolSize);
-        config.getOptional(CloudTasksConnectorOptions.SINK_RETRY_INITIAL_BACKOFF)
-                .ifPresent(builder::retryInitialBackoff);
-        config.getOptional(CloudTasksConnectorOptions.SINK_RETRY_MAX_BACKOFF)
-                .ifPresent(builder::retryMaxBackoff);
-        config.getOptional(CloudTasksConnectorOptions.SINK_RETRY_MAX_ATTEMPTS)
-                .ifPresent(builder::retryMaxAttempts);
-        config.getOptional(CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_INITIAL_BACKOFF)
-                .ifPresent(builder::notFoundInitialBackoff);
-        config.getOptional(CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_BACKOFF)
-                .ifPresent(builder::notFoundMaxBackoff);
-        config.getOptional(CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_ATTEMPTS)
-                .ifPresent(builder::notFoundMaxAttempts);
-        config.getOptional(CloudTasksConnectorOptions.SINK_METRICS_PER_DESTINATION)
-                .ifPresent(builder::perDestinationMetrics);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS,
+                builder::maxInFlightTasks);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE,
+                builder::channelPoolSize);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
+                builder::retryInitialBackoff);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_RETRY_MAX_BACKOFF,
+                builder::retryMaxBackoff);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
+                builder::retryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_INITIAL_BACKOFF,
+                builder::notFoundInitialBackoff);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_BACKOFF,
+                builder::notFoundMaxBackoff);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_ATTEMPTS,
+                builder::notFoundMaxAttempts);
+        OptionSetters.apply(
+                config,
+                CloudTasksConnectorOptions.SINK_METRICS_PER_DESTINATION,
+                builder::perDestinationMetrics);
         return builder.build();
     }
 }

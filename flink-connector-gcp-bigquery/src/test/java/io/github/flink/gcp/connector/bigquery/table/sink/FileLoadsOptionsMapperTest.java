@@ -206,13 +206,14 @@ class FileLoadsOptionsMapperTest {
     }
 
     @Test
-    void aValueTheBuilderRejectsKeepsTheBuildersOwnMessage() {
-        // Value validation is not this mapper's: a staging path that is not a gs:// URI is the
-        // builder's message, so a SQL user and a DataStream user read the same thing.
+    void aValueTheBuilderRejectsIsRenamedToItsOptionKey() {
+        // The bound is the builder's; the mapper renames its rejection to the key the SQL caller
+        // wrote and keeps the builder's sentence as the detail (#1030).
         Map<String, String> options = new HashMap<>();
         options.put(key("stagingPath"), "s3://bucket/prefix");
         assertThatThrownBy(() -> map(options))
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.file-loads.staging-path' is invalid")
                 .hasMessageContaining("stagingPath must be of the form gs://bucket[/prefix]");
     }
 
@@ -223,5 +224,17 @@ class FileLoadsOptionsMapperTest {
 
         assertThat(FileLoadsOptionsMapper.presentKeys(Configuration.fromMap(options)))
                 .containsExactly(key("stagingPath"), key("schemaReconcileMaxAttempts"));
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.file-loads.staging-path", "gs://bucket/prefix");
+        options.put("sink.file-loads.max-staging-file-bytes", "0");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.file-loads.max-staging-file-bytes' is invalid")
+                .hasMessageContaining("maxStagingFileBytes must be positive");
     }
 }

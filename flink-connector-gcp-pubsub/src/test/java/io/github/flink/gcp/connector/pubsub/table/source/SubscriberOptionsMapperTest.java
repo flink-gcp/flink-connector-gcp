@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.table.source;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
@@ -35,6 +36,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link SubscriberOptionsMapper}. */
 class SubscriberOptionsMapperTest {
@@ -147,5 +149,16 @@ class SubscriberOptionsMapperTest {
         // A defaulted knob keeps the options object's default rather than picking one up here.
         assertThat(mapped.getShutdownTimeout())
                 .isEqualTo(PubSubSubscriberOptions.defaults().getShutdownTimeout());
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("scan.parallel-pull-count", "0");
+
+        assertThatThrownBy(() -> SubscriberOptionsMapper.map(Configuration.fromMap(options)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.parallel-pull-count' is invalid")
+                .hasMessageContaining("parallelPullCount must be positive");
     }
 }

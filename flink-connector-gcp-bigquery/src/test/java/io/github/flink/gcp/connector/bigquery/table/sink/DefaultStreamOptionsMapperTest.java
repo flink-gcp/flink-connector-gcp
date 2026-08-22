@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
@@ -34,6 +35,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link DefaultStreamOptionsMapper}. */
 class DefaultStreamOptionsMapperTest {
@@ -209,5 +211,17 @@ class DefaultStreamOptionsMapperTest {
 
         assertThat(DefaultStreamOptionsMapper.presentKeys(Configuration.fromMap(options)))
                 .containsExactly(key("maxInflightRequests"), key("flushInterval"));
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.default-stream.max-inflight-requests", "0");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Option 'sink.default-stream.max-inflight-requests' is invalid")
+                .hasMessageContaining("maxInflightRequests must be positive");
     }
 }

@@ -39,6 +39,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamStartPositionMapper;
+import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
@@ -192,10 +193,19 @@ public final class SpannerChangeStreamDynamicSource
                                         changelogMode,
                                         selectedMetadata,
                                         producedType))
-                        .startPosition(startPosition)
-                        .absentRetentionFallback(absentRetentionFallback)
-                        .heartbeatInterval(heartbeatInterval)
-                        .maxConcurrentQueriesPerSubtask(maxConcurrentQueriesPerSubtask);
+                        .startPosition(startPosition);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK.key(),
+                absentRetentionFallback,
+                builder::absentRetentionFallback);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL.key(),
+                heartbeatInterval,
+                builder::heartbeatInterval);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK.key(),
+                maxConcurrentQueriesPerSubtask,
+                builder::maxConcurrentQueriesPerSubtask);
         if (resumeFallback != null) {
             builder.resumeFallback(resumeFallback);
         }

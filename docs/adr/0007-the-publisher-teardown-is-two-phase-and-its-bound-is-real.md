@@ -111,7 +111,10 @@ nowhere in a `WITH` clause. The rule that generalises (the counter-example being
 `PubSubSourceBuilder`'s `parallelPullCount` × `PER_KEY` check, which throws from
 `getScanRuntimeProvider`, outside the factory's `try`): **a check that fires inside
 `createDynamicTable{Source,Sink}` is wrapped, and a check whose message names Java setters needs
-restating in option keys; one whose message needs no translation does not.**
+restating in option keys; one whose message needs no translation does not.** (For single-value
+checks this judgment was later replaced by a mechanical rename at the mapper seam — [ADR-0133];
+the restating rule remains the cross-field checks' rule, with this record's restatement as the
+example.)
 Deliberately **no runtime re-check** in `DefaultPublisherFactory`: `PubSubWriter` carries the
 Bigtable-style "deserialization does not run the builder" guard for `maxInFlightMessages`
 because that invariant is *relied on* (a non-positive cap parks the task forever), and this one
@@ -197,3 +200,4 @@ DLQ's **flush**, a separate budget (ADR-0009).
 [#324]: https://github.com/laughingman7743/flink-connector-gcp/issues/324
 [#328]: https://github.com/laughingman7743/flink-connector-gcp/issues/328
 [#329]: https://github.com/laughingman7743/flink-connector-gcp/issues/329
+[ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

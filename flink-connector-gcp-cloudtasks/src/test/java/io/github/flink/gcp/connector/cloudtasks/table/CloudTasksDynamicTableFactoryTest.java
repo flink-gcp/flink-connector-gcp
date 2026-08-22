@@ -657,4 +657,15 @@ class CloudTasksDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("http.multipart.boundary");
     }
+
+    @Test
+    void namesTheOptionKeyWhenAWriterValueIsRejected() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.max-in-flight-tasks", "0");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option 'sink.max-in-flight-tasks' is invalid")
+                .hasStackTraceContaining("maxInFlightTasks must be positive");
+    }
 }

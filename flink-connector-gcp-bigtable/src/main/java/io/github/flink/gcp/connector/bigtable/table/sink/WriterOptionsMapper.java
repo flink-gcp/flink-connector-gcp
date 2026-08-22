@@ -17,24 +17,23 @@
 package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
+import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 /**
  * Builds {@link BigtableWriterOptions} from the table options.
  *
- * <p>Every knob is applied with {@code getOptional(...).ifPresent(...)}, so an option absent from
- * the DDL leaves the builder at its own default and an empty configuration produces exactly {@link
+ * <p>Every knob is applied through {@link OptionSetters}, so an option absent from the DDL leaves
+ * the builder at its own default and an empty configuration produces exactly {@link
  * BigtableWriterOptions#defaults()}. That is the whole contract of this class: it adds no defaults
- * of its own, and a bad <em>value</em> is rejected by the builder's own checks, so a SQL user gets
- * the same message a DataStream user does.
+ * of its own, each bound stays in the builder's own checks, and a single value the builder rejects
+ * is renamed to the option key the SQL caller wrote (issue #1030).
  *
- * <p>No cross-check is restated here. Each of the writer's own is either about a single value (the
- * batch ceilings, which name the number rather than a setter) or compares two knobs whose DDL keys
- * are spelled the same way as their setters ({@code sink.recovery.max-backoff} against {@code
+ * <p>No cross-check is restated here. The writer's one cross-check compares two knobs whose DDL
+ * keys are spelled the same way as their setters ({@code sink.recovery.max-backoff} against {@code
  * sink.recovery.initial-backoff}), so the builder's message is readable from a {@code WITH} clause
  * as it stands. The Pub/Sub mapper restates one because its does not.
  */
@@ -53,31 +52,49 @@ public final class WriterOptionsMapper {
     public static BigtableWriterOptions map(ReadableConfig config) {
         BigtableWriterOptions.Builder builder = BigtableWriterOptions.builder();
 
-        config.getOptional(BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT)
-                .ifPresent(builder::batchElementCount);
-        config.getOptional(BigtableConnectorOptions.SINK_BATCHING_BYTE_SIZE)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::batchByteSize);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT,
+                builder::batchElementCount);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_BATCHING_BYTE_SIZE,
+                size -> builder.batchByteSize(size.getBytes()));
 
-        config.getOptional(BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES)
-                .ifPresent(builder::maxInFlightEntries);
-        config.getOptional(BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::maxInFlightBytes);
-        config.getOptional(BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS)
-                .ifPresent(builder::maxConsecutiveRejections);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES,
+                builder::maxInFlightEntries);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
+                size -> builder.maxInFlightBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
+                builder::maxConsecutiveRejections);
 
-        config.getOptional(BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF)
-                .ifPresent(builder::recoveryInitialBackoff);
-        config.getOptional(BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF)
-                .ifPresent(builder::recoveryMaxBackoff);
-        config.getOptional(BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
-                .ifPresent(builder::recoveryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                builder::recoveryInitialBackoff);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                builder::recoveryMaxBackoff);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                builder::recoveryMaxAttempts);
 
-        config.getOptional(BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT)
-                .ifPresent(builder::destinationIdleTimeout);
-        config.getOptional(BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION)
-                .ifPresent(builder::perDestinationMetrics);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
+                builder::destinationIdleTimeout);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION,
+                builder::perDestinationMetrics);
 
         return builder.build();
     }

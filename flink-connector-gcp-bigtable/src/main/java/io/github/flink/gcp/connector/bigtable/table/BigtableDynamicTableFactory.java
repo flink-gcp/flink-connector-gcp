@@ -62,14 +62,14 @@ import java.util.stream.Collectors;
  * Creates the {@code bigtable} table sink and table source from a {@code CREATE TABLE} statement's
  * options.
  *
- * <p>This is the only place a DDL option becomes a value. Value validation stays in the connector's
- * own builders, so a SQL user gets the same message a DataStream user does; what this class owns
- * are the checks whose message has to name <em>option keys</em> or <em>columns</em>, which a
- * builder's cannot — among them the shape of the DDL schema, the primary key, a scan bound the
- * client would silently widen, an option belonging to the scan mode this DDL did not select, a
- * Change Streams table used as a write target, and the credential keys that are mutually exclusive.
- * A table-creation key set under a disposition that creates nothing is rejected on the same
- * grounds, by the option mapper this class calls.
+ * <p>This is the only place a DDL option becomes a value. Value bounds stay in the connector's own
+ * builders, and a value they reject is renamed to its option key ({@code OptionSetters}, issue
+ * #1030); what this class owns are the checks whose message has to name <em>option keys</em> or
+ * <em>columns</em> outright, which a builder's cannot — among them the shape of the DDL schema, the
+ * primary key, a scan bound the client would silently widen, an option belonging to the scan mode
+ * this DDL did not select, a Change Streams table used as a write target, and the credential keys
+ * that are mutually exclusive. A table-creation key set under a disposition that creates nothing is
+ * rejected on the same grounds, by the option mapper this class calls.
  *
  * <p>The identifier {@code bigtable} is also google/flink-connector-gcp's. A classpath carrying
  * both fails factory discovery loudly, which is the acceptable outcome: the natural name wins.

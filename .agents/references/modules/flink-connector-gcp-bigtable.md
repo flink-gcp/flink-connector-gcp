@@ -354,7 +354,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`, Change Streams `docs/adr/0106`; shared rules `docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
-  setter, `getOptional(...).ifPresent(...)`, no default restated. Table-owned options have no
+  setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated. Table-owned options have no
   builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The six
   defaulted table-owned options are `scan.mode`, `null-string-literal`,
   `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
