@@ -61,8 +61,14 @@ class RowDataSerializationSchemaTest {
                                                                     "flag", DataTypes.BOOLEAN()))))
                                     .getLogicalType());
 
+    /** What the planner hands a DDL that declares the {@code timestamp} metadata column. */
+    private static final WritableMetadata[] WITH_TIMESTAMP = {WritableMetadata.TIMESTAMP};
+
+    /** What it hands one that declares no metadata column at all. */
+    private static final WritableMetadata[] NO_METADATA = {};
+
     private static final RowDataSerializationSchema SERIALIZER =
-            new RowDataSerializationSchema(SCHEMA, "NULL", false, false);
+            new RowDataSerializationSchema(SCHEMA, "NULL", NO_METADATA, false);
 
     private static RowData row(RowKind kind, Object key, Object cf1, Object cf2) {
         GenericRowData row = GenericRowData.of(key, cf1, cf2);
@@ -167,7 +173,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void explicitTimestampMetadataIsAppliedToEveryCellAtMicrosecondPrecision() throws Exception {
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(SCHEMA, "NULL", true, false);
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, false);
 
         MutateRowsRequest.Entry entry =
                 serializer
@@ -187,7 +193,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void truncationDropsOnlyTheSubMillisecondPartOfExplicitMetadata() throws Exception {
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(SCHEMA, "NULL", true, true);
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, true);
 
         MutateRowsRequest.Entry entry =
                 serializer
@@ -206,7 +212,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void nullTimestampMetadataKeepsTheWriterClockPath() throws Exception {
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(SCHEMA, "NULL", true, true);
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, true);
 
         long beforeMillis = System.currentTimeMillis();
         MutateRowsRequest.Entry entry =
@@ -227,7 +233,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void aDeleteIgnoresTimestampMetadata() throws Exception {
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(SCHEMA, "NULL", true, false);
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, false);
 
         MutateRowsRequest.Entry entry =
                 serializer
@@ -242,7 +248,7 @@ class RowDataSerializationSchemaTest {
     @Test
     void timestampMetadataOutsideEpochMicrosecondsIsRejected() {
         RowDataSerializationSchema serializer =
-                new RowDataSerializationSchema(SCHEMA, "NULL", true, false);
+                new RowDataSerializationSchema(SCHEMA, "NULL", WITH_TIMESTAMP, false);
 
         assertThatThrownBy(
                         () ->
@@ -408,7 +414,8 @@ class RowDataSerializationSchemaTest {
         GenericRowData row = GenericRowData.of(1L, GenericRowData.of(StringData.fromString("v")));
 
         RowMutationEntry entry =
-                new RowDataSerializationSchema(schema, "NULL", false, false).serialize(row, null);
+                new RowDataSerializationSchema(schema, "NULL", NO_METADATA, false)
+                        .serialize(row, null);
 
         assertThat(entry.toProto().getRowKey())
                 .isEqualTo(ByteString.copyFrom(new byte[] {0, 0, 0, 0, 0, 0, 0, 1}));
