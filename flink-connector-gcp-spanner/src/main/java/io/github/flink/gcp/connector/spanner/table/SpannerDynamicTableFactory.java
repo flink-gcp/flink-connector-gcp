@@ -29,6 +29,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
@@ -130,6 +131,8 @@ public final class SpannerDynamicTableFactory
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
         rejectChangeStreamOptions(context.getCatalogTable().getOptions(), "a sink");
+        // After the check that refuses an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
         SpannerTableName table = tableName(config);
@@ -161,6 +164,8 @@ public final class SpannerDynamicTableFactory
         DataType physicalType = context.getPhysicalRowDataType();
         SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
         validateSourceMode(context.getCatalogTable().getOptions(), config, schema);
+        // After the check that refuses an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
             return SpannerChangeStreamDynamicSource.from(
                     schema, physicalType, config, tableName(config));
@@ -279,6 +284,23 @@ public final class SpannerDynamicTableFactory
             throw new ValidationException(
                     "service-account-key-file cannot be combined with emulator-endpoint.");
         }
+    }
+
+    /**
+     * Reaches the lookup path, which {@code SpannerDatabaseRowLookup} left until it opened on a
+     * TaskManager (issue #1013, {@code docs/adr/0127}).
+     *
+     * <p>Call it after every check that refuses an option outright, never before one. An emulator
+     * endpoint is itself legal in every Spanner mode, but {@code validateSourceMode} and {@code
+     * rejectChangeStreamOptions} refuse <em>other</em> options, and a DDL told to remove one of
+     * those is not helped by an answer about this one's shape.
+     */
+    private static void validateEmulatorEndpoint(ReadableConfig config) {
+        config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT)
+                .ifPresent(
+                        value ->
+                                EmulatorEndpoint.parse(
+                                        value, SpannerConnectorOptions.EMULATOR_ENDPOINT.key()));
     }
 
     private static SpannerTableName tableName(ReadableConfig config) {

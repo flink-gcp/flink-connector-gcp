@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0127: A configured name is checked for what this project will do with it
 
 - Status: Accepted
-- Date: 2026-08-22 (measured 2026-08-22)
-- Issues: [#984], [#920], [#976]
+- Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22)
+- Issues: [#984], [#920], [#976], [#1009], [#1013]
 - Modules: base (`base.options`), bigquery, bigtable, cloudtasks, pubsub, spanner
 - Current behavior: `docs/content/docs/connectors/_index.md`, "What a builder checks"
 
@@ -110,6 +110,33 @@ BigQuery would have created".
 A proposal to add a character check names which of the three shapes it is. "The service might reject
 it" is not one of them, and shape 3 asks for the failure it prevents, not the possibility of one.
 
+**A check runs where the value is configured.** The first version of this ADR said which values are
+checked and left where open, and that silence is what [#1009] and [#1013] found: `EmulatorEndpoint`
+is named under shape 2, yet the Bigtable and Spanner lookup runtimes held the option's value as a
+string and parsed it on a TaskManager, so a malformed endpoint on a table joined as a lookup
+dimension survived planning and job submission. For a DataStream caller the configuring point is the
+builder setter, which is where [#235] put it. For a SQL caller it is the table factory reading the
+option, and the two connectors whose lookup runtimes held the value now parse there. The other three
+have no lookup path, so their factory hands the string to a dynamic source or sink that reaches the
+builder setter during plan-to-runtime translation — later than a factory check, still on the client.
+
+A later re-check is not a contradiction, and two shapes of it appear here. One is a value that does
+not exist until later: a Cloud Tasks target URL an extractor produced cannot be checked at the
+builder, which is why `serialize` checks again. The other is an `@Internal` constructor a check
+would otherwise sit in front of rather than behind — the lookup runtimes keep their parse for that
+reason, passing the same option key, so the sentence is identical wherever it lands. What is ruled
+out is a value that *is* known at configuration time and is checked only at runtime, because that
+buys nothing and costs a submitted job.
+
+**A shape check goes behind every check that refuses an option outright, never in front of one.** A
+DDL being told to remove an option is not helped by an answer about that option's shape, and the
+option pre-empted need not be the one being parsed: Bigtable's `emulator-endpoint` is bounded-only,
+so the parse follows the scan-mode check, but Spanner accepts one in every mode and the parse still
+follows `validateSourceMode`, because that call refuses *other* options. Both connectors' sink paths
+sit behind their change-stream-option refusal for the same reason. Getting this wrong is invisible
+in a passing build, so each ordering carries a test that asserts the removal message and asserts the
+shape message is absent.
+
 ## Evidence
 
 Measured on `origin/main` at `fb600036`, 2026-08-22.
@@ -178,6 +205,20 @@ Tightening an input check after `1.0.0` is the expensive direction, since it rej
 that previously worked. That is why the question carried the release milestone, and why the four
 setters were brought into line now rather than recorded as known gaps.
 
+A malformed `emulator-endpoint` on a Bigtable or Spanner table now fails at planning on every SQL
+path rather than at TaskManager `open()` on the lookup ones. The sink and the scans already failed
+on the client, but during plan-to-runtime translation and with a message naming the Java setter
+`emulatorEndpoint`; they now fail in the factory, naming the option key the DDL carried.
+
+Almost every endpoint this newly refuses is one some path rejected a moment later anyway, and one
+case is not. A statement whose scan the optimizer eliminates — `SELECT ... FROM t WHERE FALSE` —
+never reached `getScanRuntimeProvider`, so a malformed endpoint on it planned and ran; the factory
+runs before that rule fires, so it is now refused. Nothing connected either way, and the stricter
+answer is the intended one, but the claim that no working configuration is refused would be false.
+
+[#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
 [#920]: https://github.com/flink-gcp/flink-connector-gcp/issues/920
 [#976]: https://github.com/flink-gcp/flink-connector-gcp/issues/976
 [#984]: https://github.com/flink-gcp/flink-connector-gcp/issues/984
+[#1009]: https://github.com/flink-gcp/flink-connector-gcp/issues/1009
+[#1013]: https://github.com/flink-gcp/flink-connector-gcp/issues/1013

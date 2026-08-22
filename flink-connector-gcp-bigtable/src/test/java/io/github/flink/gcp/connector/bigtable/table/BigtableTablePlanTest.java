@@ -503,6 +503,53 @@ class BigtableTablePlanTest {
                 .contains("Calc(select=[cf1], where=[=(rowkey");
     }
 
+    /**
+     * Where a malformed {@code emulator-endpoint} actually reaches a user on the lookup path, which
+     * is the question issue #1009 is about and the one {@code FactoryMocks} cannot answer.
+     *
+     * <p>Note what this measures rather than what the issue's title says: the failure does not move
+     * to {@code CREATE TABLE}, because nothing calls the factory there. It moves from a TaskManager
+     * opening the lookup function to the planning of the statement that joins the table — still on
+     * the client, before any job is submitted, and as early as a table option can be refused at
+     * all.
+     *
+     * <p>Before the factory parsed the option this join explained cleanly, because {@code
+     * getLookupRuntimeProvider} constructs the lookup function without looking at the endpoint and
+     * the parse waited for {@code open()}.
+     */
+    @Test
+    void aMalformedEmulatorEndpointIsAcceptedByCreateTableAndRefusedWhenALookupJoinIsPlanned() {
+        TableEnvironment tEnv = tableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE facts (\n"
+                        + "  lookup_key STRING,\n"
+                        + "  event_time AS PROCTIME()\n"
+                        + ") WITH (\n"
+                        + "  'connector' = 'datagen',\n"
+                        + "  'number-of-rows' = '1'\n"
+                        + ")");
+
+        assertThatCode(
+                        () ->
+                                tEnv.executeSql(
+                                        "CREATE TABLE bt (\n"
+                                                + "  rowkey STRING,\n"
+                                                + "  cf1 ROW<v STRING>,\n"
+                                                + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                                                + ") "
+                                                + WITH_CLAUSE.replace("localhost:1", "localhost")))
+                .doesNotThrowAnyException();
+
+        assertThatThrownBy(
+                        () ->
+                                tEnv.explainSql(
+                                        "SELECT f.lookup_key, b.cf1.v FROM facts AS f "
+                                                + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time"
+                                                + " AS b ON f.lookup_key = b.rowkey"))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("emulator-endpoint must be host:port, was 'localhost'");
+    }
+
     @Test
     void aTemporalJoinUsesTheRowKeyLookupAfterProjection() {
         TableEnvironment tEnv = tableEnvironment();

@@ -226,8 +226,10 @@ class SpannerLookupSourceTest {
 
     @Test
     void theLookupNamesTheOptionKeyWhenTheEndpointIsMalformed() {
-        // The lookup holds the option's value and parses it when it opens, on a TaskManager, so
-        // the name a SQL caller typed is the WITH key rather than a Java setter (#895).
+        // The lookup holds the option's value and parses it when it opens, naming the WITH key
+        // rather than a Java setter (#895). Since #1013 a SQL caller no longer gets this far:
+        // SpannerDynamicTableFactory parses the same value at planning. What is pinned here is the
+        // check behind the @Internal constructor, which is reached by constructing it directly.
         SpannerDatabaseRowLookup lookup =
                 new SpannerDatabaseRowLookup(
                         SpannerDatabase.of("p", "i", "d"),

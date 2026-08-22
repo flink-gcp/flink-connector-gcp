@@ -433,6 +433,87 @@ class BigtableDynamicTableFactoryTest {
         }
     }
 
+    /**
+     * The source arm is the lookup arm: {@code createDynamicTableSource} is the only entry point
+     * for a lookup table, because {@code BigtableDynamicSource} serves both {@code ScanTableSource}
+     * and {@code LookupTableSource}. So this covers the case issue #1009 is about — a table joined
+     * as a lookup dimension, which used to carry the value to a TaskManager and parse it there —
+     * and a separate assertion through {@code getLookupRuntimeProvider} would repeat this one
+     * rather than reach further.
+     *
+     * <p>The full sentence is asserted rather than the option key, for the reason recorded on
+     * {@link #rejectsABlankAppProfileIdOnEveryPathThatReadsIt()}: {@code FactoryUtil} dumps the
+     * whole {@code WITH} clause into the message, so {@code emulator-endpoint} appears in it
+     * whether or not the check fired.
+     *
+     * <p>Two values, not a catalogue. {@code "localhost"} exercises the shape, and {@code ""} the
+     * one thing that is this layer's rather than the parser's: whether an option written {@code ''}
+     * arrives as present-and-empty rather than absent, so the check sees it at all. The rejection
+     * set itself belongs to {@code EmulatorEndpointTest}, and re-testing it here would redden this
+     * class for a deliberate change to the parser.
+     */
+    @Test
+    void rejectsAMalformedEmulatorEndpointForBothDirections() {
+        Map<String, java.util.function.Function<Map<String, String>, ?>> directions =
+                new java.util.LinkedHashMap<>();
+        directions.put("sink", BigtableDynamicTableFactoryTest::sink);
+        directions.put("bounded scan and lookup", BigtableDynamicTableFactoryTest::source);
+        for (String malformed : new String[] {"localhost", ""}) {
+            directions.forEach(
+                    (name, direction) -> {
+                        Map<String, String> options = minimalOptions();
+                        options.put("emulator-endpoint", malformed);
+                        assertThatThrownBy(() -> direction.apply(options))
+                                .as("%s, '%s'", name, malformed)
+                                .isInstanceOf(ValidationException.class)
+                                .hasStackTraceContaining(
+                                        "emulator-endpoint must be host:port, was '"
+                                                + malformed
+                                                + "'");
+                    });
+        }
+    }
+
+    /**
+     * Pins the endpoint parse behind every check that refuses an option outright, in both
+     * directions. A DDL told to remove an option is not helped by an answer about its shape, and
+     * moving {@code validateEmulatorEndpoint} above either check is what this fails on.
+     *
+     * <p>Both arms assert on the root cause rather than the stack trace, and on a phrase rather
+     * than the whole sentence: those messages join every offending key they found, so pinning them
+     * verbatim would redden this test when an unrelated option joins {@code boundedSourceOptions()}
+     * or {@code changeStreamSourceOptions()}. The negative is the half that discriminates — with
+     * the parse moved first the root cause becomes the {@code IllegalArgumentException}, whose
+     * message these phrases do not appear in.
+     *
+     * <p>Green on {@code origin/main} by construction, since there the parse does not run at
+     * planning at all. It guards the ordering, not the fix; {@link
+     * #rejectsAMalformedEmulatorEndpointForBothDirections()} guards the fix.
+     */
+    @Test
+    void refusesAnOptionOutrightBeforeReportingTheEndpointShape() {
+        Map<String, String> changeStreamSource = minimalChangeStreamOptions();
+        changeStreamSource.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, changeStreamSource))
+                .as("a bounded-only option on a change-stream source")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("are not valid when 'scan.mode' = 'change-stream'")
+                .hasMessageNotContaining("must be host:port");
+
+        // scan.mode is left at its bounded default, so checkNotAChangeStreamTable does not fire and
+        // checkSinkHasNoChangeStreamOptions is the check that has to be reached.
+        Map<String, String> sinkWithChangeStreamOption = minimalOptions();
+        sinkWithChangeStreamOption.put("scan.change-stream.changelog-mode", "envelope");
+        sinkWithChangeStreamOption.put("emulator-endpoint", "localhost");
+        assertThatThrownBy(() -> sink(sinkWithChangeStreamOption))
+                .as("a change-stream option on a sink")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("are not valid on a 'bigtable' table that is written to")
+                .hasMessageNotContaining("must be host:port");
+    }
+
     @Test
     void rejectsAPrimaryKeyThatIsNotTheRowKey() {
         ResolvedSchema schema = withPrimaryKey("cf1");

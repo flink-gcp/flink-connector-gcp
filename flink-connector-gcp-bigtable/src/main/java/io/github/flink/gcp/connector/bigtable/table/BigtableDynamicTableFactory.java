@@ -36,6 +36,7 @@ import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
@@ -174,6 +175,8 @@ public class BigtableDynamicTableFactory
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
         checkSinkHasNoChangeStreamOptions(context);
+        // After the check that refuses an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
         BigtableTableSchema schema =
                 BigtableTableSchema.of((RowType) physicalDataType.getLogicalType());
@@ -570,6 +573,8 @@ public class BigtableDynamicTableFactory
         DataType physicalDataType = context.getPhysicalRowDataType();
         ScanMode scanMode = config.get(BigtableConnectorOptions.SCAN_MODE);
         validateSourceModeOptions(context, scanMode);
+        // After the check that refuses an option outright; see validateEmulatorEndpoint.
+        validateEmulatorEndpoint(config);
         if (scanMode == ScanMode.CHANGE_STREAM) {
             return createChangeStreamSource(context, config, physicalDataType, decodingFormat);
         }
@@ -645,6 +650,25 @@ public class BigtableDynamicTableFactory
                             BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
                             BigtableConnectorOptions.EMULATOR_ENDPOINT.key()));
         }
+    }
+
+    /**
+     * Reaches the lookup path, which {@link BigtableDynamicSource}'s runtimes left until they
+     * opened on a TaskManager (issue #1009, {@code docs/adr/0127}).
+     *
+     * <p>Call it after every check that refuses an option outright, never before one: a DDL told to
+     * remove {@code emulator-endpoint} is not helped by an answer about its shape.
+     *
+     * <p>The rejection is left as the {@code IllegalArgumentException} the parse throws, which
+     * {@code FactoryUtil} wraps, matching {@code TableDestination.of} above rather than the {@code
+     * ValidationException} the option-shape checks in this class raise directly.
+     */
+    private static void validateEmulatorEndpoint(ReadableConfig config) {
+        config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT)
+                .ifPresent(
+                        value ->
+                                EmulatorEndpoint.parse(
+                                        value, BigtableConnectorOptions.EMULATOR_ENDPOINT.key()));
     }
 
     private static List<ByteString> decodePrefixes(

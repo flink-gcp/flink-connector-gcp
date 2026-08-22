@@ -108,8 +108,10 @@ class BigtableRuntimeCredentialsTest {
 
     @Test
     void theLookupNamesTheOptionKeyWhenTheEndpointIsMalformed() {
-        // These runtimes hold the option's value and parse it when they open, on a TaskManager —
-        // so unlike a builder setter, the name a SQL caller typed is the WITH key (#895).
+        // These runtimes hold the option's value and parse it when they open, naming the WITH key
+        // rather than a builder setter (#895). Since #1009 a SQL caller no longer gets this far:
+        // BigtableDynamicTableFactory parses the same value at planning. What is pinned here is the
+        // check behind the @Internal constructor, which is reached by constructing it directly.
         BigtableRowDataLookupFunction function =
                 new BigtableRowDataLookupFunction(
                         TABLE,
