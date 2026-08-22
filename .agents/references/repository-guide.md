@@ -47,20 +47,38 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   observed once on a development laptop, 2026-08-16, during the #755 series: the emulator ITs
   contended and one build stalled without failing or progressing. The ~8-10 minute local figure is
   from the same machine and session; ADR-0058 carries the CI lane's measured 4:09.
-- **A published container port is not proof the container owns it.** Docker publishes on the
-  wildcard address, which coexists with a process already bound to `127.0.0.1:<port>` — and that
-  process keeps the more specific bind, so anything resolving `localhost` to the IPv4 loopback
-  reaches it rather than the container. The JVM does exactly that by default (`127.0.0.1` ahead of
-  `::1`), while `curl` reaches `::1` and so reaches the container. **On a default macOS/Docker
-  Desktop setup the tell is therefore that `curl` says the endpoint is fine and the test says it is
-  not** — reproduced 2026-08-22 with a holder on `127.0.0.1:<port>` and the container published on
-  `0.0.0.0`: 200 to `curl`, `401` to a Java client on the same URL. Every leg of that is
+- **Read a published container port at `127.0.0.1`, not at `localhost`.** Containers publish on the
+  IPv4 loopback address rather than the wildcard one (ADR-0132, `LoopbackPortPublisher` in
+  `flink-connector-gcp-test-utils`). `curl http://localhost:<port>` does still work — measured
+  2026-08-22: curl tries `::1`, is refused *instantly*, falls back and connects, so #1021's
+  predicted ergonomic cost is not real. Prefer the explicit address anyway, because that fallback
+  rests on the refusal being instant and because an `::1` squatter would be reached by `curl` and
+  not by the JVM — #1003 inverted, and it would mislead the diagnosis below. `docker ps` is the
+  ground truth: it shows `<loopback-address>:<port>->` for every container, Ryuk included, and that
+  address is whatever the Docker host resolved to — `127.0.0.1` on the usual setup, but the whole
+  `127.0.0.0/8` block is loopback and `TESTCONTAINERS_HOST_OVERRIDE` is honoured, so read the
+  address rather than assuming it. A `0.0.0.0:` there means the modifier stood down — a remote
+  daemon, a JVM resolving the Docker host to `::1`, or the explicit opt-out
+  (`FLINK_GCP_TESTS_LOOPBACK_PUBLISH=false`, `-Dflink.gcp.tests.loopback-publish=false`), which
+  logs nothing, so rule out a stale export before diagnosing the daemon.
+- **A published container port is not proof the container owns it — where that modifier stands
+  down.** Docker's wildcard publish coexists with a process already bound to `127.0.0.1:<port>` —
+  and that process keeps the more specific bind, so anything resolving `localhost` to the IPv4
+  loopback reaches it rather than the container. The JVM does exactly that by default (`127.0.0.1`
+  ahead of `::1`), while `curl` reaches `::1` and so reaches the container. **On a default
+  macOS/Docker Desktop setup the tell is therefore that `curl` says the endpoint is fine and the test
+  says it is not** — reproduced 2026-08-22 with a holder on `127.0.0.1:<port>` and the container
+  published on `0.0.0.0`: 200 to `curl`, `401` to a Java client on the same URL. Every leg of that is
   configurable (Docker's default bind, `java.net.preferIPv6Addresses`, whether `curl` has IPv6), so
   confirm the split rather than assuming it. #1003 was that, an unrelated desktop application's loopback API answering
   `401 Unauthorized` to a `tables.insert` the emulator has no code path to produce. `lsof -nP
-  -iTCP:<port> -sTCP:LISTEN` names the occupant. The BigQuery harness now makes its emulator
-  identify itself before any test runs (`BigQueryEmulatorContainers.newContainer`); the other
-  emulator harnesses have no equivalent probe today, so on those the diagnosis is still by hand.
+  -iTCP:<port> -sTCP:LISTEN` names the occupant. A local `just verify` failing in a module the diff
+  never touched is worth checking against `lsof` before it is believed — the second 2026-08-22
+  sighting was `Could not connect to Ryuk at localhost:49751`, which names no connector at all.
+  ADR-0132 removes this on a local Docker daemon; it still applies wherever the loopback publish
+  stands down — a remote daemon, an IPv6-resolving JVM, or the explicit opt-out above. The BigQuery harness also
+  makes its emulator identify itself before any test runs
+  (`BigQueryEmulatorContainers.newContainer`), which catches a merely unhealthy container too.
 - **A local build is only as honest as the local state**: a primed `~/.m2` (this project's own
   SNAPSHOTs from any `install`) and a stale `target/` make reactor, packaging and
   plugin-execution changes look green locally while CI — which starts clean — fails. Verify

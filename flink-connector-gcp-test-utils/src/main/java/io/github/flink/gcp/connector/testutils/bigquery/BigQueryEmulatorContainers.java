@@ -85,13 +85,17 @@ public final class BigQueryEmulatorContainers {
      * /bin/sh} this image carries.
      *
      * <p>What that leaves open, and what the HTTP probe below closes, is <em>who</em> owns the
-     * published host port. Docker publishes on the wildcard address, which coexists with a process
-     * already listening on {@code 127.0.0.1:<port>} — and that process keeps the more specific
-     * bind, so a client resolving {@code localhost} to the IPv4 loopback reaches it instead of the
-     * container. The JVM does resolve that way by default — {@code InetAddress.getAllByName(
-     * "localhost")} returns {@code 127.0.0.1} ahead of {@code ::1}, absent {@code
-     * java.net.preferIPv6Addresses}. Meanwhile the container is healthy, the in-container listen
-     * check passes, and the host-side connect passes because something did accept it.
+     * published host port. <b>{@link io.github.flink.gcp.connector.testutils.LoopbackPortPublisher}
+     * now prevents the collision described here from forming</b> on a local Docker daemon
+     * (ADR-0132), which is the ordinary case; what follows is what the probe defends against, and
+     * it still stands wherever that modifier does nothing — a remote daemon, a JVM resolving the
+     * Docker host to {@code ::1}, or its explicit opt-out. Docker's wildcard publish coexists with
+     * a process already listening on {@code 127.0.0.1:<port>} — and that process keeps the more
+     * specific bind, so a client resolving {@code localhost} to the IPv4 loopback reaches it
+     * instead of the container. The JVM does resolve that way by default — {@code
+     * InetAddress.getAllByName("localhost")} returns {@code 127.0.0.1} ahead of {@code ::1}, absent
+     * {@code java.net.preferIPv6Addresses}. Meanwhile the container is healthy, the in-container
+     * listen check passes, and the host-side connect passes because something did accept it.
      *
      * <p>Reproduced end to end 2026-08-22 on Docker Desktop for macOS with this project's JDK,
      * holding {@code 127.0.0.1:<port>} while Docker published the same port on {@code 0.0.0.0}: the
@@ -117,8 +121,13 @@ public final class BigQueryEmulatorContainers {
      * ContainerLaunchException: Timed out waiting for URL to be accessible (…/datasets/… should
      * return HTTP [200])} rather than handing a test an endpoint that leads elsewhere.
      *
-     * <p>The gRPC port has no equivalent probe, so a {@code GRPC_PORT} shadowed the same way still
-     * surfaces as whatever the Storage Write API client makes of a stranger's answer.
+     * <p>The gRPC port has no equivalent probe, so a {@code GRPC_PORT} shadowed the same way
+     * surfaces as whatever the Storage Write API client makes of a stranger's answer. That
+     * asymmetry is part of why ADR-0132 prevents the shadow rather than probing for it: a
+     * preventive publish covers both ports and every sibling emulator, where a probe covers the one
+     * port it was written for. The probe stays because it is not only a shadow check — it is also
+     * what proves this emulator loaded its dataset, which the 2026-08-09 control arm above measured
+     * and which no publish address can establish.
      */
     public static GenericContainer<?> newContainer(String project, String dataset) {
         return new GenericContainer<>(IMAGE)
