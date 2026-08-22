@@ -1304,6 +1304,51 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void theTrailingBytesPolicyReachesTheBoundedSourceAndDefaultsToIgnore() {
+        // Read off source equality: an explicit 'ignore' builds the same source as the default,
+        // and 'reject' builds a different one, so the option is parsed and lands in the source's
+        // state rather than being dropped on the way.
+        Map<String, String> explicitIgnore = minimalOptions();
+        explicitIgnore.put("decode.trailing-bytes", "ignore");
+        Map<String, String> reject = minimalOptions();
+        reject.put("decode.trailing-bytes", "reject");
+
+        assertThat(source(explicitIgnore)).isEqualTo(source(minimalOptions()));
+        DynamicTableSource rejecting = source(reject);
+        assertThat(rejecting).isNotEqualTo(source(minimalOptions()));
+        // The non-default policy also survives the planner's copy().
+        assertThat(rejecting.copy()).isEqualTo(rejecting);
+    }
+
+    @Test
+    void theTrailingBytesPolicyIsAcceptedInSelectedCellMode() {
+        // The selected-cell primary key decodes through the same codec, which is where the
+        // wrong-keyed-DELETE hazard the docs warn about lives.
+        Map<String, String> options = minimalSelectedCellOptions();
+        options.put("decode.trailing-bytes", "reject");
+
+        DynamicTableSource source = source(selectedCellSchema("row_id"), options);
+        assertThat(source).isInstanceOf(BigtableChangeStreamDynamicSource.class);
+        // copy() shares the discovered format instance, so equality here discriminates exactly
+        // the hand-carried fields — dropping the policy in copy() breaks it.
+        assertThat(source.copy()).isEqualTo(source);
+    }
+
+    @Test
+    void theEnvelopeModeRejectsTheTrailingBytesPolicy() {
+        // The envelope emits the row key as raw bytes and decodes no cell, so the option would
+        // configure nothing — rejected like every other option of a mode the DDL did not select.
+        Map<String, String> options = minimalChangeStreamOptions();
+        options.put("decode.trailing-bytes", "reject");
+
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'decode.trailing-bytes' is not valid when"
+                                + " 'scan.change-stream.changelog-mode' = 'envelope'");
+    }
+
+    @Test
     void malformedBase64IsRejectedWhenTheFactoryBuildsTheSource() {
         Map<String, String> options = minimalOptions();
         options.put("scan.row-key-encoding", "BASE64");

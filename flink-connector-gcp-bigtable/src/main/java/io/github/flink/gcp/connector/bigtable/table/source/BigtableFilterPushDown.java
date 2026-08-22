@@ -38,6 +38,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -62,14 +63,17 @@ final class BigtableFilterPushDown {
     private BigtableFilterPushDown() {}
 
     /** Translates one conjunctive filter list and records both exact and best-effort pushdown. */
-    static State translate(BigtableTableSchema schema, List<ResolvedExpression> filters) {
+    static State translate(
+            BigtableTableSchema schema,
+            List<ResolvedExpression> filters,
+            TrailingBytes trailingBytes) {
         List<ResolvedExpression> accepted = new ArrayList<>();
         List<ResolvedExpression> remaining = new ArrayList<>();
         @Nullable List<ByteStringRange> rowKeyRanges = null;
         @Nullable Filters.Filter cellPredicate = null;
 
         for (ResolvedExpression filter : filters) {
-            Optional<List<ByteStringRange>> exact = rowKeyRanges(schema, filter);
+            Optional<List<ByteStringRange>> exact = rowKeyRanges(schema, filter, trailingBytes);
             if (exact.isPresent()) {
                 accepted.add(filter);
                 rowKeyRanges =
@@ -96,7 +100,9 @@ final class BigtableFilterPushDown {
 
     /** Returns an exact row-key range translation, or empty when any part is not exact. */
     private static Optional<List<ByteStringRange>> rowKeyRanges(
-            BigtableTableSchema schema, ResolvedExpression expression) {
+            BigtableTableSchema schema,
+            ResolvedExpression expression,
+            TrailingBytes trailingBytes) {
         if (!(expression instanceof CallExpression)) {
             return Optional.empty();
         }
@@ -106,7 +112,8 @@ final class BigtableFilterPushDown {
         if (function.equals(BuiltInFunctionDefinitions.AND)) {
             @Nullable List<ByteStringRange> result = null;
             for (ResolvedExpression child : children) {
-                Optional<List<ByteStringRange>> translated = rowKeyRanges(schema, child);
+                Optional<List<ByteStringRange>> translated =
+                        rowKeyRanges(schema, child, trailingBytes);
                 if (!translated.isPresent()) {
                     return Optional.empty();
                 }
@@ -120,7 +127,8 @@ final class BigtableFilterPushDown {
         if (function.equals(BuiltInFunctionDefinitions.OR)) {
             List<ByteStringRange> result = new ArrayList<>();
             for (ResolvedExpression child : children) {
-                Optional<List<ByteStringRange>> translated = rowKeyRanges(schema, child);
+                Optional<List<ByteStringRange>> translated =
+                        rowKeyRanges(schema, child, trailingBytes);
                 if (!translated.isPresent()) {
                     return Optional.empty();
                 }
@@ -139,20 +147,22 @@ final class BigtableFilterPushDown {
                             : unbounded());
         }
         if (function.equals(BuiltInFunctionDefinitions.IN)) {
-            return inRanges(schema, children);
+            return inRanges(schema, children, trailingBytes);
         }
         Comparison comparison = Comparison.of(function);
         return comparison == null
                 ? Optional.empty()
-                : comparisonRanges(schema, comparison, children);
+                : comparisonRanges(schema, comparison, children, trailingBytes);
     }
 
     private static Optional<List<ByteStringRange>> inRanges(
-            BigtableTableSchema schema, List<ResolvedExpression> children) {
+            BigtableTableSchema schema,
+            List<ResolvedExpression> children,
+            TrailingBytes trailingBytes) {
         if (children.size() < 2 || !isRowKey(schema, children.get(0))) {
             return Optional.empty();
         }
-        if (!supportsEquality(schema.getRowKeyType())) {
+        if (!supportsEquality(schema.getRowKeyType(), trailingBytes)) {
             return Optional.empty();
         }
         List<ByteStringRange> ranges = new ArrayList<>();
@@ -170,7 +180,10 @@ final class BigtableFilterPushDown {
     }
 
     private static Optional<List<ByteStringRange>> comparisonRanges(
-            BigtableTableSchema schema, Comparison comparison, List<ResolvedExpression> children) {
+            BigtableTableSchema schema,
+            Comparison comparison,
+            List<ResolvedExpression> children,
+            TrailingBytes trailingBytes) {
         if (children.size() != 2) {
             return Optional.empty();
         }
@@ -186,7 +199,8 @@ final class BigtableFilterPushDown {
             return Optional.empty();
         }
         if ((normalized.isOrdered() && !supportsOrdering(schema.getRowKeyType()))
-                || (!normalized.isOrdered() && !supportsEquality(schema.getRowKeyType()))) {
+                || (!normalized.isOrdered()
+                        && !supportsEquality(schema.getRowKeyType(), trailingBytes))) {
             return Optional.empty();
         }
         Optional<ByteString> encoded = literal(schema.getRowKeyType(), value);
@@ -220,7 +234,12 @@ final class BigtableFilterPushDown {
         return ByteStringRange.unbounded().startClosed(key).endClosed(key);
     }
 
-    /** Fixed-width decoders ignore suffix bytes, so their equality set is a key prefix. */
+    /**
+     * Fixed-width decoders ignore suffix bytes under the default policy, so their equality set is a
+     * key prefix. Only that policy reaches here for a fixed-width key: under {@code
+     * decode.trailing-bytes = reject} no range is exact for one, and the predicate stays with Flink
+     * (ADR-0136).
+     */
     private static ByteStringRange equalityRange(LogicalType type, ByteString key) {
         return usesPrefixEquality(type) ? ByteStringRange.prefix(key) : singleton(key);
     }
@@ -247,7 +266,16 @@ final class BigtableFilterPushDown {
                         == schema.getRowKeyIndex();
     }
 
-    private static boolean supportsEquality(LogicalType type) {
+    private static boolean supportsEquality(LogicalType type, TrailingBytes trailingBytes) {
+        if (trailingBytes == TrailingBytes.REJECT && usesPrefixEquality(type)) {
+            // Under REJECT a fixed-width equality set has no exact range at all. The prefix range
+            // admits suffix-bearing keys as matches (and a projection that drops the key never
+            // decodes them), while its complement excludes them from a <> scan that should have
+            // failed on them; a singleton skips them from = the same way. Leaving the predicate
+            // with Flink keys the evaluation on the decoded value, which is where the policy
+            // throws (ADR-0136).
+            return false;
+        }
         switch (type.getTypeRoot()) {
             case CHAR:
             case BOOLEAN:
@@ -274,21 +302,9 @@ final class BigtableFilterPushDown {
     }
 
     private static boolean usesPrefixEquality(LogicalType type) {
-        switch (type.getTypeRoot()) {
-            case TINYINT:
-            case SMALLINT:
-            case INTEGER:
-            case BIGINT:
-            case DATE:
-            case TIME_WITHOUT_TIME_ZONE:
-            case TIMESTAMP_WITHOUT_TIME_ZONE:
-            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-            case INTERVAL_YEAR_MONTH:
-            case INTERVAL_DAY_TIME:
-                return true;
-            default:
-                return false;
-        }
+        // The same set the trailing-bytes policy governs, by construction: a type uses prefix
+        // equality exactly because its decoder ignores suffix bytes by default.
+        return CellValueCodec.isTrailingBytesGoverned(type);
     }
 
     private static Optional<ByteString> literal(LogicalType type, ResolvedExpression expression) {

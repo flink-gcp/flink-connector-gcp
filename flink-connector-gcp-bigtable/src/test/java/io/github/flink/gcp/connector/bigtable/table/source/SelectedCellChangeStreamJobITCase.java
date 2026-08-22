@@ -40,6 +40,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestBigtableChangeStreamMutations;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -90,6 +91,7 @@ class SelectedCellChangeStreamJobITCase {
                             new PayloadDeserializer(tableSchema.getPayloadDataType()),
                             new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
                             tableSchema,
+                            TrailingBytes.IGNORE,
                             new ChangeStreamReadableMetadata[0],
                             producedType);
         }

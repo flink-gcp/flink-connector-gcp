@@ -32,6 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -86,11 +87,13 @@ class BigtableRowDataLookupFunctionTest {
     }
 
     private static BigtableRowDataLookupFunction sync(FakeRowLookup lookup, int maxRetries) {
-        return new BigtableRowDataLookupFunction(SCHEMA, null, "null", maxRetries, lookup);
+        return new BigtableRowDataLookupFunction(
+                SCHEMA, null, "null", TrailingBytes.IGNORE, maxRetries, lookup);
     }
 
     private static BigtableRowDataAsyncLookupFunction async(FakeRowLookup lookup, int maxRetries) {
-        return new BigtableRowDataAsyncLookupFunction(SCHEMA, null, "null", maxRetries, lookup);
+        return new BigtableRowDataAsyncLookupFunction(
+                SCHEMA, null, "null", TrailingBytes.IGNORE, maxRetries, lookup);
     }
 
     @Test
@@ -258,7 +261,8 @@ class BigtableRowDataLookupFunctionTest {
                                         .getLogicalType());
         FakeRowLookup lookup = new FakeRowLookup().miss();
         BigtableRowDataLookupFunction function =
-                new BigtableRowDataLookupFunction(schema, null, "null", 0, lookup);
+                new BigtableRowDataLookupFunction(
+                        schema, null, "null", TrailingBytes.IGNORE, 0, lookup);
         function.open(null);
 
         assertThat(function.lookup(GenericRowData.of(7L))).isEmpty();
@@ -291,13 +295,60 @@ class BigtableRowDataLookupFunctionTest {
                                         ByteString.copyFrom(new byte[] {1, 2, 3}))));
         BigtableRowDataAsyncLookupFunction function =
                 new BigtableRowDataAsyncLookupFunction(
-                        schema, null, "null", 0, new FakeRowLookup().answer(malformed));
+                        schema,
+                        null,
+                        "null",
+                        TrailingBytes.IGNORE,
+                        (int) 0,
+                        new FakeRowLookup().answer(malformed));
 
         CompletableFuture<Collection<RowData>> result = function.asyncLookup(key("k"));
         assertThatThrownBy(result::join)
                 .isInstanceOf(CompletionException.class)
                 .hasCauseInstanceOf(IllegalStateException.class);
         assertThat(result).isCompletedExceptionally();
+    }
+
+    @Test
+    void theLookupPathHonoursTheRejectPolicy() throws Exception {
+        // The lookup decode runs the same converter as the scan, so the policy must reach it too;
+        // without this, hardcoding IGNORE anywhere along the lookup plumbing survives the suite.
+        BigtableTableSchema schema =
+                BigtableTableSchema.of(
+                        (RowType)
+                                DataTypes.ROW(
+                                                DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                                DataTypes.FIELD(
+                                                        "cf1",
+                                                        DataTypes.ROW(
+                                                                DataTypes.FIELD(
+                                                                        "q", DataTypes.BIGINT()))))
+                                        .getLogicalType());
+        Row overlong =
+                Row.create(
+                        ByteString.copyFromUtf8("k"),
+                        Collections.singletonList(
+                                RowCell.create(
+                                        "cf1",
+                                        ByteString.copyFromUtf8("q"),
+                                        1_000L,
+                                        Collections.emptyList(),
+                                        ByteString.copyFrom(
+                                                new byte[] {0, 0, 0, 0, 0, 0, 0, 7, 0x7f}))));
+        BigtableRowDataLookupFunction function =
+                new BigtableRowDataLookupFunction(
+                        schema,
+                        null,
+                        "null",
+                        TrailingBytes.REJECT,
+                        0,
+                        new FakeRowLookup().answer(overlong));
+        function.open(null);
+
+        assertThatThrownBy(() -> function.lookup(key("k")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("9 byte(s)")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
     }
 
     private static final class FakeRowLookup implements BigtableRowLookup {

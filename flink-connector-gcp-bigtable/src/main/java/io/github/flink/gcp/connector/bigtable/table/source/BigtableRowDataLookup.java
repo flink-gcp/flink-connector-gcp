@@ -27,6 +27,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -60,6 +61,7 @@ final class BigtableRowDataLookup implements Serializable {
             BigtableTableSchema schema,
             @Nullable int[] projectedFields,
             String nullStringLiteral,
+            TrailingBytes trailingBytes,
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
@@ -69,6 +71,7 @@ final class BigtableRowDataLookup implements Serializable {
                 schema,
                 projectedFields,
                 nullStringLiteral,
+                trailingBytes,
                 new BigtableDataClientRowLookup(
                         destination,
                         filter,
@@ -83,9 +86,12 @@ final class BigtableRowDataLookup implements Serializable {
             BigtableTableSchema schema,
             @Nullable int[] projectedFields,
             String nullStringLiteral,
+            TrailingBytes trailingBytes,
             BigtableRowLookup lookup) {
         this.rowKeyEncoder = CellValueCodec.encoder(schema.getRowKeyType());
-        this.converter = new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
+        this.converter =
+                new RowToRowDataConverter(
+                        schema, projectedFields, nullStringLiteral, trailingBytes);
         this.lookup = lookup;
     }
 

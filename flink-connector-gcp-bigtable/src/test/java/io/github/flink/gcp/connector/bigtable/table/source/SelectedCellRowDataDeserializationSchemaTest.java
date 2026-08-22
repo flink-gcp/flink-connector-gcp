@@ -37,6 +37,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.TestBigtableChangeStreamMutations;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -136,6 +137,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                                 }),
                         new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
                         SelectedCellTableSchema.of(type, new int[] {0}),
+                        TrailingBytes.IGNORE,
                         new ChangeStreamReadableMetadata[0],
                         InternalTypeInfo.of((RowType) type.getLogicalType()));
         BigtableChangeStreamMutation delete =
@@ -172,6 +174,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                                 }),
                         new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
                         SelectedCellTableSchema.of(type, new int[] {0}),
+                        TrailingBytes.IGNORE,
                         new ChangeStreamReadableMetadata[0],
                         InternalTypeInfo.of((RowType) type.getLogicalType()));
         BigtableChangeStreamMutation delete =
@@ -191,6 +194,42 @@ class SelectedCellRowDataDeserializationSchemaTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("precision 10 and scale 2")
                 .hasMessageContaining("DECIMAL(5, 2)");
+    }
+
+    @Test
+    void anOverlongRowKeyDeleteIsReportedUnderReject() {
+        // Issue #1037's sharpest arm: a DELETE routed by a nine-byte key on a BIGINT primary key
+        // silently deletes the prefix's row under the HBase-compatible default, which is why the
+        // docs recommend REJECT for this mode — under it, the same mutation fails with the guard's
+        // message instead of emitting a wrong-keyed changelog row.
+        DataType type =
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                        DataTypes.FIELD("score", DataTypes.INT()));
+        SelectedCellRowDataDeserializationSchema schema =
+                new SelectedCellRowDataDeserializationSchema(
+                        payload(
+                                (bytes, out) -> {
+                                    throw new AssertionError(
+                                            "delete must not invoke the value format");
+                                }),
+                        new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
+                        SelectedCellTableSchema.of(type, new int[] {0}),
+                        TrailingBytes.REJECT,
+                        new ChangeStreamReadableMetadata[0],
+                        InternalTypeInfo.of((RowType) type.getLogicalType()));
+        BigtableChangeStreamMutation delete =
+                mutation(
+                        ByteString.copyFrom(new byte[] {0, 0, 0, 0, 0, 0, 0, 7, 0x7f}),
+                        builder ->
+                                builder.deleteCells(
+                                        FAMILY, QUALIFIER, Range.TimestampRange.unbounded()));
+
+        assertThatThrownBy(() -> schema.deserialize(delete, collectingInto(new ArrayList<>())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("holds 9 byte(s)")
+                .hasMessageContaining("primary-key column type cannot decode")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
@@ -253,6 +292,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                 payload,
                 new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
                 TABLE_SCHEMA,
+                TrailingBytes.IGNORE,
                 metadata,
                 producedType);
     }
