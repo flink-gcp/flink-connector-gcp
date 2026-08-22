@@ -52,11 +52,14 @@ import java.util.List;
  * <p>The client's retry configuration is left alone. It retries {@code SampleRowKeys} on the
  * transient codes under a total timeout of its own, so a failure that reaches the enumerator has
  * already exhausted the retry the client owns.
+ *
+ * <p>One sampler belongs to one enumerator: {@link DefaultRowKeySamplerFactory} mints it, and the
+ * source mints one per {@code createEnumerator} and {@code restoreEnumerator}. That is what makes
+ * the holder's one-way closed flag correct — it ends this object rather than poisoning one the next
+ * enumerator will also be handed ({@code docs/adr/0128}).
  */
 @Internal
 public final class DataClientRowKeySampler implements RowKeySampler {
-
-    private static final long serialVersionUID = 1L;
 
     /**
      * The client this sampler reads through, and everything around building it: {@link #sample}

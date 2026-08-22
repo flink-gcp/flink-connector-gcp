@@ -60,7 +60,8 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void aFreshEnumeratorPlansOnceAndNumbersTheSplitsInOrder() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a", "b", "c");
+        ScriptedPartitionPlanner.Factory planner =
+                ScriptedPartitionPlanner.planning("plan", "a", "b", "c");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(2);
 
         try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
@@ -90,7 +91,8 @@ class SpannerPartitionSplitEnumeratorTest {
     void everySplitOfOnePlanCarriesTheSameSnapshot() throws Exception {
         // The property the whole design rests on: one timestamp across every subtask. A plan that
         // handed each split its own transaction id would still pass every assignment test.
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a", "b");
+        ScriptedPartitionPlanner.Factory planner =
+                ScriptedPartitionPlanner.planning("plan", "a", "b");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(2);
 
         try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
@@ -106,7 +108,7 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void aRestoredEnumeratorNeverPlansAgain() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
         SpannerBatchEnumeratorState restored =
                 new SpannerBatchEnumeratorState(
@@ -133,7 +135,7 @@ class SpannerPartitionSplitEnumeratorTest {
     void aRestoredButUnplannedStateStillPlans() throws Exception {
         // The other arm: a checkpoint taken before the plan landed has nothing to restore, and a
         // restore that treated it as planned would leave the source reading nothing.
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
@@ -150,14 +152,14 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void theReadParametersReachThePlanner() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
                 enumerator(
                         context,
                         builder ->
-                                TestSources.withPlanner(builder, planner)
+                                TestSources.withPlannerFactory(builder, planner)
                                         .timestampBound(
                                                 TimestampBound.ofExactStaleness(
                                                         9, TimeUnit.SECONDS))
@@ -185,7 +187,7 @@ class SpannerPartitionSplitEnumeratorTest {
     void anUnsetPriorityReachesThePlannerAsNothingRatherThanAsADefault() throws Exception {
         // The other arm of the test above: a builder that quietly substituted HIGH would pass it
         // and would then send a priority on every request of every job that never asked for one.
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
@@ -199,7 +201,7 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void aPlanningFailureNamesTheReadAndTheDatabase() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         planner.failNextPlan(new IllegalStateException("INVALID_ARGUMENT: not partitionable"));
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
@@ -219,7 +221,7 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void closingTheEnumeratorClosesThePlannerOnce() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
@@ -235,7 +237,7 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void aRefusingPlannerFailsTheCloseByName() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         planner.failClose(new IllegalStateException("no"));
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
@@ -250,7 +252,8 @@ class SpannerPartitionSplitEnumeratorTest {
 
     @Test
     void theCountersAreRegisteredUnderTheConnectorsOwnNames() throws Exception {
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a", "b");
+        ScriptedPartitionPlanner.Factory planner =
+                ScriptedPartitionPlanner.planning("plan", "a", "b");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
         context.registerReader(0);
 
@@ -273,7 +276,7 @@ class SpannerPartitionSplitEnumeratorTest {
     void aRestoredEnumeratorReportsNoPlanningCall() throws Exception {
         // readsPlanned is 1 on a fresh run and 0 on a restored one, which is how an operator tells
         // the two apart at runtime rather than from the log.
-        ScriptedPartitionPlanner planner = ScriptedPartitionPlanner.planning("plan", "a");
+        ScriptedPartitionPlanner.Factory planner = ScriptedPartitionPlanner.planning("plan", "a");
         FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator =
@@ -290,10 +293,11 @@ class SpannerPartitionSplitEnumeratorTest {
 
     private static SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator(
             SplitEnumeratorContext<PartitionSplit> context,
-            ScriptedPartitionPlanner planner,
+            ScriptedPartitionPlanner.Factory planner,
             @Nullable SpannerBatchEnumeratorState restored)
             throws Exception {
-        return enumerator(context, builder -> TestSources.withPlanner(builder, planner), restored);
+        return enumerator(
+                context, builder -> TestSources.withPlannerFactory(builder, planner), restored);
     }
 
     private static SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> enumerator(

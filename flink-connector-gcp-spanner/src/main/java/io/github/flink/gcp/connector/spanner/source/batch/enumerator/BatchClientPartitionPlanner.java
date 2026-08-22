@@ -68,11 +68,14 @@ import java.util.List;
  * <p>The client's retry configuration is left alone. It retries the partition calls on the
  * transient codes under a total timeout of its own, so a failure that reaches the enumerator has
  * already exhausted the retry the client owns.
+ *
+ * <p>One planner belongs to one enumerator: {@link DefaultPartitionPlannerFactory} mints it, and
+ * the source mints one per {@code createEnumerator} and {@code restoreEnumerator}. That is what
+ * makes the one-way {@code closed} flag below correct — it ends this object rather than poisoning
+ * one the next enumerator will also be handed ({@code docs/adr/0128}).
  */
 @Internal
 public final class BatchClientPartitionPlanner implements PartitionPlanner {
-
-    private static final long serialVersionUID = 1L;
 
     private final SpannerDatabase database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
@@ -80,26 +83,24 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     /**
      * The service handle and the batch transaction on it, both built by {@link #plan}.
      *
-     * <p>Transient because this planner is serialized into the job graph; {@code volatile} and
-     * guarded by the monitor below because {@link #plan} runs on the executor {@code
-     * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} runs on the
-     * scheduler thread and may overtake it.
+     * <p>{@code volatile} and guarded by the monitor below because {@link #plan} runs on the
+     * executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()}
+     * runs on the scheduler thread and may overtake it.
      */
-    @Nullable private transient volatile Spanner spanner;
+    @Nullable private volatile Spanner spanner;
 
     /**
      * What the enumerator loaded and handed over, or {@code null} for application default
      * credentials.
      *
-     * <p>Transient for the same reason as the handle above, and {@code volatile} because {@link
-     * #useCredentials} runs on the thread that creates or restores the enumerator while {@link
-     * #plan} reads it on the {@code callAsync} executor.
+     * <p>{@code volatile} because {@link #useCredentials} runs on the thread that creates or
+     * restores the enumerator while {@link #plan} reads it on the {@code callAsync} executor.
      */
-    @Nullable private transient volatile GoogleCredentials credentials;
+    @Nullable private volatile GoogleCredentials credentials;
 
-    @Nullable private transient volatile BatchReadOnlyTransaction transaction;
+    @Nullable private volatile BatchReadOnlyTransaction transaction;
 
-    private transient volatile boolean closed;
+    private volatile boolean closed;
 
     /**
      * Creates the planner.
@@ -216,8 +217,9 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     /**
      * Opens the batch transaction, building the service handle on first use.
      *
-     * <p>The monitor is this object rather than a lock field, because a lock field would have to
-     * travel in the job graph.
+     * <p>The monitor is this object rather than a lock field: one planner belongs to one
+     * enumerator, so the only contention is between that enumerator's planning call and its
+     * teardown, and a separate lock would name nothing the object does not already name.
      */
     private BatchReadOnlyTransaction open(TimestampBound bound) throws IOException {
         BatchClient batchClient;

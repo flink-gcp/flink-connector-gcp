@@ -42,6 +42,12 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## `base.source` (`docs/adr/0083`, `0108`)
 
+- The one `AutoCloseable` `PullAssignmentSplitEnumerator` takes is the enumerator's for its
+  lifetime, and `close()` ends it. A source therefore mints one per `createEnumerator` and
+  `restoreEnumerator` rather than carrying one on its serialized configuration, because the
+  JobManager reuses one `Source` object for a job's whole life (`docs/adr/0128`). Do not add a
+  `protected` accessor for it here: a subclass that also plans through the seam keeps its own typed
+  field, which is what all three subclasses do.
 - `SynchronousDeserializationCollector.deserialize` is the one direct adapter for all collector-
   shaped source deserializers. It creates one collector per input, forwards each record immediately,
   returns the successful count, and clears its downstream function in `finally`. Do not add a record

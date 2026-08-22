@@ -150,9 +150,9 @@ class BigtableSourceFailoverITCase {
                 BigtableSource.<String>builder()
                         .table(TestSources.TABLE)
                         .deserializer(new TestSources.RowKeyDeserializer());
-        TestSources.withSampler(
+        TestSources.withSamplerFactory(
                 builder,
-                ScriptedRowKeySampler.answering(
+                ScriptedRowKeySampler.Factory.answering(
                         RowKeySample.of(ByteString.copyFromUtf8(BOUNDARY), 1_000L)));
         TestSources.withOpener(builder, opener);
         // Without a small cap a fetch would not return until a whole range had been

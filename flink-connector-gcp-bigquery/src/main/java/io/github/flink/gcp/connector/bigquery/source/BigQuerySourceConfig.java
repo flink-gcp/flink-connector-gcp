@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreator;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreatorFactory;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
@@ -59,7 +59,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     private final int maxStreamCount;
     private final int preferredMinStreamCount;
     private final int maxRecordsPerFetch;
-    private final ReadSessionCreator sessionCreator;
+    private final ReadSessionCreatorFactory sessionCreatorFactory;
     private final RowStreamOpener rowStreamOpener;
 
     private BigQuerySourceConfig(Builder<T> builder) {
@@ -78,7 +78,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         this.maxStreamCount = builder.maxStreamCount;
         this.preferredMinStreamCount = builder.preferredMinStreamCount;
         this.maxRecordsPerFetch = builder.maxRecordsPerFetch;
-        this.sessionCreator = builder.sessionCreator;
+        this.sessionCreatorFactory = builder.sessionCreatorFactory;
         this.rowStreamOpener = builder.rowStreamOpener;
     }
 
@@ -208,9 +208,15 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         return maxRecordsPerFetch;
     }
 
-    /** Returns the seam creating the read session. */
-    public ReadSessionCreator getSessionCreator() {
-        return sessionCreator;
+    /**
+     * Returns the factory the source mints one session creator per enumerator from.
+     *
+     * <p>A factory rather than a creator because the JobManager holds one source object for a job's
+     * whole life, so a creator here would be shared by every enumerator a coordinator reset builds
+     * and the first teardown would refuse every later one ({@code docs/adr/0128}).
+     */
+    public ReadSessionCreatorFactory getSessionCreatorFactory() {
+        return sessionCreatorFactory;
     }
 
     /** Returns the seam opening read streams. */
@@ -246,7 +252,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         private int maxStreamCount;
         private int preferredMinStreamCount;
         private int maxRecordsPerFetch;
-        private ReadSessionCreator sessionCreator;
+        private ReadSessionCreatorFactory sessionCreatorFactory;
         private RowStreamOpener rowStreamOpener;
 
         private Builder() {}
@@ -341,9 +347,9 @@ public final class BigQuerySourceConfig<T> implements Serializable {
             return this;
         }
 
-        /** Sets the seam creating the read session. */
-        Builder<T> sessionCreator(ReadSessionCreator sessionCreator) {
-            this.sessionCreator = sessionCreator;
+        /** Sets the factory minting the seam that creates the read session. */
+        Builder<T> sessionCreatorFactory(ReadSessionCreatorFactory sessionCreatorFactory) {
+            this.sessionCreatorFactory = sessionCreatorFactory;
             return this;
         }
 
@@ -362,7 +368,8 @@ public final class BigQuerySourceConfig<T> implements Serializable {
             Preconditions.checkNotNull(parentProject, "parentProject must not be null");
             Preconditions.checkNotNull(deserializer, "deserializer must not be null");
             Preconditions.checkNotNull(selectedFields, "selectedFields must not be null");
-            Preconditions.checkNotNull(sessionCreator, "sessionCreator must not be null");
+            Preconditions.checkNotNull(
+                    sessionCreatorFactory, "sessionCreatorFactory must not be null");
             Preconditions.checkNotNull(rowStreamOpener, "rowStreamOpener must not be null");
             // Zero is not a "let the service decide" value here, as it is for the two stream
             // counts: a reader fetching no rows never finishes a split. Only an unset value can

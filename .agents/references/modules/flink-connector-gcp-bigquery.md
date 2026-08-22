@@ -307,6 +307,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   process types.
   Absent uses ADC, and either emulator endpoint is mutually exclusive with it (#542).
 
+- **One read session creator belongs to one enumerator** (`docs/adr/0128`).
+  `BigQuerySourceConfig` carries a `ReadSessionCreatorFactory`, not a creator, and
+  `BigQueryStorageReadSource` mints one in both `createEnumerator` and `restoreEnumerator`, closing
+  it itself if the enumerator's constructor throws before taking it. `ReadSessionCreator` is
+  deliberately not `Serializable`. `QueryRunner` stays on the configuration and stays shared: it is
+  not `AutoCloseable`, so no teardown makes reuse unsafe, and its lazy-build guard already names a
+  second enumerator over the same object.
+
 - **The assignment protocol is the base module's** (`docs/adr/0083`):
   `BigQueryReadSplitEnumerator` extends `PullAssignmentSplitEnumerator` and supplies the read
   session — `restore`, the planning call and its report, the counters, its own `snapshotState`.

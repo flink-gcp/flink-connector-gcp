@@ -35,8 +35,10 @@ import org.apache.flink.util.UserCodeClassLoader;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerPartitionSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerRecordEmitter;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReader;
@@ -118,21 +120,46 @@ public class SpannerBatchReadSource<T>
     @Override
     public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> createEnumerator(
             SplitEnumeratorContext<PartitionSplit> context) throws Exception {
-        useEnumeratorCredentials();
-        return new SpannerPartitionSplitEnumerator(context, config, null);
+        return enumerator(context, null);
     }
 
     @Override
     public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<PartitionSplit> context, SpannerBatchEnumeratorState checkpoint)
             throws Exception {
-        useEnumeratorCredentials();
-        return new SpannerPartitionSplitEnumerator(context, config, checkpoint);
+        return enumerator(context, checkpoint);
     }
 
-    /** Hands the planner the credentials before the enumerator makes its one planning call. */
-    private void useEnumeratorCredentials() throws IOException {
-        config.getPlanner().useCredentials(credentials());
+    /**
+     * Builds one enumerator and the one planner it owns.
+     *
+     * <p>A planner per enumerator, minted here rather than carried on the configuration: this
+     * object is what the JobManager keeps for a job's whole life, and a coordinator reset builds
+     * the next enumerator from it. A shared planner would already be closed by then, and would
+     * refuse this enumerator and every retry after it ({@code docs/adr/0128}).
+     *
+     * <p>The credentials are loaded <em>before</em> the planner is minted, so a key file that
+     * cannot be read still fails here with nothing built to release.
+     *
+     * @param context the enumerator context
+     * @param checkpoint the state to restore, or {@code null} for a fresh enumerator
+     * @return the enumerator
+     * @throws Exception if the credentials cannot be loaded or the planner cannot be created
+     */
+    private SpannerPartitionSplitEnumerator enumerator(
+            SplitEnumeratorContext<PartitionSplit> context,
+            @Nullable SpannerBatchEnumeratorState checkpoint)
+            throws Exception {
+        GoogleCredentials credentials = credentials();
+        PartitionPlanner planner = config.getPlannerFactory().create();
+        try {
+            planner.useCredentials(credentials);
+            return new SpannerPartitionSplitEnumerator(context, config, planner, checkpoint);
+        } catch (Throwable e) {
+            // The enumerator never took ownership, so nothing else will close what was just minted.
+            Closers.closeAllSuppressing(e, planner);
+            throw e;
+        }
     }
 
     /**

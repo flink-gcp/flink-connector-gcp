@@ -36,6 +36,8 @@ import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumer
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySample;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.ScriptedRowKeySampler;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStream;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
@@ -49,6 +51,7 @@ import javax.annotation.Nullable;
 
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -87,6 +90,31 @@ class BigtableSourceRuntimeCredentialsTest {
                         source.restoreEnumerator(
                                 context,
                                 new BigtableScanEnumeratorState(true, Collections.emptyList())));
+    }
+
+    /**
+     * Pins the ordering the source's own javadoc claims: the provider is loaded <em>before</em> the
+     * sampler is minted, so a key file that cannot be read leaves nothing built to release.
+     *
+     * <p>Without this, moving the load below the mint would keep the assertions above green while
+     * stranding one sampler per failed attempt on the JobManager.
+     */
+    @Test
+    void nothingIsMintedWhenTheKeyFileCannotBeRead() {
+        ScriptedRowKeySampler.Factory samplers = ScriptedRowKeySampler.Factory.answering();
+        BigtableReadRowsSource<String> source =
+                (BigtableReadRowsSource<String>)
+                        TestSources.withSamplerFactory(
+                                        BigtableSource.<String>builder()
+                                                .table(TestSources.TABLE)
+                                                .deserializer(new TestSources.RowKeyDeserializer())
+                                                .serviceAccountKeyFile(MISSING_KEY),
+                                        samplers)
+                                .build();
+
+        assertSanitized(() -> source.createEnumerator(new FakeSplitEnumeratorContext<>(1)));
+
+        assertThat(samplers.minted()).as("the load failed before anything was minted").isEmpty();
     }
 
     @Test
@@ -146,7 +174,7 @@ class BigtableSourceRuntimeCredentialsTest {
         // that each was handed a provider rather than that the two are one object: they run in
         // different processes, so whether they share an instance here says nothing.
         CapturingRowStreamOpener opener = new CapturingRowStreamOpener();
-        CapturingRowKeySampler sampler = new CapturingRowKeySampler();
+        CapturingRowKeySamplerFactory samplers = new CapturingRowKeySamplerFactory();
         BigtableReadRowsSource<String> source =
                 (BigtableReadRowsSource<String>)
                         BigtableSource.<String>builder()
@@ -155,14 +183,14 @@ class BigtableSourceRuntimeCredentialsTest {
                                 .serviceAccountKeyFile(
                                         ServiceAccountKeyFiles.create(tempDir).toString())
                                 .opener(opener)
-                                .sampler(sampler)
+                                .samplerFactory(samplers)
                                 .build();
 
         source.createReader(readerContext()).close();
         source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
 
         assertThat(opener.credentials).isNotNull();
-        assertThat(sampler.credentials).isNotNull();
+        assertThat(samplers.only().credentials).isNotNull();
     }
 
     private static FakeSourceReaderContext readerContext() {
@@ -240,8 +268,30 @@ class BigtableSourceRuntimeCredentialsTest {
         public void close() {}
     }
 
-    private static final class CapturingRowKeySampler implements RowKeySampler {
+    /** Mints capturing samplers and records them, so a test can assert how many were minted. */
+    private static final class CapturingRowKeySamplerFactory implements RowKeySamplerFactory {
         private static final long serialVersionUID = 1L;
+
+        // Transient because the seams it records are no longer serializable. No test round-trips
+        // this factory; one that did would need the lazy accessor the Scripted* doubles use,
+        // because a transient field deserializes to null.
+        private final transient List<CapturingRowKeySampler> minted = new ArrayList<>();
+
+        @Override
+        public RowKeySampler create() {
+            CapturingRowKeySampler sampler = new CapturingRowKeySampler();
+            minted.add(sampler);
+            return sampler;
+        }
+
+        /** Returns the one sampler minted, failing when there was not exactly one. */
+        private CapturingRowKeySampler only() {
+            assertThat(minted).as("one enumerator mints exactly one sampler").hasSize(1);
+            return minted.get(0);
+        }
+    }
+
+    private static final class CapturingRowKeySampler implements RowKeySampler {
 
         @Nullable private CredentialsProvider credentials;
 

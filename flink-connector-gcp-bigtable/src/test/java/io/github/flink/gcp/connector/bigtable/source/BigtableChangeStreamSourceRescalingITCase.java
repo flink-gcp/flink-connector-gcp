@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ScriptedChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import org.junit.jupiter.api.Test;
@@ -142,7 +143,7 @@ class BigtableChangeStreamSourceRescalingITCase {
                 .maxConcurrentStreamsPerSubtask(maximumStreams)
                 .opener(new ScriptedChangeStreamOpener(runId))
                 .restoreResolver((split, ignored) -> split)
-                .coordinatorClient(new ScriptedCoordinatorClient())
+                .coordinatorClientFactory(new ScriptedCoordinatorClientFactory())
                 .build();
     }
 
@@ -229,6 +230,24 @@ class BigtableChangeStreamSourceRescalingITCase {
             Thread.currentThread().interrupt();
         } catch (Exception ignored) {
             // Best effort only.
+        }
+    }
+
+    /**
+     * Mints the scripted client, because the configuration carries a factory rather than a client.
+     *
+     * <p>A named class rather than a lambda: this travels in the job graph, which {@code
+     * docs/adr/0125} keeps connector-minted serializable lambdas out of. The client it mints holds
+     * no state, so a fresh one per enumerator is indistinguishable from a shared one here.
+     */
+    private static final class ScriptedCoordinatorClientFactory
+            implements ChangeStreamCoordinatorClientFactory {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public ChangeStreamCoordinatorClient create() {
+            return new ScriptedCoordinatorClient();
         }
     }
 

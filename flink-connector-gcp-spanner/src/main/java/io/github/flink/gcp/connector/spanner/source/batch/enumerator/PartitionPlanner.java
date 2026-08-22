@@ -27,7 +27,6 @@ import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.Serializable;
 
 /**
  * Opens a batch read and asks the service to plan it into partitions.
@@ -36,14 +35,19 @@ import java.io.Serializable;
  * releases <em>both</em> the batch transaction and the service handle it was opened on — which is
  * why the split enumerator base class takes one closeable and not two.
  *
- * <p>Serializable because it travels in the job graph inside the source configuration.
+ * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
+ * PartitionPlannerFactory}, and the source mints one planner per enumerator from it. The JobManager
+ * holds one source object for a job's whole life, so a planner parked on the source configuration
+ * would be shared by every enumerator a coordinator reset builds, and the first teardown would
+ * refuse every later one. Leaving this interface unserializable is what stops that being
+ * expressible (issue #990, {@code docs/adr/0128}).
  *
  * <p>It carries no service-account key-file path: the enumerator that owns it loads one set of
  * credentials and hands them over through {@link #useCredentials}, so an implementation neither
  * holds a path nor reads one.
  */
 @Internal
-public interface PartitionPlanner extends Serializable, AutoCloseable {
+public interface PartitionPlanner extends AutoCloseable {
 
     /**
      * Plans the read into partitions.

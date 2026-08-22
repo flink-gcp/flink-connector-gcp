@@ -53,6 +53,31 @@ class DefaultChangeStreamCoordinatorClientTest {
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "instance", "table");
 
+    /**
+     * Pins the guard that makes the lazy accessors safe against a teardown that overtakes them.
+     *
+     * <p>{@code volatile} alone would not: the accessors are a check-then-create, so a teardown
+     * between the check and the assignment closed nothing and left the client the caller then
+     * assigned owned by no one. The reconciliation scan runs on the {@code callAsync} executor and
+     * {@code close()} on the coordinator thread, so that ordering is reachable.
+     */
+    @Test
+    void refusesToBuildAClientAfterItHasBeenClosed() throws Exception {
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(
+                        DESTINATION, "single-cluster", NoCredentialsProvider.create());
+
+        client.close();
+
+        assertThatThrownBy(client::generateInitialPartitions)
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("was closed before it was used")
+                .hasMessageContaining(DESTINATION.toString());
+        assertThatThrownBy(client::retention).hasMessageContaining("was closed before it was used");
+        assertThatThrownBy(client::validateSingleClusterAppProfile)
+                .hasMessageContaining("was closed before it was used");
+    }
+
     @Test
     void acceptsSingleClusterRouting() {
         assertThatCode(

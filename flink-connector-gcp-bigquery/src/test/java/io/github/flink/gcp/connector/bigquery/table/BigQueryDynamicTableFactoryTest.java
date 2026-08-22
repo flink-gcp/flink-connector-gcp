@@ -365,7 +365,8 @@ class BigQueryDynamicTableFactoryTest {
 
             assertThatThrownBy(
                             () ->
-                                    config.getSessionCreator()
+                                    config.getSessionCreatorFactory()
+                                            .create()
                                             .create(
                                                     com.google.cloud.bigquery.storage.v1
                                                             .CreateReadSessionRequest

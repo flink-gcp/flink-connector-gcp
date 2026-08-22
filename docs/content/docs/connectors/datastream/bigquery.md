@@ -1870,7 +1870,10 @@ anything this connector invents. Three facts hold it together:
 - The **read session is created exactly once**, by the enumerator, guarded by a checkpointed flag so
   a restore adopts the existing session instead of creating a second one. A second session would pin
   a second snapshot of the table, and a failed-over job would silently read the table as of two
-  different instants. `readSessionsCreated` reports the same fact at runtime.
+  different instants. `readSessionsCreated` reports the same fact at runtime. The guard is the
+  checkpoint, so a recovery that has none — a JobManager failover before the first checkpoint
+  completes — plans afresh at a new snapshot, which is correct because the readers restarted with no
+  state either and nothing survives from the first session.
 - The offset advances **once per successfully deserialized row**, after every synchronous output
   has reached the source output.
   It advances by one whether the row emitted zero, one, or many records, because it counts input

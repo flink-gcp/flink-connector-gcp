@@ -24,7 +24,7 @@ import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
-import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 
@@ -97,15 +97,16 @@ public final class TestSources {
     }
 
     /**
-     * Applies a planner seam to a builder, reaching the package-private setter for a subpackage.
+     * Applies a planner-factory seam to a builder, reaching the package-private setter for a
+     * subpackage.
      *
      * @param builder the builder
-     * @param planner the planner
+     * @param plannerFactory the factory the source mints one planner per enumerator from
      * @return the builder
      */
-    public static SpannerSourceBuilder<Long> withPlanner(
-            SpannerSourceBuilder<Long> builder, PartitionPlanner planner) {
-        return builder.planner(planner);
+    public static SpannerSourceBuilder<Long> withPlannerFactory(
+            SpannerSourceBuilder<Long> builder, PartitionPlannerFactory plannerFactory) {
+        return builder.plannerFactory(plannerFactory);
     }
 
     /**

@@ -29,8 +29,8 @@ import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
-import io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner;
-import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.DefaultPartitionPlannerFactory;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.BatchClientStructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSplitReader;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
@@ -59,7 +59,7 @@ public class SpannerSourceBuilder<T> {
     private @Nullable SpannerRpcPriority rpcPriority;
     private @Nullable String serviceAccountKeyFile;
     private @Nullable EmulatorEndpoint emulatorEndpoint;
-    private @Nullable PartitionPlanner planner;
+    private @Nullable PartitionPlannerFactory plannerFactory;
     private @Nullable StructStreamOpener opener;
     private int maxRecordsPerFetch = SpannerSplitReader.DEFAULT_MAX_ROWS_PER_FETCH;
 
@@ -249,10 +249,13 @@ public class SpannerSourceBuilder<T> {
         return this;
     }
 
-    /** Replaces the planner the enumerator plans with. For tests that must not reach a service. */
+    /**
+     * Replaces the factory the source mints the enumerator's planner from. For tests that must not
+     * reach a service.
+     */
     @VisibleForTesting
-    SpannerSourceBuilder<T> planner(PartitionPlanner planner) {
-        this.planner = planner;
+    SpannerSourceBuilder<T> plannerFactory(PartitionPlannerFactory plannerFactory) {
+        this.plannerFactory = plannerFactory;
         return this;
     }
 
@@ -303,9 +306,9 @@ public class SpannerSourceBuilder<T> {
                         dataBoostEnabled,
                         rpcPriority,
                         serviceAccountKeyFile,
-                        planner != null
-                                ? planner
-                                : new BatchClientPartitionPlanner(database, emulatorEndpoint),
+                        plannerFactory != null
+                                ? plannerFactory
+                                : new DefaultPartitionPlannerFactory(database, emulatorEndpoint),
                         opener != null
                                 ? opener
                                 : new BatchClientStructStreamOpener(database, emulatorEndpoint),

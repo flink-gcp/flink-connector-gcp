@@ -22,7 +22,7 @@ import org.apache.flink.util.Collector;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
-import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
+import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
 
@@ -75,11 +75,12 @@ public final class TestSources {
     }
 
     /**
-     * Applies a sampler seam to a builder, reaching the package-private setter for a subpackage.
+     * Applies a sampler-factory seam to a builder, reaching the package-private setter for a
+     * subpackage.
      */
-    public static BigtableSourceBuilder<String> withSampler(
-            BigtableSourceBuilder<String> builder, RowKeySampler sampler) {
-        return builder.sampler(sampler);
+    public static BigtableSourceBuilder<String> withSamplerFactory(
+            BigtableSourceBuilder<String> builder, RowKeySamplerFactory samplerFactory) {
+        return builder.samplerFactory(samplerFactory);
     }
 
     /**
