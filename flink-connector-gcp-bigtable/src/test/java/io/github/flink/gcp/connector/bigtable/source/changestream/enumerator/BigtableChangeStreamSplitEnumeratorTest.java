@@ -711,6 +711,40 @@ class BigtableChangeStreamSplitEnumeratorTest {
     }
 
     @Test
+    void aReaderRegisteredAfterBoundedCompletionIsToldNothingIsComing() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
+                new FakeSplitEnumeratorContext<>(2);
+        context.registerReader(0);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        StartPosition.latest(),
+                        null,
+                        null,
+                        true,
+                        false,
+                        Clock.systemUTC());
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit only = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionTransitionEvent(
+                        only.splitId(), only.getLowWatermark(), Collections.emptyList()));
+        assertThat(context.readersToldNoMoreSplits()).containsExactly(0);
+
+        // SourceCoordinator registers a reader in its context before addReader reaches us.
+        context.registerReader(1);
+        enumerator.addReader(1);
+
+        assertThat(context.readersToldNoMoreSplits()).containsExactly(0, 1);
+        assertThat(context.assignedSplits(1)).isEmpty();
+        enumerator.close();
+    }
+
+    @Test
     void boundedSourceSignalsCompletionOnlyAfterEveryPartitionFinishes() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(3);
         BigtableChangeStreamSplitEnumerator enumerator =

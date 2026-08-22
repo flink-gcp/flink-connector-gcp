@@ -303,6 +303,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   thing that stops the scans. **The `bounded` gate is load-bearing in the other direction** — a
   continuous run has no end time to close a stream at, so a successorless close there is a loss and
   must still be restarted.
+- **A bounded completion signal is owed to readers that register after the ledger drains** (#1041).
+  `signalBoundedCompletionIfDrained` broadcasts only to readers registered at that moment, while
+  Flink registers a later reader in the enumerator context before calling `addReader` on both
+  supported minors. `addReader` therefore replays no-more-splits when `boundedComplete` is already
+  set. Without that replay, an empty late reader stays at `NOTHING_AVAILABLE` instead of reaching
+  `END_OF_INPUT`, so the bounded job can remain unfinished.
 - **Before rendering a byte string, read `RowRanges`' class javadoc and pick by who reads the
   result** (#1012, ADR-0080). Four forms, and the choice is not made by package: escaped
   (`RowRanges.format`) for a person reading a log line or an exception message; Base64 for a pattern
