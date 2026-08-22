@@ -463,6 +463,55 @@ class PubSubDynamicTableFactoryTest {
                 .hasMessageNotContaining("must be host:port");
     }
 
+    /**
+     * Issue #1027: a configured name is refused under the option key the DDL carried, not under the
+     * {@code kmsKeyName(...)} setter a SQL caller never wrote. Same defect #1019 fixed for {@code
+     * emulator-endpoint}.
+     *
+     * <p>Asserted on the root cause, because {@code FactoryUtil} dumps every {@code WITH} option
+     * into its own message and a needle of just the key would pass with the check deleted.
+     *
+     * <p>The check is reached through {@code TopicCreateOptionsMapper}, which runs only when the
+     * sink is assembled, so the create disposition has to allow creation for the arm to fire at
+     * all.
+     */
+    @Test
+    void refusesAKmsKeyNameUnderTheOptionKeyTheDdlCarried() {
+        Map<String, String> options = minimalSinkOptions();
+        options.put("sink.create-disposition", "create-if-needed");
+        options.put("sink.auto-create.kms-key-name", "  ");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("sink.auto-create.kms-key-name must not be blank");
+
+        // The neighbouring list option, found by an independent review of this change. A list
+        // names the entry rather than the option alone: the option is not blank, one entry is.
+        Map<String, String> regions = minimalSinkOptions();
+        regions.put("sink.create-disposition", "create-if-needed");
+        // A blank entry written as a space rather than as an empty one, because checkstyle's
+        // "use one semicolon" rule reads a doubled separator in a literal as a stray statement.
+        regions.put(
+                "sink.auto-create.storage-policy.allowed-regions", "us-central1; ;europe-west1");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, regions))
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage(
+                        "an entry of sink.auto-create.storage-policy.allowed-regions must not be"
+                                + " blank");
+
+        // A value written blank parses to an empty list, so it never reaches the per-entry check
+        // and would otherwise be answered by the builder's own "must not be empty".
+        Map<String, String> noRegions = minimalSinkOptions();
+        noRegions.put("sink.create-disposition", "create-if-needed");
+        noRegions.put("sink.auto-create.storage-policy.allowed-regions", "  ");
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, noRegions))
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("sink.auto-create.storage-policy.allowed-regions must not be empty");
+    }
+
     @Test
     void rejectsABlankServiceAccountKeyFile() {
         Map<String, String> options = minimalSinkOptions();

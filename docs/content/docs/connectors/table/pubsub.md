@@ -230,8 +230,8 @@ setting any of them alongside an explicit `create-never` is rejected.
 | `topic` | String, required to write | `topic(...)` |
 | `sink.create-disposition` | `create-if-needed` \| `create-never` | `createDisposition` |
 | `sink.auto-create.message-retention` | Duration | `TopicCreateOptions` `messageRetention` |
-| `sink.auto-create.kms-key-name` | String | `TopicCreateOptions` `kmsKeyName` |
-| `sink.auto-create.storage-policy.allowed-regions` | String list | `TopicCreateOptions` `allowedPersistenceRegions` |
+| `sink.auto-create.kms-key-name` | String | `TopicCreateOptions` `kmsKeyName`. A blank value is refused under `sink.auto-create.kms-key-name`, the key written in the DDL |
+| `sink.auto-create.storage-policy.allowed-regions` | String list | `TopicCreateOptions` `allowedPersistenceRegions`. A list that is blank, or that carries a blank entry, is refused under `sink.auto-create.storage-policy.allowed-regions`, the key written in the DDL |
 | `sink.auto-create.storage-policy.enforce-in-transit` | Boolean | `TopicCreateOptions` `enforceInTransit` |
 | `sink.batching.element-count-threshold` | Long | `batchElementCountThreshold` |
 | `sink.batching.request-byte-threshold` | MemorySize | `batchRequestByteThreshold` |

@@ -1137,6 +1137,19 @@ class BigQueryDynamicTableFactoryTest {
                 .hasMessageContaining("a query is already materialized")
                 .hasMessageNotContaining("must be host:port");
 
+        // parentProject(...) gained a shape check in #1027 and is resolved before
+        // validateEmulatorEndpoints, so it is the one name check that could pre-empt a refusal.
+        Map<String, String> queriedViewWithBadParent = minimalOptions();
+        queriedViewWithBadParent.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        queriedViewWithBadParent.put("source.materialize-views", "true");
+        queriedViewWithBadParent.put("source.parent-project", "a/b");
+        assertThatThrownBy(() -> source(queriedViewWithBadParent))
+                .as("a query beside view materialization, with an unusable parent project")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessageContaining("a query is already materialized")
+                .hasMessageNotContaining("must not contain");
+
         Map<String, String> sinkWithoutTable = minimalOptions();
         sinkWithoutTable.remove("table");
         sinkWithoutTable.put("emulator-endpoint", "localhost");
@@ -1157,6 +1170,88 @@ class BigQueryDynamicTableFactoryTest {
                 .rootCause()
                 .hasMessageContaining("query source requires option")
                 .hasMessageNotContaining("must be host:port");
+    }
+
+    /**
+     * Issue #1027: a configured name is refused under the option key the DDL carried, not under the
+     * builder setter the value reaches. Same defect #1019 fixed for the emulator endpoints; these
+     * five arms are what a grep of the validator call sites for a string-literal name found next.
+     *
+     * <p>Asserted on the root cause. {@code FactoryUtil} dumps every {@code WITH} option into its
+     * own message, so a needle of just the key would pass with the check deleted; the root cause is
+     * the {@code IllegalArgumentException} the checker throws and carries nothing else.
+     *
+     * <p>The {@code project} arm is the one that could not be read off the code. {@code
+     * parentProject(...)} falls back to {@code project} when {@code source.parent-project} is
+     * unset, and a query source never calls {@code destination(config, "source")}, so before this
+     * the fallback was answered under the name of an option the DDL <em>does not contain</em> —
+     * which is exactly why the fallback ran. The name has to follow the value's source, so both
+     * arms are driven.
+     */
+    @Test
+    void refusesAConfiguredNameUnderTheOptionKeyTheDdlCarried() {
+        Map<String, String> parentProject = minimalOptions();
+        parentProject.put("source.query", "SELECT 1");
+        parentProject.put("source.parent-project", "a/b");
+        assertThatThrownBy(() -> source(parentProject))
+                .as("source.parent-project")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("source.parent-project must not contain '/': 'a/b'");
+
+        Map<String, String> fallback = minimalOptions();
+        fallback.put("project", "a/b");
+        fallback.put("source.query", "SELECT 1");
+        assertThatThrownBy(() -> source(fallback))
+                .as("project, reached as the parent-project fallback")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("project must not contain '/': 'a/b'");
+
+        Map<String, String> resultDataset = minimalOptions();
+        resultDataset.put("source.query", "SELECT 1");
+        resultDataset.put("source.query-result-dataset", "a/b");
+        assertThatThrownBy(() -> source(resultDataset))
+                .as("source.query-result-dataset")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("source.query-result-dataset must not contain '/': 'a/b'");
+
+        Map<String, String> location = minimalOptions();
+        location.put("sink.location", "  ");
+        assertThatThrownBy(() -> sink(location))
+                .as("sink.location")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("sink.location must not be blank");
+
+        Map<String, String> tempDataset = optionsFor(WriteMethod.FILE_LOADS);
+        tempDataset.put("sink.file-loads.temp-dataset", "a/b");
+        assertThatThrownBy(() -> sink(tempDataset))
+                .as("sink.file-loads.temp-dataset")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("sink.file-loads.temp-dataset must not contain '/': 'a/b'");
+
+        // These two reach their check through Preconditions inside the builder rather than through
+        // a ResourceNames call site, which is how a grep of ResourceNames missed them; an
+        // independent review of this change found them.
+        Map<String, String> queryLocation = minimalOptions();
+        queryLocation.put("source.query", "SELECT 1");
+        queryLocation.put("source.query-location", "  ");
+        assertThatThrownBy(() -> source(queryLocation))
+                .as("source.query-location")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("source.query-location must not be blank");
+
+        Map<String, String> rowRestriction = minimalOptions();
+        rowRestriction.put("source.row-restriction", "  ");
+        assertThatThrownBy(() -> source(rowRestriction))
+                .as("source.row-restriction")
+                .isInstanceOf(ValidationException.class)
+                .rootCause()
+                .hasMessage("source.row-restriction must not be blank");
     }
 
     @Test

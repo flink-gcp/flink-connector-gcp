@@ -22,6 +22,7 @@ import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
@@ -35,20 +36,27 @@ import java.util.Optional;
  * Maps the {@code sink.file-loads.*} options onto {@link FileLoadsOptions}.
  *
  * <p>Under the same contract as {@code DefaultStreamOptionsMapper}: every knob is applied through
- * the builder, no default is introduced, and value validation — a staging path that is not a {@code
- * gs://} URI, a blank temp dataset, a sub-millisecond backoff — stays with that builder so a SQL
- * user gets the message a DataStream user gets.
+ * the builder and no default is introduced. Value validation — a staging path that is not a {@code
+ * gs://} URI, a sub-millisecond backoff — stays with that builder so a SQL user gets the message a
+ * DataStream user gets, <em>except</em> where the builder's message would name a setter the SQL
+ * user never wrote.
  *
  * <p><b>It always builds</b>, for the reason {@code BufferedStreamOptionsMapper} states: {@code
  * fileLoadsOptions(...)} is <em>required</em> for {@code FILE_LOADS}, so whether an options object
  * is wanted is decided by the write method — which the factory knows — and not by key presence.
  * {@link #presentKeys(ReadableConfig)} survives for the factory's wrong-family check.
  *
- * <p>One rule is owned here rather than left to the builder, because its message has to name an
- * option key: <b>a missing staging path</b>. {@code FileLoadsOptions.build()} rejects it too, but
- * names {@code stagingPath("gs://...")}, a builder method a SQL user cannot call — and this is the
- * one option on the whole table surface that has no default, so its message is all that stands
- * between a DDL and a write method with nowhere to stage.
+ * <p>Two rules are owned here rather than left to the builder, because their messages have to name
+ * an option key. The first is <b>a missing staging path</b>. {@code FileLoadsOptions.build()}
+ * rejects it too, but names {@code stagingPath("gs://...")}, a builder method a SQL user cannot
+ * call — and this is the one option on the whole table surface that has no default, so its message
+ * is all that stands between a DDL and a write method with nowhere to stage. The second is <b>a
+ * {@code sink.file-loads.temp-dataset} that is not one path component</b> (issue #1027): {@code
+ * FileLoadsOptions} rejects it as {@code tempDataset}, which is not what the DDL said.
+ *
+ * <p>A malformed <em>staging path</em> is still reported as {@code stagingPath} and is not
+ * translated here, because that grammar lives in a private pattern on {@code FileLoadsOptions} and
+ * restating it would put a second copy of it in the tree.
  */
 @Internal
 public final class FileLoadsOptionsMapper {
@@ -106,8 +114,17 @@ public final class FileLoadsOptionsMapper {
         FileLoadsOptions.Builder builder = FileLoadsOptions.builder();
         builder.stagingPath(stagingPath.get());
 
+        // Checked here under the DDL key rather than left to FileLoadsOptions' own check, which
+        // names the tempDataset(...) setter a SQL caller never wrote (issue #1027, docs/adr/0127).
         config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_TEMP_DATASET)
-                .ifPresent(builder::tempDataset);
+                .ifPresent(
+                        value ->
+                                builder.tempDataset(
+                                        ResourceNames.checkComponent(
+                                                value,
+                                                BigQueryConnectorOptions
+                                                        .SINK_FILE_LOADS_TEMP_DATASET
+                                                        .key())));
         config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION)
                 .ifPresent(builder::writeDisposition);
         config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL)

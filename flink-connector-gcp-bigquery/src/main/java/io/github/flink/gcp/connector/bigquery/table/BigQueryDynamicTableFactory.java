@@ -31,6 +31,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
@@ -267,7 +268,7 @@ public class BigQueryDynamicTableFactory
                                 : null)
                 .cdcTableReconciliationPolicy(
                         cdcEnabled ? CdcTableOptionsMapper.policy(config) : null)
-                .location(config.getOptional(BigQueryConnectorOptions.SINK_LOCATION).orElse(null))
+                .location(sinkLocation(config))
                 .schemaUpdateOptions(schemaUpdateOptions)
                 .defaultStreamOptions(DefaultStreamOptionsMapper.map(config))
                 .bufferedStreamOptions(bufferedStreamOptions)
@@ -398,18 +399,15 @@ public class BigQueryDynamicTableFactory
                 .parentProject(parentProject)
                 .materializeViews(materializeViews)
                 .queryLocation(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_LOCATION)
-                                .orElse(null))
-                .queryResultDataset(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET)
-                                .orElse(null))
+                        notBlankUnderItsKey(config, BigQueryConnectorOptions.SOURCE_QUERY_LOCATION))
+                .queryResultDataset(queryResultDataset(config))
                 .reuseQueryResultWithin(
                         config.getOptional(
                                         BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN)
                                 .orElse(null))
                 .rowRestriction(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION)
-                                .orElse(null))
+                        notBlankUnderItsKey(
+                                config, BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION))
                 .snapshotTime(snapshotTime(config))
                 .maxStreamCount(
                         config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT)
@@ -745,6 +743,64 @@ public class BigQueryDynamicTableFactory
     }
 
     /**
+     * Reads {@code sink.location} under its own key (issue #1027, {@code docs/adr/0127}).
+     *
+     * <p>{@code BigQuerySinkBuilder.location(String)} checks it too and keeps that check, but it
+     * names {@code location} — which is not this connector's key, and <em>is</em> Cloud Tasks'. A
+     * BigQuery user told that {@code location} must not be blank has a plausible wrong option to go
+     * looking for.
+     *
+     * @param config the table options
+     * @return the location, or {@code null} when unset
+     */
+    @Nullable
+    private static String sinkLocation(ReadableConfig config) {
+        return notBlankUnderItsKey(config, BigQueryConnectorOptions.SINK_LOCATION);
+    }
+
+    /**
+     * Reads an optional value that its builder setter refuses when blank, under the option key the
+     * DDL carried rather than under the setter's own name (issue #1027, {@code docs/adr/0127}).
+     *
+     * <p>Every setter reached from here keeps its own check, and this is what a SQL caller meets
+     * first. On almost every statement that changes only the name in the sentence, but not on all
+     * of them: a value whose only check ran during plan-to-runtime translation was never reached at
+     * all on a statement whose scan a streaming plan eliminates, so such a statement planned before
+     * and is refused now. {@code docs/adr/0127} records that set.
+     *
+     * @param config the table options
+     * @param option the option to read
+     * @return the value, or {@code null} when unset
+     */
+    @Nullable
+    private static String notBlankUnderItsKey(ReadableConfig config, ConfigOption<String> option) {
+        return config.getOptional(option)
+                .map(value -> ResourceNames.checkNotBlank(value, option.key()))
+                .orElse(null);
+    }
+
+    /**
+     * Reads {@code source.query-result-dataset} under its own key (issue #1027, {@code
+     * docs/adr/0127}).
+     *
+     * <p>{@code BigQuerySourceBuilder.queryResultDataset(String)} checks it too and keeps that
+     * check; it names the setter, which a SQL caller never wrote.
+     *
+     * @param config the table options
+     * @return the dataset, or {@code null} when unset
+     */
+    @Nullable
+    private static String queryResultDataset(ReadableConfig config) {
+        return config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET)
+                .map(
+                        value ->
+                                ResourceNames.checkComponent(
+                                        value,
+                                        BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET.key()))
+                .orElse(null);
+    }
+
+    /**
      * Resolves the Storage Read and query billing project.
      *
      * <p>{@code source.parent-project} when set, else {@code project}. A direct-table source that
@@ -759,10 +815,12 @@ public class BigQueryDynamicTableFactory
         Optional<String> parent =
                 config.getOptional(BigQueryConnectorOptions.SOURCE_PARENT_PROJECT);
         if (parent.isPresent()) {
-            return parent.get();
+            return ResourceNames.checkComponent(
+                    parent.get(), BigQueryConnectorOptions.SOURCE_PARENT_PROJECT.key());
         }
         if (project.isPresent()) {
-            return project.get();
+            return ResourceNames.checkComponent(
+                    project.get(), BigQueryConnectorOptions.PROJECT.key());
         }
         throw new ValidationException(
                 "A 'bigquery' query source requires option '"

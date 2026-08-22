@@ -20,7 +20,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
@@ -35,10 +37,13 @@ import java.util.List;
  * Builds {@link TopicCreateOptions} from the table options.
  *
  * <p>Under the same contract as {@code PublisherOptionsMapper}: every knob is applied with {@code
- * getOptional(...).ifPresent(...)}, no default is introduced, and value validation is left to the
- * builder so a SQL user gets the message a DataStream user gets. The two rules owned here — the
- * disposition cross-check and the storage-policy pair — are owned because their messages must name
- * option keys rather than builder methods.
+ * getOptional(...).ifPresent(...)}, and no default is introduced. Value validation is left to the
+ * builder wherever the builder's message needs no translation; what is owned here is every rule
+ * whose message must name an <em>option key</em> rather than a builder method — the disposition
+ * cross-check, the storage-policy pair, and (issue #1027) the blankness of {@code
+ * sink.auto-create.kms-key-name} and of {@code sink.auto-create.storage-policy.allowed-regions} and
+ * its entries. The builder still refuses all of those; restating them here only changes the name
+ * the sentence carries.
  *
  * <p><b>Unlike the source's {@code scan.auto-create.*}, these options do not authorize creation</b>
  * — {@code sink.create-disposition} does, and it defaults to {@code create-if-needed}, so the
@@ -113,10 +118,35 @@ public final class TopicCreateOptionsMapper {
         TopicCreateOptions.Builder builder = TopicCreateOptions.builder();
         config.getOptional(PubSubConnectorOptions.SINK_AUTO_CREATE_MESSAGE_RETENTION)
                 .ifPresent(builder::messageRetention);
+        // Checked here under the DDL key rather than left to TopicCreateOptions' own check, which
+        // names the kmsKeyName(...) setter a SQL caller never wrote (issue #1027, docs/adr/0127).
         config.getOptional(PubSubConnectorOptions.SINK_AUTO_CREATE_KMS_KEY_NAME)
-                .ifPresent(builder::kmsKeyName);
+                .ifPresent(
+                        value ->
+                                builder.kmsKeyName(
+                                        ResourceNames.checkNotBlank(
+                                                value,
+                                                PubSubConnectorOptions.SINK_AUTO_CREATE_KMS_KEY_NAME
+                                                        .key())));
         config.getOptional(PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS)
-                .ifPresent(builder::allowedPersistenceRegions);
+                .ifPresent(
+                        regions -> {
+                            // Under the DDL key rather than TopicCreateOptions' own checks, which
+                            // name allowedPersistenceRegions(...) (issue #1027, docs/adr/0127).
+                            // Both of its rejections are restated, because a value written blank
+                            // parses to an empty list and never reaches the per-entry one.
+                            String key =
+                                    PubSubConnectorOptions
+                                            .SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS
+                                            .key();
+                            Preconditions.checkArgument(
+                                    !regions.isEmpty(), "%s must not be empty", key);
+                            regions.forEach(
+                                    region ->
+                                            ResourceNames.checkNotBlank(
+                                                    region, "an entry of " + key));
+                            builder.allowedPersistenceRegions(regions);
+                        });
         config.getOptional(
                         PubSubConnectorOptions.SINK_AUTO_CREATE_STORAGE_POLICY_ENFORCE_IN_TRANSIT)
                 .ifPresent(builder::enforceInTransit);

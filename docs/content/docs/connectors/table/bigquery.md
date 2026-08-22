@@ -172,6 +172,19 @@ runtime option out of the DDL leaves its setter uncalled, so its default is what
 or SDK already uses. The full list of defaults is in the
 [configuration reference]({{< relref "docs/reference/bigquery" >}}).
 
+These names are refused under the option key you wrote rather than under the setter they map onto:
+`project`, `source.parent-project`, `source.query-location`, `source.query-result-dataset`,
+`source.row-restriction`, `sink.location` and `sink.file-loads.temp-dataset`. Where a value has two
+possible sources the message follows the one that supplied it, so a query source that leaves
+`source.parent-project` unset and carries an unusable `project` is answered about `project`.
+
+**Other options are still refused under their setter's name**, and knowing that is how to read such
+a message: `'source.max-stream-count' = '-1'` is answered about `maxStreamCount`, and a
+`sink.file-loads.staging-path` that is not a `gs://bucket[/prefix]` URI about `stagingPath`. The
+setter each option maps to is the third column of these tables, so a name you did not write can be
+looked up there. A *missing* staging path is the exception among exceptions: it already names the
+key, because that is the one option on this surface with no default.
+
 ### Destination
 
 | Option | Type | Maps to |

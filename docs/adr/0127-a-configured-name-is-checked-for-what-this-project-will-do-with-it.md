@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22), then by
-  [#1019] (2026-08-22)
-- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019]
+  [#1019] and [#1027] (2026-08-22)
+- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019], [#1027]
 - Modules: base (`base.options`), bigquery, bigtable, cloudtasks, pubsub, spanner
 - Current behavior: `docs/content/docs/connectors/_index.md`, "What a builder checks"
 
@@ -278,10 +278,49 @@ still accepted and still unused; a malformed one is now refused where it was ign
 cannot be an endpoint at all is a typo wherever it sits, and the same DDL used as a sink was already
 refused.
 
-What that leaves untouched is the asymmetry underneath: `BigQuerySourceBuilder.build()` *rejects*
+What it leaves in place is the drop itself, and — correcting what [#1019] wrote here — that is not
+a defect the two layers disagree about. `BigQuerySourceBuilder.build()` *rejects*
 `emulatorRestEndpoint(...)` without `query(...)` or `materializeViews()`, while the table factory
-silently ignores the key. That is a separate defect about which options a direction accepts, not
-about what a rejection names, and it is not decided here.
+ignores the key on a direct-table read; the two answers differ because the situations do. A source
+builder is source-only, so a caller who sets that setter with nothing to spend it on has made a
+mistake nothing else will report. A `WITH` clause is not: one serves both directions, and refusing
+the key on the source path would break a table whose sink half legitimately needs it — which is what
+`directTableSourceLeavesTheSinkRestEndpointUnused` holds. Every configuration the factory ignores is
+one where the value has no work to do, because a direct-table read makes no query job and no view
+lookup, so no traffic reaches a destination the DDL did not ask for. What the shape check adds is
+the one thing the drop never covered: whether the value could be an endpoint at all.
+
+[#1027] applies the same rule to five more names, and adds one measurement that reading could not
+have produced. `parentProject(...)` falls back to `project` when `source.parent-project` is unset,
+and a query source never calls `destination(config, "source")`, so that fallback was answered under
+the name of an option the DDL **does not contain** — `source.parent-project` was absent, which is
+precisely why the fallback ran. A name reported for a value with two possible sources therefore has
+to follow the source, not be fixed at the call site.
+
+`sink.location` is the same shape with a sharper edge: the builder names `location`, which is not
+BigQuery's key and *is* Cloud Tasks', so the message sends a BigQuery user to an option that exists
+somewhere else. Two candidates were measured and excluded rather than assumed —
+`sink.json-field-paths` and `sink.geography-field-paths` with a blank value reach no check at all,
+so the literal `"path"` in `AvroSchemaOptions` and `ProtoSchemaOptions` is not reachable that way.
+
+Some configurations that planned before are now refused, and the set is described by a mechanism
+rather than counted. Measured 2026-08-22 with `EXPLAIN SELECT * FROM t WHERE FALSE` over a BigQuery
+query source carrying an unusable `source.parent-project`: in **batch** execution the planner asks
+for the scan runtime provider anyway, so the value was already refused and only the name changes; in
+**streaming** execution the pruned scan never reached it, so the statement planned. That is the same
+split [#1019] measured across two connectors, and it is one rule rather than a per-connector quirk —
+a pruned scan skips plan-to-runtime translation in streaming and does not in batch.
+
+So the newly-refused set is **every source value whose only check ran during plan-to-runtime
+translation, on a statement whose scan a streaming plan eliminates**. Counting it was tried and got
+the number wrong: the first version of this paragraph said "one configuration", and an independent
+review named `source.query-result-dataset` as a second. Nothing connected in any of them. Every
+value outside that set was already refused a moment later by the builder, under a different name.
+
+Nothing enforces any of this yet, which is why the same defect has now been found six times by
+reading. [#1028] carries the checker.
+
+[#1028]: https://github.com/flink-gcp/flink-connector-gcp/issues/1028
 
 [#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
 [#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895
@@ -291,3 +330,4 @@ about what a rejection names, and it is not decided here.
 [#1009]: https://github.com/flink-gcp/flink-connector-gcp/issues/1009
 [#1013]: https://github.com/flink-gcp/flink-connector-gcp/issues/1013
 [#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019
+[#1027]: https://github.com/flink-gcp/flink-connector-gcp/issues/1027
