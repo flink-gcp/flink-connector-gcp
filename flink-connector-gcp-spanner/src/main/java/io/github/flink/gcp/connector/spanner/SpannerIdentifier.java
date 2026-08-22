@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.spanner.Dialect;
 
@@ -45,7 +46,7 @@ final class SpannerIdentifier {
     }
 
     private static String decode(String value, Dialect dialect) {
-        if (value == null || value.trim().isEmpty()) {
+        if (StringUtils.isNullOrWhitespaceOnly(value)) {
             throw new IllegalArgumentException("The identifier is blank.");
         }
         char quote = quote(dialect);

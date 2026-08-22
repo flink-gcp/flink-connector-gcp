@@ -147,7 +147,7 @@ public final class SpannerReadOperation implements Serializable {
 
     private static void checkName(String value, String what) {
         Preconditions.checkNotNull(value, what + " must not be null");
-        Preconditions.checkArgument(!value.trim().isEmpty(), what + " must not be blank");
+        Preconditions.checkArgument(!value.isBlank(), what + " must not be blank");
     }
 
     /**

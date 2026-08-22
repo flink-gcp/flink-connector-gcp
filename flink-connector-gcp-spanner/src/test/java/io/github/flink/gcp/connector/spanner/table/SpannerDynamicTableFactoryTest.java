@@ -180,6 +180,25 @@ class SpannerDynamicTableFactoryTest {
     }
 
     @Test
+    void rejectsWhitespaceThatTrimDoesNotStrip() {
+        // U+2028 is the value that tells the two blank idioms apart: Character.isWhitespace calls
+        // it whitespace, and String.trim() leaves it alone because it sits above U+0020. The
+        // "  " assertions elsewhere in this class pass under either idiom; these two fail if the
+        // checks behind them return to trim().isEmpty(). SpannerIdentifier has no test class of
+        // its own and is reached only this way.
+        Map<String, String> blankTable = options();
+        blankTable.put("schema", "analytics");
+        blankTable.put("table", "\u2028");
+        assertThatThrownBy(() -> source(SCHEMA, blankTable))
+                .hasStackTraceContaining("table must be one non-blank GoogleSQL identifier");
+
+        Map<String, String> blankKeyFile = options();
+        blankKeyFile.put("service-account-key-file", "\u2028");
+        assertThatThrownBy(() -> source(SCHEMA, blankKeyFile))
+                .hasStackTraceContaining("service-account-key-file must not be blank");
+    }
+
+    @Test
     void mapsEveryWriterOptionAndTheEndpoint() {
         Map<String, String> options = options();
         options.put("sink.buffer-flush.max-cells", "100");

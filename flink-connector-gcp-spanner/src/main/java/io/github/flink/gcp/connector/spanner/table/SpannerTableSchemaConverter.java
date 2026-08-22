@@ -22,6 +22,7 @@ import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.spanner.Dialect;
@@ -171,9 +172,7 @@ public final class SpannerTableSchemaConverter implements Serializable {
                 }
                 return Type.timestamp();
             case ARRAY:
-                if (((ArrayType) logicalType)
-                        .getElementType()
-                        .is(org.apache.flink.table.types.logical.LogicalTypeRoot.ARRAY)) {
+                if (((ArrayType) logicalType).getElementType().is(LogicalTypeRoot.ARRAY)) {
                     throw unsupported(
                             path, logicalType, "Spanner ARRAY elements cannot be another ARRAY.");
                 }
@@ -196,25 +195,17 @@ public final class SpannerTableSchemaConverter implements Serializable {
             String spannerName,
             String flinkName) {
         LogicalType candidate = logicalType;
-        boolean array =
-                candidate.getTypeRoot()
-                        == org.apache.flink.table.types.logical.LogicalTypeRoot.ARRAY;
+        boolean array = candidate.getTypeRoot() == LogicalTypeRoot.ARRAY;
         if (array) {
             candidate = ((ArrayType) candidate).getElementType();
         }
         boolean compatible;
         if ("BYTES".equals(flinkName)) {
-            compatible =
-                    candidate.isAnyOf(
-                            org.apache.flink.table.types.logical.LogicalTypeRoot.BINARY,
-                            org.apache.flink.table.types.logical.LogicalTypeRoot.VARBINARY);
+            compatible = candidate.isAnyOf(LogicalTypeRoot.BINARY, LogicalTypeRoot.VARBINARY);
         } else if ("BIGINT".equals(flinkName)) {
-            compatible = candidate.is(org.apache.flink.table.types.logical.LogicalTypeRoot.BIGINT);
+            compatible = candidate.is(LogicalTypeRoot.BIGINT);
         } else {
-            compatible =
-                    candidate.isAnyOf(
-                            org.apache.flink.table.types.logical.LogicalTypeRoot.CHAR,
-                            org.apache.flink.table.types.logical.LogicalTypeRoot.VARCHAR);
+            compatible = candidate.isAnyOf(LogicalTypeRoot.CHAR, LogicalTypeRoot.VARCHAR);
         }
         if (!compatible) {
             throw unsupported(

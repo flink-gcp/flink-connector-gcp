@@ -247,6 +247,8 @@ Exact pushed primary-key predicates also gate synchronous and asynchronous looku
 Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
 The standard partial-cache expiry, size, and missing-key options apply unchanged.
 `lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
+Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this option is what buys a second attempt at the other two.
+`RESOURCE_EXHAUSTED` is not retried here because the client already retries it whenever the server asks for a delay, and waits that delay; re-issuing the read at once would spend the budget against the wait rather than observe it.
 
 UUID, JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
 

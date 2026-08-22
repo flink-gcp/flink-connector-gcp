@@ -116,6 +116,14 @@ class SpannerReadOperationTest {
                                         "singers", KeySet.all(), Arrays.asList("id", " ")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("column must not be blank");
+        // U+2028 is the value that tells the two blank idioms apart: Character.isWhitespace calls
+        // it whitespace, and String.trim() leaves it alone because it sits above U+0020. The three
+        // ASCII assertions above pass under either idiom; only this one fails if the check returns
+        // to trim().isEmpty().
+        assertThatThrownBy(() -> SpannerReadOperation.read("\u2028", KeySet.all(), COLUMNS))
+                .as("U+2028 is blank to isBlank() but survives trim()")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("table must not be blank");
     }
 
     @Test

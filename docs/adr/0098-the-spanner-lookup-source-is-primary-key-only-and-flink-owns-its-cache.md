@@ -39,9 +39,14 @@ Both modes qualify the table with the optional dialect-specific `schema` value u
 The connector exposes Flink's `NONE` and `PARTIAL` cache modes and delegates partial-cache storage, expiry, and missing-key behavior to Flink.
 It rejects `FULL` because a full cache would require a scan and a separately defined snapshot and reload contract.
 The connector retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point reads within the configured retry budget.
+Those three are the connector's own choice rather than a mirror of the client's, because `readRow` reaches `StreamingRead` rather than the unary `Read` and `SpannerStubSettings` gives that RPC an empty retryable set (google-cloud-spanner 6.120.0); of the three, only `UNAVAILABLE` is retried underneath, so `ABORTED` and `DEADLINE_EXCEEDED` would be retried by nobody without this loop.
 When the planner also pushes an exact primary-key predicate, both lookup modes reject a non-matching lookup key before opening a point-read RPC.
 Predicates that are not exact primary-key constraints remain Flink residuals.
 The bounded-scan `scan.index` option does not change lookup access paths.
+
+## Alternatives declined
+
+- Retrying `RESOURCE_EXHAUSTED`, which the sink's `SpannerErrorClassifier` does treat as transient. What separates the two is backoff rather than polarity: the sink retries on a `RetrySchedule` and sleeps between attempts (ADR-0075), so it can serve out the wait this status asks for, and the client honours that wait too, retrying the status on this read path precisely when the server attached a retry delay. The lookup loop has no backoff at all, so including it would re-issue at once and spend the whole budget against the wait the server asked for. That is the shape ADR-0084 records on the BigQuery read path.
 
 ## Consequences
 

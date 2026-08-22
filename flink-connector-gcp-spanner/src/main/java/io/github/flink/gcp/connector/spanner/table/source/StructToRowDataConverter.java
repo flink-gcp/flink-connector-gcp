@@ -23,6 +23,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LogicalType;
 
@@ -179,8 +180,7 @@ final class StructToRowDataConverter implements Serializable {
                 throw new IllegalArgumentException(
                         "Unsupported Spanner array type: " + elementType);
         }
-        LogicalType elementLogicalType =
-                ((org.apache.flink.table.types.logical.ArrayType) logicalType).getElementType();
+        LogicalType elementLogicalType = ((ArrayType) logicalType).getElementType();
         Object[] converted = new Object[values.size()];
         for (int i = 0; i < values.size(); i++) {
             Object item = values.get(i);
