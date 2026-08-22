@@ -14,6 +14,10 @@ being complete.
 Run `just check-option-docs` after any change to a builder, an options class, a `ConfigOption`, or
 a reference page. It is offline and takes under a second.
 
+**If you arrived here by adding an option**, this page is one of its five obligations and not the
+first: `$add-a-connector-option` carries the rest, including the one no checker holds — that a
+rejection names the key the caller typed rather than the setter it reaches (ADR-0127).
+
 ## The config file, in one paragraph
 
 `scripts/config/option-docs.toml` has four tables and they do different jobs:
