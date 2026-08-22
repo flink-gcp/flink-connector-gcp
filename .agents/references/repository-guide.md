@@ -147,7 +147,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `[extra]` point in opposite directions, and an entry that never fires fails. It compares names,
   not defaults or meanings, so those still move with the source change. Its own `verify.yaml` job
   is recorded in ADR-0058; the checker design is ADR-0116, and every failure routes through
-  `.agents/skills/curate-option-docs/`
+  `.agents/skills/curate-option-docs/` — and, because adding an option always fails this check,
+  onward to `.agents/skills/add-a-connector-option/`, which carries the obligations no checker
+  holds. ADR-0127 records why the largest of those is held by a test rather than by a sixth
+  checker, with the measurement — one was built for it on #1028 and withdrawn
 - `just check-metric-docs` — holds DataStream `Metric` tables to each connector's inventory in both
   directions, including registration kind, source-derived subgroup templates, guarded
   `(Flink standard)` rows and the mechanical `num`-prefix rule. It does not check Meaning cells,

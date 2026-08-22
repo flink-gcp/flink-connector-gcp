@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22), then by
-  [#1019] (2026-08-22)
-- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019]
+  [#1019], then by [#1028] (2026-08-22)
+- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019], [#1028]
 - Modules: base (`base.options`), bigquery, bigtable, cloudtasks, pubsub, spanner
 - Current behavior: `docs/content/docs/connectors/_index.md`, "What a builder checks"
 
@@ -283,6 +283,39 @@ What that leaves untouched is the asymmetry underneath: `BigQuerySourceBuilder.b
 silently ignores the key. That is a separate defect about which options a direction accepts, not
 about what a rejection names, and it is not decided here.
 
+## A checker was built for this, and withdrawn
+
+Nothing enforced any of the above, which is why the same defect was found six times by reading, and
+[#1028] set out to end that with a script. It was written, reviewed and **withdrawn**.
+
+**Why it was withdrawn**, in the numbers that decided it:
+
+| | |
+|---|---|
+| The checker, with its config, tests and skill | **3,798 lines** |
+| The same property as an ordinary unit test | **~10-24 lines per site**, measured on the tests [#1029] and [#1032] wrote |
+| Review findings across six rounds | **~58, every one in the checker**; none in the 37 call sites it policed |
+| Independent review rounds | **3, none converging** |
+
+Every defect was in the instrument, which is the evidence that closed [#971]. And it could not see a
+newly added option at all — its population was call sites, so adding a `ConfigOption` wired to an
+existing setter left it green, measured by adding one. That is the moment this defect enters.
+
+**Why it was hard is the transferable part.** It approximated *reachability* — which option reaches
+which check — with regular expressions over Java, and the traps did not run out. A test does not
+approximate reachability; it runs the factory and reads the message. Before writing a tool that
+approximates a property, ask whether the property can simply be executed.
+
+[ADR-0133] then renamed the whole single-value surface at a seam, which removes most of the
+judgment this record used to demand. What is left — shape 2's factory-time parse, the cross-field
+checks a seam cannot attribute — is carried by `$add-a-connector-option` and held by a test per
+reachable value. Adding an option always fails `just check-option-docs`, whose failure routes there.
+
+One measurement bounds any future attempt: widening such a check to *any* rejection whose message
+opens with a bare identifier was measured at **735 sites, of which 90% name a parameter of the
+enclosing method** rather than a setting a caller chose. Those are argument checks between this
+project's own methods.
+
 [#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
 [#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895
 [#920]: https://github.com/flink-gcp/flink-connector-gcp/issues/920
@@ -291,3 +324,8 @@ about what a rejection names, and it is not decided here.
 [#1009]: https://github.com/flink-gcp/flink-connector-gcp/issues/1009
 [#1013]: https://github.com/flink-gcp/flink-connector-gcp/issues/1013
 [#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019
+[#1028]: https://github.com/flink-gcp/flink-connector-gcp/issues/1028
+[#1029]: https://github.com/flink-gcp/flink-connector-gcp/pull/1029
+[#1032]: https://github.com/flink-gcp/flink-connector-gcp/pull/1032
+[#971]: https://github.com/flink-gcp/flink-connector-gcp/issues/971
+[ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

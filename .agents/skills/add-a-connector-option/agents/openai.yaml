@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add A Connector Option"
+  short_description: "The five obligations a new connector option carries"
+  default_prompt: "Use $add-a-connector-option before adding or changing a connector option."
