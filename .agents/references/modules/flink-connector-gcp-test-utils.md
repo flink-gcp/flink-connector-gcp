@@ -25,6 +25,16 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## Harnesses (`docs/adr/0051`)
 
+- `LoopbackPortPublisher` is this module's one `META-INF/services` entry and the only thing here
+  that reaches containers no harness constructs — testcontainers loads the SPI per
+  `GenericContainer`, so it applies to Ryuk and to the `exposeHostPorts` sshd forwarder as well
+  (`docs/adr/0132`). It is therefore **not** a helper a harness calls: nothing imports it, and the
+  services file is the whole mechanism, which is why a test asserts `ServiceLoader` resolves it. It
+  stands down on a non-loopback Docker host by design, and on an explicit
+  `FLINK_GCP_TESTS_LOOPBACK_PUBLISH=false` / `-Dflink.gcp.tests.loopback-publish=false` for the
+  topologies that address test cannot see. It publishes on the address the Docker host *resolved*
+  to rather than a hard-coded `127.0.0.1` — loopback is all of `127.0.0.0/8`, so
+  read the address out of `docker ps` rather than assuming it.
 - `StubWriterInitContext` answers what a sink reads and throws for everything else — the throws
   are the point. `TestSinkWriterMetricGroup` / `TestSinkCommitterMetricGroup` are the only
   metric-group harnesses; everything asserts **by registered name**, and the committer names are
