@@ -103,10 +103,10 @@ public final class BigtableDynamicSource
     @Nullable private final Integer parallelism;
     private final BigtableLookupConfig lookupOptions;
 
-    // The projection state, mutated by applyProjection and carried by copy().
+    // The projection state, mutated by applyProjection and carried by copy() through the builder.
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
-    private BigtableFilterPushDown.State filterState = BigtableFilterPushDown.State.empty();
+    private BigtableFilterPushDown.State filterState;
 
     private BigtableDynamicSource(Builder builder) {
         this.schema = Preconditions.checkNotNull(builder.schema, "schema must not be null");
@@ -128,6 +128,9 @@ public final class BigtableDynamicSource
         this.producedDataType =
                 Preconditions.checkNotNull(
                         builder.producedDataType, "producedDataType must not be null");
+        this.projectedFields = builder.projectedFields;
+        this.filterState =
+                Preconditions.checkNotNull(builder.filterState, "filterState must not be null");
     }
 
     /**
@@ -352,25 +355,23 @@ public final class BigtableDynamicSource
 
     @Override
     public DynamicTableSource copy() {
-        BigtableDynamicSource copy =
-                builder()
-                        .schema(schema)
-                        .destination(destination)
-                        .nullStringLiteral(nullStringLiteral)
-                        .appProfileId(appProfileId)
-                        .serviceAccountKeyFile(serviceAccountKeyFile)
-                        .prefixes(prefixes)
-                        .rangeStartClosed(rangeStartClosed)
-                        .rangeEndOpen(rangeEndOpen)
-                        .rowRanges(rowRanges)
-                        .emulatorEndpoint(emulatorEndpoint)
-                        .parallelism(parallelism)
-                        .lookupOptions(lookupOptions)
-                        .producedDataType(producedDataType)
-                        .build();
-        copy.projectedFields = projectedFields;
-        copy.filterState = filterState;
-        return copy;
+        return builder()
+                .schema(schema)
+                .destination(destination)
+                .nullStringLiteral(nullStringLiteral)
+                .appProfileId(appProfileId)
+                .serviceAccountKeyFile(serviceAccountKeyFile)
+                .prefixes(prefixes)
+                .rangeStartClosed(rangeStartClosed)
+                .rangeEndOpen(rangeEndOpen)
+                .rowRanges(rowRanges)
+                .emulatorEndpoint(emulatorEndpoint)
+                .parallelism(parallelism)
+                .lookupOptions(lookupOptions)
+                .producedDataType(producedDataType)
+                .projectedFields(projectedFields)
+                .filterState(filterState)
+                .build();
     }
 
     @Override
@@ -440,6 +441,8 @@ public final class BigtableDynamicSource
         @Nullable private Integer parallelism;
         private BigtableLookupConfig lookupOptions;
         private DataType producedDataType;
+        @Nullable private int[] projectedFields;
+        private BigtableFilterPushDown.State filterState = BigtableFilterPushDown.State.empty();
 
         private Builder() {}
 
@@ -558,6 +561,35 @@ public final class BigtableDynamicSource
          */
         public Builder producedDataType(DataType producedDataType) {
             this.producedDataType = producedDataType;
+            return this;
+        }
+
+        /**
+         * Carries the projection the planner already applied, for {@link #copy()}.
+         *
+         * <p>Package-private and undocumented as a knob, because nothing but {@code copy()} may set
+         * it: {@code applyProjection} is how a projection arrives, and a source built with one
+         * already applied but a {@code producedDataType} that does not match it would build rows of
+         * the wrong shape.
+         *
+         * @param projectedFields the physical field indexes, or {@code null} for no projection
+         * @return this builder
+         */
+        Builder projectedFields(@Nullable int[] projectedFields) {
+            this.projectedFields = projectedFields;
+            return this;
+        }
+
+        /**
+         * Carries the filter push-down the planner already applied, for {@link #copy()}.
+         *
+         * <p>Package-private for the reason above: {@code applyFilters} is how a filter arrives.
+         *
+         * @param filterState the translated filter state
+         * @return this builder
+         */
+        Builder filterState(BigtableFilterPushDown.State filterState) {
+            this.filterState = filterState;
             return this;
         }
 
