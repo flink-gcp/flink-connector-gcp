@@ -1,0 +1,4 @@
+interface:
+  display_name: "Independent Review"
+  short_description: "Ask a second model to review a draft pull request"
+  default_prompt: "Use $independent-review after both self-review rounds, before the pull request is called ready."

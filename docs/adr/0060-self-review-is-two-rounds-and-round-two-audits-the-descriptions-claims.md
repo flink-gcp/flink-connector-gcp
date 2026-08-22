@@ -22,8 +22,10 @@ limitations under the License.
   [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317))
 - Issues: —
 - Modules: all (workflow)
-- Current behavior: root `AGENTS.md` § Workflow rules (the imperative form, with the review
+- Current behavior: root `AGENTS.md` § GitHub workflow (the imperative form, with the review
   tooling)
+- Related: `docs/adr/0130` adds a third round after these two — an independent review by a second
+  model — which extends this flow without changing what either round here asks
 
 ## Decision
 

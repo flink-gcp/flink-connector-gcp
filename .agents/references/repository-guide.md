@@ -400,7 +400,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
     asked for different things. Run them as parallel subagents where the session permits the Agent
     tool and sequentially where it does not, say which was done, and verify each finding against
     the code before acting on it
-- **Then run a second round with different lenses, and do it before saying the PR is ready** —
+- **Then run a second round with different lenses, then a third round in which a
+  second model reviews the pushed commit without the description as its frame (`docs/adr/0130`), and
+  only then is the PR ready** —
   `.agents/skills/self-review-round-two/`, which is where its procedure lives (ADR-0060 carries
   the measurement that pinned this). The rounds answer different questions:
   round one asks whether the code does what the description says, **round two asks whether the
