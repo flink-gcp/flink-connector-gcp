@@ -21,6 +21,7 @@ import org.apache.flink.table.types.DataType;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +48,18 @@ class BigtableChangeStreamDynamicSourceTest {
     @Test
     void anEnvelopeSourceRejectsASelectedCellValueLeftOnTheBuilder() {
         BigtableChangeStreamDynamicSource.Builder builder = envelope().selectedCellFamily("state");
+
+        assertThatThrownBy(builder::build)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("selectedCellSchema");
+    }
+
+    @Test
+    void anEnvelopeSourceRejectsATrailingBytesValueLeftOnTheBuilder() {
+        // The envelope decodes no cell, so a decode policy set on one configures nothing — the
+        // same half-configuration hazard as the selected-cell values beside it.
+        BigtableChangeStreamDynamicSource.Builder builder =
+                envelope().trailingBytes(TrailingBytes.REJECT);
 
         assertThatThrownBy(builder::build)
                 .isInstanceOf(IllegalArgumentException.class)
@@ -90,6 +103,7 @@ class BigtableChangeStreamDynamicSourceTest {
         return BigtableChangeStreamDynamicSource.builder()
                 .destination(DESTINATION)
                 .appProfileId("single-cluster-profile")
-                .selectedCellSchema(SELECTED_CELL_SCHEMA);
+                .selectedCellSchema(SELECTED_CELL_SCHEMA)
+                .trailingBytes(TrailingBytes.IGNORE);
     }
 }

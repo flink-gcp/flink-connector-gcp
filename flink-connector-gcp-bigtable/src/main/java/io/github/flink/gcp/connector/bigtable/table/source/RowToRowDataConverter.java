@@ -24,6 +24,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -78,9 +79,13 @@ final class RowToRowDataConverter implements Serializable {
      * @param projectedFields for each output position, the physical column it carries; null for the
      *     identity
      * @param nullStringLiteral the cell value that stands for a null character string
+     * @param trailingBytes what a fixed-width decode does with bytes past the declared layout
      */
     RowToRowDataConverter(
-            BigtableTableSchema schema, @Nullable int[] projectedFields, String nullStringLiteral) {
+            BigtableTableSchema schema,
+            @Nullable int[] projectedFields,
+            String nullStringLiteral,
+            TrailingBytes trailingBytes) {
         byte[] nullStringBytes = nullStringLiteral.getBytes(StandardCharsets.UTF_8);
         List<BigtableTableSchema.Family> declared = schema.getFamilies();
         this.arity = projectedFields == null ? 1 + declared.size() : projectedFields.length;
@@ -93,12 +98,24 @@ final class RowToRowDataConverter implements Serializable {
                 rowKeySlot = i;
                 continue;
             }
-            slots[slotCount++] = new FamilySlot(i, familyAt(declared, physical), nullStringBytes);
+            slots[slotCount++] =
+                    new FamilySlot(i, familyAt(declared, physical), nullStringBytes, trailingBytes);
         }
         this.rowKeySlot = rowKeySlot;
         // The plain decoder: a Bigtable row cannot exist without a key, so there is no null to
-        // read, whatever the column's declared nullability.
-        this.rowKeyDecoder = rowKeySlot < 0 ? null : CellValueCodec.decoder(schema.getRowKeyType());
+        // read, whatever the column's declared nullability. Under REJECT the decoder is kept even
+        // when the projection dropped the key: the policy promises that a malformed key fails the
+        // read, and a projection must not quietly narrow that to "unless the query skipped the
+        // column" (ADR-0136). Only for the types the policy governs, though — validating, say, a
+        // dropped DECIMAL key would let this fixed-width option change ADR-0135's overflow
+        // behavior for a column it does not cover.
+        boolean validatesDroppedKey =
+                trailingBytes == TrailingBytes.REJECT
+                        && CellValueCodec.isTrailingBytesGoverned(schema.getRowKeyType());
+        this.rowKeyDecoder =
+                rowKeySlot < 0 && !validatesDroppedKey
+                        ? null
+                        : CellValueCodec.decoder(schema.getRowKeyType(), trailingBytes);
         this.familySlots = new FamilySlot[slotCount];
         System.arraycopy(slots, 0, this.familySlots, 0, slotCount);
         this.familySlotsByName = new HashMap<>();
@@ -127,10 +144,13 @@ final class RowToRowDataConverter implements Serializable {
      */
     GenericRowData convert(Row row) {
         GenericRowData out = new GenericRowData(arity);
-        if (rowKeySlot >= 0) {
+        if (rowKeyDecoder != null) {
             byte[] key = row.getKey().toByteArray();
             try {
-                out.setField(rowKeySlot, rowKeyDecoder.decode(key));
+                Object decoded = rowKeyDecoder.decode(key);
+                if (rowKeySlot >= 0) {
+                    out.setField(rowKeySlot, decoded);
+                }
             } catch (RuntimeException e) {
                 // The same guard the cell decode below carries, for the same reason: a row key is
                 // as externally written as a cell — interop with HBase-written tables is what
@@ -213,7 +233,10 @@ final class RowToRowDataConverter implements Serializable {
         private final CellValueCodec.FieldDecoder[] decoders;
 
         private FamilySlot(
-                int outputPosition, BigtableTableSchema.Family family, byte[] nullStringBytes) {
+                int outputPosition,
+                BigtableTableSchema.Family family,
+                byte[] nullStringBytes,
+                TrailingBytes trailingBytes) {
             this.outputPosition = outputPosition;
             this.name = family.getName();
             List<BigtableTableSchema.Qualifier> declared = family.getQualifiers();
@@ -222,7 +245,9 @@ final class RowToRowDataConverter implements Serializable {
             for (int i = 0; i < declared.size(); i++) {
                 BigtableTableSchema.Qualifier qualifier = declared.get(i);
                 qualifiers[i] = ByteString.copyFromUtf8(qualifier.getName());
-                decoders[i] = CellValueCodec.nullableDecoder(qualifier.getType(), nullStringBytes);
+                decoders[i] =
+                        CellValueCodec.nullableDecoder(
+                                qualifier.getType(), nullStringBytes, trailingBytes);
             }
         }
 

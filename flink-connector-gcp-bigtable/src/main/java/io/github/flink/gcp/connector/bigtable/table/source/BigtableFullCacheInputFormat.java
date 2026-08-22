@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -69,6 +70,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             BigtableTableSchema schema,
             @Nullable int[] projectedFields,
             String nullStringLiteral,
+            TrailingBytes trailingBytes,
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
@@ -81,7 +83,9 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
         this.appProfileId = appProfileId;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
-        this.converter = new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
+        this.converter =
+                new RowToRowDataConverter(
+                        schema, projectedFields, nullStringLiteral, trailingBytes);
         this.rowStreamOpener = rowStreamOpener;
     }
 

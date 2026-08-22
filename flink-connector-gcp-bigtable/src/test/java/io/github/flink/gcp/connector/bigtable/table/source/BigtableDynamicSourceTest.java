@@ -50,6 +50,7 @@ import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Proxy;
@@ -89,6 +90,7 @@ class BigtableDynamicSourceTest {
                 .schema(SCHEMA)
                 .destination(TableDestination.of("p", "i", "t"))
                 .nullStringLiteral("null")
+                .trailingBytes(TrailingBytes.IGNORE)
                 // The provider builds the source's real clients, which would demand
                 // application-default credentials on a machine that has them and fail in CI on one
                 // that does not. The endpoint is never connected to.
@@ -573,7 +575,7 @@ class BigtableDynamicSourceTest {
 
         BigtableFilterPushDown.State state =
                 BigtableFilterPushDown.translate(
-                        schema, java.util.Collections.singletonList(filter));
+                        schema, java.util.Collections.singletonList(filter), TrailingBytes.IGNORE);
 
         assertThat(state.result().getAcceptedFilters()).isEmpty();
         assertThat(state.result().getRemainingFilters()).containsExactly(filter);
@@ -594,12 +596,14 @@ class BigtableDynamicSourceTest {
                 BigtableFilterPushDown.translate(
                         schema,
                         java.util.Collections.singletonList(
-                                call(BuiltInFunctionDefinitions.EQUALS, rowKey, seven)));
+                                call(BuiltInFunctionDefinitions.EQUALS, rowKey, seven)),
+                        TrailingBytes.IGNORE);
         BigtableFilterPushDown.State notEqual =
                 BigtableFilterPushDown.translate(
                         schema,
                         java.util.Collections.singletonList(
-                                call(BuiltInFunctionDefinitions.NOT_EQUALS, rowKey, seven)));
+                                call(BuiltInFunctionDefinitions.NOT_EQUALS, rowKey, seven)),
+                        TrailingBytes.IGNORE);
 
         assertThat(equal.rowKeyRanges())
                 .singleElement()
@@ -612,6 +616,52 @@ class BigtableDynamicSourceTest {
         assertThat(notEqual.rowKeyRanges())
                 .allSatisfy(range -> assertThat(RowRanges.contains(range, suffixed)).isFalse())
                 .anySatisfy(range -> assertThat(RowRanges.contains(range, next)).isTrue());
+    }
+
+    @Test
+    void underRejectFixedWidthKeyPredicatesStayWithFlink() {
+        // Under REJECT no range is exact for a fixed-width key: the prefix set admits a
+        // suffix-bearing key as an = match, and its complement excludes that key from a <> scan
+        // that must fail on it. Leaving the predicate residual keys the evaluation on the decoded
+        // value — where the policy throws — while a variable-width key, whose decode has no width
+        // to enforce, stays pushable (ADR-0136).
+        DataType physical = DataTypes.ROW(DataTypes.FIELD("rowkey", DataTypes.INT()));
+        BigtableTableSchema schema = BigtableTableSchema.of((RowType) physical.getLogicalType());
+        FieldReferenceExpression rowKey =
+                new FieldReferenceExpression("rowkey", DataTypes.INT(), 0, 0);
+        ValueLiteralExpression seven = new ValueLiteralExpression(new BigDecimal("7"));
+
+        for (BuiltInFunctionDefinition function :
+                java.util.Arrays.asList(
+                        BuiltInFunctionDefinitions.EQUALS, BuiltInFunctionDefinitions.NOT_EQUALS)) {
+            ResolvedExpression filter = call(function, rowKey, seven);
+            BigtableFilterPushDown.State state =
+                    BigtableFilterPushDown.translate(
+                            schema,
+                            java.util.Collections.singletonList(filter),
+                            TrailingBytes.REJECT);
+            assertThat(state.result().getAcceptedFilters()).as("%s", function).isEmpty();
+            assertThat(state.result().getRemainingFilters())
+                    .as("%s", function)
+                    .containsExactly(filter);
+        }
+
+        DataType varPhysical = DataTypes.ROW(DataTypes.FIELD("rowkey", DataTypes.STRING()));
+        BigtableTableSchema varSchema =
+                BigtableTableSchema.of((RowType) varPhysical.getLogicalType());
+        FieldReferenceExpression varKey =
+                new FieldReferenceExpression("rowkey", DataTypes.STRING(), 0, 0);
+        BigtableFilterPushDown.State varState =
+                BigtableFilterPushDown.translate(
+                        varSchema,
+                        java.util.Collections.singletonList(
+                                call(
+                                        BuiltInFunctionDefinitions.EQUALS,
+                                        varKey,
+                                        new ValueLiteralExpression("r1"))),
+                        TrailingBytes.REJECT);
+        assertThat(varState.result().getAcceptedFilters()).hasSize(1);
+        assertThat(varState.result().getRemainingFilters()).isEmpty();
     }
 
     @Test
@@ -802,7 +852,7 @@ class BigtableDynamicSourceTest {
 
         BigtableFilterPushDown.State state =
                 BigtableFilterPushDown.translate(
-                        SCHEMA, java.util.Collections.singletonList(filter));
+                        SCHEMA, java.util.Collections.singletonList(filter), TrailingBytes.IGNORE);
 
         assertThat(state.cellPredicate().toProto())
                 .isEqualTo(
@@ -887,7 +937,7 @@ class BigtableDynamicSourceTest {
 
         BigtableFilterPushDown.State state =
                 BigtableFilterPushDown.translate(
-                        SCHEMA, java.util.Collections.singletonList(filter));
+                        SCHEMA, java.util.Collections.singletonList(filter), TrailingBytes.IGNORE);
 
         assertThat(state.rowKeyRanges()).isNull();
         assertThat(state.result().getAcceptedFilters()).isEmpty();
@@ -909,7 +959,8 @@ class BigtableDynamicSourceTest {
                 BigtableFilterPushDown.translate(
                         schema,
                         java.util.Collections.singletonList(
-                                call(BuiltInFunctionDefinitions.EQUALS, rowKey, day)));
+                                call(BuiltInFunctionDefinitions.EQUALS, rowKey, day)),
+                        TrailingBytes.IGNORE);
 
         assertThat(state.rowKeyRanges())
                 .singleElement()

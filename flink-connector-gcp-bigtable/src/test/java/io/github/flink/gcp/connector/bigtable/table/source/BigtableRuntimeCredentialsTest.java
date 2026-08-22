@@ -24,6 +24,7 @@ import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -61,6 +62,7 @@ class BigtableRuntimeCredentialsTest {
                         SCHEMA,
                         null,
                         "null",
+                        TrailingBytes.IGNORE,
                         FILTER,
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
@@ -79,6 +81,7 @@ class BigtableRuntimeCredentialsTest {
                         SCHEMA,
                         null,
                         "null",
+                        TrailingBytes.IGNORE,
                         FILTER,
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
@@ -97,6 +100,7 @@ class BigtableRuntimeCredentialsTest {
                         SCHEMA,
                         null,
                         "null",
+                        TrailingBytes.IGNORE,
                         FILTER,
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
@@ -119,6 +123,7 @@ class BigtableRuntimeCredentialsTest {
                         SCHEMA,
                         null,
                         "null",
+                        TrailingBytes.IGNORE,
                         FILTER,
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,
@@ -139,6 +144,7 @@ class BigtableRuntimeCredentialsTest {
                         SCHEMA,
                         null,
                         "null",
+                        TrailingBytes.IGNORE,
                         FILTER,
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,

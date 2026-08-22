@@ -97,7 +97,12 @@ class CellValueCodecTest {
     }
 
     private static Object decodeHex(DataType type, String hexBytes) {
-        return CellValueCodec.decoder(type.getLogicalType()).decode(fromHex(hexBytes));
+        return decodeHex(type, TrailingBytes.IGNORE, hexBytes);
+    }
+
+    private static Object decodeHex(DataType type, TrailingBytes trailingBytes, String hexBytes) {
+        return CellValueCodec.decoder(type.getLogicalType(), trailingBytes)
+                .decode(fromHex(hexBytes));
     }
 
     private static String hex(byte[] bytes) {
@@ -241,6 +246,29 @@ class CellValueCodecTest {
         }
 
         @Test
+        void aBooleanCellOfAnySizeButOneByteIsRejectedUnderEitherPolicy() {
+            // Bytes.toBoolean is the one fixed-width decoder that checks its length, so a strict
+            // length here is fidelity, not the REJECT policy: it holds under IGNORE too. Without
+            // it a two-byte cell read its first byte — the same silent-prefix defect issue #1037
+            // names, met on the one type whose mirrored method forbids it.
+            for (TrailingBytes trailingBytes : TrailingBytes.values()) {
+                assertThatThrownBy(
+                                () -> decodeHex(DataTypes.BOOLEAN(), trailingBytes, "ff00"),
+                                "%s",
+                                trailingBytes)
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasMessageContaining("exactly 1 byte(s)")
+                        .hasMessageContaining("holds 2");
+                assertThatThrownBy(
+                                () -> decodeHex(DataTypes.BOOLEAN(), trailingBytes, ""),
+                                "%s",
+                                trailingBytes)
+                        .isInstanceOf(IllegalArgumentException.class)
+                        .hasMessageContaining("exactly 1 byte(s)");
+            }
+        }
+
+        @Test
         void binaryIsPassedThroughUnchanged() {
             assertThat(decodeHex(DataTypes.BYTES(), "01fe"))
                     .isEqualTo(new byte[] {0x01, (byte) 0xfe});
@@ -303,11 +331,98 @@ class CellValueCodecTest {
         @Test
         void aFixedWidthDecoderIgnoresTrailingBytesLikeHBaseBytes() {
             // Bytes.toShort/toInt/toLong(byte[]) read exactly their declared width from offset
-            // zero and ignore a longer array's tail. Preserve that interoperability detail while
-            // still rejecting a value too short to hold the declared layout.
+            // zero and ignore a longer array's tail — their no-offset overloads delegate to the
+            // offset-taking ones, whose only bound is offset + length <= bytes.length (verified
+            // against hbase-common 2.6.6, issue #1037). Preserved as the IGNORE default while
+            // still rejecting a value too short to hold the declared layout; REJECT is the
+            // opt-out, pinned below. Every fixed-width family is walked so the policy cannot
+            // quietly cover only the integrals.
+            assertThat(decodeHex(DataTypes.TINYINT(), "2a7f")).isEqualTo((byte) 42);
             assertThat(decodeHex(DataTypes.SMALLINT(), "01027f")).isEqualTo((short) 258);
             assertThat(decodeHex(DataTypes.INT(), "000102037f")).isEqualTo(66051);
             assertThat(decodeHex(DataTypes.BIGINT(), "00000000000000017f")).isEqualTo(1L);
+            assertThat(decodeHex(DataTypes.FLOAT(), "3f8000007f")).isEqualTo(1.0f);
+            assertThat(decodeHex(DataTypes.DOUBLE(), "3ff00000000000007f")).isEqualTo(1.0d);
+            assertThat(decodeHex(DataTypes.DATE(), "00004d0b7f")).isEqualTo(19723);
+            assertThat(decodeHex(DataTypes.TIMESTAMP(3), "0000018bcfe568007f"))
+                    .isEqualTo(TimestampData.fromEpochMillis(1_700_000_000_000L));
+        }
+
+        @Test
+        void underRejectAValueOfAnyLengthButTheDeclaredWidthFails() {
+            // The other side of the vector above: the same overlong bytes that decode a prefix
+            // under IGNORE fail under REJECT, naming both lengths — and so does a short value,
+            // with this message rather than the bare ArrayIndexOutOfBoundsException the IGNORE
+            // decoders throw incidentally. The exact width still decodes, so the check cannot
+            // pass by rejecting everything.
+            assertThat(decodeHex(DataTypes.BIGINT(), TrailingBytes.REJECT, "0000000000000001"))
+                    .isEqualTo(1L);
+            assertThatThrownBy(
+                            () ->
+                                    decodeHex(
+                                            DataTypes.BIGINT(),
+                                            TrailingBytes.REJECT,
+                                            "00000000000000017f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 8 byte(s)")
+                    .hasMessageContaining("holds 9");
+            assertThatThrownBy(
+                            () -> decodeHex(DataTypes.BIGINT(), TrailingBytes.REJECT, "00000001"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 8 byte(s)")
+                    .hasMessageContaining("holds 4");
+            assertThatThrownBy(() -> decodeHex(DataTypes.TINYINT(), TrailingBytes.REJECT, "2a7f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 1 byte(s)");
+            assertThatThrownBy(
+                            () -> decodeHex(DataTypes.SMALLINT(), TrailingBytes.REJECT, "01027f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 2 byte(s)");
+            assertThatThrownBy(() -> decodeHex(DataTypes.INT(), TrailingBytes.REJECT, "000102037f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 4 byte(s)");
+            assertThatThrownBy(
+                            () -> decodeHex(DataTypes.DATE(), TrailingBytes.REJECT, "00004d0b7f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 4 byte(s)");
+            assertThatThrownBy(
+                            () -> decodeHex(DataTypes.FLOAT(), TrailingBytes.REJECT, "3f8000007f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 4 byte(s)");
+            assertThatThrownBy(
+                            () ->
+                                    decodeHex(
+                                            DataTypes.DOUBLE(),
+                                            TrailingBytes.REJECT,
+                                            "3ff00000000000007f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 8 byte(s)");
+            assertThatThrownBy(
+                            () ->
+                                    decodeHex(
+                                            DataTypes.TIMESTAMP(3),
+                                            TrailingBytes.REJECT,
+                                            "0000018bcfe568007f"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 8 byte(s)");
+        }
+
+        @Test
+        void underRejectAVariableWidthValueIsUntouched() {
+            // The policy names fixed-width layouts only. A decimal cell is a four-byte scale plus
+            // however many unscaled bytes the value needs — its toInt call reads a prefix by
+            // design — and strings and binary have no width to enforce. Pinned so a REJECT
+            // implementation routed through the shared helpers cannot quietly break them.
+            assertThat(
+                            decodeHex(
+                                    DataTypes.DECIMAL(5, 2),
+                                    TrailingBytes.REJECT,
+                                    "00000002" + "3039"))
+                    .isEqualTo(DecimalData.fromBigDecimal(new BigDecimal("123.45"), 5, 2));
+            assertThat(decodeHex(DataTypes.STRING(), TrailingBytes.REJECT, "616263"))
+                    .isEqualTo(StringData.fromString("abc"));
+            assertThat(decodeHex(DataTypes.BYTES(), TrailingBytes.REJECT, "01fe"))
+                    .isEqualTo(new byte[] {0x01, (byte) 0xfe});
         }
 
         @Test
@@ -387,7 +502,9 @@ class CellValueCodecTest {
         void theNullStringLiteralDecodesAsNull() {
             LogicalType type = DataTypes.STRING().getLogicalType();
 
-            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(NULL_STRING))
+            assertThat(
+                            CellValueCodec.nullableDecoder(type, NULL_STRING, TrailingBytes.IGNORE)
+                                    .decode(NULL_STRING))
                     .isNull();
         }
 
@@ -395,14 +512,18 @@ class CellValueCodecTest {
         void anEmptyCellDecodesAsNullForEveryTypeButAString() {
             LogicalType type = DataTypes.BIGINT().getLogicalType();
 
-            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(new byte[0]))
+            assertThat(
+                            CellValueCodec.nullableDecoder(type, NULL_STRING, TrailingBytes.IGNORE)
+                                    .decode(new byte[0]))
                     .isNull();
             // BYTES too, although an empty byte array is — like the empty string — a value in its
             // own right: only a character string gets the literal marker, so for BYTES a null and
             // a zero-length value are the same bytes, the collision the docs page names.
             assertThat(
                             CellValueCodec.nullableDecoder(
-                                            DataTypes.BYTES().getLogicalType(), NULL_STRING)
+                                            DataTypes.BYTES().getLogicalType(),
+                                            NULL_STRING,
+                                            TrailingBytes.IGNORE)
                                     .decode(new byte[0]))
                     .isNull();
         }
@@ -413,7 +534,9 @@ class CellValueCodecTest {
             // string is a value in its own right, and this is where that pays off on the way out.
             LogicalType type = DataTypes.STRING().getLogicalType();
 
-            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(new byte[0]))
+            assertThat(
+                            CellValueCodec.nullableDecoder(type, NULL_STRING, TrailingBytes.IGNORE)
+                                    .decode(new byte[0]))
                     .isEqualTo(StringData.fromString(""));
         }
 
@@ -421,7 +544,9 @@ class CellValueCodecTest {
         void aPresentValueIsUnaffectedByTheNullUnwrapper() {
             LogicalType type = DataTypes.STRING().getLogicalType();
 
-            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(new byte[] {'x'}))
+            assertThat(
+                            CellValueCodec.nullableDecoder(type, NULL_STRING, TrailingBytes.IGNORE)
+                                    .decode(new byte[] {'x'}))
                     .isEqualTo(StringData.fromString("x"));
         }
 
@@ -431,7 +556,9 @@ class CellValueCodecTest {
             // null literal, so bytes that happen to equal it are that text, not a null.
             LogicalType type = DataTypes.STRING().notNull().getLogicalType();
 
-            assertThat(CellValueCodec.nullableDecoder(type, NULL_STRING).decode(NULL_STRING))
+            assertThat(
+                            CellValueCodec.nullableDecoder(type, NULL_STRING, TrailingBytes.IGNORE)
+                                    .decode(NULL_STRING))
                     .isEqualTo(StringData.fromString("NULL"));
         }
 
@@ -455,7 +582,8 @@ class CellValueCodecTest {
                     continue;
                 }
                 CellValueCodec.FieldDecoder decoder =
-                        CellValueCodec.nullableDecoder(sample.copy(false), NULL_STRING);
+                        CellValueCodec.nullableDecoder(
+                                sample.copy(false), NULL_STRING, TrailingBytes.IGNORE);
 
                 switch (root) {
                     case CHAR:
@@ -469,6 +597,12 @@ class CellValueCodecTest {
                         assertThat(decoder.decode(new byte[0]))
                                 .describedAs("%s", root)
                                 .isEqualTo(new byte[0]);
+                        break;
+                    case BOOLEAN:
+                        // The one decoder with a length rule of its own — Bytes.toBoolean's —
+                        // so its empty-cell failure is a deliberate message, not an index.
+                        assertThatThrownBy(() -> decoder.decode(new byte[0]), "%s", root)
+                                .isInstanceOf(IllegalArgumentException.class);
                         break;
                     default:
                         // Every remaining decoder indexes into the array, which is what
@@ -579,7 +713,7 @@ class CellValueCodecTest {
                 }
                 boolean decodable = true;
                 try {
-                    CellValueCodec.decoder(type);
+                    CellValueCodec.decoder(type, TrailingBytes.IGNORE);
                 } catch (IllegalStateException e) {
                     decodable = false;
                 }
@@ -623,9 +757,10 @@ class CellValueCodecTest {
                 for (Object codec :
                         Arrays.asList(
                                 CellValueCodec.encoder(type),
-                                CellValueCodec.decoder(type),
+                                CellValueCodec.decoder(type, TrailingBytes.IGNORE),
                                 CellValueCodec.nullableEncoder(type.copy(true), NULL_STRING),
-                                CellValueCodec.nullableDecoder(type.copy(true), NULL_STRING))) {
+                                CellValueCodec.nullableDecoder(
+                                        type.copy(true), NULL_STRING, TrailingBytes.IGNORE))) {
                     assertThat(
                                     new String(
                                             InstantiationUtil.serializeObject(codec),
@@ -663,7 +798,9 @@ class CellValueCodecTest {
                 CellValueCodec.FieldEncoder encoder =
                         clone(CellValueCodec.nullableEncoder(nullable, NULL_STRING));
                 CellValueCodec.FieldDecoder decoder =
-                        clone(CellValueCodec.nullableDecoder(nullable, NULL_STRING));
+                        clone(
+                                CellValueCodec.nullableDecoder(
+                                        nullable, NULL_STRING, TrailingBytes.IGNORE));
 
                 byte[] encoded = encoder.encode(GenericRowData.of((Object) null), 0);
 
@@ -673,11 +810,41 @@ class CellValueCodecTest {
             }
         }
 
+        @Test
+        void anAbsentPolicyResolvesTheDocumentedDefault() {
+            // A TypedFieldDecoder serialized before the policy existed deserializes with a null
+            // trailingBytes field — defaultReadObject leaves an absent field at its default —
+            // and readObject re-resolves through the same resolveDecoder path this reaches with
+            // null directly. The compatible reading is the documented default, never the strict
+            // opt-in.
+            assertThat(
+                            CellValueCodec.decoder(DataTypes.BIGINT().getLogicalType(), null)
+                                    .decode(fromHex("00000000000000017f")))
+                    .isEqualTo(1L);
+        }
+
+        @Test
+        void aRestoredRejectDecoderStillRejects() throws Exception {
+            // The policy crosses the job graph beside the declared type, and readObject
+            // re-resolves from both — a restored decoder that fell back to IGNORE would decode
+            // the prefix here and fail nothing.
+            CellValueCodec.FieldDecoder decoder =
+                    clone(
+                            CellValueCodec.decoder(
+                                    DataTypes.BIGINT().getLogicalType(), TrailingBytes.REJECT));
+
+            assertThat(decoder.decode(fromHex("0000000000000001"))).isEqualTo(1L);
+            assertThatThrownBy(() -> decoder.decode(fromHex("00000000000000017f")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("exactly 8 byte(s)");
+        }
+
         private void assertRoundTrip(DataType type, Object value, String expectedHex)
                 throws Exception {
             LogicalType logicalType = type.getLogicalType();
             CellValueCodec.FieldEncoder encoder = clone(CellValueCodec.encoder(logicalType));
-            CellValueCodec.FieldDecoder decoder = clone(CellValueCodec.decoder(logicalType));
+            CellValueCodec.FieldDecoder decoder =
+                    clone(CellValueCodec.decoder(logicalType, TrailingBytes.IGNORE));
 
             byte[] encoded = encoder.encode(GenericRowData.of(value), 0);
 

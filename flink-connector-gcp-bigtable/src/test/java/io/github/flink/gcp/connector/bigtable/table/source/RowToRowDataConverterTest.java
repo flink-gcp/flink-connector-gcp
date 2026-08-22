@@ -26,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -146,7 +147,8 @@ class RowToRowDataConverterTest {
 
     @Test
     void theIdentityConvertsEveryDeclaredCell() {
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out = converter.convert(fullRow());
 
@@ -162,7 +164,8 @@ class RowToRowDataConverterTest {
     void aReorderedProjectionMapsOutputPositions() {
         // SELECT cf1, rowkey: output position 0 is physical column 1, position 1 is column 0.
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(SCHEMA, new int[] {1, 0}, NULL_LITERAL);
+                new RowToRowDataConverter(
+                        SCHEMA, new int[] {1, 0}, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out = converter.convert(fullRow());
 
@@ -176,7 +179,8 @@ class RowToRowDataConverterTest {
     @Test
     void aFamilyOnlyProjectionDropsTheRowKey() {
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(SCHEMA, new int[] {2}, NULL_LITERAL);
+                new RowToRowDataConverter(
+                        SCHEMA, new int[] {2}, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out = converter.convert(fullRow());
 
@@ -186,7 +190,8 @@ class RowToRowDataConverterTest {
     @Test
     void aRowKeyOnlyProjectionReadsTheKeyAlone() {
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(SCHEMA, new int[] {0}, NULL_LITERAL);
+                new RowToRowDataConverter(
+                        SCHEMA, new int[] {0}, NULL_LITERAL, TrailingBytes.IGNORE);
 
         // What the keys-only filter chain delivers: one cell, value stripped, family intact. The
         // family carries no slot here, so the cell is ignored and only the key is read.
@@ -199,7 +204,7 @@ class RowToRowDataConverterTest {
     void anEmptyProjectionProducesEmptyRows() {
         // SELECT COUNT(*): no column at all, one output row per Bigtable row.
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(SCHEMA, new int[0], NULL_LITERAL);
+                new RowToRowDataConverter(SCHEMA, new int[0], NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out = converter.convert(row("k1", cell("cf1", "a", 1_000L, new byte[0])));
 
@@ -208,7 +213,8 @@ class RowToRowDataConverterTest {
 
     @Test
     void anUndeclaredFamilyIsIgnored() {
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out =
                 converter.convert(
@@ -225,7 +231,8 @@ class RowToRowDataConverterTest {
 
     @Test
     void anUndeclaredQualifierIsIgnored() {
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out =
                 converter.convert(
@@ -245,7 +252,8 @@ class RowToRowDataConverterTest {
         // The family has cells, but none the DDL declares: indistinguishable from an unwritten
         // family through this schema, so it reads the same way — as a null field, not a row of
         // nulls.
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out = converter.convert(row("k1", cell("cf1", "zzz", 1_000L, LONG_7)));
 
@@ -254,7 +262,8 @@ class RowToRowDataConverterTest {
 
     @Test
     void theLatestVersionOfACellWins() {
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         // Two versions of cf1.b, newest first — the order the service returns them in.
         RowData out =
@@ -272,7 +281,8 @@ class RowToRowDataConverterTest {
 
     @Test
     void aFamilyWithNoCellReadsAsNull() {
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         RowData out = converter.convert(row("k1", cell("cf2", "m", 1_000L, DOUBLE_1)));
 
@@ -284,7 +294,8 @@ class RowToRowDataConverterTest {
 
     @Test
     void nullsDecodeAsTheSinkWroteThem() {
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         // The sink writes a null string as the null-string-literal and a null of any other type
         // as an empty cell; both must read back as SQL NULL inside a present family row.
@@ -311,7 +322,8 @@ class RowToRowDataConverterTest {
         // An external writer stored four bytes where the DDL declares BIGINT: the raw decoder
         // failure is an ArrayIndexOutOfBoundsException naming nothing, so the converter wraps it
         // with the one thing the operator needs — which cell of which row.
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         assertThatThrownBy(
                         () ->
@@ -333,7 +345,8 @@ class RowToRowDataConverterTest {
         // Row.create rather than the row(String, ...) helper: that one encodes the key as UTF-8,
         // and this case needs the four raw bytes a foreign writer would have stored.
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(LONG_KEY_SCHEMA, null, NULL_LITERAL);
+                new RowToRowDataConverter(
+                        LONG_KEY_SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         assertThatThrownBy(
                         () ->
@@ -360,7 +373,7 @@ class RowToRowDataConverterTest {
         // passed the RuntimeException guard untouched and aliased real data onto the empty-cell
         // null convention (#1038). Now the codec throws, and the guard adds the address.
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(DECIMAL_SCHEMA, null, NULL_LITERAL);
+                new RowToRowDataConverter(DECIMAL_SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         assertThatThrownBy(
                         () ->
@@ -380,7 +393,8 @@ class RowToRowDataConverterTest {
         // The row-key variant is the one the issue leads with: without the throw, the emitted row
         // carried a null in a NOT NULL primary-key column and nothing in the source path said so.
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(DECIMAL_KEY_SCHEMA, null, NULL_LITERAL);
+                new RowToRowDataConverter(
+                        DECIMAL_KEY_SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         assertThatThrownBy(
                         () ->
@@ -399,10 +413,119 @@ class RowToRowDataConverterTest {
     }
 
     @Test
+    void anOverlongRowKeyIsSilentUnderIgnoreAndReportedUnderReject() {
+        // Issue #1037's scenario end to end: a nine-byte key on a BIGINT row-key column decodes
+        // as its eight-byte prefix under the HBase-compatible default — two distinct keys sharing
+        // a prefix read as one SQL value — and under REJECT the same row fails with the guard's
+        // message, the cause now a deliberate IllegalArgumentException rather than an index.
+        byte[] overlongKey = {0, 0, 0, 0, 0, 0, 0, 7, 0x7f};
+        Row overlongRow =
+                Row.create(
+                        ByteString.copyFrom(overlongKey),
+                        Collections.singletonList(cell("cf1", "a", 1_000L, LONG_7)));
+
+        RowToRowDataConverter ignoring =
+                new RowToRowDataConverter(
+                        LONG_KEY_SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
+        assertThat(ignoring.convert(overlongRow).getLong(0)).isEqualTo(7L);
+
+        RowToRowDataConverter rejecting =
+                new RowToRowDataConverter(
+                        LONG_KEY_SCHEMA, null, NULL_LITERAL, TrailingBytes.REJECT);
+        assertThatThrownBy(() -> rejecting.convert(overlongRow))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("row key")
+                .hasMessageContaining("9 byte(s)")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aProjectionThatDropsTheKeyStillValidatesItUnderReject() {
+        // The policy promises a malformed key fails the read; a projection that drops the key
+        // column must not quietly narrow that to "unless the query skipped it". Found by the
+        // independent review round: with the prefix-range pushdown this was the hole through
+        // which a wrong-keyed row reached the result with no error (ADR-0136).
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(
+                        LONG_KEY_SCHEMA, new int[] {1}, NULL_LITERAL, TrailingBytes.REJECT);
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        Row.create(
+                                                ByteString.copyFrom(
+                                                        new byte[] {0, 0, 0, 0, 0, 0, 0, 7, 0x7f}),
+                                                Collections.singletonList(
+                                                        cell("cf1", "a", 1_000L, LONG_7)))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("row key")
+                .hasMessageContaining("9 byte(s)");
+
+        // The scope boundary: a dropped key of a type the policy does not govern is not decoded
+        // even under REJECT — validating a DECIMAL key here would let a fixed-width option change
+        // ADR-0135's overflow behavior for a column outside its scope.
+        RowToRowDataConverter decimalKeyed =
+                new RowToRowDataConverter(
+                        DECIMAL_KEY_SCHEMA, new int[] {1}, NULL_LITERAL, TrailingBytes.REJECT);
+        assertThat(
+                        decimalKeyed
+                                .convert(
+                                        Row.create(
+                                                ByteString.copyFrom(DECIMAL_TOO_WIDE),
+                                                Collections.singletonList(
+                                                        cell("cf1", "a", 1_000L, LONG_7))))
+                                .getRow(0, 1)
+                                .getLong(0))
+                .isEqualTo(7L);
+
+        // The mirror that keeps this from over-validating: the same projected converter under the
+        // default still skips the dropped key entirely.
+        RowToRowDataConverter ignoring =
+                new RowToRowDataConverter(
+                        LONG_KEY_SCHEMA, new int[] {1}, NULL_LITERAL, TrailingBytes.IGNORE);
+        assertThat(
+                        ignoring.convert(
+                                        Row.create(
+                                                ByteString.copyFrom(
+                                                        new byte[] {0, 0, 0, 0, 0, 0, 0, 7, 0x7f}),
+                                                Collections.singletonList(
+                                                        cell("cf1", "a", 1_000L, LONG_7))))
+                                .getRow(0, 1)
+                                .getLong(0))
+                .isEqualTo(7L);
+    }
+
+    @Test
+    void anOverlongCellIsReportedWithItsAddressUnderReject() {
+        // The cell-side arm of the policy, through the same guard the short cell above exercises.
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.REJECT);
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        row(
+                                                "k1",
+                                                cell(
+                                                        "cf1",
+                                                        "b",
+                                                        1_000L,
+                                                        new byte[] {
+                                                            0, 0, 0, 0, 0, 0, 0, 7, 0x7f
+                                                        }))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cf1:b")
+                .hasMessageContaining("'k1'")
+                .hasMessageContaining("9 byte(s)")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void theConverterSurvivesJavaSerialization() throws Exception {
         // The schema itself is not Serializable; the constructor must have resolved everything
         // into state that is, because the deserializer travels in the job graph.
-        RowToRowDataConverter converter = new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL);
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(SCHEMA, null, NULL_LITERAL, TrailingBytes.IGNORE);
 
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ObjectOutputStream out = new ObjectOutputStream(bytes)) {

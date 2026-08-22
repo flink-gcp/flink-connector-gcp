@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChange
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import java.io.IOException;
 
@@ -55,13 +56,14 @@ final class SelectedCellRowDataDeserializationSchema
             DeserializationSchema<RowData> payloadDeserializer,
             SelectedCellMutationClassifier classifier,
             SelectedCellTableSchema schema,
+            TrailingBytes trailingBytes,
             ChangeStreamReadableMetadata[] metadata,
             TypeInformation<RowData> producedType) {
         this.payloadDeserializer =
                 Preconditions.checkNotNull(
                         payloadDeserializer, "payloadDeserializer must not be null");
         this.classifier = Preconditions.checkNotNull(classifier, "classifier must not be null");
-        this.primaryKeyDecoder = CellValueCodec.decoder(schema.getPrimaryKeyType());
+        this.primaryKeyDecoder = CellValueCodec.decoder(schema.getPrimaryKeyType(), trailingBytes);
         this.primaryKeyIndex = schema.getPrimaryKeyIndex();
         RowType payloadType = (RowType) schema.getPayloadDataType().getLogicalType();
         this.payloadGetters = new RowData.FieldGetter[payloadType.getFieldCount()];

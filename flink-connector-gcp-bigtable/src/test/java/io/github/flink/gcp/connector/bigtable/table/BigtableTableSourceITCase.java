@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * End-to-end SQL reads against the emulator, through the production factory.
@@ -510,6 +511,97 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
 
         assertThat(collect(tEnv, "SELECT rowkey FROM bt"))
                 .containsExactlyInAnyOrder(Row.of(start), Row.of(nonUtf8));
+    }
+
+    @Test
+    void theTrailingBytesPolicyDecidesAnOverlongRowKeyEndToEnd() throws Exception {
+        // Issue #1037 through the whole stack — DDL, factory, scan plumbing, converter: a
+        // nine-byte key on a BIGINT row-key column reads as its eight-byte prefix under the
+        // default and fails the scan under 'reject', so a policy hardcoded anywhere along the
+        // way breaks one of the two arms.
+        byte[] overlongKey = {0, 0, 0, 0, 0, 0, 0, 7, 0x7f};
+        TableDestination destination = createTable("sql-trailing-bytes");
+        writeCell(destination, ByteString.copyFrom(overlongKey), "cf", "q", "value");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE ignoring (\n"
+                        + "  rowkey BIGINT,\n"
+                        + "  cf ROW<q STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions("sql-trailing-bytes"));
+        tEnv.executeSql(
+                "CREATE TABLE rejecting (\n"
+                        + "  rowkey BIGINT,\n"
+                        + "  cf ROW<q STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions("sql-trailing-bytes", "decode.trailing-bytes", "reject"));
+
+        assertThat(collect(tEnv, "SELECT rowkey FROM ignoring")).containsExactly(Row.of(7L));
+        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM rejecting"))
+                .hasStackTraceContaining("holds 9 byte(s)")
+                .hasStackTraceContaining("row-key column type cannot decode");
+        // The pushdown interaction ADR-0136 settles, remeasured after the independent review
+        // found the two holes it closes: under 'ignore' equality is a prefix range and the
+        // suffix-bearing key matches = and is excluded from <>; under 'reject' fixed-width key
+        // predicates stay with Flink, so every one of these scans meets the malformed key and
+        // fails — including <> which a pushed prefix-complement would have silently skipped, and
+        // a projection that drops the key column, which decodes it anyway.
+        assertThat(collect(tEnv, "SELECT rowkey FROM ignoring WHERE rowkey = 7"))
+                .containsExactly(Row.of(7L));
+        assertThat(collect(tEnv, "SELECT rowkey FROM ignoring WHERE rowkey <> 7")).isEmpty();
+        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM rejecting WHERE rowkey = 7"))
+                .hasStackTraceContaining("holds 9 byte(s)");
+        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM rejecting WHERE rowkey <> 7"))
+                .hasStackTraceContaining("holds 9 byte(s)");
+        assertThatThrownBy(() -> collect(tEnv, "SELECT cf.q FROM rejecting"))
+                .hasStackTraceContaining("holds 9 byte(s)");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void everyLookupModeHonorsTheTrailingBytesPolicy(String mode, String[] lookupOptions)
+            throws Exception {
+        // The lookup-side arm of the policy, once per runtime shape: the five modes reach four
+        // different constructors (sync, async, partial caches over each, and the full-cache input
+        // format), and each carries the policy separately, so one hardcoded IGNORE among them
+        // fails exactly its mode here. The malformed bytes sit in a cell rather than the key —
+        // a point read can only hit a key the join input encoded, which is always exact.
+        String tableId = "sql-lookup-trailing-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, "r1", "cf1", "score", "123456789");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData("r1"),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<score BIGINT>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(
+                                tableId, append(lookupOptions, "decode.trailing-bytes", "reject")));
+
+        // The nine-byte string cell on a BIGINT qualifier is exactly the overlong shape.
+        assertThatThrownBy(
+                        () ->
+                                collect(
+                                        tEnv,
+                                        "SELECT f.f0, b.cf1.score FROM facts AS f "
+                                                + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time"
+                                                + " AS b ON f.f0 = b.rowkey"))
+                .hasStackTraceContaining("holds 9 byte(s)")
+                .hasStackTraceContaining("declared column type cannot decode");
     }
 
     @Test

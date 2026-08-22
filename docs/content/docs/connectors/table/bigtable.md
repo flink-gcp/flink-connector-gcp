@@ -360,6 +360,12 @@ complete serialized non-key part of a logical row.
 The mutation row key supplies exactly one declared physical primary key, which may appear anywhere
 in the DDL, and `value.format` decodes every other physical column.
 At least one non-key column is required.
+The primary key decodes under the same fixed-width rule as every other read, and this mode is
+where its default bites hardest: a key longer than a fixed-width primary key's layout silently
+decodes as its prefix, and the `DELETE` or `UPDATE_AFTER` it keys then lands on the wrong Flink
+row. Set `decode.trailing-bytes = 'reject'` here unless the table's keys are known to be exact, so
+such a mutation fails the read instead — see
+[what a read produces](#what-a-read-produces).
 
 ```sql
 CREATE TABLE current_profiles (
@@ -482,11 +488,15 @@ filtered source plan.
 | Row-key type | `=`, `<>`, `IN` | `<`, `<=`, `>`, `>=` | `IS NULL`, `IS NOT NULL` |
 |---|---|---|---|
 | `VARCHAR`, `VARBINARY` | Exact pushdown | Exact pushdown | Exact pushdown |
-| Integer, date, time, timestamp and interval types | Exact pushdown | Evaluated by Flink | Exact pushdown |
+| Integer, date, time, timestamp and interval types | Exact pushdown under `decode.trailing-bytes = 'ignore'`; evaluated by Flink under `'reject'` | Evaluated by Flink | Exact pushdown |
 | `CHAR`, `BINARY`, `BOOLEAN`, `DECIMAL`, `FLOAT`, `DOUBLE` | Evaluated by Flink | Evaluated by Flink | Exact pushdown |
 
-Fixed-width integer and temporal decoders ignore suffix bytes, so equality uses a key-prefix range
-rather than only the canonical encoded key.
+Fixed-width integer and temporal decoders ignore suffix bytes by default, so equality uses a
+key-prefix range rather than only the canonical encoded key.
+Under `decode.trailing-bytes = 'reject'` those predicates stay with Flink instead: no range is
+exact for a fixed-width key there — a prefix set admits a suffix-bearing key as an `=` match while
+its complement excludes that key from a `<>` scan that must fail on it — so the evaluation stays
+on the decoded value, where the policy throws, at the cost of the pushdown.
 Their encodings do not preserve signed SQL order.
 An empty `VARCHAR` or `VARBINARY` literal remains with Flink: the SDK cannot express an empty-key
 range, and although the service rejects empty row keys, the emulator accepts them.
@@ -523,7 +533,7 @@ none of whose declared qualifiers has a cell is a `NULL` field, mirroring the si
 family writes no cells; a family with some cells is a `ROW` whose absent qualifiers are null.
 (Flink's HBase connector differs here: it always builds the nested row.)
 
-Two more read-side facts worth knowing:
+Three more read-side facts worth knowing:
 
 - **A decimal wider than its column fails the read.** A cell whose value, rounded to the declared
   scale, needs more precision than the declared `DECIMAL(p, s)` allows fails the scan with a
@@ -533,8 +543,17 @@ Two more read-side facts worth knowing:
   this connector deliberately diverges. Rescaling alone is not an overflow: a cell written at
   another scale reads, its fractional digits rounded to the declared scale, and fails only when
   the rounded value no longer fits — which a rounding carry can make true of a value whose stored
-  digits look representable. As in HBase's `Bytes` decoder, trailing bytes after a complete
-  fixed-width value are ignored.
+  digits look representable.
+- **`decode.trailing-bytes` decides what a fixed-width value longer than its layout does.** Under
+  the default `ignore`, trailing bytes after a complete fixed-width value are discarded, exactly
+  as HBase's `Bytes` decoder discards them — which is what lets a `BIGINT` column read the leading
+  component of a composite key. The cost of that compatibility is that distinct values sharing a
+  decoded prefix read as one SQL value, so a key column whose bytes were not written under this
+  convention is better declared `BYTES` or `STRING`. Setting the option to `reject` fails the read
+  on any length but the exact layout instead, with the same message a short cell gets. `BOOLEAN`
+  is the one exception under either setting: `Bytes.toBoolean` rejects any cell that is not
+  exactly one byte, and so does this decoder. (A nullable column's *empty* cell never reaches a
+  decoder under either setting — it is the null convention's, above.)
 - **Declare a qualifier `NOT NULL` only when every row carries the cell.** The read path cannot
   manufacture a value for an absent cell, so sparse data under a `NOT NULL` column hands the
   planner a null it was told cannot exist. What an *empty* cell does under `NOT NULL` depends on
@@ -616,10 +635,10 @@ source of truth. Lookup options are table-layer or Flink-owned instead. An optio
 DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
 the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 
-`scan.mode`, `null-string-literal`, `scan.row-key-encoding`, `lookup.async`,
-`sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to the table layer
-because they configure its codec, runtime shape or planner contract rather than a DataStream
-builder.
+`scan.mode`, `null-string-literal`, `decode.trailing-bytes`, `scan.row-key-encoding`,
+`lookup.async`, `sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to
+the table layer because they configure its codec, runtime shape or planner contract rather than a
+DataStream builder.
 
 ### Destination
 
@@ -631,6 +650,7 @@ builder.
 | `service-account-key-file` | String | Shared credential path mapped to `serviceAccountKeyFile(...)` for the sink, the scan and change-stream sources, and every lookup cache mode. Unset keeps ADC. Every eligible TaskManager must see the path; either source also needs it on the JobManager. The option is rejected beside `emulator-endpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client for every direction — whether the table is written to, scanned, or joined as a lookup dimension. The rejection names `emulator-endpoint`, the key written in the DDL. Under `scan.mode = 'change-stream'` the option is refused outright, before its shape is looked at |
 | `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies, in both directions. Every other type writes a null as an empty cell |
+| `decode.trailing-bytes` | Enum | What a read does with a fixed-width cell or row key longer than the declared type's layout: `ignore` (default) decodes the declared width and discards the rest, HBase's own rule; `reject` fails the read instead. Not a builder setter, for the same reason as `null-string-literal`. Governs scans, lookups and the selected-cell primary key; refused in the envelope Change Streams mode, which decodes no cell. See [what a read produces](#what-a-read-produces) |
 
 ### Scan
 
