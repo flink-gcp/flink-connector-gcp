@@ -156,6 +156,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `SpannerClients` at the module root builds the service handle both directions open. The
   emulator-versus-credentials branch is exactly what `docs/adr/0064` exists for; do not grow a
   second copy.
+- **The two batch seams keep their own copy of the lazy handle lifecycle**; a
+  `LazyBigtableDataClient`-style holder was measured and declined (`docs/adr/0131`) — do not
+  extract one without superseding that record. `SpannerClients` already factors out the part worth
+  sharing, and what stays identical between `BatchClientStructStreamOpener` and
+  `BatchClientPartitionPlanner` is about eight lines. The obstacle is that the planner's `closed`
+  guards more than client construction: the re-check `open()` makes after opening the transaction
+  outside the monitor reads that flag and writes `transaction` under the same monitor `close()`
+  takes to set the flag and read the field, and that interlock is what keeps a transaction the
+  teardown could not see from leaking its session. Bigtable's holder pays because neither seam it
+  serves owns a second lifecycle, both closes being one delegating line — it is not a precedent
+  here.
 - `SpannerCredentials` loads only service-account JSON and returns `null` when no credential
   override is configured. Serialize only `serviceAccountKeyFile` paths: bounded and Change Streams
   coordinators load on the JobManager, bounded and Change Streams readers and sink writers load on
