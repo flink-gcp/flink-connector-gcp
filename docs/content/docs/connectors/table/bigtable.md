@@ -435,6 +435,11 @@ Set `scan.end-timestamp-millis` to make the source bounded; without it the sourc
 `scan.max-concurrent-streams-per-subtask` bounds open partition reads in each source subtask and
 keeps the DataStream builder's default of two when absent.
 Source parallelism multiplied by that value is configured job capacity, not a Bigtable quota.
+No option sets the service heartbeat interval, and Spanner's
+`scan.change-stream.heartbeat-interval` has no counterpart here: Bigtable's five seconds are fixed,
+because the same value paces how the reader rotates queued partitions in.
+[ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md)
+records that decision.
 
 Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
 queryable metadata.

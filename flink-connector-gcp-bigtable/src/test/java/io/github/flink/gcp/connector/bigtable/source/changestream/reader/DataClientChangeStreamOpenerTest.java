@@ -65,6 +65,27 @@ class DataClientChangeStreamOpenerTest {
         assertThat(partition.getStartKeyClosed()).isEqualTo(ByteString.EMPTY);
         assertThat(partition.getEndKeyCase()).isEqualTo(RowRange.EndKeyCase.END_KEY_OPEN);
         assertThat(partition.getEndKeyOpen()).isEqualTo(ByteString.EMPTY);
+    }
+
+    /**
+     * The five seconds are documented as a fixed value on three pages and in ADR-0103, so this
+     * asserts on the protobuf the client sends rather than on the constant, which would pass
+     * whatever the request carried.
+     */
+    @Test
+    void openQueryAsksTheServiceForTheDocumentedFiveSecondHeartbeat() {
+        ChangeStreamPartitionSplit split =
+                new ChangeStreamPartitionSplit(
+                        "change-stream-0",
+                        ByteStringRange.unbounded(),
+                        Collections.emptyList(),
+                        Instant.parse("2026-08-12T00:00:00Z"));
+
+        ReadChangeStreamRequest request =
+                DataClientChangeStreamOpener.query(
+                                TableDestination.of("project", "instance", "table"), split, null)
+                        .toProto(RequestContext.create("project", "instance", "profile"));
+
         assertThat(request.getHeartbeatDuration().getSeconds()).isEqualTo(5);
         assertThat(request.getHeartbeatDuration().getNanos()).isZero();
     }

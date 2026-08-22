@@ -41,6 +41,15 @@ import java.time.Instant;
 public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
 
     private static final long serialVersionUID = 1L;
+
+    /**
+     * The heartbeat duration asked of the service on every {@code ReadChangeStream} request, which
+     * is also the service's own default. Two other things follow from it: a stream that no service
+     * topology change closes is rotated out only at a heartbeat, so this is how often {@link
+     * BigtableChangeStreamReader} can hand its slot to a queued partition, and {@code
+     * missedHeartbeatIntervals} divides an elapsed time by it, so it is that gauge's unit. ADR-0103
+     * records why it stays a constant rather than becoming a builder option.
+     */
     static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
     private final String appProfileId;
