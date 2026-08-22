@@ -39,10 +39,6 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.Big
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.BigtableChangeStreamReader;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
-import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DefaultChangeStreamRestoreResolver;
 
 /** FLIP-27 source for Bigtable Change Streams. */
 @Public
@@ -75,17 +71,13 @@ public final class BigtableChangeStreamSource<T>
     @Override
     public SourceReader<T, ChangeStreamPartitionSplit> createReader(SourceReaderContext context)
             throws Exception {
+        // One provider for both of the reader's seams: the opener streams changes through a data
+        // client while the restore resolver reads retention through a table-admin one, so a load
+        // per seam would scope each for half of what this reader does.
         CredentialsProvider credentials =
                 BigtableCredentials.loadDataAndTableAdmin(config.getServiceAccountKeyFile());
-        ChangeStreamOpener opener = config.getOpener();
-        if (opener instanceof DataClientChangeStreamOpener) {
-            ((DataClientChangeStreamOpener) opener).setCredentialsOverride(credentials);
-        }
-        ChangeStreamRestoreResolver restoreResolver = config.getRestoreResolver();
-        if (restoreResolver instanceof DefaultChangeStreamRestoreResolver) {
-            ((DefaultChangeStreamRestoreResolver) restoreResolver)
-                    .setCredentialsOverride(credentials);
-        }
+        config.getOpener().useCredentials(credentials);
+        config.getRestoreResolver().useCredentials(credentials);
         config.getDeserializer().open(new ReaderInitializationContext(context));
         return new BigtableChangeStreamReader<>(context, config);
     }
@@ -112,13 +104,13 @@ public final class BigtableChangeStreamSource<T>
             throws Exception {
         ChangeStreamCoordinatorClient client = config.getCoordinatorClient();
         if (client == null) {
-            DefaultChangeStreamCoordinatorClient defaultClient =
+            // One provider for the coordinator's three client families: data for partition
+            // discovery, table admin for retention, instance admin for the app profile.
+            client =
                     new DefaultChangeStreamCoordinatorClient(
                             config.getTable(),
                             config.getAppProfileId(),
-                            config.getServiceAccountKeyFile());
-            defaultClient.loadCredentials();
-            client = defaultClient;
+                            BigtableCredentials.loadAll(config.getServiceAccountKeyFile()));
         }
         return new BigtableChangeStreamSplitEnumerator(
                 context,

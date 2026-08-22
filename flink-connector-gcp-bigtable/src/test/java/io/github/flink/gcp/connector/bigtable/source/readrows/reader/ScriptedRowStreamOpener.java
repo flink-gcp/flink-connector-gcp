@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.readrows.reader;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
@@ -111,6 +112,10 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         }
         return new ScriptedStream(state, rowsIn(state, range));
     }
+
+    /** Answers from a script rather than a client, so there is nothing to authenticate. */
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {}
 
     @Override
     public void close() {

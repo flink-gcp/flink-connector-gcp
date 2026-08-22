@@ -22,6 +22,7 @@ import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ResponseObserver;
 import com.google.api.gax.rpc.StreamController;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
@@ -38,6 +39,8 @@ import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeSt
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.Test;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -331,6 +334,10 @@ class BigtableChangeStreamSourceBuilderTest {
             observer.onResponse(record);
         }
 
+        /** Captures rather than streams, so there is nothing to authenticate. */
+        @Override
+        public void useCredentials(@Nullable CredentialsProvider credentials) {}
+
         @Override
         public void close() throws IOException {}
     }
@@ -353,6 +360,10 @@ class BigtableChangeStreamSourceBuilderTest {
                 ChangeStreamPartitionSplit split,
                 Instant endTime,
                 ResponseObserver<ChangeStreamRecord> observer) {}
+
+        /** Opens nothing, so there is nothing to authenticate. */
+        @Override
+        public void useCredentials(@Nullable CredentialsProvider credentials) {}
 
         @Override
         public void close() throws IOException {}

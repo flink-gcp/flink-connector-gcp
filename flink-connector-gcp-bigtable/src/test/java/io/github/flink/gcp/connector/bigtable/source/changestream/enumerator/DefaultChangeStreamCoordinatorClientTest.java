@@ -141,7 +141,7 @@ class DefaultChangeStreamCoordinatorClientTest {
     void injectsOneRuntimeProviderIntoEveryCoordinatorClientFamily() throws Exception {
         NoCredentialsProvider provider = NoCredentialsProvider.create();
         DefaultChangeStreamCoordinatorClient client =
-                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile", null, provider);
+                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile", provider);
 
         assertThat(client.dataSettings().getStubSettings().getCredentialsProvider())
                 .isSameAs(provider);

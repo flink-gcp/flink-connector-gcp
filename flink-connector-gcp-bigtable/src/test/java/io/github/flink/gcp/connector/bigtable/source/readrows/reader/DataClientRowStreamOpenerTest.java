@@ -90,7 +90,7 @@ class DataClientRowStreamOpenerTest {
     void injectsTheRuntimeCredentialProvider() throws Exception {
         DataClientRowStreamOpener opener = new DataClientRowStreamOpener(null, null);
         NoCredentialsProvider provider = NoCredentialsProvider.create();
-        opener.setCredentialsOverride(provider);
+        opener.useCredentials(provider);
 
         assertThat(opener.settings(TABLE).getStubSettings().getCredentialsProvider())
                 .isSameAs(provider);

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
@@ -87,6 +88,10 @@ public final class ScriptedRowKeySampler implements RowKeySampler {
         }
         return samples;
     }
+
+    /** Answers from a script rather than a client, so there is nothing to authenticate. */
+    @Override
+    public void useCredentials(@Nullable CredentialsProvider credentials) {}
 
     @Override
     public void close() {

@@ -90,7 +90,7 @@ class DataClientRowKeySamplerTest {
     void injectsTheRuntimeCredentialProvider() throws Exception {
         DataClientRowKeySampler sampler = new DataClientRowKeySampler(null, null);
         NoCredentialsProvider provider = NoCredentialsProvider.create();
-        sampler.setCredentialsOverride(provider);
+        sampler.useCredentials(provider);
 
         assertThat(sampler.settings(TABLE).getStubSettings().getCredentialsProvider())
                 .isSameAs(provider);

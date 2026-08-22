@@ -30,18 +30,20 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
+import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
-import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DataClientRowKeySampler;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableRecordEmitter;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSourceReader;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSourceReaderMetrics;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSplitReader;
-import io.github.flink.gcp.connector.bigtable.source.readrows.reader.DataClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.function.Supplier;
@@ -86,9 +88,7 @@ public class BigtableReadRowsSource<T>
     public SourceReader<T, RowRangeSplit> createReader(SourceReaderContext context)
             throws Exception {
         RowStreamOpener opener = config.getOpener();
-        if (opener instanceof DataClientRowStreamOpener) {
-            ((DataClientRowStreamOpener) opener).loadCredentials();
-        }
+        opener.useCredentials(dataCredentials());
         BigtableRowDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
@@ -113,7 +113,7 @@ public class BigtableReadRowsSource<T>
     @Override
     public SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> createEnumerator(
             SplitEnumeratorContext<RowRangeSplit> context) throws Exception {
-        loadEnumeratorCredentials();
+        useEnumeratorCredentials();
         return new BigtableScanSplitEnumerator(context, config, null);
     }
 
@@ -121,14 +121,24 @@ public class BigtableReadRowsSource<T>
     public SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<RowRangeSplit> context, BigtableScanEnumeratorState checkpoint)
             throws Exception {
-        loadEnumeratorCredentials();
+        useEnumeratorCredentials();
         return new BigtableScanSplitEnumerator(context, config, checkpoint);
     }
 
-    private void loadEnumeratorCredentials() throws IOException {
-        if (config.getSampler() instanceof DataClientRowKeySampler) {
-            ((DataClientRowKeySampler) config.getSampler()).loadCredentials();
-        }
+    /** Hands the sampler the provider before the enumerator makes its one planning call. */
+    private void useEnumeratorCredentials() throws IOException {
+        config.getSampler().useCredentials(dataCredentials());
+    }
+
+    /**
+     * Loads the provider for this component's one client family.
+     *
+     * <p>Called once per runtime component rather than once per source: the reader and the
+     * enumerator run in different processes, so each loads the key it was configured with.
+     */
+    @Nullable
+    private CredentialsProvider dataCredentials() throws IOException {
+        return BigtableCredentials.loadData(config.getServiceAccountKeyFile());
     }
 
     @Override

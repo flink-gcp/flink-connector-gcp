@@ -23,6 +23,7 @@ import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 import org.apache.flink.util.Collector;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ResponseObserver;
 import com.google.api.gax.rpc.StreamController;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
@@ -595,6 +596,10 @@ class BigtableChangeStreamReaderTest {
         private void complete(int index) {
             observers.get(index).onComplete();
         }
+
+        /** Answers from a script rather than a client, so there is nothing to authenticate. */
+        @Override
+        public void useCredentials(@Nullable CredentialsProvider credentials) {}
 
         @Override
         public void close() {

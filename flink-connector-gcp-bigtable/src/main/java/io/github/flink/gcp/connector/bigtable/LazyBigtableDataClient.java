@@ -35,8 +35,11 @@ import java.io.Serializable;
  *
  * <p>The seams that read through the data client — the scan source's row-stream opener and its
  * row-key sampler — differ in the one call they make and share everything around it: the settings
- * they build, the credentials they load, the lazy construction and the close. That shared half
- * lives here so that neither seam owns a private copy of client lifecycle code.
+ * they build, the provider their owner hands them, the lazy construction and the close. That shared
+ * half lives here so that neither seam owns a private copy of client lifecycle code.
+ *
+ * <p>No key-file path travels here. The runtime component that owns the seam loads one provider for
+ * every client family it owns and pushes it in, so this holder never loads a second one.
  *
  * <p>The client is {@code transient} because the holder is serialized into the job graph, {@code
  * volatile} because the thread that builds it is not the thread that closes it, and built under
@@ -54,11 +57,10 @@ public final class LazyBigtableDataClient implements Serializable {
     private final String owner;
     @Nullable private final String appProfileId;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
-    @Nullable private final String serviceAccountKeyFile;
 
     @Nullable private transient volatile BigtableDataClient client;
 
-    @Nullable private transient CredentialsProvider credentialsOverride;
+    @Nullable private transient CredentialsProvider credentials;
 
     private transient volatile boolean closed;
 
@@ -71,17 +73,14 @@ public final class LazyBigtableDataClient implements Serializable {
      *     instance's default
      * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
      *     for production Bigtable
-     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} to use ADC
      */
     public LazyBigtableDataClient(
             String owner,
             @Nullable String appProfileId,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable String serviceAccountKeyFile) {
+            @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.owner = Preconditions.checkNotNull(owner, "owner must not be null");
         this.appProfileId = appProfileId;
         this.emulatorEndpoint = emulatorEndpoint;
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
     }
 
     /** Returns the client, building it on first use. */
@@ -113,18 +112,13 @@ public final class LazyBigtableDataClient implements Serializable {
      * that never reaches the client looks exactly like one that does.
      */
     public BigtableDataSettings settings(TableDestination table) throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials())
+        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials)
                 .build();
     }
 
-    /** Loads credentials before the seam's first call, when the process that owns it starts. */
-    public void loadCredentials() throws IOException {
-        credentials();
-    }
-
-    /** Supplies a runtime provider directly for settings-level tests. */
-    public void setCredentialsOverride(@Nullable CredentialsProvider credentialsOverride) {
-        this.credentialsOverride = credentialsOverride;
+    /** Takes the provider the seam's owner loaded, or {@code null} to keep ADC. */
+    public void useCredentials(@Nullable CredentialsProvider credentials) {
+        this.credentials = credentials;
     }
 
     /** Closes the client if one was built, and refuses to build another. */
@@ -138,13 +132,5 @@ public final class LazyBigtableDataClient implements Serializable {
         if (toClose != null) {
             toClose.close();
         }
-    }
-
-    @Nullable
-    private CredentialsProvider credentials() throws IOException {
-        if (credentialsOverride == null && serviceAccountKeyFile != null) {
-            credentialsOverride = BigtableCredentials.loadData(serviceAccountKeyFile);
-        }
-        return credentialsOverride;
     }
 }

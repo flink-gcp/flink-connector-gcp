@@ -86,7 +86,6 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         createSingleClusterAppProfile(APP_PROFILE);
         try (DefaultChangeStreamCoordinatorClient coordinator =
                 new DefaultChangeStreamCoordinatorClient(table, APP_PROFILE)) {
-            coordinator.loadCredentials();
             List<ByteStringRange> partitions = coordinator.generateInitialPartitions();
             assertThat(partitions).hasSizeGreaterThanOrEqualTo(4);
 

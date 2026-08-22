@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 
@@ -25,7 +26,13 @@ import javax.annotation.Nullable;
 
 import java.io.Serializable;
 
-/** Resolves a reader-restored split against current retention. */
+/**
+ * Resolves a reader-restored split against current retention.
+ *
+ * <p>An implementation that asks Bigtable for retention carries no service-account key-file path
+ * and loads no credentials of its own: the reader that owns it loads one provider for every client
+ * family it owns and hands that provider over through {@link #useCredentials(CredentialsProvider)}.
+ */
 @Internal
 public interface ChangeStreamRestoreResolver extends Serializable {
 
@@ -40,4 +47,17 @@ public interface ChangeStreamRestoreResolver extends Serializable {
      */
     ChangeStreamPartitionSplit resolve(
             ChangeStreamPartitionSplit split, @Nullable StartPosition fallback) throws Exception;
+
+    /**
+     * Receives the provider the owning reader loaded, before the first {@link #resolve}.
+     *
+     * <p>Defaulted, unlike the same method on the seams around it, because this is the one of them
+     * that resolving can be a pure function of: {@link #resolve} is the only abstract method here,
+     * and tests pass lambdas that answer from the split alone. An implementation that builds a
+     * client overrides this; one that does not needs no credentials to ignore.
+     *
+     * @param credentials the provider to build clients with, or {@code null} to leave the client's
+     *     application default credentials in place
+     */
+    default void useCredentials(@Nullable CredentialsProvider credentials) {}
 }
