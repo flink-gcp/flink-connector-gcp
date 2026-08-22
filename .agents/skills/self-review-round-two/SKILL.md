@@ -8,7 +8,8 @@ description: "Run round two of this repository's mandatory two-round self-review
 Where this sits in the development flow:
 
 ```text
-plan → approval → implement → draft PR → self-review → [self-review-round-two] → ask for review
+plan → approval → implement → draft PR → self-review → [self-review-round-two] →
+  independent-review → ask for review
 ```
 
 The trigger is round one finishing, or any turn about to call the PR ready. It runs in the
@@ -72,6 +73,20 @@ measured now — the flag is not a substitute. If the claim is about a vendor li
 pinned version's source; if it is about the service, measure against the service; if it is about
 Flink, check both supported minors.
 
+**And a measurement you are about to record has a base.** "21 checks pass" is true when written and
+stops being true when `main` moves under it, without anything in the diff changing and without any
+lens here pointing at it. Before writing a verification result into a PR comment, ask GitHub whether
+the PR can still merge:
+
+```bash
+gh pr view <n> --json mergeable,mergeStateStatus     # MERGEABLE, or the result you are about to
+                                                    # record is measured against a stale base
+```
+
+`UNKNOWN` means ask again, not pass. `CONFLICTING` means rebase and re-run before recording, because
+a conflicting PR runs no further checks and the green you are quoting is the last base's. Measured on
+#1014, where the stale claim sat in this round's own comment (issue #1020).
+
 ## Step 4: sweep the prose the diff did not touch
 
 A change that makes a sentence false usually leaves that sentence alone. `grep` the whole page —
@@ -111,4 +126,4 @@ your own initiative.
 - [ ] The whole page grepped for the changed term, not just the edited paragraph
 - [ ] Mutation batch re-run if this round changed code
 - [ ] A PR comment recording the round
-- [ ] Only now is the PR ready
+- [ ] `independent-review` run next, and only then is the PR ready

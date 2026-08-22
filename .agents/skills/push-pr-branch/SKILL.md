@@ -84,7 +84,29 @@ first is a coin flip. If a rebase is genuinely impossible right now, compare aga
 `$(git merge-base HEAD origin/main)` instead, which answers the question the gate is actually
 asking: what does *this branch* change?
 
-The second is the one that matters, and it is **a list to read rather than a number to interpret**.
+A fourth, once the pull request exists, because the three above cannot see it:
+
+```bash
+gh pr view <n> --json mergeable,mergeStateStatus     # MERGEABLE, or resolve before reporting green
+```
+
+`CONFLICTING` means GitHub runs no further checks, so a "CI is green" already recorded in a review
+comment stays in the record looking current while nothing re-ran against the moved base. The three
+commands above compare the branch against `origin/main` and would not catch it: the branch can be
+current at squash time and the conflict arrive afterwards. Measured on #1014, where `main` moved and
+the conflict was in `docs/adr/README.md`, one row beneath the row the change edited.
+
+`mergeable` is computed asynchronously, so a push is often followed by `UNKNOWN` for a few seconds.
+**Treat `UNKNOWN` as "ask again", never as a pass** — a check that green-lights its own unanswered
+state is worse than no check.
+
+And when it does come back conflicting: rebase, and then **re-run the verification rather than
+carrying it over**. The rebase pulls in whatever moved, which is by definition what the earlier run
+never compiled or tested against — on #1014 that was another PR's changes to four source files. A
+result reported from before the rebase is a result from a tree that no longer exists.
+
+The second of the three is the one that matters most, and it is **a list to read rather than a
+number to interpret**.
 On #376 the diffstat *was* read at each push and the deletions hid inside a plausible-looking
 insertion count; only the explicit list makes them impossible to miss. If any path in it is one you
 did not intend to remove, stop — do not push, do not "just re-run the squash".

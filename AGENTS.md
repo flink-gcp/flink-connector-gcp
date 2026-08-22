@@ -130,6 +130,11 @@ green; use the clean-state procedures in that guide for such changes.
 - After creating the draft PR, run `$self-review`, apply verified findings, push fixes, and then run
   `$self-review-round-two` when its trigger applies. Record findings and reasoned deferrals on the
   PR. Re-run affected tests after review changes.
+- Then run `$independent-review` before calling the PR ready, and again after each fix-up push: a
+  second model — not the one that wrote the change — reviews the pushed commit, given no
+  pull-request number, told to write nothing, and told not to read the PR or the agent memories
+  (ADR-0130). Its findings are hypotheses, a defect it finds that predates the change is routed by
+  the user, and a round that could not run is recorded rather than skipped in silence.
 - Pin GitHub Actions with `just pin-actions` when adding a workflow or changing an action version.
 - Write commit messages, PR text, issues, code comments, and javadoc in English.
 

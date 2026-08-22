@@ -8,11 +8,12 @@ description: Run round one of this repository's mandatory two-round self-review 
 Where this sits in the development flow:
 
 ```text
-plan → approval → implement → draft PR → [self-review] → self-review-round-two → ask for review
+plan → approval → implement → draft PR → [self-review] → self-review-round-two →
+  independent-review → ask for review
 ```
 
 Reaching the draft PR is the trigger. Nothing else needs to happen first, and nothing downstream —
-asking for review, calling the PR ready, marking it ready-for-review — may happen before both
+asking for review, calling the PR ready, marking it ready-for-review — may happen before all three
 rounds have.
 
 **Round one asks whether the code does what the description says**, taking the PR description as
@@ -99,4 +100,5 @@ being folded in.
 - [ ] Mutation batch re-run after the fix-ups, opened by a commit
 - [ ] Build and the checkers green again
 - [ ] One PR comment recording findings **and** deferrals with reasons
-- [ ] `self-review-round-two` run next — this round is not the whole obligation
+- [ ] `self-review-round-two` run next, then `independent-review` — this round is not the whole
+      obligation
