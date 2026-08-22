@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
@@ -40,7 +41,23 @@ final class PendingMergeAccumulator {
     private final NavigableSet<TokenEntry> tokens = new TreeSet<>(TOKEN_ORDER);
     private Instant lowWatermark;
     private int disconnectedPairs;
+
+    /**
+     * How many neighbour comparisons {@link #add} has made, counted because its bound is the
+     * property worth holding: an arriving token is compared against its two neighbours and against
+     * the pair those two formed without it, so three per token, and an accumulator handed <i>n</i>
+     * parents stays linear in <i>n</i>. A rewrite that rescanned the set would still produce the
+     * right merge and would only read as a slow job; the test's ceiling of {@code 3n} on this
+     * counter is what turns it into a failure. It is also why {@link #connected} is an instance
+     * method where every other comparison this class needs is a static on {@code RowRanges}.
+     */
     private long adjacencyEvaluations;
+
+    /**
+     * How many times a checkpoint has been taken of this accumulator, counted so the test can hold
+     * the other half of the same bound: accumulating must not materialize, and a checkpoint must
+     * materialize once.
+     */
     private long materializations;
 
     PendingMergeAccumulator(ByteStringRange partition, Instant lowWatermark) {
@@ -120,10 +137,12 @@ final class PendingMergeAccumulator {
         return new PendingMerge(partition, snapshot, lowWatermark);
     }
 
+    @VisibleForTesting
     long getAdjacencyEvaluations() {
         return adjacencyEvaluations;
     }
 
+    @VisibleForTesting
     long getMaterializations() {
         return materializations;
     }

@@ -259,14 +259,28 @@ public final class BigtableChangeStreamReader<T>
 
     @Override
     public List<ChangeStreamPartitionSplit> snapshotState(long checkpointId) {
-        List<ChangeStreamPartitionSplit> state = new ArrayList<>();
-        for (ActiveRead read : active.values()) {
-            if (!read.closeSeen) {
-                state.add(read.emittedState.toSplit());
-            }
-        }
+        List<ChangeStreamPartitionSplit> state = activeSplits();
         state.addAll(queued);
         return state;
+    }
+
+    /**
+     * Returns the splits the active reads still hold, each at the position it has emitted to.
+     *
+     * <p>One method rather than the same loop twice, because the rule it applies is not obvious: a
+     * read that has seen {@code CloseStream} has finished its partition and is no longer assigned
+     * anything, even though it is still in {@code active} until the reader drains it. The
+     * checkpoint and the {@code partitionLowWatermarkMillis} gauge both answer with this, so a copy
+     * that drifted would make the two disagree about the same reader.
+     */
+    private List<ChangeStreamPartitionSplit> activeSplits() {
+        List<ChangeStreamPartitionSplit> splits = new ArrayList<>(active.size());
+        for (ActiveRead read : active.values()) {
+            if (!read.closeSeen) {
+                splits.add(read.emittedState.toSplit());
+            }
+        }
+        return splits;
     }
 
     @Override
@@ -351,13 +365,7 @@ public final class BigtableChangeStreamReader<T>
     }
 
     private void updateAssignedMetrics() {
-        List<ChangeStreamPartitionSplit> activeSplits = new ArrayList<>(active.size());
-        for (ActiveRead read : active.values()) {
-            if (!read.closeSeen) {
-                activeSplits.add(read.emittedState.toSplit());
-            }
-        }
-        metrics.assigned(activeSplits, queued);
+        metrics.assigned(activeSplits(), queued);
     }
 
     @Nullable
