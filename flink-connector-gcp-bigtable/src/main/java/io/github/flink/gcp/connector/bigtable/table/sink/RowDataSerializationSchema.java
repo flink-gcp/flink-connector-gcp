@@ -152,7 +152,8 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     }
 
     private long timestampMicros(RowData element) throws IOException {
-        TimestampData timestamp = element.getTimestamp(timestampMetadataIndex, 6);
+        TimestampData timestamp =
+                element.getTimestamp(timestampMetadataIndex, WritableMetadata.TIMESTAMP_PRECISION);
         try {
             long millis = Math.multiplyExact(timestamp.getMillisecond(), 1_000L);
             if (truncateCellTimestampToMillis) {

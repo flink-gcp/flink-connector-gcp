@@ -1178,6 +1178,19 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 case DELETE_FROM_ROW:
                 case MUTATION_NOT_SET:
                     break;
+                default:
+                    // A case this switch does not name is left unresolved deliberately, and the
+                    // caller reads that as "names no family to blame", so the entry parks for
+                    // repair instead of failing fast. Throwing here would assert knowledge this
+                    // sink does not have: the guard fails fast only once it has positively named a
+                    // family that creation cannot supply, and this method also sees entries whose
+                    // families are declared and merely not visible yet, which park here and then
+                    // succeed — a throw would fail those jobs instead, which is what the two
+                    // propagation tests in BigtableWriterAutoCreationTest measure. What the
+                    // silence costs is a slower and less precise failure for a case that does name
+                    // a family; the tripwire for that is BigtableWriterMutationCaseTest, which
+                    // fails on the bump that grows the enum rather than on someone's job.
+                    break;
             }
             if (family != null && !existingFamilies.contains(family)) {
                 missing.add(family);
