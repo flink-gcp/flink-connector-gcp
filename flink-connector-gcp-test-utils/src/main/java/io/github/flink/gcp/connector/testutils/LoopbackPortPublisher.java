@@ -65,12 +65,12 @@ import java.util.Map;
  * carries wildcard-bound guest ports. There the modifier engages and binds inside the daemon, and
  * the connection is refused. Nothing distinguishes that from a local daemon — a local one exposed
  * over {@code tcp://127.0.0.1} is a setup this <em>should</em> serve — so the escape is explicit
- * rather than inferred: set the environment variable {@code
- * FLINK_GCP_TESTS_LOOPBACK_PUBLISH=false}, or pass {@code
- * -Dflink.gcp.tests.loopback-publish=false}.
+ * rather than inferred: pass {@code -Dflink.gcp.tests.loopback-publish=false}. Maven forwards a
+ * command-line {@code -D} into the surefire fork, and {@code .mvn/maven.config} or {@code
+ * MAVEN_OPTS} carries it for a shell that sets no flags per run.
  *
- * <p>Either restores testcontainers' own wildcard publish. It is read per container rather than
- * once, so clearing it mid-run re-engages the rewrite for later containers. Docker Desktop for
+ * <p>That restores testcontainers' own wildcard publish. The property is read per container rather
+ * than once, so clearing it mid-run re-engages the rewrite for later containers. Docker Desktop for
  * macOS — itself VM-backed — is measured working without it; colima and Rancher Desktop are not
  * measured, which is what the escape is for.
  *
@@ -87,12 +87,6 @@ public final class LoopbackPortPublisher implements CreateContainerCmdModifier {
      */
     static final String LOOPBACK_PUBLISH_PROPERTY = "flink.gcp.tests.loopback-publish";
 
-    /**
-     * Environment variable whose value {@code false} switches the rewrite off, for a shell that
-     * sets no JVM flags. {@code LOOPBACK_PUBLISH_PROPERTY} wins when both are set.
-     */
-    static final String LOOPBACK_PUBLISH_ENV = "FLINK_GCP_TESTS_LOOPBACK_PUBLISH";
-
     /** Required by {@link java.util.ServiceLoader}, which is the only intended caller. */
     public LoopbackPortPublisher() {}
 
@@ -100,12 +94,9 @@ public final class LoopbackPortPublisher implements CreateContainerCmdModifier {
     public CreateContainerCmd modify(CreateContainerCmd createContainerCmd) {
         // Before the Docker host is resolved, so the opt-out costs nothing and — the reason it is
         // here rather than inside the seam — so a test can drive this very method: with the
-        // property set it returns without touching testcontainers' provider strategy, which pins
-        // both constant spellings and the property-beats-environment order that no assertion on
-        // isDisabled alone can reach.
-        if (isDisabled(
-                System.getProperty(LOOPBACK_PUBLISH_PROPERTY),
-                System.getenv(LOOPBACK_PUBLISH_ENV))) {
+        // property set it returns without touching testcontainers' provider strategy, which is
+        // what pins the constant's spelling.
+        if (isDisabled(System.getProperty(LOOPBACK_PUBLISH_PROPERTY))) {
             return createContainerCmd;
         }
         // The strategy is resolved before any container is created, so this neither initialises
@@ -114,21 +105,17 @@ public final class LoopbackPortPublisher implements CreateContainerCmdModifier {
     }
 
     /**
-     * Whether an explicit opt-out is in force, the system property winning over the environment.
+     * Whether an explicit opt-out is in force.
      *
      * <p>Only {@code false} disables, case-insensitively and after stripping — not {@link
      * Boolean#parseBoolean}, which reads every other spelling as {@code false} and would let a typo
      * switch the rewrite off silently. An unrecognised value therefore leaves the rewrite on, which
      * is the behaviour every other setup gets; the cost of that choice is that {@code =0} or {@code
-     * =no} is ignored without saying so, and ADR-0132 records it.
-     *
-     * <p>A blank property counts as unset, so a valueless {@code
-     * -Dflink.gcp.tests.loopback-publish} — which {@code System.getProperty} answers as {@code ""}
-     * — does not mask an environment variable that is set.
+     * =no} is ignored without saying so, and ADR-0132 records it. A blank or valueless {@code -D}
+     * counts as unset.
      */
-    static boolean isDisabled(String property, String environment) {
-        String value = property != null && !property.isBlank() ? property : environment;
-        return value != null && "false".equalsIgnoreCase(value.strip());
+    static boolean isDisabled(String property) {
+        return property != null && "false".equalsIgnoreCase(property.strip());
     }
 
     /**

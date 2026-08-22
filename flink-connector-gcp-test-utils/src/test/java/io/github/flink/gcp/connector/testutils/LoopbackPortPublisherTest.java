@@ -205,36 +205,27 @@ class LoopbackPortPublisherTest {
     }
 
     @Test
-    void theOptOutNamesTheRepositoryDocumentsAreTheOnesTheCodeReads() {
-        // ADR-0132, this class's javadoc and the repository guide all quote these two spellings,
-        // and a typo in either would leave all other tests green while the escape hatch is dead
-        // for the one user it exists for.
+    void theOptOutNameTheRepositoryDocumentsIsTheOneTheCodeReads() {
+        // ADR-0132, this class's javadoc and the repository guide all quote this spelling, and a
+        // typo would leave all other tests green while the escape hatch is dead for the one user
+        // it exists for.
         assertThat(LoopbackPortPublisher.LOOPBACK_PUBLISH_PROPERTY)
                 .isEqualTo("flink.gcp.tests.loopback-publish");
-        assertThat(LoopbackPortPublisher.LOOPBACK_PUBLISH_ENV)
-                .isEqualTo("FLINK_GCP_TESTS_LOOPBACK_PUBLISH");
     }
 
     @Test
     void onlyTheValueFalseDisables() {
-        assertThat(LoopbackPortPublisher.isDisabled("false", null)).isTrue();
-        assertThat(LoopbackPortPublisher.isDisabled(null, "false")).isTrue();
-        assertThat(LoopbackPortPublisher.isDisabled(null, "FALSE")).isTrue();
-        // A CI `env:` block readily produces trailing whitespace.
-        assertThat(LoopbackPortPublisher.isDisabled(null, " false ")).isTrue();
+        assertThat(LoopbackPortPublisher.isDisabled("false")).isTrue();
+        assertThat(LoopbackPortPublisher.isDisabled("FALSE")).isTrue();
+        // A `.mvn/maven.config` line readily carries trailing whitespace.
+        assertThat(LoopbackPortPublisher.isDisabled(" false ")).isTrue();
         // Not Boolean.parseBoolean, which reads every non-"true" spelling as false: a typo must
         // not switch the rewrite off silently. The cost is that these are ignored in silence.
-        assertThat(LoopbackPortPublisher.isDisabled("no", null)).isFalse();
-        assertThat(LoopbackPortPublisher.isDisabled("0", null)).isFalse();
-        assertThat(LoopbackPortPublisher.isDisabled(null, null)).isFalse();
-    }
-
-    @Test
-    void aSetPropertyWinsOverTheEnvironmentButAValuelessOneDoesNot() {
-        assertThat(LoopbackPortPublisher.isDisabled("true", "false")).isFalse();
-        // `-Dflink.gcp.tests.loopback-publish` with no value answers "", which must not mask an
-        // environment variable the developer did set.
-        assertThat(LoopbackPortPublisher.isDisabled("", "false")).isTrue();
+        assertThat(LoopbackPortPublisher.isDisabled("no")).isFalse();
+        assertThat(LoopbackPortPublisher.isDisabled("0")).isFalse();
+        assertThat(LoopbackPortPublisher.isDisabled(null)).isFalse();
+        // A valueless `-Dflink.gcp.tests.loopback-publish` answers "", which is unset, not false.
+        assertThat(LoopbackPortPublisher.isDisabled("")).isFalse();
     }
 
     @Test
