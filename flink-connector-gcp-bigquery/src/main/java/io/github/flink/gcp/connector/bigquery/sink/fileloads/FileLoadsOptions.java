@@ -19,9 +19,9 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.StringUtils;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -393,10 +393,7 @@ public final class FileLoadsOptions implements Serializable {
          * @return this builder
          */
         public Builder tempDataset(String tempDataset) {
-            Preconditions.checkArgument(
-                    !StringUtils.isNullOrWhitespaceOnly(tempDataset),
-                    "tempDataset must not be blank");
-            this.tempDataset = tempDataset;
+            this.tempDataset = ResourceNames.checkComponent(tempDataset, "tempDataset");
             return this;
         }
 

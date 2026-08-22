@@ -22,6 +22,7 @@ import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
@@ -220,10 +221,8 @@ public class BigQuerySourceBuilder<T> {
      * @return this builder
      */
     public BigQuerySourceBuilder<T> queryResultDataset(String queryResultDataset) {
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(queryResultDataset),
-                "queryResultDataset must not be blank");
-        this.queryResultDataset = queryResultDataset;
+        this.queryResultDataset =
+                ResourceNames.checkComponent(queryResultDataset, "queryResultDataset");
         return this;
     }
 
@@ -292,10 +291,7 @@ public class BigQuerySourceBuilder<T> {
      * @return this builder
      */
     public BigQuerySourceBuilder<T> parentProject(String parentProject) {
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(parentProject),
-                "parentProject must not be blank");
-        this.parentProject = parentProject;
+        this.parentProject = ResourceNames.checkComponent(parentProject, "parentProject");
         return this;
     }
 

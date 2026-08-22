@@ -21,6 +21,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
@@ -314,7 +315,8 @@ public class BigQuerySinkBuilder<T> {
      * @return this builder
      */
     public BigQuerySinkBuilder<T> location(String location) {
-        this.location = Preconditions.checkNotNull(location, "location must not be null");
+        Preconditions.checkNotNull(location, "location must not be null");
+        this.location = ResourceNames.checkNotBlank(location, "location");
         return this;
     }
 

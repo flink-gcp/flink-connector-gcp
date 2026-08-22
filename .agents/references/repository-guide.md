@@ -780,6 +780,19 @@ connector gets its own module file rather than a section here.
   setter. A `nanoTime` deadline stamped at that ceiling **overflows and is still correct** — the
   read subtracts and wraps back — so never "harden" one with `Math.addExact` or a clamp, which is
   what would break it. Which sites convert how, and that measurement, are in the ADR.
+- **A configured name is checked for what this project will do with it, not for what the service
+  might refuse** (#984; `docs/adr/0127`): a component the connector concatenates into a resource
+  path rejects `/` and edge whitespace via `ResourceNames.checkComponent`, because a `/` inside one
+  silently addresses a *different* resource and the service then answers accurately about a name
+  the user never typed; a value the connector parses is checked against the grammar that will read
+  it; and a value whose service-side failure would be **silent**, per-record, or would not name the
+  option is checked even though it is only forwarded — which is what the Cloud Tasks URL and
+  reserved-header checks are, rather than exceptions. Everything else takes
+  `ResourceNames.checkNotBlank` and no more. Two values sit outside the path rule by their nature
+  and not by oversight: `kmsKeyName` *is* a path, and `prefix("")` means the whole table. A new
+  character check states which of the three shapes it is. The gax measurement that settled [#984],
+  the four setters this brought into line, and why restoring `trim().isEmpty()` would be a new
+  check rather than a fix, are in the ADR.
 - **A test driving a sink's production `createWriter(WriterInitContext)` sets an emulator
   endpoint** (`docs/adr/0064`): the production path builds the connector's real client, and an
   eagerly constructed one demands ADC — green on any machine with credentials, red only in CI.

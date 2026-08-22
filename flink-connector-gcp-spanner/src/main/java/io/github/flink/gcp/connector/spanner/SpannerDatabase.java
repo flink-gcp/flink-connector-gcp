@@ -17,8 +17,8 @@
 package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Public;
-import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.StringUtils;
+
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 
 import java.io.Serializable;
 import java.util.Objects;
@@ -71,22 +71,10 @@ public final class SpannerDatabase implements Serializable {
      * @return the database reference
      */
     public static SpannerDatabase of(String project, String instance, String database) {
-        checkComponent(project, "project");
-        checkComponent(instance, "instance");
-        checkComponent(database, "database");
+        ResourceNames.checkComponent(project, "project");
+        ResourceNames.checkComponent(instance, "instance");
+        ResourceNames.checkComponent(database, "database");
         return new SpannerDatabase(project, instance, database);
-    }
-
-    private static void checkComponent(String value, String name) {
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(value), "%s must not be blank", name);
-        Preconditions.checkArgument(
-                value.equals(value.trim()),
-                "%s must not have leading or trailing whitespace: '%s'",
-                name,
-                value);
-        Preconditions.checkArgument(
-                value.indexOf('/') < 0, "%s must not contain '/': '%s'", name, value);
     }
 
     /** Returns the Google Cloud project id. */

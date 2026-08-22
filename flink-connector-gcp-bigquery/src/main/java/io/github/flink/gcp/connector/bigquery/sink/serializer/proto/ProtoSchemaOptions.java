@@ -23,6 +23,7 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.protobuf.DescriptorProtos;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.GeneratedMessage;
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 
 import java.io.Serializable;
 import java.util.Collection;
@@ -353,7 +354,8 @@ public final class ProtoSchemaOptions implements Serializable {
          * @return this builder
          */
         public Builder jsonFieldPath(String path) {
-            this.jsonFieldPaths.add(Preconditions.checkNotNull(path, "path must not be null"));
+            Preconditions.checkNotNull(path, "path must not be null");
+            this.jsonFieldPaths.add(ResourceNames.checkNotBlank(path, "path"));
             return this;
         }
 
@@ -389,7 +391,8 @@ public final class ProtoSchemaOptions implements Serializable {
          * @return this builder
          */
         public Builder geographyFieldPath(String path) {
-            this.geographyFieldPaths.add(Preconditions.checkNotNull(path, "path must not be null"));
+            Preconditions.checkNotNull(path, "path must not be null");
+            this.geographyFieldPaths.add(ResourceNames.checkNotBlank(path, "path"));
             return this;
         }
 
