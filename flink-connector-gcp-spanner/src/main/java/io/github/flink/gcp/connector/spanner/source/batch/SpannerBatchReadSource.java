@@ -33,17 +33,19 @@ import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
-import io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerPartitionSplitEnumerator;
-import io.github.flink.gcp.connector.spanner.source.batch.reader.BatchClientStructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerRecordEmitter;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReader;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReaderMetrics;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSplitReader;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.function.Supplier;
@@ -93,9 +95,7 @@ public class SpannerBatchReadSource<T>
     public SourceReader<T, PartitionSplit> createReader(SourceReaderContext context)
             throws Exception {
         StructStreamOpener opener = config.getOpener();
-        if (opener instanceof BatchClientStructStreamOpener) {
-            ((BatchClientStructStreamOpener) opener).loadCredentials();
-        }
+        opener.useCredentials(credentials());
         SpannerStructDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
@@ -118,7 +118,7 @@ public class SpannerBatchReadSource<T>
     @Override
     public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> createEnumerator(
             SplitEnumeratorContext<PartitionSplit> context) throws Exception {
-        loadEnumeratorCredentials();
+        useEnumeratorCredentials();
         return new SpannerPartitionSplitEnumerator(context, config, null);
     }
 
@@ -126,14 +126,29 @@ public class SpannerBatchReadSource<T>
     public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<PartitionSplit> context, SpannerBatchEnumeratorState checkpoint)
             throws Exception {
-        loadEnumeratorCredentials();
+        useEnumeratorCredentials();
         return new SpannerPartitionSplitEnumerator(context, config, checkpoint);
     }
 
-    private void loadEnumeratorCredentials() throws IOException {
-        if (config.getPlanner() instanceof BatchClientPartitionPlanner) {
-            ((BatchClientPartitionPlanner) config.getPlanner()).loadCredentials();
-        }
+    /** Hands the planner the credentials before the enumerator makes its one planning call. */
+    private void useEnumeratorCredentials() throws IOException {
+        config.getPlanner().useCredentials(credentials());
+    }
+
+    /**
+     * Loads the key this component was configured with.
+     *
+     * <p>Called once per runtime component rather than once per source: the reader runs on a
+     * TaskManager and the enumerator on the JobManager, so each loads the mounted path itself. The
+     * seams are handed the result rather than the path, so none of them loads a second one and no
+     * caller reaches one by downcast.
+     *
+     * @return the loaded credentials, or {@code null} when no key file is configured
+     * @throws IOException if the configured key file cannot be read
+     */
+    @Nullable
+    private GoogleCredentials credentials() throws IOException {
+        return SpannerCredentials.load(config.getServiceAccountKeyFile());
     }
 
     @Override

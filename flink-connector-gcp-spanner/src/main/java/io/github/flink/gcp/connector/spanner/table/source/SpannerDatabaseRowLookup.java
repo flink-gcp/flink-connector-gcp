@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.spanner.table.source;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiFuture;
-import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Key;
@@ -45,7 +44,6 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     private final List<String> columns;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
-    @Nullable private transient GoogleCredentials credentialsOverride;
     @Nullable private transient Spanner spanner;
     @Nullable private transient DatabaseClient client;
 
@@ -94,6 +92,13 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
                                 database.getDatabase()));
     }
 
+    /**
+     * Builds the settings the one client is opened on.
+     *
+     * <p>Reads the key here rather than caching it, because {@link #open()} is this method's only
+     * production caller and is where this lookup's runtime component starts: the load already
+     * happens exactly once. Tests call it directly to inspect what a component would be built with.
+     */
     @VisibleForTesting
     SpannerOptions settings() throws Exception {
         EmulatorEndpoint endpoint =
@@ -101,10 +106,8 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
                         ? null
                         : EmulatorEndpoint.parse(
                                 emulatorEndpoint, SpannerConnectorOptions.EMULATOR_ENDPOINT.key());
-        if (credentialsOverride == null && serviceAccountKeyFile != null) {
-            credentialsOverride = SpannerCredentials.load(serviceAccountKeyFile);
-        }
-        return SpannerClients.settings(database, endpoint, credentialsOverride);
+        return SpannerClients.settings(
+                database, endpoint, SpannerCredentials.load(serviceAccountKeyFile));
     }
 
     @Override

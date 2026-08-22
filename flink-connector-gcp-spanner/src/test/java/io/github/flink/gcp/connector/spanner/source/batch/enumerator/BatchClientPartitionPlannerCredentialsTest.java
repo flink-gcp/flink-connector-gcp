@@ -16,7 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
-import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.auth.oauth2.GoogleCredentials;
+import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
@@ -30,14 +31,14 @@ class BatchClientPartitionPlannerCredentialsTest {
     @TempDir Path tempDir;
 
     @Test
-    void injectsRuntimeCredentialsIntoEnumeratorClientSettings() throws Exception {
+    void carriesTheCredentialsTheEnumeratorHandedItIntoTheClientSettings() throws Exception {
+        GoogleCredentials loaded =
+                SpannerCredentials.load(ServiceAccountKeyFiles.create(tempDir).toString());
         BatchClientPartitionPlanner planner =
-                new BatchClientPartitionPlanner(
-                        SpannerDatabase.of("p", "i", "d"),
-                        null,
-                        ServiceAccountKeyFiles.create(tempDir).toString());
+                new BatchClientPartitionPlanner(SpannerDatabase.of("p", "i", "d"), null);
 
-        assertThat(planner.settings().getCredentials() instanceof ServiceAccountCredentials)
-                .isTrue();
+        planner.useCredentials(loaded);
+
+        assertThat(planner.settings().getCredentials()).isSameAs(loaded);
     }
 }

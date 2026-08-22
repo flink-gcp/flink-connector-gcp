@@ -54,6 +54,9 @@ The destination fields assemble `SpannerDatabase`, the physical DDL supplies the
 The table layer keeps the DataStream sink's fail-job constraint and failed-mutation policies because a DDL cannot carry a serializable failure-handler implementation.
 The shared `service-account-key-file` option maps to the bounded source and sink builders and to synchronous and asynchronous lookup clients.
 Only its path is serialized, and each JobManager or TaskManager component that owns a client reads the service-account JSON when that component opens.
+A seam a component must inject into carries no path: the bounded source's reader and enumerator each load once and push the result into the seam they own, and the seam interface declares that injection abstractly, so no caller reaches a seam by downcast and no implementation can omit the method.
+That narrows the silent substitution rather than removing it — an implementation is still free to discard what it is handed — so the declaration carries the cost in its javadoc.
+A seam that builds its own client instead — the Change Streams client factories and the lookup — reads the path itself when its component opens, which is the same boundary.
 Absent on a real-service path keeps ADC, and an emulator endpoint is mutually exclusive with the key path.
 
 **The optional `schema` value qualifies every Table API data path.**

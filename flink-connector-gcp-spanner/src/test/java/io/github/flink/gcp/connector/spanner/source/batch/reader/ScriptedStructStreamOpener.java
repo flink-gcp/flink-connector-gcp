@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch.reader;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.Struct;
@@ -98,6 +99,10 @@ public final class ScriptedStructStreamOpener implements StructStreamOpener {
     public static void reset() {
         STATES.clear();
     }
+
+    /** Ignores them: nothing here reaches the service, so there is no client to scope. */
+    @Override
+    public void useCredentials(@Nullable GoogleCredentials credentials) {}
 
     @Override
     public StructStream open(BatchTransactionId batchTransactionId, Partition partition) {
