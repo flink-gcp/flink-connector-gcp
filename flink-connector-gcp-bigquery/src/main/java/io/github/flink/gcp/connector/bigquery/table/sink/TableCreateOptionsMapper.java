@@ -28,6 +28,7 @@ import org.apache.flink.util.StringUtils;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
@@ -41,9 +42,9 @@ import java.util.Optional;
  * Maps the {@code sink.table-create.*} options onto {@link TableCreateOptions}.
  *
  * <p>Under the same contract as {@code DefaultStreamOptionsMapper}: every knob is applied through
- * the builder, no default is introduced, and value validation — a blank column name, a fifth
- * clustering column, a non-positive expiration — is left to that builder so a SQL user gets the
- * message a DataStream user gets. Returns {@code null} when the DDL sets no key of the family,
+ * {@link OptionSetters}, no default is introduced, and each bound — a blank column name, a fifth
+ * clustering column, a non-positive expiration — stays with the builder, whose rejection is renamed
+ * to the option key (issue #1030). Returns {@code null} when the DDL sets no key of the family,
  * which leaves the sink on {@code TableCreateOptions.defaults()} rather than on a copy of it made
  * here.
  *
@@ -166,15 +167,25 @@ public final class TableCreateOptionsMapper {
         type.ifPresent(
                 granularity -> {
                     if (field.isPresent()) {
-                        builder.timePartitioning(granularity, field.get());
+                        // The two-argument overload's one rejectable value is the column, so its
+                        // rejection is attributable to the field key alone.
+                        OptionSetters.accept(
+                                BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD
+                                        .key(),
+                                field.get(),
+                                column -> builder.timePartitioning(granularity, column));
                     } else {
                         builder.timePartitioning(granularity);
                     }
                 });
-        expiration.ifPresent(builder::timePartitioningExpiration);
-        if (clusteredFields != null) {
-            builder.clusteredFields(clusteredFields);
-        }
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION.key(),
+                expiration.orElse(null),
+                builder::timePartitioningExpiration);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS.key(),
+                clusteredFields,
+                builder::clusteredFields);
         return builder.build();
     }
 

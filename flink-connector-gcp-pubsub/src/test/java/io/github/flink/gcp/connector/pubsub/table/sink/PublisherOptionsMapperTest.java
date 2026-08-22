@@ -238,4 +238,15 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.hasBatchingOverrides()).isFalse();
         assertThat(mapped.getRetryTotalTimeout()).isNull();
     }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.in-flight.max-messages", "0");
+
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(Configuration.fromMap(options)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.in-flight.max-messages' is invalid")
+                .hasMessageContaining("maxInFlightMessages must be positive");
+    }
 }

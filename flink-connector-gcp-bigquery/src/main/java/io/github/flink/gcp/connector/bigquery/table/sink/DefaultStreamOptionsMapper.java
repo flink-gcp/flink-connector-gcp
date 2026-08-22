@@ -18,11 +18,11 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
@@ -33,9 +33,10 @@ import java.util.List;
 /**
  * Maps the {@code sink.default-stream.*} options onto {@link DefaultStreamOptions}.
  *
- * <p>Adds no defaults of its own and performs no validation: an option left out of the DDL leaves
- * its setter uncalled, and the builder's own {@code Preconditions} are the one place a bad value is
- * rejected, so a SQL user gets the same message a DataStream user does.
+ * <p>Adds no defaults of its own and owns no bounds: an option left out of the DDL leaves its
+ * setter uncalled through {@link OptionSetters}, the builder's own {@code Preconditions} are the
+ * one place a bad value is rejected, and the rejection is renamed to the option key the SQL caller
+ * wrote (issue #1030).
  *
  * <p>Returns {@code null} when no key of the family is set, which is the state the builder reads as
  * "this write method's options were not configured" — the same shape {@code
@@ -91,44 +92,74 @@ public final class DefaultStreamOptionsMapper {
         }
         DefaultStreamOptions.Builder builder = DefaultStreamOptions.builder();
 
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_APPEND_REQUEST_BYTES)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::maxAppendRequestBytes);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_APPEND_REQUEST_BYTES,
+                size -> builder.maxAppendRequestBytes(size.getBytes()));
 
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_INITIAL_BACKOFF)
-                .ifPresent(builder::recoveryInitialBackoff);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_MAX_BACKOFF)
-                .ifPresent(builder::recoveryMaxBackoff);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS)
-                .ifPresent(builder::recoveryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_INITIAL_BACKOFF,
+                builder::recoveryInitialBackoff);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_MAX_BACKOFF,
+                builder::recoveryMaxBackoff);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RECOVERY_MAX_ATTEMPTS,
+                builder::recoveryMaxAttempts);
 
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_INITIAL_DELAY)
-                .ifPresent(builder::retryInitialDelay);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_DELAY_MULTIPLIER)
-                .ifPresent(builder::retryDelayMultiplier);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_DELAY)
-                .ifPresent(builder::retryMaxDelay);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_ATTEMPTS)
-                .ifPresent(builder::retryMaxAttempts);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_DURATION)
-                .ifPresent(builder::maxRetryDuration);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_INITIAL_DELAY,
+                builder::retryInitialDelay);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_DELAY_MULTIPLIER,
+                builder::retryDelayMultiplier);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_DELAY,
+                builder::retryMaxDelay);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_ATTEMPTS,
+                builder::retryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_RETRY_MAX_DURATION,
+                builder::maxRetryDuration);
 
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_INFLIGHT_REQUESTS)
-                .ifPresent(builder::maxInflightRequests);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_INFLIGHT_BYTES)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::maxInflightBytes);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MIN_CONNECTIONS_PER_REGION)
-                .ifPresent(builder::minConnectionsPerRegion);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_CONNECTIONS_PER_REGION)
-                .ifPresent(builder::maxConnectionsPerRegion);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_INFLIGHT_REQUESTS,
+                builder::maxInflightRequests);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_INFLIGHT_BYTES,
+                size -> builder.maxInflightBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MIN_CONNECTIONS_PER_REGION,
+                builder::minConnectionsPerRegion);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_CONNECTIONS_PER_REGION,
+                builder::maxConnectionsPerRegion);
 
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT)
-                .ifPresent(builder::destinationIdleTimeout);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL)
-                .ifPresent(builder::flushInterval);
-        config.getOptional(BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS)
-                .ifPresent(builder::perDestinationMetrics);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT,
+                builder::destinationIdleTimeout);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL,
+                builder::flushInterval);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS,
+                builder::perDestinationMetrics);
 
         return builder.build();
     }

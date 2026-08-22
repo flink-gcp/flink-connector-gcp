@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table.sink;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for mapping the {@code sink.*} keys onto the writer's tuning. */
 class WriterOptionsMapperTest {
@@ -82,5 +84,16 @@ class WriterOptionsMapperTest {
 
         assertThat(options.getBatchElementCount()).isEqualTo(500L);
         assertThat(options.getBatchByteSize()).isNull();
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                WriterOptionsMapper.map(
+                                        configuration("sink.in-flight.max-entries", "0")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.in-flight.max-entries' is invalid")
+                .hasMessageContaining("maxInFlightEntries must be positive");
     }
 }

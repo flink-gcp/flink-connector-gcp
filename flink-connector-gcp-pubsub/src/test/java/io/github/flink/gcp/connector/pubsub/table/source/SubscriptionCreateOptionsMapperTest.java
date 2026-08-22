@@ -413,4 +413,59 @@ class SubscriptionCreateOptionsMapperTest {
         assertThat(value).as("no sample value for '%s'", option.key()).isNotNull();
         return value;
     }
+
+    @Test
+    void namesTheOptionKeyWhenTheDeadLetterAttemptCountIsRejected() {
+        // The two-argument deadLetterPolicy call is split so each value's rejection is
+        // attributable to its own key (#1030).
+        Configuration config = new Configuration();
+        config.set(PubSubConnectorOptions.PROJECT, "my-project");
+        config.set(PubSubConnectorOptions.SUBSCRIPTION, Collections.singletonList("my-sub"));
+        config.set(
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS,
+                Collections.singletonMap("my-sub", "my-topic"));
+        config.setString(PubSubConnectorOptions.SCAN_AUTO_CREATE_DEAD_LETTER_TOPIC.key(), "dlq");
+        config.setString(
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_DEAD_LETTER_MAX_DELIVERY_ATTEMPTS.key(),
+                "0");
+
+        assertThatThrownBy(() -> SubscriptionCreateOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Option 'scan.auto-create.dead-letter.max-delivery-attempts' is invalid")
+                .hasMessageContaining("maxDeliveryAttempts must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        // The expiration TTL is an extracted-value site (it is cross-checked against never-expire
+        // before the builder sees it), so it goes through the accept overload.
+        Configuration config = new Configuration();
+        config.set(PubSubConnectorOptions.PROJECT, "my-project");
+        config.set(PubSubConnectorOptions.SUBSCRIPTION, Collections.singletonList("my-sub"));
+        config.set(
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS,
+                Collections.singletonMap("my-sub", "my-topic"));
+        config.set(PubSubConnectorOptions.SCAN_AUTO_CREATE_EXPIRATION_TTL, Duration.ZERO);
+
+        assertThatThrownBy(() -> SubscriptionCreateOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.auto-create.expiration-ttl' is invalid")
+                .hasMessageContaining("expirationTtl must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAnAutoCreateTopicValueIsRejected() {
+        Configuration config = new Configuration();
+        config.set(PubSubConnectorOptions.PROJECT, "my-project");
+        config.set(PubSubConnectorOptions.SUBSCRIPTION, Collections.singletonList("my-sub"));
+        config.set(
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS,
+                Collections.singletonMap("my-sub", "bad/topic"));
+
+        assertThatThrownBy(() -> SubscriptionCreateOptionsMapper.map(config))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.auto-create.topics' is invalid")
+                .hasMessageContaining("entry 'my-sub'");
+    }
 }

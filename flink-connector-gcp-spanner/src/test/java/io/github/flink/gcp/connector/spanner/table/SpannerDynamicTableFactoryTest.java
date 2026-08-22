@@ -743,4 +743,42 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> source(SCHEMA, zeroStaleness))
                 .hasStackTraceContaining("exact-staleness must be positive");
     }
+
+    @Test
+    void namesTheOptionKeyWhenASinkValueIsRejected() {
+        // 'sink.buffer-flush.max-cells' maps onto maxBatchCells — a rename, so the builder's own
+        // message is unreadable from a WITH clause without the option key in front of it.
+        Map<String, String> options = options();
+        options.put("sink.buffer-flush.max-cells", "0");
+
+        assertThatThrownBy(() -> sink(SCHEMA, options))
+                .hasStackTraceContaining("Option 'sink.buffer-flush.max-cells' is invalid")
+                .hasStackTraceContaining("maxBatchCells must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAScanValueIsRejected() {
+        Map<String, String> options = options();
+        options.put("scan.partition.max-partitions", "0");
+
+        assertThatThrownBy(() -> builtSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.partition.max-partitions' is invalid")
+                .hasMessageContaining("maxPartitions must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAChangeStreamValueIsRejected() {
+        Map<String, String> options = changeStreamOptions("full");
+        options.put("scan.max-concurrent-queries-per-subtask", "0");
+
+        assertThatThrownBy(
+                        () ->
+                                ((ScanTableSource) source(SCHEMA, options))
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.max-concurrent-queries-per-subtask' is invalid")
+                .hasMessageContaining("maxConcurrentQueriesPerSubtask must be positive");
+    }
 }

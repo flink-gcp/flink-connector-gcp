@@ -24,6 +24,7 @@ import org.apache.flink.table.api.ValidationException;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 import java.time.Duration;
@@ -41,11 +42,11 @@ import java.util.TreeSet;
 /**
  * Builds per-subscription {@link SubscriptionCreateOptions} from the table options.
  *
- * <p>Under the same contract as {@code SubscriberOptionsMapper}: every knob is applied with {@code
- * getOptional(...).ifPresent(...)}, no default is introduced, and value validation is left to the
- * builder so a SQL user gets the message a DataStream user gets. What is different is that three of
- * this options object's setters do not take a {@code ConfigOption}'s shape, so the rules below
- * exist here and nowhere else.
+ * <p>Under the same contract as {@code SubscriberOptionsMapper}: every knob is applied through
+ * {@link OptionSetters}, no default is introduced, and each bound stays in the builder — a value it
+ * rejects is renamed to the option key (issue #1030). What is different is that three of this
+ * options object's setters do not take a {@code ConfigOption}'s shape, so the rules below exist
+ * here and nowhere else.
  *
  * <p><b>Auto-creation is authorized by {@code scan.auto-create.topics}.</b> Its map keys must match
  * the {@code subscription} list exactly, and each value supplies that subscription's topic binding.
@@ -115,7 +116,13 @@ public final class SubscriptionCreateOptionsMapper {
         for (String subscription : subscriptions) {
             SubscriptionCreateOptions.Builder builder =
                     SubscriptionCreateOptions.builder()
-                            .topic(TopicDestination.of(project, topics.get(subscription)));
+                            .topic(
+                                    OptionSetters.convert(
+                                            PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS.key(),
+                                            topics.get(subscription),
+                                            value ->
+                                                    topicDestination(
+                                                            project, subscription, value)));
             applySharedSettings(config, project, builder);
             mapped.put(SubscriptionDestination.of(project, subscription), builder.build());
         }
@@ -161,16 +168,22 @@ public final class SubscriptionCreateOptionsMapper {
 
     private static void applySharedSettings(
             ReadableConfig config, String project, SubscriptionCreateOptions.Builder builder) {
-        config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE)
-                .ifPresent(builder::ackDeadline);
-        config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED)
-                .ifPresent(builder::enableMessageOrdering);
-        config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_RETENTION)
-                .ifPresent(builder::messageRetention);
-        config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_RETAIN_ACKED_MESSAGES)
-                .ifPresent(builder::retainAckedMessages);
-        config.getOptional(PubSubConnectorOptions.SCAN_AUTO_CREATE_FILTER)
-                .ifPresent(builder::filter);
+        OptionSetters.apply(
+                config, PubSubConnectorOptions.SCAN_AUTO_CREATE_ACK_DEADLINE, builder::ackDeadline);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED,
+                builder::enableMessageOrdering);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_MESSAGE_RETENTION,
+                builder::messageRetention);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_RETAIN_ACKED_MESSAGES,
+                builder::retainAckedMessages);
+        OptionSetters.apply(
+                config, PubSubConnectorOptions.SCAN_AUTO_CREATE_FILTER, builder::filter);
         applyExpiration(config, builder);
         applyDeadLetterPolicy(config, project, builder);
     }
@@ -191,7 +204,10 @@ public final class SubscriptionCreateOptionsMapper {
                             PubSubConnectorOptions.SCAN_AUTO_CREATE_EXPIRATION_TTL.key(),
                             PubSubConnectorOptions.SCAN_AUTO_CREATE_NEVER_EXPIRE.key()));
         }
-        ttl.ifPresent(builder::expirationTtl);
+        OptionSetters.accept(
+                PubSubConnectorOptions.SCAN_AUTO_CREATE_EXPIRATION_TTL.key(),
+                ttl.orElse(null),
+                builder::expirationTtl);
         if (neverExpire) {
             // Only 'true' calls the setter: it takes no argument, so 'false' can only mean "leave
             // the expiration alone", which is what not calling it does.
@@ -225,8 +241,30 @@ public final class SubscriptionCreateOptionsMapper {
                                             .key()));
         }
         if (topic.isPresent()) {
-            builder.deadLetterPolicy(
-                    TopicDestination.of(project, topic.get()), maxDeliveryAttempts.get());
+            TopicDestination deadLetterTopic =
+                    OptionSetters.convert(
+                            PubSubConnectorOptions.SCAN_AUTO_CREATE_DEAD_LETTER_TOPIC.key(),
+                            topic.get(),
+                            value -> TopicDestination.of(project, value));
+            OptionSetters.accept(
+                    PubSubConnectorOptions.SCAN_AUTO_CREATE_DEAD_LETTER_MAX_DELIVERY_ATTEMPTS.key(),
+                    maxDeliveryAttempts.get(),
+                    attempts -> builder.deadLetterPolicy(deadLetterTopic, attempts));
+        }
+    }
+
+    /**
+     * Builds the topic binding, naming the map entry a rejection belongs to: the base key is what a
+     * packed DDL wrote and the prefix of what a prefixed DDL wrote, so the entry name is the half
+     * both spellings need.
+     */
+    private static TopicDestination topicDestination(
+            String project, String subscription, String topic) {
+        try {
+            return TopicDestination.of(project, topic);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    String.format("entry '%s': %s", subscription, e.getMessage()), e);
         }
     }
 }

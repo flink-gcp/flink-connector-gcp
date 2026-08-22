@@ -167,8 +167,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> absentRetentionFallback(Duration fallback) {
-        Preconditions.checkNotNull(fallback, "fallback must not be null");
-        StartPositionResolver.validateRetention(fallback, "fallback");
+        Preconditions.checkNotNull(fallback, "absentRetentionFallback must not be null");
+        StartPositionResolver.validateRetention(fallback, "absentRetentionFallback");
         this.absentRetentionFallback = fallback;
         return this;
     }
@@ -184,17 +184,17 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> heartbeatInterval(Duration interval) {
-        Preconditions.checkNotNull(interval, "interval must not be null");
+        Preconditions.checkNotNull(interval, "heartbeatInterval must not be null");
         Preconditions.checkArgument(
                 interval.compareTo(MIN_HEARTBEAT_INTERVAL) >= 0
                         && interval.compareTo(MAX_HEARTBEAT_INTERVAL) <= 0,
-                "interval must be between %s and %s, but was %s",
+                "heartbeatInterval must be between %s and %s, but was %s",
                 MIN_HEARTBEAT_INTERVAL,
                 MAX_HEARTBEAT_INTERVAL,
                 interval);
         Preconditions.checkArgument(
                 interval.toNanos() % 1_000_000 == 0,
-                "interval must be expressible as whole milliseconds, but was %s",
+                "heartbeatInterval must be expressible as whole milliseconds, but was %s",
                 interval);
         this.heartbeatInterval = interval;
         return this;
@@ -225,7 +225,10 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * @return this builder
      */
     public SpannerChangeStreamSourceBuilder<T> maxConcurrentQueriesPerSubtask(int maximum) {
-        Preconditions.checkArgument(maximum > 0, "maximum must be positive, but was %s", maximum);
+        Preconditions.checkArgument(
+                maximum > 0,
+                "maxConcurrentQueriesPerSubtask must be positive, but was %s",
+                maximum);
         this.maxConcurrentQueriesPerSubtask = maximum;
         return this;
     }

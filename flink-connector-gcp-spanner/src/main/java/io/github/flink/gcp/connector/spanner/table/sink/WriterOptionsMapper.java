@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 
 /** Maps table options onto {@link SpannerWriterOptions}. */
@@ -30,22 +31,32 @@ public final class WriterOptionsMapper {
 
     public static SpannerWriterOptions map(ReadableConfig config) {
         SpannerWriterOptions.Builder builder = SpannerWriterOptions.builder();
-        config.getOptional(SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_CELLS)
-                .ifPresent(builder::maxBatchCells);
-        config.getOptional(SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS)
-                .ifPresent(builder::maxBatchMutations);
-        config.getOptional(SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE)
-                .ifPresent(size -> builder.maxBatchBytes(size.getBytes()));
-        config.getOptional(SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY)
-                .ifPresent(builder::maxCommitDelay);
-        config.getOptional(SpannerConnectorOptions.SINK_RPC_PRIORITY)
-                .ifPresent(builder::rpcPriority);
-        config.getOptional(SpannerConnectorOptions.SINK_RETRY_INITIAL_BACKOFF)
-                .ifPresent(builder::retryInitialBackoff);
-        config.getOptional(SpannerConnectorOptions.SINK_RETRY_MAX_BACKOFF)
-                .ifPresent(builder::retryMaxBackoff);
-        config.getOptional(SpannerConnectorOptions.SINK_RETRY_MAX_ATTEMPTS)
-                .ifPresent(builder::retryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_CELLS,
+                builder::maxBatchCells);
+        OptionSetters.apply(
+                config,
+                SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
+                builder::maxBatchMutations);
+        OptionSetters.apply(
+                config,
+                SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
+                size -> builder.maxBatchBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY,
+                builder::maxCommitDelay);
+        OptionSetters.apply(
+                config, SpannerConnectorOptions.SINK_RPC_PRIORITY, builder::rpcPriority);
+        OptionSetters.apply(
+                config,
+                SpannerConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
+                builder::retryInitialBackoff);
+        OptionSetters.apply(
+                config, SpannerConnectorOptions.SINK_RETRY_MAX_BACKOFF, builder::retryMaxBackoff);
+        OptionSetters.apply(
+                config, SpannerConnectorOptions.SINK_RETRY_MAX_ATTEMPTS, builder::retryMaxAttempts);
         return builder.build();
     }
 }

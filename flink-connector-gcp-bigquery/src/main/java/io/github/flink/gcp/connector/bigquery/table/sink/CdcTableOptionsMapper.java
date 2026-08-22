@@ -23,6 +23,7 @@ import org.apache.flink.table.api.ValidationException;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
@@ -55,7 +56,10 @@ public final class CdcTableOptionsMapper {
         if (!primaryKeyColumns.isEmpty()) {
             builder.primaryKeyColumns(primaryKeyColumns);
         }
-        maxStaleness.ifPresent(builder::maxStaleness);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SINK_CDC_MAX_STALENESS.key(),
+                maxStaleness.orElse(null),
+                builder::maxStaleness);
         if (clearMaxStaleness) {
             builder.clearMaxStaleness();
         }

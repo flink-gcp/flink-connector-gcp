@@ -227,10 +227,10 @@ class BigtableChangeStreamSourceBuilderTest {
         assertThat(minimal().build().getConfig().getMaxConcurrentStreamsPerSubtask()).isEqualTo(2);
         assertThatThrownBy(() -> minimal().maxConcurrentStreamsPerSubtask(0))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("maximum must be positive");
+                .hasMessage("maxConcurrentStreamsPerSubtask must be positive");
         assertThatThrownBy(() -> minimal().maxConcurrentStreamsPerSubtask(-1))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("maximum must be positive");
+                .hasMessage("maxConcurrentStreamsPerSubtask must be positive");
     }
 
     @Test

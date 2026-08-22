@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
@@ -129,13 +130,13 @@ public final class TableCreateOptionsMapper {
             // A union, not an intersection: a cell goes when it is either too old or too far down
             // the version list, which is the shape Bigtable's own documentation recommends for a
             // family holding a bounded history.
-            return GcRule.union(GcRule.maxVersions(maxVersions.get()), GcRule.maxAge(maxAge.get()));
+            return GcRule.union(maxVersionsRule(maxVersions.get()), maxAgeRule(maxAge.get()));
         }
         if (maxVersions.isPresent()) {
-            return GcRule.maxVersions(maxVersions.get());
+            return maxVersionsRule(maxVersions.get());
         }
         if (maxAge.isPresent()) {
-            return GcRule.maxAge(maxAge.get());
+            return maxAgeRule(maxAge.get());
         }
         throw new ValidationException(
                 String.format(
@@ -147,5 +148,19 @@ public final class TableCreateOptionsMapper {
                         CreateDisposition.CREATE_IF_NEEDED,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS.key(),
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE.key()));
+    }
+
+    private static GcRule maxVersionsRule(int maxVersions) {
+        return OptionSetters.convert(
+                BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS.key(),
+                maxVersions,
+                GcRule::maxVersions);
+    }
+
+    private static GcRule maxAgeRule(Duration maxAge) {
+        return OptionSetters.convert(
+                BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE.key(),
+                maxAge,
+                GcRule::maxAge);
     }
 }

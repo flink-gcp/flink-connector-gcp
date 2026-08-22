@@ -280,6 +280,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 
+- A single option value a DataStream builder rejects is renamed to its option key through the
+  module's `table.OptionSetters` (`docs/adr/0133`); a new mapper or translation line goes
+  through it, and cross-field checks keep the restate-in-DDL-keys judgment (`docs/adr/0007`).
 - `scan.mode` defaults to the independent bounded source. Change-stream mode implements only
   `ScanTableSource`: no bounded projection or filter pushdown and no lookup provider. It is
   **source-only** — reject it on the sink path, and reject the change-stream options there too,

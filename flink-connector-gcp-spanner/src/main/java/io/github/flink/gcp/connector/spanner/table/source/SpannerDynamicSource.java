@@ -49,6 +49,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
+import io.github.flink.gcp.connector.spanner.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
@@ -225,12 +226,14 @@ public final class SpannerDynamicSource
                                         new StructToRowDataConverter(schema, projectedFields),
                                         producedType))
                         .timestampBound(timestampBound);
-        if (maxPartitions != null) {
-            builder.maxPartitions(maxPartitions);
-        }
-        if (partitionSizeBytes != null) {
-            builder.partitionSizeBytes(partitionSizeBytes);
-        }
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS.key(),
+                maxPartitions,
+                builder::maxPartitions);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_PARTITION_SIZE.key(),
+                partitionSizeBytes,
+                builder::partitionSizeBytes);
         if (rpcPriority != null) {
             builder.rpcPriority(rpcPriority);
         }

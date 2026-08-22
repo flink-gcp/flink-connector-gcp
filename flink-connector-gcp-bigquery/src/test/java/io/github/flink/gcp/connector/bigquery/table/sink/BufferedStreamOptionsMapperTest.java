@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
@@ -34,6 +35,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link BufferedStreamOptionsMapper}. */
 class BufferedStreamOptionsMapperTest {
@@ -185,5 +187,17 @@ class BufferedStreamOptionsMapperTest {
 
         assertThat(BufferedStreamOptionsMapper.presentKeys(Configuration.fromMap(options)))
                 .containsExactly(key("recoveryMaxAttempts"), key("retryMaxAttempts"));
+    }
+
+    @Test
+    void namesTheOptionKeyWhenAValueIsRejected() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.buffered-stream.recovery.max-attempts", "0");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Option 'sink.buffered-stream.recovery.max-attempts' is invalid")
+                .hasMessageContaining("recoveryMaxAttempts must be positive");
     }
 }

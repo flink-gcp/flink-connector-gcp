@@ -223,7 +223,7 @@ public final class TableCreateOptions implements Serializable {
          * @return this builder
          */
         public Builder timePartitioningExpiration(Duration expiration) {
-            OptionChecks.checkAtLeastOneMilli(expiration, "expiration");
+            OptionChecks.checkAtLeastOneMilli(expiration, "timePartitioningExpiration");
             this.timePartitioningExpirationMs = expiration.toMillis();
             return this;
         }

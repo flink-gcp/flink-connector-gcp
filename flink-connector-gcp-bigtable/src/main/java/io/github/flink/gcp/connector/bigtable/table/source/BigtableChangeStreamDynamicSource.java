@@ -34,7 +34,9 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.ChangeStreamChangelogMode;
+import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
 
 import javax.annotation.Nullable;
@@ -230,9 +232,10 @@ public final class BigtableChangeStreamDynamicSource
         if (endTime != null) {
             builder.endTime(endTime);
         }
-        if (maxConcurrentStreamsPerSubtask != null) {
-            builder.maxConcurrentStreamsPerSubtask(maxConcurrentStreamsPerSubtask);
-        }
+        OptionSetters.accept(
+                BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK.key(),
+                maxConcurrentStreamsPerSubtask,
+                builder::maxConcurrentStreamsPerSubtask);
         return SourceProvider.of(builder.build(), parallelism);
     }
 

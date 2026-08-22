@@ -62,9 +62,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   module-root `PubSubShutdownResidue` adder — the base class holds no count; the dead-letter
   queue's own closes are a second adder under a second name (#329, below).
 - **A table-layer check that fires inside `createDynamicTable{Source,Sink}` is wrapped by
-  `FactoryUtil`, and a check whose message names Java setters needs restating in option keys**;
-  one whose message needs no translation does not (`docs/adr/0007`). Never assert on an option
-  key through the wrapper's own message in a factory test.
+  `FactoryUtil`. A single value the builder rejects is renamed to its option key through the
+  module's `table.OptionSetters`** (`docs/adr/0133`); the restate-in-DDL-keys judgment remains
+  only for cross-field checks (`docs/adr/0007`, refined by `docs/adr/0133`). Never assert on an
+  option key through the wrapper's own message in a factory test.
 
 ## Dead-letter queue (`docs/adr/0009`)
 
@@ -179,7 +180,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Table API / SQL (`docs/adr/0014`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption`
-  per setter, `getOptional(...).ifPresent(...)`, no default restated, enums carry their DDL
+  per setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated, enums carry their DDL
   spelling in `toString()`, and the reflective completeness test holds the two sets equal.
   "No default restated" covers the *description* as well as `defaultValue()`, and covers a
   derived default too — `reference/pubsub.md` carries the derivation and the resolved value.

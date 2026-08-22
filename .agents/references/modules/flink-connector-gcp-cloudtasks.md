@@ -47,6 +47,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Table sink (`docs/adr/0107`)
 
+- A single option value a DataStream builder rejects is renamed to its option key through the
+  module's `table.OptionSetters` (`docs/adr/0133`); a new mapper line goes through it, and
+  cross-field checks keep the restate-in-DDL-keys judgment (`docs/adr/0007`).
 - `cloud-tasks` is insert-only and maps one table to one fixed queue. `target.type` defaults to
   external HTTP and can select App Engine without translating between their protobuf request arms.
   A generic Flink format sees physical columns only; writable target metadata configures the task

@@ -18,11 +18,11 @@ package io.github.flink.gcp.connector.pubsub.table.sink;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ConfigOption;
-import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
+import io.github.flink.gcp.connector.pubsub.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 import java.util.ArrayList;
@@ -31,11 +31,11 @@ import java.util.List;
 /**
  * Builds {@link PubSubPublisherOptions} from the table options.
  *
- * <p>Every knob is applied with {@code getOptional(...).ifPresent(...)}, so an option absent from
- * the DDL leaves the builder at its own default and an empty configuration produces exactly {@link
+ * <p>Every knob is applied through {@link OptionSetters}, so an option absent from the DDL leaves
+ * the builder at its own default and an empty configuration produces exactly {@link
  * PubSubPublisherOptions#defaults()}. That is the whole contract of this class: it adds no defaults
- * of its own, and a bad <em>value</em> is rejected by the builder's own {@code Preconditions}, so a
- * SQL user gets the same message a DataStream user does.
+ * of its own, each bound stays in the builder's own {@code Preconditions}, and a rejected value is
+ * renamed to the option key the SQL caller wrote (issue #1030).
  *
  * <p><b>One cross-check is restated here in DDL vocabulary</b>, and that is deliberate rather than
  * duplication. A {@code Preconditions} failure inside {@code createDynamicTableSink} is wrapped by
@@ -61,55 +61,89 @@ public final class PublisherOptionsMapper {
         rejectBoundedRetriesWithMessageOrdering(config);
         PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
 
-        config.getOptional(PubSubConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD)
-                .ifPresent(builder::batchElementCountThreshold);
-        config.getOptional(PubSubConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::batchRequestByteThreshold);
-        config.getOptional(PubSubConnectorOptions.SINK_BATCHING_DELAY_THRESHOLD)
-                .ifPresent(builder::batchDelayThreshold);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
+                builder::batchElementCountThreshold);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
+                size -> builder.batchRequestByteThreshold(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_BATCHING_DELAY_THRESHOLD,
+                builder::batchDelayThreshold);
 
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_TOTAL_TIMEOUT)
-                .ifPresent(builder::retryTotalTimeout);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_INITIAL_DELAY)
-                .ifPresent(builder::retryInitialDelay);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_DELAY_MULTIPLIER)
-                .ifPresent(builder::retryDelayMultiplier);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_MAX_DELAY)
-                .ifPresent(builder::retryMaxDelay);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_INITIAL_RPC_TIMEOUT)
-                .ifPresent(builder::retryInitialRpcTimeout);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_RPC_TIMEOUT_MULTIPLIER)
-                .ifPresent(builder::retryRpcTimeoutMultiplier);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_MAX_RPC_TIMEOUT)
-                .ifPresent(builder::retryMaxRpcTimeout);
-        config.getOptional(PubSubConnectorOptions.SINK_RETRY_MAX_ATTEMPTS)
-                .ifPresent(builder::retryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RETRY_TOTAL_TIMEOUT,
+                builder::retryTotalTimeout);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RETRY_INITIAL_DELAY,
+                builder::retryInitialDelay);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RETRY_DELAY_MULTIPLIER,
+                builder::retryDelayMultiplier);
+        OptionSetters.apply(
+                config, PubSubConnectorOptions.SINK_RETRY_MAX_DELAY, builder::retryMaxDelay);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RETRY_INITIAL_RPC_TIMEOUT,
+                builder::retryInitialRpcTimeout);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RETRY_RPC_TIMEOUT_MULTIPLIER,
+                builder::retryRpcTimeoutMultiplier);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RETRY_MAX_RPC_TIMEOUT,
+                builder::retryMaxRpcTimeout);
+        OptionSetters.apply(
+                config, PubSubConnectorOptions.SINK_RETRY_MAX_ATTEMPTS, builder::retryMaxAttempts);
 
-        config.getOptional(PubSubConnectorOptions.SINK_MESSAGE_ORDERING_ENABLED)
-                .ifPresent(builder::enableMessageOrdering);
-        config.getOptional(PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_MESSAGES)
-                .ifPresent(builder::maxInFlightMessages);
-        config.getOptional(PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES)
-                .map(MemorySize::getBytes)
-                .ifPresent(builder::maxInFlightBytes);
-        config.getOptional(PubSubConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS)
-                .ifPresent(builder::maxConsecutiveRejections);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_MESSAGE_ORDERING_ENABLED,
+                builder::enableMessageOrdering);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_MESSAGES,
+                builder::maxInFlightMessages);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
+                size -> builder.maxInFlightBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
+                builder::maxConsecutiveRejections);
 
-        config.getOptional(PubSubConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF)
-                .ifPresent(builder::recoveryInitialBackoff);
-        config.getOptional(PubSubConnectorOptions.SINK_RECOVERY_MAX_BACKOFF)
-                .ifPresent(builder::recoveryMaxBackoff);
-        config.getOptional(PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
-                .ifPresent(builder::recoveryMaxAttempts);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                builder::recoveryInitialBackoff);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                builder::recoveryMaxBackoff);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                builder::recoveryMaxAttempts);
 
-        config.getOptional(PubSubConnectorOptions.SINK_PUBLISH_PROGRESS_TIMEOUT)
-                .ifPresent(builder::publishProgressTimeout);
-        config.getOptional(PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT)
-                .ifPresent(builder::shutdownTimeout);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_PUBLISH_PROGRESS_TIMEOUT,
+                builder::publishProgressTimeout);
+        OptionSetters.apply(
+                config, PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT, builder::shutdownTimeout);
 
-        config.getOptional(PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION)
-                .ifPresent(builder::perDestinationMetrics);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION,
+                builder::perDestinationMetrics);
 
         return builder.build();
     }

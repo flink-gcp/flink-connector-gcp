@@ -32,6 +32,8 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder;
+import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
+import io.github.flink.gcp.connector.bigquery.table.OptionSetters;
 
 import javax.annotation.Nullable;
 
@@ -143,39 +145,48 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         if (table != null) {
             builder.table(table);
         } else {
-            builder.query(query);
+            OptionSetters.accept(
+                    BigQueryConnectorOptions.SOURCE_QUERY.key(), query, builder::query);
         }
         builder.parentProject(parentProject);
         if (materializeViews) {
             builder.materializeViews();
         }
-        if (queryLocation != null) {
-            builder.queryLocation(queryLocation);
-        }
-        if (queryResultDataset != null) {
-            builder.queryResultDataset(queryResultDataset);
-        }
-        if (reuseQueryResultWithin != null) {
-            builder.reuseQueryResultWithin(reuseQueryResultWithin);
-        }
-        if (rowRestriction != null) {
-            builder.rowRestriction(rowRestriction);
-        }
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_QUERY_LOCATION.key(),
+                queryLocation,
+                builder::queryLocation);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET.key(),
+                queryResultDataset,
+                builder::queryResultDataset);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN.key(),
+                reuseQueryResultWithin,
+                builder::reuseQueryResultWithin);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION.key(),
+                rowRestriction,
+                builder::rowRestriction);
         if (snapshotTime != null) {
             builder.snapshotTime(snapshotTime);
         }
-        if (maxStreamCount != null) {
-            builder.maxStreamCount(maxStreamCount);
-        }
-        if (preferredMinStreamCount != null) {
-            builder.preferredMinStreamCount(preferredMinStreamCount);
-        }
-        if (maxRecordsPerFetch != null) {
-            builder.maxRecordsPerFetch(maxRecordsPerFetch);
-        }
-        if (retryMaxAttempts != null) {
-            builder.retryMaxAttempts(retryMaxAttempts);
-        }
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT.key(),
+                maxStreamCount,
+                builder::maxStreamCount);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT.key(),
+                preferredMinStreamCount,
+                builder::preferredMinStreamCount);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH.key(),
+                maxRecordsPerFetch,
+                builder::maxRecordsPerFetch);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS.key(),
+                retryMaxAttempts,
+                builder::retryMaxAttempts);
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }

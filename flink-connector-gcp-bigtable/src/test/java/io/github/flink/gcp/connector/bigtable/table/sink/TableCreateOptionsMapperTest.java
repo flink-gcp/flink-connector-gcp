@@ -171,4 +171,18 @@ class TableCreateOptionsMapperTest {
                                 + " 'sink.table-create.gc-rule.max-age' describe")
                 .hasMessageNotContaining("[");
     }
+
+    @Test
+    void namesTheOptionKeyWhenAGcRuleValueIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                TableCreateOptionsMapper.map(
+                                        configuration(
+                                                "sink.create-disposition", "create-if-needed",
+                                                "sink.table-create.gc-rule.max-versions", "0"),
+                                        TWO_FAMILIES))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.table-create.gc-rule.max-versions' is invalid")
+                .hasMessageContaining("maxVersions must be positive");
+    }
 }

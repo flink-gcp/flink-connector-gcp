@@ -1223,4 +1223,28 @@ class BigQueryDynamicTableFactoryTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("no BigQuery equivalent");
     }
+
+    @Test
+    void namesTheOptionKeyWhenASourceValueIsRejected() {
+        // The source has no mapper: the factory hands raw values to the dynamic source, whose
+        // builder setters run at getScanRuntimeProvider — the rename must reach that path too.
+        Map<String, String> options = minimalOptions();
+        options.put("source.max-records-per-fetch", "0");
+
+        assertThatThrownBy(() -> builtSource(source(options)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'source.max-records-per-fetch' is invalid")
+                .hasMessageContaining("maxRecordsPerFetch must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenTheSinkLocationIsRejected() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.location", "   ");
+
+        assertThatThrownBy(() -> built(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.location' is invalid")
+                .hasMessageContaining("location must not be blank");
+    }
 }
