@@ -305,12 +305,10 @@ public class SpannerSourceBuilder<T> {
                         serviceAccountKeyFile,
                         planner != null
                                 ? planner
-                                : new BatchClientPartitionPlanner(
-                                        database, emulatorEndpoint, serviceAccountKeyFile),
+                                : new BatchClientPartitionPlanner(database, emulatorEndpoint),
                         opener != null
                                 ? opener
-                                : new BatchClientStructStreamOpener(
-                                        database, emulatorEndpoint, serviceAccountKeyFile),
+                                : new BatchClientStructStreamOpener(database, emulatorEndpoint),
                         maxRecordsPerFetch));
     }
 

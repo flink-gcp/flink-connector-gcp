@@ -152,9 +152,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `SpannerCredentials` loads only service-account JSON and returns `null` when no credential
   override is configured. Serialize only `serviceAccountKeyFile` paths: bounded and Change Streams
   coordinators load on the JobManager, bounded and Change Streams readers and sink writers load on
-  TaskManagers, and Table lookup functions load when they open. Restored components reload
-  independently, emulator endpoints are mutually exclusive, and loading failures remain cause-free
-  so paths and credential material cannot leak.
+  TaskManagers, and Table lookup functions load when they open. Load once per runtime component,
+  never once per client. A seam the component must inject into carries no path: `StructStreamOpener`
+  and `PartitionPlanner` take `useCredentials` abstractly, and `SpannerBatchReadSource` loads and
+  pushes — so no caller reaches a seam by downcast and an implementation that omitted the method
+  would not compile. Abstract narrows the silent substitution rather than removing it: an
+  implementation may still discard what it is handed and reach Spanner as the process's ADC, which
+  nothing logs or counts, so keep that cost in the declaring javadoc.
+  A seam that builds its own client reads the path itself at the same boundary:
+  the two Change Streams client factories load in `create()`, and `SpannerDatabaseRowLookup` loads
+  in `open()`. Restored components reload independently, emulator endpoints are mutually exclusive,
+  and loading failures remain cause-free so paths and credential material cannot leak.
 - **A test needing a `Partition` or a `BatchTransactionId` goes through
   `src/test/java/com/google/cloud/spanner/TestPartitions.java`** — the second file in this
   repository declaring a vendor package, taken under `docs/adr/0067`'s bar and recorded in

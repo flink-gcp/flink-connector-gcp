@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
@@ -36,6 +37,10 @@ import java.io.Serializable;
  * why the split enumerator base class takes one closeable and not two.
  *
  * <p>Serializable because it travels in the job graph inside the source configuration.
+ *
+ * <p>It carries no service-account key-file path: the enumerator that owns it loads one set of
+ * credentials and hands them over through {@link #useCredentials}, so an implementation neither
+ * holds a path nor reads one.
  */
 @Internal
 public interface PartitionPlanner extends Serializable, AutoCloseable {
@@ -62,6 +67,21 @@ public interface PartitionPlanner extends Serializable, AutoCloseable {
             boolean dataBoostEnabled,
             @Nullable SpannerRpcPriority rpcPriority)
             throws IOException;
+
+    /**
+     * Receives the credentials the owning enumerator loaded, before the one {@link
+     * #plan(SpannerReadOperation, TimestampBound, PartitionOptions, boolean, SpannerRpcPriority)}
+     * call.
+     *
+     * <p>Declared here rather than on the implementation so that the enumerator needs no cast, and
+     * abstract rather than defaulted because an implementation that quietly skipped it would plan
+     * as the process's application default credentials instead of the configured service account —
+     * a misconfiguration nothing would report.
+     *
+     * @param credentials what the enumerator loaded, or {@code null} to keep application default
+     *     credentials
+     */
+    void useCredentials(@Nullable GoogleCredentials credentials);
 
     /**
      * Releases the batch transaction and the client behind it.

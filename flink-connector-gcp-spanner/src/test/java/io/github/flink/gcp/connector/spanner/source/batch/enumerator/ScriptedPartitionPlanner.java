@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
+import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
@@ -119,6 +120,10 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
     public List<String> priorities() {
         return new ArrayList<>(state().priorities);
     }
+
+    /** Ignores them: nothing here reaches the service, so there is no client to scope. */
+    @Override
+    public void useCredentials(@Nullable GoogleCredentials credentials) {}
 
     @Override
     public PartitionPlan plan(
