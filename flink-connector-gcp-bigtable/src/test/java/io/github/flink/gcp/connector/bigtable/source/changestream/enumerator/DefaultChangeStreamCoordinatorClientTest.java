@@ -32,83 +32,82 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Tests for the coordinator client's own logic.
+ *
+ * <p>Each case calls the method the production path calls, with the value the client library would
+ * have returned. That is the point of the shape: an earlier version of this test drove a fake
+ * {@code Operations} interface the class branched on, so every assertion here covered the fake's
+ * branch and none covered the statement that runs in a job — a control that reverted the fold below
+ * in only the production branch passed. The RPCs themselves are not reachable from a unit test and
+ * are not pretended to be; what a gated run covers is in {@code
+ * BigtableChangeStreamSourceRealGcpITCase}.
+ */
 class DefaultChangeStreamCoordinatorClientTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "instance", "table");
 
     @Test
-    void acceptsSingleClusterRouting() throws Exception {
-        FakeOperations operations = new FakeOperations();
-        operations.appProfile =
-                AppProfile.fromProto(
-                        com.google.bigtable.admin.v2.AppProfile.newBuilder()
-                                .setName("projects/project/instances/instance/appProfiles/profile")
-                                .setSingleClusterRouting(
-                                        com.google.bigtable.admin.v2.AppProfile.SingleClusterRouting
-                                                .newBuilder()
-                                                .setClusterId("cluster"))
-                                .build());
-
-        client(operations).validateSingleClusterAppProfile();
+    void acceptsSingleClusterRouting() {
+        assertThatCode(
+                        () ->
+                                DefaultChangeStreamCoordinatorClient.checkSingleClusterRouting(
+                                        singleClusterProfile(), "profile"))
+                .doesNotThrowAnyException();
     }
 
     @Test
     void rejectsMultiClusterRouting() {
-        FakeOperations operations = new FakeOperations();
-        operations.appProfile =
-                AppProfile.fromProto(
-                        com.google.bigtable.admin.v2.AppProfile.newBuilder()
-                                .setName("projects/project/instances/instance/appProfiles/profile")
-                                .setMultiClusterRoutingUseAny(
-                                        com.google.bigtable.admin.v2.AppProfile
-                                                .MultiClusterRoutingUseAny.getDefaultInstance())
-                                .build());
-
-        assertThatThrownBy(() -> client(operations).validateSingleClusterAppProfile())
+        assertThatThrownBy(
+                        () ->
+                                DefaultChangeStreamCoordinatorClient.checkSingleClusterRouting(
+                                        multiClusterProfile(), "profile"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("multi-cluster routing");
     }
 
     @Test
-    void convertsChangeStreamRetention() throws Exception {
-        FakeOperations operations = new FakeOperations();
-        operations.table = tableWithRetention(123, 456);
-
-        assertThat(client(operations).retention())
+    void convertsChangeStreamRetention() {
+        assertThat(
+                        DefaultChangeStreamCoordinatorClient.retentionOf(
+                                tableWithRetention(123, 456), DESTINATION))
                 .isEqualTo(java.time.Duration.ofSeconds(123, 456));
     }
 
     @Test
     void rejectsATableWithoutChangeStreams() {
-        FakeOperations operations = new FakeOperations();
-        operations.table =
+        Table withoutChangeStream =
                 Table.fromProto(
                         com.google.bigtable.admin.v2.Table.newBuilder()
                                 .setName("projects/project/instances/instance/tables/table")
                                 .build());
 
-        assertThatThrownBy(() -> client(operations).retention())
+        assertThatThrownBy(
+                        () ->
+                                DefaultChangeStreamCoordinatorClient.retentionOf(
+                                        withoutChangeStream, DESTINATION))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Change Streams is not enabled");
     }
 
     @Test
     void rejectsAnEmptyInitialPartitionResponse() {
-        FakeOperations operations = new FakeOperations();
-
-        assertThatThrownBy(() -> client(operations).generateInitialPartitions())
+        assertThatThrownBy(
+                        () ->
+                                DefaultChangeStreamCoordinatorClient.foldInitialPartitions(
+                                        Collections.emptyList(), DESTINATION))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("no initial Change Streams partitions");
     }
 
     @Test
-    void foldsTheEmptyKeyBoundsTheServiceUsesIntoUnboundedOnes() throws Exception {
+    void foldsTheEmptyKeyBoundsTheServiceUsesIntoUnboundedOnes() {
         // GenerateInitialChangeStreamPartitionsUserCallable hands every partition to
         // ByteStringRange.create(start_key_closed, end_key_open), and create — unlike the
         // startClosed/endOpen setters — leaves an empty key as a bounded one. So a table's first
@@ -116,25 +115,26 @@ class DefaultChangeStreamCoordinatorClientTest {
         // reads bound types, and the value types it flows into normalise on construction, so an
         // unfolded partition compares unequal to its own remembered copy and reads as a range that
         // begins or ends at the smallest key there is. This is the only place that can fold it.
-        FakeOperations operations = new FakeOperations();
-        operations.partitions =
-                Arrays.asList(
-                        ByteStringRange.create(ByteString.EMPTY, ByteString.copyFromUtf8("m")),
-                        ByteStringRange.create(ByteString.copyFromUtf8("m"), ByteString.EMPTY));
-
-        assertThat(client(operations).generateInitialPartitions())
+        assertThat(
+                        DefaultChangeStreamCoordinatorClient.foldInitialPartitions(
+                                Arrays.asList(
+                                        ByteStringRange.create(
+                                                ByteString.EMPTY, ByteString.copyFromUtf8("m")),
+                                        ByteStringRange.create(
+                                                ByteString.copyFromUtf8("m"), ByteString.EMPTY)),
+                                DESTINATION))
                 .containsExactly(
                         ByteStringRange.unbounded().endOpen("m"),
                         ByteStringRange.unbounded().startClosed("m"));
     }
 
     @Test
-    void closesAdapterResources() throws Exception {
-        FakeOperations operations = new FakeOperations();
-
-        client(operations).close();
-
-        assertThat(operations.closed).isTrue();
+    void closingBeforeAnyClientWasBuiltReleasesNothingAndFailsNothing() {
+        assertThatCode(
+                        () ->
+                                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile")
+                                        .close())
+                .doesNotThrowAnyException();
     }
 
     @Test
@@ -150,23 +150,50 @@ class DefaultChangeStreamCoordinatorClientTest {
     }
 
     @Test
+    void aReadableProfileIsCheckedRatherThanSkipped() {
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile");
+
+        assertThatThrownBy(() -> client.validateSingleClusterAppProfile(this::multiClusterProfile))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("multi-cluster routing");
+    }
+
+    @Test
     void unreadableAppProfileMetadataLeavesTheCheckToBigtable() throws Exception {
-        FakeOperations operations = new FakeOperations();
-        operations.appProfileFailure =
-                new PermissionDeniedException(
-                        new RuntimeException("denied"),
-                        GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
-                        false);
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile");
 
         // Preflight must not fail — a data-plane-only principal can stream without reading profile
         // metadata — but the skip is invisible unless it says so, which is the whole of the arm.
         try (LogCapture capture = LogCapture.of(DefaultChangeStreamCoordinatorClient.class)) {
-            client(operations).validateSingleClusterAppProfile();
+            client.validateSingleClusterAppProfile(
+                    () -> {
+                        throw new PermissionDeniedException(
+                                new RuntimeException("denied"),
+                                GrpcStatusCode.of(Status.Code.PERMISSION_DENIED),
+                                false);
+                    });
 
             assertThat(capture.getMessages())
                     .singleElement()
                     .satisfies(message -> assertThat(message).contains("profile"));
         }
+    }
+
+    @Test
+    void aLookupFailureThatIsNotAPermissionDenialIsNotSwallowed() {
+        DefaultChangeStreamCoordinatorClient client =
+                new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile");
+
+        assertThatThrownBy(
+                        () ->
+                                client.validateSingleClusterAppProfile(
+                                        () -> {
+                                            throw new java.io.IOException("instance admin is down");
+                                        }))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessage("instance admin is down");
     }
 
     @Test
@@ -176,8 +203,25 @@ class DefaultChangeStreamCoordinatorClientTest {
                 .hasMessageContaining("appProfileId must not be empty");
     }
 
-    private static DefaultChangeStreamCoordinatorClient client(FakeOperations operations) {
-        return new DefaultChangeStreamCoordinatorClient(DESTINATION, "profile", operations);
+    private AppProfile singleClusterProfile() {
+        return AppProfile.fromProto(
+                com.google.bigtable.admin.v2.AppProfile.newBuilder()
+                        .setName("projects/project/instances/instance/appProfiles/profile")
+                        .setSingleClusterRouting(
+                                com.google.bigtable.admin.v2.AppProfile.SingleClusterRouting
+                                        .newBuilder()
+                                        .setClusterId("cluster"))
+                        .build());
+    }
+
+    private AppProfile multiClusterProfile() {
+        return AppProfile.fromProto(
+                com.google.bigtable.admin.v2.AppProfile.newBuilder()
+                        .setName("projects/project/instances/instance/appProfiles/profile")
+                        .setMultiClusterRoutingUseAny(
+                                com.google.bigtable.admin.v2.AppProfile.MultiClusterRoutingUseAny
+                                        .getDefaultInstance())
+                        .build());
     }
 
     private static Table tableWithRetention(long seconds, int nanos) {
@@ -191,38 +235,5 @@ class DefaultChangeStreamCoordinatorClientTest {
                                                         .setSeconds(seconds)
                                                         .setNanos(nanos)))
                         .build());
-    }
-
-    private static final class FakeOperations
-            implements DefaultChangeStreamCoordinatorClient.Operations {
-
-        private AppProfile appProfile;
-        private RuntimeException appProfileFailure;
-        private Table table;
-        private List<ByteStringRange> partitions = Collections.emptyList();
-        private boolean closed;
-
-        @Override
-        public AppProfile getAppProfile() {
-            if (appProfileFailure != null) {
-                throw appProfileFailure;
-            }
-            return appProfile;
-        }
-
-        @Override
-        public Table getTable() {
-            return table;
-        }
-
-        @Override
-        public List<ByteStringRange> generateInitialPartitions() {
-            return partitions;
-        }
-
-        @Override
-        public void close() {
-            closed = true;
-        }
     }
 }

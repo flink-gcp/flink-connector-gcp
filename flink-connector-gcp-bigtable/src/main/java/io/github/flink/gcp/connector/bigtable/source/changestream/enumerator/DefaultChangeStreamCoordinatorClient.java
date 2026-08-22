@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
@@ -43,6 +44,7 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 /** Native java-bigtable implementation of the coordinator operations. */
 @Internal
@@ -55,7 +57,6 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     private final TableDestination table;
     private final String appProfileId;
-    @Nullable private final transient Operations testOperations;
 
     @Nullable private transient BigtableDataClient dataClient;
     @Nullable private transient BigtableTableAdminClient tableAdminClient;
@@ -63,7 +64,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     @Nullable private transient CredentialsProvider credentials;
 
     public DefaultChangeStreamCoordinatorClient(TableDestination table, String appProfileId) {
-        this(table, appProfileId, null, null);
+        this(table, appProfileId, null);
     }
 
     /**
@@ -78,39 +79,34 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
             TableDestination table,
             String appProfileId,
             @Nullable CredentialsProvider credentials) {
-        this(table, appProfileId, credentials, null);
-    }
-
-    DefaultChangeStreamCoordinatorClient(
-            TableDestination table, String appProfileId, @Nullable Operations testOperations) {
-        this(table, appProfileId, null, testOperations);
-    }
-
-    private DefaultChangeStreamCoordinatorClient(
-            TableDestination table,
-            String appProfileId,
-            @Nullable CredentialsProvider credentials,
-            @Nullable Operations testOperations) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.appProfileId =
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         Preconditions.checkArgument(!appProfileId.isEmpty(), "appProfileId must not be empty");
         this.credentials = credentials;
-        this.testOperations = testOperations;
     }
 
     @Override
     public void validateSingleClusterAppProfile() throws Exception {
+        validateSingleClusterAppProfile(
+                () -> instanceAdmin().getAppProfile(table.getInstance(), appProfileId));
+    }
+
+    /**
+     * The preflight around a profile lookup, taking the lookup as an argument.
+     *
+     * <p>The one seam a test needs that a value cannot provide: the arm below is entered by the
+     * <em>lookup</em> failing, so a test that passed an {@link AppProfile} could not reach it.
+     * Everything the check itself does is {@link #checkSingleClusterRouting}, which takes the
+     * profile and needs no seam at all.
+     *
+     * @param lookup reads the application profile's metadata
+     * @throws Exception if the lookup fails with anything but a permission denial
+     */
+    @VisibleForTesting
+    void validateSingleClusterAppProfile(Callable<AppProfile> lookup) throws Exception {
         try {
-            AppProfile profile =
-                    testOperations == null
-                            ? instanceAdmin().getAppProfile(table.getInstance(), appProfileId)
-                            : testOperations.getAppProfile();
-            Preconditions.checkArgument(
-                    profile.getPolicy() instanceof AppProfile.SingleClusterRoutingPolicy,
-                    "Bigtable Change Streams requires a single-cluster application profile, but"
-                            + " app profile '%s' uses multi-cluster routing.",
-                    appProfileId);
+            checkSingleClusterRouting(lookup.call(), appProfileId);
         } catch (PermissionDeniedException e) {
             // A data-plane-only principal may be able to stream changes without reading app-profile
             // metadata. The ReadChangeStream failure is translated by the reader if the profile is
@@ -122,12 +118,22 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         }
     }
 
+    /** Rejects a profile whose routing policy Change Streams cannot be read through. */
+    static void checkSingleClusterRouting(AppProfile profile, String appProfileId) {
+        Preconditions.checkArgument(
+                profile.getPolicy() instanceof AppProfile.SingleClusterRoutingPolicy,
+                "Bigtable Change Streams requires a single-cluster application profile, but app"
+                        + " profile '%s' uses multi-cluster routing.",
+                appProfileId);
+    }
+
     @Override
     public Duration retention() throws Exception {
-        Table description =
-                testOperations == null
-                        ? tableAdmin().getTable(table.getTable())
-                        : testOperations.getTable();
+        return retentionOf(tableAdmin().getTable(table.getTable()), table);
+    }
+
+    /** Converts the client's retention, rejecting a table that has no change stream enabled. */
+    static Duration retentionOf(Table description, TableDestination table) {
         org.threeten.bp.Duration clientRetention = description.getChangeStreamRetention();
         Preconditions.checkState(
                 clientRetention != null,
@@ -140,17 +146,24 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     @Override
     public List<ByteStringRange> generateInitialPartitions() throws Exception {
         List<ByteStringRange> discovered = new ArrayList<>();
-        if (testOperations == null) {
-            dataClient()
-                    .generateInitialChangeStreamPartitions(table.getTable())
-                    .forEach(discovered::add);
-        } else {
-            discovered.addAll(testOperations.generateInitialPartitions());
-        }
-        // One fold, covering both branches. The client builds every partition with
-        // ByteStringRange.create, which spells an absent bound as an empty key rather than as
-        // UNBOUNDED; RowRanges.copyOf rebuilds through the setters, which is what folds it, and its
-        // javadoc carries the why. This is the only place that can do it for a service partition.
+        dataClient()
+                .generateInitialChangeStreamPartitions(table.getTable())
+                .forEach(discovered::add);
+        return foldInitialPartitions(discovered, table);
+    }
+
+    /**
+     * Folds the empty-key bounds the service sends, and rejects an empty response.
+     *
+     * <p>{@code GenerateInitialChangeStreamPartitionsUserCallable} hands every partition to {@code
+     * ByteStringRange.create(start_key_closed, end_key_open)}, which — unlike the {@code
+     * startClosed}/{@code endOpen} setters — leaves an empty key as a bounded one, so a table's
+     * first partition arrives closed at the empty key and its last open at it. {@code
+     * RowRanges.copyAll} rebuilds through the setters, which is what folds it. This is the only
+     * place that can do it for a service partition.
+     */
+    static List<ByteStringRange> foldInitialPartitions(
+            List<ByteStringRange> discovered, TableDestination table) {
         List<ByteStringRange> partitions = RowRanges.copyAll(discovered);
         Preconditions.checkState(
                 !partitions.isEmpty(),
@@ -206,23 +219,10 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     @Override
     public void close() throws Exception {
-        if (testOperations == null) {
-            Closers.closeAll(dataClient, tableAdminClient, instanceAdminClient);
-        } else {
-            testOperations.close();
-        }
+        Closers.closeAll(dataClient, tableAdminClient, instanceAdminClient);
         dataClient = null;
         tableAdminClient = null;
         instanceAdminClient = null;
         credentials = null;
-    }
-
-    interface Operations extends AutoCloseable {
-
-        AppProfile getAppProfile() throws Exception;
-
-        Table getTable() throws Exception;
-
-        List<ByteStringRange> generateInitialPartitions() throws Exception;
     }
 }
