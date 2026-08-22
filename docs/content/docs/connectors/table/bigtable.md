@@ -525,11 +525,16 @@ family writes no cells; a family with some cells is a `ROW` whose absent qualifi
 
 Two more read-side facts worth knowing:
 
-- **A decimal wider than its column reads as `NULL`.** A cell whose value does not fit the
-  declared `DECIMAL(p, s)` decodes as a SQL `NULL` rather than failing — the HBase connector's
-  behaviour, silently aliased onto the null convention. A fixed-width cell shorter than its
-  declared layout, by contrast, fails the scan with a message naming the cell and its row. As in
-  HBase's `Bytes` decoder, trailing bytes after a complete fixed-width value are ignored.
+- **A decimal wider than its column fails the read.** A cell whose value, rounded to the declared
+  scale, needs more precision than the declared `DECIMAL(p, s)` allows fails the scan with a
+  message naming the cell and its row, the same way a fixed-width cell shorter than its declared
+  layout does. Flink's HBase connector reads such a cell as a SQL `NULL` instead, which silently
+  aliases a real value onto the empty-cell null convention — or hands a `NOT NULL` column a null;
+  this connector deliberately diverges. Rescaling alone is not an overflow: a cell written at
+  another scale reads, its fractional digits rounded to the declared scale, and fails only when
+  the rounded value no longer fits — which a rounding carry can make true of a value whose stored
+  digits look representable. As in HBase's `Bytes` decoder, trailing bytes after a complete
+  fixed-width value are ignored.
 - **Declare a qualifier `NOT NULL` only when every row carries the cell.** The read path cannot
   manufacture a value for an absent cell, so sparse data under a `NOT NULL` column hands the
   planner a null it was told cannot exist. What an *empty* cell does under `NOT NULL` depends on

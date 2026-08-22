@@ -154,6 +154,46 @@ class SelectedCellRowDataDeserializationSchemaTest {
     }
 
     @Test
+    void anOverflowingDecimalPrimaryKeyIsReportedTheWayAnUndecodableOneIs() {
+        // A decimal key wider than the declared DECIMAL(5, 2) used to decode to null —
+        // DecimalData.fromBigDecimal answers an overflow with null rather than throwing, so the
+        // guard above never fired and the changelog row carried a null NOT NULL primary key
+        // (#1038). The codec now throws, and this path wraps it like any other key failure.
+        DataType type =
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.DECIMAL(5, 2).notNull()),
+                        DataTypes.FIELD("score", DataTypes.INT()));
+        SelectedCellRowDataDeserializationSchema schema =
+                new SelectedCellRowDataDeserializationSchema(
+                        payload(
+                                (bytes, out) -> {
+                                    throw new AssertionError(
+                                            "delete must not invoke the value format");
+                                }),
+                        new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
+                        SelectedCellTableSchema.of(type, new int[] {0}),
+                        new ChangeStreamReadableMetadata[0],
+                        InternalTypeInfo.of((RowType) type.getLogicalType()));
+        BigtableChangeStreamMutation delete =
+                mutation(
+                        // 12345678.90 in the cell layout: scale 2, then the unscaled value.
+                        ByteString.copyFrom(
+                                new byte[] {0, 0, 0, 2, 0x49, (byte) 0x96, 0x02, (byte) 0xd2}),
+                        builder ->
+                                builder.deleteCells(
+                                        FAMILY, QUALIFIER, Range.TimestampRange.unbounded()));
+
+        assertThatThrownBy(() -> schema.deserialize(delete, collectingInto(new ArrayList<>())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("8 byte(s)")
+                .hasMessageContaining("primary-key column type cannot decode")
+                .cause()
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("precision 10 and scale 2")
+                .hasMessageContaining("DECIMAL(5, 2)");
+    }
+
+    @Test
     void emitsNothingForAnUnrelatedMutation() throws Exception {
         SelectedCellRowDataDeserializationSchema schema =
                 schema(

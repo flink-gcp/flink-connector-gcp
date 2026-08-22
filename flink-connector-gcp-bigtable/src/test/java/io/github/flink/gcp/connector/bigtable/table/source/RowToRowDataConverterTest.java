@@ -87,8 +87,39 @@ class RowToRowDataConverterTest {
                                                                     "a", DataTypes.BIGINT()))))
                                     .getLogicalType());
 
+    /** A string row key and one {@code DECIMAL(5, 2)} column, for the overflow decode cases. */
+    private static final BigtableTableSchema DECIMAL_SCHEMA =
+            BigtableTableSchema.of(
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("rowkey", DataTypes.STRING()),
+                                            DataTypes.FIELD(
+                                                    "cf1",
+                                                    DataTypes.ROW(
+                                                            DataTypes.FIELD(
+                                                                    "d", DataTypes.DECIMAL(5, 2)))))
+                                    .getLogicalType());
+
+    /** The mirror with the {@code DECIMAL(5, 2)} on the row key, which the DDL permits. */
+    private static final BigtableTableSchema DECIMAL_KEY_SCHEMA =
+            BigtableTableSchema.of(
+                    (RowType)
+                            DataTypes.ROW(
+                                            DataTypes.FIELD("rowkey", DataTypes.DECIMAL(5, 2)),
+                                            DataTypes.FIELD(
+                                                    "cf1",
+                                                    DataTypes.ROW(
+                                                            DataTypes.FIELD(
+                                                                    "a", DataTypes.BIGINT()))))
+                                    .getLogicalType());
+
     private static final byte[] LONG_7 = {0, 0, 0, 0, 0, 0, 0, 7};
     private static final byte[] DOUBLE_1 = {0x3f, (byte) 0xf0, 0, 0, 0, 0, 0, 0};
+
+    /** {@code 12345678.90} in the cell layout: scale {@code 2}, then the unscaled value. */
+    private static final byte[] DECIMAL_TOO_WIDE = {
+        0, 0, 0, 2, 0x49, (byte) 0x96, 0x02, (byte) 0xd2
+    };
 
     private static RowCell cell(String family, String qualifier, long timestamp, byte[] value) {
         return RowCell.create(
@@ -320,6 +351,51 @@ class RowToRowDataConverterTest {
                 // the question arrived without the evidence it is asking about.
                 .hasMessageContaining("'\\x00\\x00\\x00\\x07'")
                 .hasCauseInstanceOf(ArrayIndexOutOfBoundsException.class);
+    }
+
+    @Test
+    void anOverflowingDecimalCellIsReportedWithItsAddress() {
+        // A well-formed decimal cell whose value is too wide for the declared DECIMAL(5, 2) used
+        // to read as a SQL NULL — DecimalData.fromBigDecimal answers an overflow with null, which
+        // passed the RuntimeException guard untouched and aliased real data onto the empty-cell
+        // null convention (#1038). Now the codec throws, and the guard adds the address.
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(DECIMAL_SCHEMA, null, NULL_LITERAL);
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        row("k1", cell("cf1", "d", 1_000L, DECIMAL_TOO_WIDE))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cf1:d")
+                .hasMessageContaining("'k1'")
+                .cause()
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("precision 10 and scale 2")
+                .hasMessageContaining("DECIMAL(5, 2)");
+    }
+
+    @Test
+    void anOverflowingDecimalRowKeyIsReportedTheWayAnOverflowingCellIs() {
+        // The row-key variant is the one the issue leads with: without the throw, the emitted row
+        // carried a null in a NOT NULL primary-key column and nothing in the source path said so.
+        RowToRowDataConverter converter =
+                new RowToRowDataConverter(DECIMAL_KEY_SCHEMA, null, NULL_LITERAL);
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        Row.create(
+                                                ByteString.copyFrom(DECIMAL_TOO_WIDE),
+                                                Collections.singletonList(
+                                                        cell("cf1", "a", 1_000L, LONG_7)))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("row key")
+                .hasMessageContaining("8 byte(s)")
+                .cause()
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("precision 10 and scale 2")
+                .hasMessageContaining("DECIMAL(5, 2)");
     }
 
     @Test
