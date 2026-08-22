@@ -5,8 +5,10 @@ Module-scoped guidance, read when working in this module. Repository-wide rules
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
-## Sink (`docs/adr/0048`)
+## Sink (`docs/adr/0048`, `docs/adr/0129`)
 
+- **One `CreateTask` RPC per record**; the v2beta3 `BatchCreateTasks` was measured and declined
+  (`docs/adr/0129`) — do not adopt a batch create without superseding that record.
 - No rate knobs and **no queue auto-creation** — pacing lives on the queue, and an auto-created
   queue would discard the throttling that is the reason to use the service. External HTTP and
   App Engine targets are separate serializer arms. OIDC vs OAuth is the external HTTP target's

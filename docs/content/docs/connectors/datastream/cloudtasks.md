@@ -364,9 +364,13 @@ one — which is why even the short `NOT_FOUND` budget carries it.
 **This sink does not use a batch create, and creation costs one RPC per record.** `BufferTask` is a
 GA v2 method that does not exist in the Java client at all. `BatchCreateTasks` does, but only on the
 **v2beta3** surface — long-running, explicitly non-atomic, 100 tasks maximum — while this
-connector targets v2. Adopting it is planned in [#937]({{< param BookRepo >}}/issues/937) rather
-than done: a non-atomic long-running call has to be reconciled against a sink that reports
-per-task outcomes. The Java client also
+connector targets v2. It was evaluated against a real queue and declined in
+[#937]({{< param BookRepo >}}/issues/937)
+([ADR-0129]({{< param BookRepo >}}/blob/main/docs/adr/0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md)
+holds the measurements): batching was no faster than the sink's existing concurrent creates, and
+a batch containing already-existing named tasks is rejected wholesale with a single
+`ALREADY_EXISTS` — no per-task report, its non-duplicate half still silently created — which no
+sink reporting per-task outcomes can reconcile. The Java client also
 configures no method with gax batching — there is no `BatchingSettings` in `CloudTasksSettings` or
 `CloudTasksStubSettings` (the `BatchingCallSettings` references in the generated callable factories
 are unwired boilerplate). So the sink owns batching, backpressure and concurrency outright.
@@ -375,8 +379,11 @@ What the sink provides is the same mailbox-based bound the Pub/Sub sink uses: a 
 creates (`maxInFlightTasks`, defaulting to 1,000 as the Pub/Sub sink's equivalent does), with
 completions re-dispatched onto the task mailbox so all writer state stays single-threaded, and a
 write at the cap yielding until completions bring the count down.
-Create throughput is then sink parallelism × the in-flight cap, against a per-RPC latency that
-naming increases.
+Create throughput is then bounded by sink parallelism × the in-flight cap, against a per-RPC
+latency that naming increases — though the [#937]({{< param BookRepo >}}/issues/937) measurement
+found the default transport saturates first: a single gRPC channel carries ~100 concurrent
+streams, so one subtask tops out well below the cap's nominal concurrency
+([#1015]({{< param BookRepo >}}/issues/1015) tracks whether the client should pool channels).
 
 What the sink does **not** provide is pacing. Two numbers bound the queue instead:
 
