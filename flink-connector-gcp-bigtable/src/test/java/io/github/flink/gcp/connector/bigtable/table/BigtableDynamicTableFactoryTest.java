@@ -376,6 +376,42 @@ class BigtableDynamicTableFactoryTest {
                 .hasStackTraceContaining("Unsupported options");
     }
 
+    /**
+     * The full sentence is asserted, not the option key: {@code FactoryUtil} wraps a factory's
+     * failure with a dump of the whole {@code WITH} clause, so the key alone appears in the message
+     * whether or not the check fired.
+     *
+     * <p>The empty string is carried beside the whitespace one because it is the arm whose reach
+     * depends on a Flink semantic rather than on this code: an option written {@code ''} in a
+     * {@code WITH} clause arrives as a present, empty value rather than as an absent one, so {@code
+     * optionalNonBlank} sees it. If that ever changed, this is what would notice.
+     */
+    @Test
+    void rejectsABlankAppProfileIdOnEveryPathThatReadsIt() {
+        for (String blank : new String[] {"", "  "}) {
+            Map<String, String> blankScan = minimalOptions();
+            blankScan.put("scan.app-profile-id", blank);
+            assertThatThrownBy(() -> source(blankScan))
+                    .as("bounded scan, %d characters", blank.length())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("Option 'scan.app-profile-id' must not be blank.");
+
+            Map<String, String> blankSink = minimalOptions();
+            blankSink.put("sink.app-profile-id", blank);
+            assertThatThrownBy(() -> sink(blankSink))
+                    .as("sink, %d characters", blank.length())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("Option 'sink.app-profile-id' must not be blank.");
+
+            Map<String, String> blankChangeStream = minimalChangeStreamOptions();
+            blankChangeStream.put("scan.app-profile-id", blank);
+            assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, blankChangeStream))
+                    .as("change stream, %d characters", blank.length())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("Option 'scan.app-profile-id' must not be blank.");
+        }
+    }
+
     @Test
     void rejectsBlankOrEmulatorCombinedCredentialOptionsForBothDirections() {
         for (java.util.function.Function<Map<String, String>, ?> direction :

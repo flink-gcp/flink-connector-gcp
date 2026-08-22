@@ -196,11 +196,21 @@ class DefaultChangeStreamCoordinatorClientTest {
                 .hasMessage("instance admin is down");
     }
 
+    /**
+     * The ASCII cases are what an emptiness check let through; U+2028 is what tells the surviving
+     * idioms apart. {@code Character.isWhitespace} calls it whitespace and {@code String.trim()}
+     * leaves it alone, so only that assertion fails if this check returns to {@code
+     * trim().isEmpty()} — the same discrimination {@code BigtableSourceBuilderTest} and {@code
+     * BigtableChangeStreamSourceBuilderTest} make for the identical rule.
+     */
     @Test
-    void rejectsAnEmptyApplicationProfileId() {
-        assertThatThrownBy(() -> new DefaultChangeStreamCoordinatorClient(DESTINATION, ""))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("appProfileId must not be empty");
+    void rejectsABlankApplicationProfileId() {
+        for (String blank : new String[] {"", " ", "\t", "\u2028"}) {
+            assertThatThrownBy(() -> new DefaultChangeStreamCoordinatorClient(DESTINATION, blank))
+                    .as("appProfileId code points %s", Arrays.toString(blank.chars().toArray()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("appProfileId must not be blank");
+        }
     }
 
     private AppProfile singleClusterProfile() {

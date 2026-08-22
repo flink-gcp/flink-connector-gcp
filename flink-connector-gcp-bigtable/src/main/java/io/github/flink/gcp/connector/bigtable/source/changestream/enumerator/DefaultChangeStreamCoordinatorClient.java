@@ -82,7 +82,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.appProfileId =
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
-        Preconditions.checkArgument(!appProfileId.isEmpty(), "appProfileId must not be empty");
+        Preconditions.checkArgument(!appProfileId.isBlank(), "appProfileId must not be blank");
         this.credentials = credentials;
     }
 

@@ -189,8 +189,7 @@ public class BigtableDynamicTableFactory
                                 config.get(BigtableConnectorOptions.TABLE)))
                 .nullStringLiteral(config.get(BigtableConnectorOptions.NULL_STRING_LITERAL))
                 .appProfileId(
-                        config.getOptional(BigtableConnectorOptions.SINK_APP_PROFILE_ID)
-                                .orElse(null))
+                        optionalNonBlank(config, BigtableConnectorOptions.SINK_APP_PROFILE_ID))
                 .serviceAccountKeyFile(
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
@@ -414,6 +413,26 @@ public class BigtableDynamicTableFactory
                                                 option.key())));
     }
 
+    /**
+     * Returns an option that was not required, rejecting it when it was set but blank.
+     *
+     * <p>The counterpart to {@link #requireNonBlank} for an optional option; Cloud Tasks' {@code
+     * HttpTargetSpec} arrived at the same shape and name independently. Without it the value
+     * reaches the {@code @Internal} builder unchecked, and where it goes from there differs by
+     * path: the scan and sink providers hand it to the DataStream builder, which refuses it with a
+     * message naming a Java setter rather than the option the user wrote, while the lookup provider
+     * never builds one — it passes the value to {@code BigtableDataClients}, whose only guard is a
+     * null check, so a blank profile reached the service per lookup.
+     */
+    @Nullable
+    private static String optionalNonBlank(ReadableConfig config, ConfigOption<String> option) {
+        String value = config.getOptional(option).orElse(null);
+        if (value != null) {
+            checkNotBlank(value, option);
+        }
+        return value;
+    }
+
     private static String requireNonBlank(ReadableConfig config, ConfigOption<String> option) {
         String value = requireConfigured(config, option);
         checkNotBlank(value, option);
@@ -594,8 +613,7 @@ public class BigtableDynamicTableFactory
                                 config.get(BigtableConnectorOptions.TABLE)))
                 .nullStringLiteral(config.get(BigtableConnectorOptions.NULL_STRING_LITERAL))
                 .appProfileId(
-                        config.getOptional(BigtableConnectorOptions.SCAN_APP_PROFILE_ID)
-                                .orElse(null))
+                        optionalNonBlank(config, BigtableConnectorOptions.SCAN_APP_PROFILE_ID))
                 .serviceAccountKeyFile(
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
