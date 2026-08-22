@@ -31,8 +31,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (`docs/adr/0132`). It is therefore **not** a helper a harness calls: nothing imports it, and the
   services file is the whole mechanism, which is why a test asserts `ServiceLoader` resolves it. It
   stands down on a non-loopback Docker host by design, and on an explicit
-  `FLINK_GCP_TESTS_LOOPBACK_PUBLISH=false` / `-Dflink.gcp.tests.loopback-publish=false` for the
-  topologies that address test cannot see. It publishes on the address the Docker host *resolved*
+  `-Dflink.gcp.tests.loopback-publish=false` for the topologies that address test cannot see —
+  the property is the only spelling; the environment-variable form was removed (ADR-0132). It publishes on the address the Docker host *resolved*
   to rather than a hard-coded `127.0.0.1` — loopback is all of `127.0.0.0/8`, so
   read the address out of `docker ps` rather than assuming it.
 - `StubWriterInitContext` answers what a sink reads and throws for everything else — the throws

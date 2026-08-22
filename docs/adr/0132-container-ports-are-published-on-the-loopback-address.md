@@ -84,15 +84,23 @@ resource file, and no harness changes at all.
   `ServiceLoader` resolves it. Without the file the class is dead code and every container silently
   returns to the wildcard publish with nothing failing.
 - **An explicit opt-out, because the guard is an address test and one topology defeats it.**
-  `FLINK_GCP_TESTS_LOOPBACK_PUBLISH=false`, or `-Dflink.gcp.tests.loopback-publish=false`, restores
-  testcontainers' own wildcard publish. Only the literal `false` disables, case-insensitively and
-  after stripping — not `Boolean.parseBoolean`, which reads every other spelling as `false` and
-  would let a typo switch the rewrite off silently. The accepted cost of that direction is that
-  `=0` or `=no` is ignored *without saying so*; a warning was weighed and declined because this
-  runs per container and the class has no logger, so the silence is documented here instead.
-  The key is dotted lowercase with a hyphen, matching Flink's own configuration-key style and this
-  repository's one other property, `test.excluded.groups`; the `flink.gcp.tests.` prefix is new
-  and deliberate, to keep a test-only knob out of any connector's option namespace.
+  `-Dflink.gcp.tests.loopback-publish=false` restores testcontainers' own wildcard publish; Maven
+  forwards a command-line `-D` into the surefire fork, and `.mvn/maven.config` or `MAVEN_OPTS`
+  carries it for a shell that sets no flags per run. Only the literal `false` disables,
+  case-insensitively and after stripping — not `Boolean.parseBoolean`, which reads every other
+  spelling as `false` and would let a typo switch the rewrite off silently. The accepted cost of
+  that direction is that `=0` or `=no` is ignored *without saying so*; a warning was weighed and
+  declined because this runs per container and the class has no logger, so the silence is
+  documented here instead. The key is dotted lowercase with a hyphen, matching Flink's own
+  configuration-key style and this repository's one other property, `test.excluded.groups`; the
+  `flink.gcp.tests.` prefix is new and deliberate, to keep a test-only knob out of any connector's
+  option namespace.
+  An environment-variable spelling (`FLINK_GCP_TESTS_LOOPBACK_PUBLISH`) shipped first and was
+  removed (2026-08-22): a knob for the handful of developers who run this repository's tests does
+  not need two spellings, `MAVEN_OPTS` already serves the shell-only case, and the second source
+  made the read order a behaviour of its own — one whose only in-process verification would have
+  been a surefire `environmentVariables` export that, measured, *overrides* a developer's real
+  `export …=false` and so breaks the opt-out for exactly the user it exists for.
 
 ## Evidence
 

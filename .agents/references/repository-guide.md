@@ -59,8 +59,9 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `127.0.0.0/8` block is loopback and `TESTCONTAINERS_HOST_OVERRIDE` is honoured, so read the
   address rather than assuming it. A `0.0.0.0:` there means the modifier stood down — a remote
   daemon, a JVM resolving the Docker host to `::1`, or the explicit opt-out
-  (`FLINK_GCP_TESTS_LOOPBACK_PUBLISH=false`, `-Dflink.gcp.tests.loopback-publish=false`), which
-  logs nothing, so rule out a stale export before diagnosing the daemon.
+  (`-Dflink.gcp.tests.loopback-publish=false`, also honoured from `MAVEN_OPTS` or
+  `.mvn/maven.config`), which logs nothing — so rule out a stale flag in either of those before
+  diagnosing the daemon.
 - **A published container port is not proof the container owns it — where that modifier stands
   down.** Docker's wildcard publish coexists with a process already bound to `127.0.0.1:<port>` —
   and that process keeps the more specific bind, so anything resolving `localhost` to the IPv4
