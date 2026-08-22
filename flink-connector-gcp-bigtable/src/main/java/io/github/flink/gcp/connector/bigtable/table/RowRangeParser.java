@@ -21,7 +21,7 @@ import org.apache.flink.table.api.ValidationException;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 
 import javax.annotation.Nullable;
 
@@ -98,8 +98,15 @@ final class RowRangeParser {
             char current = entry.charAt(i);
             if (current == '\\') {
                 if (i + 1 >= entry.length() - 1) {
+                    // Reached only by an entry whose final ')' is itself escaped, and the escape is
+                    // complete rather than incomplete, which is what this used to say. splitEntries
+                    // has already refused a backslash with no partner and a partner outside
+                    // ESCAPABLE, and the shape check above has already refused a last character
+                    // that is not ')' -- so a backslash in this position always escaped that ')',
+                    // and the entry it was supposed to close has no terminator left.
                     throw invalid(
-                            entryNumber, "ends an endpoint with an incomplete backslash escape");
+                            entryNumber,
+                            "escapes the ')' that must end it, so the entry has no terminator");
                 }
                 char escaped = entry.charAt(++i);
                 if (ESCAPABLE.indexOf(escaped) < 0) {

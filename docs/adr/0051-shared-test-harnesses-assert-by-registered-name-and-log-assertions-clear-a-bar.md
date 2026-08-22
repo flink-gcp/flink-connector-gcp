@@ -90,3 +90,4 @@ limitations under the License.
 [#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
 [#336]: https://github.com/laughingman7743/flink-connector-gcp/issues/336
 [#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
+[#726]: https://github.com/flink-gcp/flink-connector-gcp/issues/726

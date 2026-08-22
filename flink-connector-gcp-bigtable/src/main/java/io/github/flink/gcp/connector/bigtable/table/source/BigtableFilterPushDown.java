@@ -35,7 +35,7 @@ import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 
@@ -560,9 +560,10 @@ final class BigtableFilterPushDown {
                 return false;
             }
             State state = (State) o;
-            // The ranges are compared as ranges rather than as RowRanges.format() renderings. That
-            // renderer prints "*" both for an unbounded bound and for a bound at the row key "*"
-            // (0x2A), and a SQL predicate reaches both spellings, so comparing renderings is lossy
+            // The ranges are compared as ranges rather than as RowRanges.format() renderings,
+            // because a rendering is for a reader and never an identity (#910). The collision this
+            // comment used to cite -- "*" for both an unbounded bound and a bound at the row key
+            // "*" (0x2A) -- was closed by #947, which escapes that byte
             // — though not, today, decisive: translate derives the ranges from the accepted filters
             // and the schema, which the enclosing BigtableDynamicSource.equals already compares, so
             // no pair of states can differ here alone. This keeps the comparison exact anyway, at

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0080: The Bigtable scan source splits by sampled row-key range, and a checkpoint truncates the range
 
 - Status: Accepted
-- Date: 2026-08-09, revised by [#587] (2026-08-13) and [#947] (2026-08-17)
-- Issues: [#216], [#34], [#248], [#481], [#587], [#910], [#947]
-- Modules: bigtable (`source`, `source.readrows`)
+- Date: 2026-08-09, revised by [#587] (2026-08-13), [#947] (2026-08-17) and [#1012] (2026-08-22)
+- Issues: [#216], [#34], [#248], [#481], [#587], [#910], [#947], [#1012]
+- Modules: bigtable (module root, `source`, `source.readrows`, `table`, `sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Source
 
 ## Context / Evidence
@@ -180,6 +180,65 @@ the three render differently.
 
 The property is a readability guarantee and **not a licence to compare renderings**: nothing decides
 identity from one, and [#910] is why.
+
+### Refinement, [#1012] (2026-08-22): one key, and the three forms that are not this one
+
+The escaping above was defined for a *range*. [#1012] extended it to a single key —
+`RowRanges.format(ByteString)` — after finding **four** places that rendered a row key with
+`toStringUtf8()`, which a row key does not survive: a key is arbitrary bytes, decoding invalid UTF-8
+substitutes U+FFFD rather than failing, and so `0xFE` and `0xFF` arrive as one character. The value
+is exposed and destroyed in the same breath. (A fifth site, `RowKeySample`, rendered `key=<n> bytes`
+instead, which hid the key without identifying it.) Measured, the worst of the four named the row a
+user has to go and fix as eight control characters:
+
+```text
+Every column family of the row with key '       ' is null, so the mutation would carry no cell.
+```
+
+What that work settled is not only *escape it* but **which of four forms a byte string takes, chosen
+by who reads the result**. The table is in `RowRanges`' class javadoc, where a writer looking for
+"how do I print a key" lands; the arms that were not obvious are decided here.
+
+**A qualifier built from a DDL field name keeps `toStringUtf8()`.** It is valid UTF-8 by
+construction and it is the identifier a reader must match against their own DDL. Escaping it was
+tried and reverted: a column declared 名前 inside `state ROW<...>` reported
+`Cell state:\xe5\x90\x8d...`, which no reader can map back to a column — and printed unlike the
+family name beside it in the same sentence, which is the same identifier from the same `RowType`.
+The test is *text by construction*, not *which package it is in*.
+
+**A value type a user's own code logs keeps the key out of its own rendering.**
+`FailedMutation.toString()` prints the size of the whole failed mutation, which is what `FailedTask`,
+`FailedRow` and `FailedMessage` each measure and what Spanner's `FailedMutation` achieves by carrying
+no key. Escaping it there was tried and reverted, and why the range argument does not carry over is
+the part worth recording: a sample that cuts a configured range is *already* rendered escaped at
+`INFO` through the split it becomes (one that cuts nothing reaches only a debugger or an assertion
+message, since no production log renders a sample itself), whereas nothing renders a *mutation's*
+row key into a log of its own.
+
+**That bounds a `toString`, not an object graph, and the difference was measured rather than
+assumed.** On a serialization failure `BigtableWriter` builds `FailedMutation.of(destination, null,
+…, e)`, so `getRowKey()` is `null` and the cause is the only place the row can be named. Whether it
+is named depends on which failure `e` was. The empty-mutation refusal carries the row key escaped —
+correctly, a message being the one place that must — and `FailureHandlers.LogAndDrop` logs the
+cause, so the key reaches the log through the object that does not render it: the message doing its
+job, not a hole. The timestamp-overflow refusal names no row at all, so on that path nothing
+identifies it. Reading the arm as a guarantee about the whole element is wrong in both directions,
+which is why it is written about the rendering.
+
+**Base64 stays the pattern-facing form**: `family:qualifierBase64`, which user regexes match against.
+A pattern needs a form the user can *write*, and `\xNN` is not one. The row-key options accept
+Base64 too, but only when `scan.row-key-encoding` asks for it, and its default is `UTF8` — so that is
+an option declaring its own encoding rather than this rule reaching into input. Where output and
+input meet, `RowRangeParser` is the precedent: it reports the entry number and does not echo the
+value back in either form.
+
+`RowRanges` moved to the module root in the same change. It serves both source directions and both
+halves of the table layer — 26 importers in the main tree across ten packages — which is ADR-0055's
+rule. Six packages do not import it, the DataStream `sink/` tree among them — which for that tree
+follows from the arm above rather than being a rule of its own, and is not a statement about "the
+sink": the *table* sink's empty-mutation refusal is one of the call sites listed.
+
+[#1012]: https://github.com/flink-gcp/flink-connector-gcp/issues/1012
 
 ## Alternatives declined
 

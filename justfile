@@ -340,8 +340,9 @@ sweep-e2e *args:
 # from the tofu-plan workflow, which subsumes validate on exactly the changes
 # that need it. Locally, `just tofu validate` runs it directly.
 #
-# markdownlint's file set and its rule deviations live in
-# .markdownlint-cli2.jsonc, discovered from the working directory.
+# markdownlint's file set, rule deviations and docs/content's MD052 opt-out
+# all live in .markdownlint-cli2.jsonc (#1035), discovered from the working
+# directory.
 #
 # Lint the shell and Python scripts, the workflows, the markdown and OpenTofu.
 lint:

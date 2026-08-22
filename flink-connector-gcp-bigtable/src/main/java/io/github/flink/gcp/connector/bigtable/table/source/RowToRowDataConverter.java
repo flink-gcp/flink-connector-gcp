@@ -21,6 +21,7 @@ import org.apache.flink.table.data.GenericRowData;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 
@@ -135,12 +136,15 @@ final class RowToRowDataConverter implements Serializable {
                 // as externally written as a cell — interop with HBase-written tables is what
                 // CellValueCodec exists for — and a fixed-width decoder reading a shorter key
                 // otherwise throws a bare ArrayIndexOutOfBoundsException naming nothing.
+                // The key is escaped rather than decoded as UTF-8: this message asks whether the
+                // row was written under a different encoding, so rendering the offending bytes
+                // under the encoding the question doubts is how a reader loses them.
                 throw new IllegalStateException(
                         String.format(
                                 "The row key of the row '%s' holds %d byte(s), which the declared"
                                         + " row-key column type cannot decode. Was the row written"
                                         + " under a different encoding?",
-                                row.getKey().toStringUtf8(), key.length),
+                                RowRanges.format(row.getKey()), key.length),
                         e);
             }
         }
@@ -174,6 +178,12 @@ final class RowToRowDataConverter implements Serializable {
             } catch (RuntimeException e) {
                 // A malformed cell — one an external writer stored under a different layout —
                 // otherwise surfaces as a bare ArrayIndexOutOfBoundsException naming nothing.
+                // The row key is escaped and the qualifier is not, because they come from
+                // different places: a qualifier is built from a DDL field name and so is valid
+                // UTF-8 by construction, and escaping it would render a non-ASCII column as hex
+                // the reader cannot match against the DDL they have to go and edit — while
+                // printing it unlike the family beside it, which is the same identifier from the
+                // same RowType. A row key is whatever an external writer stored.
                 throw new IllegalStateException(
                         String.format(
                                 "Cell %s:%s of the row with key '%s' holds %d byte(s), which the"
@@ -181,7 +191,7 @@ final class RowToRowDataConverter implements Serializable {
                                         + " written under a different encoding?",
                                 slot.name,
                                 slot.qualifiers[q].toStringUtf8(),
-                                row.getKey().toStringUtf8(),
+                                RowRanges.format(row.getKey()),
                                 value.length),
                         e);
             }

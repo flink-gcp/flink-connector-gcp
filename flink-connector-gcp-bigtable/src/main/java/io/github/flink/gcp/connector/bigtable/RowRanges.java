@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable.source.readrows;
+package io.github.flink.gcp.connector.bigtable;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
@@ -31,14 +31,60 @@ import java.util.List;
  * The module's row-key range algebra: emptiness, containment, cutting, coalescing, intersection,
  * truncation and the unsigned key comparison they all rest on, each defined once here.
  *
- * <p>It began as the bounded scan source's and now serves the whole module — the scan source's
- * builder, planner, split state and split reader, the Change Streams partition model, and the table
- * layer's range parsing, filter pushdown and point lookups. It lives in one place because every one
- * of those would otherwise have to get the bound types right, and would each get them wrong
- * differently. Row keys are compared as <em>unsigned</em> bytes, which is the order Bigtable stores
- * them in; the natural ordering of {@link ByteString} is not that order, and a signed comparison
- * sorts every key whose first byte is above {@code 0x7F} before every key whose first byte is below
- * it.
+ * <p>It began as the bounded scan source's and now serves both source directions and both halves of
+ * the table layer — the scan source's builder, planner, split state and split reader, the Change
+ * Streams partition model, the table source's range parsing, filter pushdown, point lookups and
+ * decode-failure guards, and the table sink's empty-mutation refusal — which is why it sits at the
+ * module root rather than under one of them (ADR-0055): 26 importers in the main tree, across ten
+ * packages. It lives in one place because every one of those would otherwise have to get the bound
+ * types right, and would each get them wrong differently. Row keys are compared as
+ * <em>unsigned</em> bytes, which is the order Bigtable stores them in; the natural ordering of
+ * {@link ByteString} is not that order, and a signed comparison sorts every key whose first byte is
+ * above {@code 0x7F} before every key whose first byte is below it.
+ *
+ * <h2>Turning bytes into text: which form, and why there is more than one</h2>
+ *
+ * <p>A row key, a qualifier and a cell value are all arbitrary bytes, and this module turns them
+ * into text four different ways. That is not drift: <b>the reader chooses the form</b>, and
+ * choosing by package or by habit is how the wrong one gets used. Before rendering a byte string,
+ * ask who reads the result. This is about <em>rendering for something to read</em> and not about
+ * decoding a stored value back into what it was — a serializer's {@code readString} is neither
+ * governed nor contradicted by it.
+ *
+ * <ul>
+ *   <li><b>A person, in a log line or an exception message → {@link #format(ByteString)} or {@link
+ *       #format(ByteStringRange)}.</b> Printable ASCII stays itself so a text key is recognisable,
+ *       and every other byte — plus the three that carry structure — becomes {@code \xNN}. The
+ *       rendering is injective, so an operator can tell two of them apart (ADR-0080).
+ *   <li><b>A pattern the user wrote → Base64</b>, canonical padded RFC 4648. {@code
+ *       BigtableChangeStreamMutationFilter} matches user regexes against {@code
+ *       family:qualifierBase64}. A pattern needs a form the user can <em>write</em>, which an
+ *       escape sequence is not. The row-key options take Base64 too, but only when {@code
+ *       scan.row-key-encoding} asks for it — its default is {@code UTF8} — so this arm is about the
+ *       filter identifier, and an option's own encoding is whatever that option declares. Note it
+ *       runs the other way from the three below, which are all about output; where the two meet,
+ *       {@code RowRangeParser} is the precedent, and it names the entry number rather than echoing
+ *       the value back at all.
+ *   <li><b>Anyone, when the value is text by construction → {@code toStringUtf8()}.</b> A qualifier
+ *       built from a DDL field name is valid UTF-8 and is the identifier the reader must match
+ *       against their own DDL; escaping it would render a non-ASCII column as hex, and unlike the
+ *       family name printed beside it.
+ *   <li><b>A user's own code, which is likely to log the object → keep it out of that object's own
+ *       rendering.</b> A row's key and cell values are that row's data: {@code FailedMutation}
+ *       prints the failed mutation's size, and {@code BigtableChangeStreamMutation} has no {@code
+ *       toString} at all. An exception message is the deliberate exception, having one chance to
+ *       name the offending row and no accessors — <b>so this arm bounds a {@code toString} and not
+ *       a whole object graph</b>: a {@code FailedMutation} whose {@code getCause()} is a
+ *       serialization failure may carry that message, escaped key and all, into any handler that
+ *       logs the cause — a message doing its job through this arm's object, not a leak to close.
+ *       <em>May</em>, because it is per message: of this connector's own refusals only the
+ *       empty-mutation one names the key, and a {@code FailedMutation} can equally wrap whatever a
+ *       user's own serializer threw. {@code getRowKey()} is null for all of them.
+ * </ul>
+ *
+ * <p><b>{@code toStringUtf8()} on a value that is not text by construction is always wrong.</b>
+ * Decoding invalid UTF-8 substitutes U+FFFD rather than failing, so {@code 0xFE} and {@code 0xFF}
+ * arrive as one character — the value is exposed and destroyed in the same breath.
  *
  * <p>Three facts about the vendor's {@link ByteStringRange}, measured against google-cloud-bigtable
  * 2.80.0 on 2026-08-09 and relied on below:
@@ -470,6 +516,28 @@ public final class RowRanges {
     }
 
     /**
+     * Renders one row key under {@link #format(ByteStringRange)}'s escaping, for a caller holding a
+     * key rather than a range.
+     *
+     * <p>Escaping only — no sentinel, and the empty key renders as the empty string. Every caller
+     * that names a row in a message quotes the value ({@code '%s'}), where an empty rendering reads
+     * as {@code ''} and needs no marker. A caller that does <em>not</em> quote, and for which an
+     * empty key carries a meaning, supplies its own: {@code RowKeySample} marks it {@code *},
+     * because there it is the service's "end of table" rather than a key. Deciding that here would
+     * impose one caller's meaning on the rest, which is the whole reason this method does not.
+     *
+     * <p>Same caveat as the range form: a rendering is what a person reads in a log, and nothing
+     * decides identity from one.
+     *
+     * @param key the key to render
+     * @return a rendering such as {@code row-1} or {@code \x00\xff}; empty for the empty key
+     */
+    public static String format(ByteString key) {
+        Preconditions.checkNotNull(key, "key must not be null");
+        return escape(key);
+    }
+
+    /**
      * Orders two ranges by where they begin; an unbounded start comes first.
      *
      * <p>Like {@link #compareKeys(ByteString, ByteString)}, and unlike the range predicates above,
@@ -616,8 +684,8 @@ public final class RowRanges {
     }
 
     /**
-     * Renders a key readably, escaping every byte that carries structure in {@link #format}'s
-     * output as well as every unprintable one.
+     * Renders a key readably, escaping every byte that carries structure in {@link
+     * #format(ByteStringRange)}'s output as well as every unprintable one.
      *
      * <p>Three printable bytes are structural, and a key holding one has to be escaped or the
      * rendering becomes ambiguous: {@code \} introduces an escape, {@code *} is the sentinel for an

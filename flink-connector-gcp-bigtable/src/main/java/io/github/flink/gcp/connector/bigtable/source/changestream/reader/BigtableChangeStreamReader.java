@@ -74,7 +74,7 @@ public final class BigtableChangeStreamReader<T>
     private final BigtableChangeStreamReaderMetrics metrics;
     private final Deque<ChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveRead> active = new LinkedHashMap<>();
-    private final ArrayBlockingQueue<Delivery> handover;
+    private final ArrayBlockingQueue<Delivery<T>> handover;
     private final Object availabilityLock = new Object();
     private CompletableFuture<Void> availability = new CompletableFuture<>();
 
@@ -159,7 +159,7 @@ public final class BigtableChangeStreamReader<T>
 
     @Override
     public InputStatus pollNext(ReaderOutput<T> output) throws Exception {
-        Delivery delivery = handover.poll();
+        Delivery<T> delivery = handover.poll();
         if (delivery != null) {
             consume(delivery, output);
             return nextStatus();
@@ -174,7 +174,7 @@ public final class BigtableChangeStreamReader<T>
         return finished() ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
     }
 
-    private void consume(Delivery delivery, ReaderOutput<T> output) throws Exception {
+    private void consume(Delivery<T> delivery, ReaderOutput<T> output) throws Exception {
         ActiveRead read = active.get(delivery.read.splitId());
         if (read != delivery.read || read.closeSeen) {
             return;
@@ -494,7 +494,7 @@ public final class BigtableChangeStreamReader<T>
             if (closed) {
                 return;
             }
-            if (!handover.offer(new Delivery(this, record))) {
+            if (!handover.offer(new Delivery<>(this, record))) {
                 publishTerminal(
                         Terminal.failed(
                                 new IllegalStateException(
@@ -549,11 +549,17 @@ public final class BigtableChangeStreamReader<T>
         CLOSE
     }
 
-    private final class Delivery {
-        private final ActiveRead read;
+    /**
+     * One record handed from a read's gRPC thread to the task thread.
+     *
+     * <p>The type parameter is only what naming the enclosing reader's inner {@code ActiveRead}
+     * costs; nothing in here reads a {@code T}.
+     */
+    private static final class Delivery<T> {
+        private final BigtableChangeStreamReader<T>.ActiveRead read;
         private final ChangeStreamRecord record;
 
-        private Delivery(ActiveRead read, ChangeStreamRecord record) {
+        private Delivery(BigtableChangeStreamReader<T>.ActiveRead read, ChangeStreamRecord record) {
             this.read = read;
             this.record = record;
         }

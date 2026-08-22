@@ -59,7 +59,7 @@ import java.util.function.Supplier;
  * @param <T> the record type produced
  */
 @Internal
-public class BigtableReadRowsSource<T>
+public final class BigtableReadRowsSource<T>
         implements Source<T, RowRangeSplit, BigtableScanEnumeratorState>, ResultTypeQueryable<T> {
 
     private static final long serialVersionUID = 1L;

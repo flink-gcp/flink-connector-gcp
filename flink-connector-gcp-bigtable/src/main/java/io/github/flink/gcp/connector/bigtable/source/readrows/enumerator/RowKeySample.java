@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
+import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 
 import java.util.Objects;
 
@@ -86,8 +88,28 @@ public final class RowKeySample {
         return Objects.hash(key, offsetBytes);
     }
 
+    /**
+     * Renders the sample, key included, through {@link RowRanges#format(ByteString)}, with the
+     * end-of-table sample this class admits marked {@code *} rather than left blank.
+     *
+     * <p>It used to render {@code key=<n> bytes}, and that bought little: a sample that cuts a
+     * configured range becomes a {@link RowRangeSplit} boundary, which prints through the same
+     * escaping — including at {@code INFO}, when the reader opens it. A sample that cuts nothing is
+     * never logged, so for it this rendering is the first exposure — but only where a sample is
+     * rendered at all, which is a debugger or an assertion message, not a production log.
+     *
+     * <p>No production log renders a sample today — {@code BigtableScanSplitEnumerator.logPlan}
+     * prints how many there are, not what they are — so this reaches a debugger, an assertion
+     * message, and whatever prints one next. Which is the point: the rule for that next caller is
+     * here rather than left to be guessed.
+     */
     @Override
     public String toString() {
-        return "RowKeySample{key=" + key.size() + " bytes, offsetBytes=" + offsetBytes + '}';
+        // The marker is this class's own, not the renderer's: here an empty key is the service's
+        // "end of table" rather than a key, and this rendering does not quote the value, so an
+        // empty one would read as a truncated line. `*` is unambiguous because a key that really
+        // holds that byte escapes to \x2a.
+        String rendered = key.isEmpty() ? "*" : RowRanges.format(key);
+        return "RowKeySample{key=" + rendered + ", offsetBytes=" + offsetBytes + '}';
     }
 }

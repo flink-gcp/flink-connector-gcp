@@ -140,12 +140,44 @@ public final class FailedMutation implements FailedElement {
         return cause;
     }
 
+    /**
+     * Renders the failure as its siblings do: the destination, the size of the failed payload, and
+     * the message.
+     *
+     * <p>It used to render the row key with {@code toStringUtf8()}, which was the worst of both. A
+     * row key is arbitrary bytes, so decoding invalid UTF-8 substituted U+FFFD rather than failing
+     * — {@code 0xFE} and {@code 0xFF} both arrived as one replacement character — while a key that
+     * <em>was</em> valid UTF-8 went into the line exactly. It neither identified the row nor kept
+     * it out of a log.
+     *
+     * <p>What replaces it is the shape {@code FailedTask}, {@code FailedRow} and {@code
+     * FailedMessage} share, and it is the whole payload each of them measures rather than one field
+     * of it: the mutation's size is what an operator asks after an {@code INVALID_ARGUMENT} on a
+     * batch, and a row key's length answers that only for the part of it the key happens to be.
+     * Spanner's {@code FailedMutation} carries no key either.
+     *
+     * <p>Not printing the key is deliberate and is <em>not</em> the rule an exception message
+     * follows. A message has one chance to name the offending row and no accessors, which is why
+     * the table layer's decode-failure guards and its empty-mutation refusal do carry an escaped
+     * key — a payload format's own failure carries whatever that format wrote. This type is handed
+     * to a {@link FailureHandler} a user writes, and has {@link #getRowKey()} for a handler that
+     * wants the row.
+     *
+     * <p><b>This bounds the rendering and not the object.</b> When serialization itself failed,
+     * {@link #getRowKey()} is {@code null} — there is no entry to read it from — so {@link
+     * #getCause()} is the only place the row can be named. Whether it <em>is</em> named is that
+     * message's business and not this type's: the table sink's empty-mutation refusal carries the
+     * row key escaped, since a message is the one place that must name it, so a handler logging
+     * that cause publishes it — while its other refusals name none, and a cause here is just as
+     * likely to be whatever a user's own {@code BigtableSerializationSchema} threw. So this is
+     * neither a hole to close here nor a guarantee to lean on.
+     */
     @Override
     public String toString() {
         return "FailedMutation{destination="
                 + destination
-                + ", rowKey="
-                + (proto == null ? "null" : proto.getRowKey().toStringUtf8())
+                + ", mutation="
+                + (proto == null ? "null" : proto.getSerializedSize() + " bytes")
                 + ", errorMessage="
                 + errorMessage
                 + "}";

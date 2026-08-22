@@ -454,9 +454,17 @@ public final class CellValueCodec {
 
     /** {@code Bytes.toBytes(int)}: four bytes, big-endian two's complement. */
     private static byte[] toBytes(int value) {
-        return new byte[] {
-            (byte) (value >> 24), (byte) (value >> 16), (byte) (value >> 8), (byte) value
-        };
+        byte[] bytes = new byte[4];
+        putInt(bytes, 0, value);
+        return bytes;
+    }
+
+    /** {@code Bytes.putInt(byte[], int, int)}: the same four bytes, written at an offset. */
+    private static void putInt(byte[] destination, int offset, int value) {
+        destination[offset] = (byte) (value >> 24);
+        destination[offset + 1] = (byte) (value >> 16);
+        destination[offset + 2] = (byte) (value >> 8);
+        destination[offset + 3] = (byte) value;
     }
 
     /** {@code Bytes.toBytes(long)}: eight bytes, big-endian two's complement. */
@@ -476,11 +484,7 @@ public final class CellValueCodec {
     private static byte[] toBytes(BigDecimal value) {
         byte[] unscaled = value.unscaledValue().toByteArray();
         byte[] bytes = new byte[4 + unscaled.length];
-        int scale = value.scale();
-        bytes[0] = (byte) (scale >> 24);
-        bytes[1] = (byte) (scale >> 16);
-        bytes[2] = (byte) (scale >> 8);
-        bytes[3] = (byte) scale;
+        putInt(bytes, 0, value.scale());
         System.arraycopy(unscaled, 0, bytes, 4, unscaled.length);
         return bytes;
     }

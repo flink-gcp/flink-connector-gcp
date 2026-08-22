@@ -21,10 +21,10 @@ import org.apache.flink.annotation.Internal;
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
 import javax.annotation.Nullable;
 

@@ -25,10 +25,10 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
 import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

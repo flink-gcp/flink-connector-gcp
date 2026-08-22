@@ -303,6 +303,28 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   thing that stops the scans. **The `bounded` gate is load-bearing in the other direction** — a
   continuous run has no end time to close a stream at, so a successorless close there is a loss and
   must still be restarted.
+- **Before rendering a byte string, read `RowRanges`' class javadoc and pick by who reads the
+  result** (#1012, ADR-0080). Four forms, and the choice is not made by package: escaped
+  (`RowRanges.format`) for a person reading a log line or an exception message; Base64 for a pattern
+  the user writes (`family:qualifierBase64` — the row-key options take Base64 only when
+  `scan.row-key-encoding` asks, its default being `UTF8`);
+  `toStringUtf8()` only where the value is text by construction, which among row keys, qualifiers
+  and cell values means a qualifier built from a DDL field name and nothing else; and **not rendered
+  at all** in a value type a user's own code logs — `FailedMutation` prints the mutation's size,
+  `BigtableChangeStreamMutation` has no `toString`. An exception message is the deliberate
+  exception, having one chance to name the offending row and no accessors. **That last arm bounds a
+  `toString`, not an object graph**: a `FailedMutation` from a serialization failure has a `null`
+  `getRowKey()`, so its `getCause()` is the only place the row can be named — and whether it is
+  depends on that message: the table sink's empty-mutation refusal carries the escaped key, its
+  other refusals name none, and a `FailedMutation` may equally wrap what a user's own serializer
+  threw. Measured on #1012.
+  `toStringUtf8()` on anything else exposes and destroys the value at once, since invalid UTF-8
+  becomes U+FFFD rather than failing.
+- **`RowRanges` lives at the module root**, not under `source/`: it serves both source directions
+  and both halves of the table layer — 26 importers in the main tree across ten packages — which is
+  ADR-0055's rule for a type belonging to the connector as a whole. Moved there in #1012. Six
+  packages do not import it, the DataStream `sink/` tree among them — which for that tree follows
+  from the rendering rule above rather than being a separate one.
 - **`RowRanges.format` is a renderer and never an identity** (#910). Range identity is
   `ByteStringRange.equals`; the rendering call sites are correct as they are, and the four
   `StartPositionResolver.resolveRestored` arguments are labels for a log line and a message, which

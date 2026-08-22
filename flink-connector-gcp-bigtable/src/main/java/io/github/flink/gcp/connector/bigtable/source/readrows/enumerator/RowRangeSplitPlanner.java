@@ -22,8 +22,8 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 
 import java.util.ArrayList;
 import java.util.List;

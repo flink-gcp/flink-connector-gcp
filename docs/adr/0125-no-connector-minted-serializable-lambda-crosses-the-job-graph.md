@@ -122,3 +122,5 @@ Two limits this rule does not claim to cover.
 The finding's own priority moved the other way: the five sites [#822] named are insertion-stable,
 so converting them is consistency and independence from a compiler detail, not a fix. The codec
 families it set aside were the defect.
+
+[#822]: https://github.com/flink-gcp/flink-connector-gcp/issues/822

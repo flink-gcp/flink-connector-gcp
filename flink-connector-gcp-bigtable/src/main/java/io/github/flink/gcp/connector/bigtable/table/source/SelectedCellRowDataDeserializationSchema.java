@@ -28,6 +28,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
@@ -90,8 +91,23 @@ final class SelectedCellRowDataDeserializationSchema
                         ? RowKind.UPDATE_AFTER
                         : RowKind.DELETE;
         GenericRowData physical = new GenericRowData(rowKind, payloadGetters.length + 1);
-        physical.setField(
-                primaryKeyIndex, primaryKeyDecoder.decode(mutation.getRowKey().toByteArray()));
+        byte[] key = mutation.getRowKey().toByteArray();
+        try {
+            physical.setField(primaryKeyIndex, primaryKeyDecoder.decode(key));
+        } catch (RuntimeException e) {
+            // The guard RowToRowDataConverter's row-key decode carries, for the same reason: a row
+            // key is as externally written as a cell, and a fixed-width decoder reading a shorter
+            // key otherwise throws a bare ArrayIndexOutOfBoundsException naming nothing. The key is
+            // escaped rather than decoded as UTF-8, since the question the message asks is whether
+            // the row was written under a different encoding.
+            throw new IOException(
+                    String.format(
+                            "The row key of the row '%s' holds %d byte(s), which the declared"
+                                    + " primary-key column type cannot decode. Was the row written"
+                                    + " under a different encoding?",
+                            RowRanges.format(mutation.getRowKey()), key.length),
+                    e);
+        }
         if (result.getKind() == SelectedCellMutationClassifier.Kind.UPSERT) {
             RowData[] payload = new RowData[1];
             long emittedCount =

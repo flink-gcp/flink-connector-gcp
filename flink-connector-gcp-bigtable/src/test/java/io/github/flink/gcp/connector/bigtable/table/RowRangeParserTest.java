@@ -83,7 +83,11 @@ class RowRangeParserTest {
                 Arguments.of("[a(b,c)", 1, "unescaped grammar character '('"),
                 Arguments.of("[a\\q,b)", 1, "unsupported escape"),
                 Arguments.of("[a\\,b)", 1, "one unescaped comma"),
-                Arguments.of("[a,b\\)", 1, "incomplete backslash escape"));
+                // Two distinct backslash failures, asserted apart: an escaped terminator (see the
+                // comment on that throw in RowRangeParser) and a value whose last character is a
+                // bare backslash, which splitEntries refuses before an entry is parsed at all.
+                Arguments.of("[a,b\\)", 1, "escapes the ')' that must end it"),
+                Arguments.of("[a,b);[c,d)\\", 2, "ends with an incomplete backslash escape"));
     }
 
     @ParameterizedTest

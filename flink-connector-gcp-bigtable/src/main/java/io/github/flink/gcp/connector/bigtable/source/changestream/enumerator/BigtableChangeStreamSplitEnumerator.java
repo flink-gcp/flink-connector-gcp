@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricValues;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
@@ -43,7 +44,6 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgr
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -135,15 +135,19 @@ public final class BigtableChangeStreamSplitEnumerator
     @Nullable private volatile Duration reconciliationRetention;
     @Nullable private volatile Instant reconciliationRetentionFetchedAt;
 
-    public BigtableChangeStreamSplitEnumerator(
-            SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
-            ChangeStreamCoordinatorClient client,
-            StartPosition startPosition,
-            @Nullable StartPosition resumeFallback,
-            @Nullable BigtableChangeStreamEnumeratorState restoredState) {
-        this(context, client, startPosition, resumeFallback, restoredState, false, false);
-    }
-
+    /**
+     * Creates the enumerator a job runs.
+     *
+     * <p>This is the whole public surface, and it is deliberately the shape production passes:
+     * reconciliation is always on in a job, and the clock is always the system one.
+     *
+     * @param context the enumerator context Flink supplies
+     * @param client the coordinator client; the enumerator takes ownership and closes it
+     * @param startPosition where a partition with no stored token starts
+     * @param resumeFallback where a partition whose token has expired resumes, or {@code null}
+     * @param restoredState the checkpointed state, or {@code null} on a fresh start
+     * @param bounded whether the stream has an end time and so finishes
+     */
     public BigtableChangeStreamSplitEnumerator(
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ChangeStreamCoordinatorClient client,
@@ -151,17 +155,6 @@ public final class BigtableChangeStreamSplitEnumerator
             @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded) {
-        this(context, client, startPosition, resumeFallback, restoredState, bounded, false);
-    }
-
-    public BigtableChangeStreamSplitEnumerator(
-            SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
-            ChangeStreamCoordinatorClient client,
-            StartPosition startPosition,
-            @Nullable StartPosition resumeFallback,
-            @Nullable BigtableChangeStreamEnumeratorState restoredState,
-            boolean bounded,
-            boolean reconciliationEnabled) {
         this(
                 context,
                 client,
@@ -169,10 +162,17 @@ public final class BigtableChangeStreamSplitEnumerator
                 resumeFallback,
                 restoredState,
                 bounded,
-                reconciliationEnabled,
+                true,
                 Clock.systemUTC());
     }
 
+    /**
+     * The test seam, exposing the two values the public constructor fixes.
+     *
+     * <p>A unit test taking the public constructor would schedule a real periodic reconciliation
+     * scan against the wall clock, which is why both are parameters here rather than knobs there.
+     */
+    @VisibleForTesting
     BigtableChangeStreamSplitEnumerator(
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             ChangeStreamCoordinatorClient client,

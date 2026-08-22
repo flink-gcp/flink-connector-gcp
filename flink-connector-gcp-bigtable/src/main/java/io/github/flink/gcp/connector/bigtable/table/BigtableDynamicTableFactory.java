@@ -168,11 +168,10 @@ public class BigtableDynamicTableFactory
         // Read the scan mode before validating, as the source does: a selected-cell DDL carries
         // value.<format>.* keys this direction discovers no format for, so helper.validate() would
         // reject those first and bury the reason the table cannot be written to at all.
-        ScanMode preliminaryScanMode = helper.getOptions().get(BigtableConnectorOptions.SCAN_MODE);
-        checkNotAChangeStreamTable(preliminaryScanMode);
+        ReadableConfig config = helper.getOptions();
+        checkNotAChangeStreamTable(config.get(BigtableConnectorOptions.SCAN_MODE));
         helper.validate();
 
-        ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
         checkSinkHasNoChangeStreamOptions(context);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
@@ -552,15 +551,18 @@ public class BigtableDynamicTableFactory
     @Override
     public DynamicTableSource createDynamicTableSource(Context context) {
         FactoryUtil.TableFactoryHelper helper = FactoryUtil.createTableFactoryHelper(this, context);
-        ReadableConfig preliminaryConfig = helper.getOptions();
-        ScanMode preliminaryScanMode = preliminaryConfig.get(BigtableConnectorOptions.SCAN_MODE);
-        ChangeStreamChangelogMode preliminaryChangelogMode =
-                preliminaryConfig
-                        .getOptional(BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)
+        // helper.getOptions() returns the same object throughout, so these two reads are the
+        // configuration every line below sees. They happen before validate() because a value
+        // format has to be discovered first: discoverDecodingFormat registers that format's own
+        // option keys, and without them validate() would reject the keys as unrecognized.
+        ReadableConfig config = helper.getOptions();
+        ScanMode scanMode = config.get(BigtableConnectorOptions.SCAN_MODE);
+        ChangeStreamChangelogMode changelogMode =
+                config.getOptional(BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)
                         .orElse(null);
         DecodingFormat<DeserializationSchema<RowData>> decodingFormat = null;
-        if (preliminaryScanMode == ScanMode.CHANGE_STREAM
-                && preliminaryChangelogMode == ChangeStreamChangelogMode.SELECTED_CELL) {
+        if (scanMode == ScanMode.CHANGE_STREAM
+                && changelogMode == ChangeStreamChangelogMode.SELECTED_CELL) {
             decodingFormat =
                     helper.discoverDecodingFormat(
                             DeserializationFormatFactory.class,
@@ -568,10 +570,8 @@ public class BigtableDynamicTableFactory
         }
         helper.validate();
 
-        ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
         DataType physicalDataType = context.getPhysicalRowDataType();
-        ScanMode scanMode = config.get(BigtableConnectorOptions.SCAN_MODE);
         validateSourceModeOptions(context, scanMode);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);

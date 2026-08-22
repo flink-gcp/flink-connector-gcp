@@ -17,7 +17,9 @@ limitations under the License.
 # ADR-0111: The BigQuery table sink maps upsert changelogs and keeps CDC metadata out of the schema
 
 - Status: Accepted
-- Date: 2026-08-14; revised by [#629], [#631] and [#717] (2026-08-15)
+- Date: 2026-08-14; revised by [#629](https://github.com/flink-gcp/flink-connector-gcp/issues/629),
+  [#631](https://github.com/flink-gcp/flink-connector-gcp/issues/631) and
+  [#717](https://github.com/flink-gcp/flink-connector-gcp/issues/717) (2026-08-15)
 - Issues: [#65](https://github.com/laughingman7743/flink-connector-gcp/issues/65),
   [#626](https://github.com/laughingman7743/flink-connector-gcp/issues/626),
   [#629](https://github.com/laughingman7743/flink-connector-gcp/issues/629),

@@ -39,16 +39,25 @@ import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeSt
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 class BigtableChangeStreamSourceBuilderTest {
 
@@ -298,6 +307,61 @@ class BigtableChangeStreamSourceBuilderTest {
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("must not both be set");
+    }
+
+    /**
+     * Every pattern setter's message names that setter.
+     *
+     * <p>Each one passes its own name to {@code compilePatterns} as a string literal, and nothing
+     * ties that literal to the method it sits in. Here the expected name is read off the class, so
+     * renaming the setter moves the expectation and the stale literal is what fails.
+     *
+     * <p>Measured rather than assumed, by renaming {@code familyIncludeList} to {@code
+     * familyInclude} across the declaration and every caller as an IDE would, leaving both string
+     * literals alone. The assertions above keep passing, because the message and the expectation
+     * are the same stale literal. {@code BigtableOptionParityTest} does fail — its exemption map is
+     * keyed by setter name — but it fails saying the setter is unmapped, which is answered by
+     * editing that map; after that edit this was the only failure left in the module's 897 tests.
+     */
+    @ParameterizedTest
+    @MethodSource("patternSetters")
+    void everyPatternSetterMessageNamesThatSetter(String setter) throws Exception {
+        Method method = BigtableChangeStreamSourceBuilder.class.getMethod(setter, Collection.class);
+
+        Throwable thrown = catchThrowable(() -> method.invoke(minimal(), (Object) null));
+
+        assertThat(thrown)
+                .as("%s(null) must be refused through compilePatterns", setter)
+                .isInstanceOf(InvocationTargetException.class);
+        assertThat(thrown.getCause())
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage(setter + " must not be null");
+    }
+
+    @Test
+    void patternSetterSourceStillFindsAllFour() {
+        // The source above finds setters by their Collection parameter, which is a proxy for
+        // "calls compilePatterns" rather than the thing itself. Naming them, not counting them:
+        // a size guard passes when one is retyped to List in the same change that adds an
+        // unrelated Collection setter, which is the substitution the proxy makes possible.
+        assertThat(patternSetters())
+                .as("each must reach everyPatternSetterMessageNamesThatSetter")
+                .containsExactly(
+                        "familyExcludeList",
+                        "familyIncludeList",
+                        "qualifierExcludeList",
+                        "qualifierIncludeList");
+    }
+
+    private static List<String> patternSetters() {
+        return Arrays.stream(BigtableChangeStreamSourceBuilder.class.getDeclaredMethods())
+                .filter(method -> Modifier.isPublic(method.getModifiers()))
+                .filter(method -> !method.isSynthetic())
+                .filter(method -> method.getParameterCount() == 1)
+                .filter(method -> method.getParameterTypes()[0] == Collection.class)
+                .map(Method::getName)
+                .sorted()
+                .collect(Collectors.toList());
     }
 
     private static BigtableChangeStreamSourceBuilder<BigtableChangeStreamMutation> minimal() {

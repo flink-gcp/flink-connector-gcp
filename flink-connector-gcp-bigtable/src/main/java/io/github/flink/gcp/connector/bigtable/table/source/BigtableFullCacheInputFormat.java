@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.io.GenericInputFormat;
 import org.apache.flink.core.io.GenericInputSplit;
 import org.apache.flink.table.data.RowData;
@@ -33,8 +32,8 @@ import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 
@@ -65,54 +64,6 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     private transient Iterator<ByteStringRange> remainingRanges = Collections.emptyIterator();
     private transient Iterator<Row> rows = Collections.emptyIterator();
 
-    BigtableFullCacheInputFormat(
-            TableDestination destination,
-            BigtableTableSchema schema,
-            @Nullable int[] projectedFields,
-            String nullStringLiteral,
-            Filters.Filter filter,
-            List<ByteStringRange> ranges,
-            @Nullable String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable String emulatorEndpoint) {
-        this(
-                destination,
-                schema,
-                projectedFields,
-                nullStringLiteral,
-                filter,
-                ranges,
-                appProfileId,
-                serviceAccountKeyFile,
-                emulatorEndpoint,
-                null);
-    }
-
-    @VisibleForTesting
-    BigtableFullCacheInputFormat(
-            TableDestination destination,
-            BigtableTableSchema schema,
-            @Nullable int[] projectedFields,
-            String nullStringLiteral,
-            Filters.Filter filter,
-            List<ByteStringRange> ranges,
-            @Nullable String appProfileId,
-            @Nullable String emulatorEndpoint,
-            @Nullable RowStreamOpener rowStreamOpener) {
-        this(
-                destination,
-                schema,
-                projectedFields,
-                nullStringLiteral,
-                filter,
-                ranges,
-                appProfileId,
-                null,
-                emulatorEndpoint,
-                rowStreamOpener);
-    }
-
-    @VisibleForTesting
     BigtableFullCacheInputFormat(
             TableDestination destination,
             BigtableTableSchema schema,

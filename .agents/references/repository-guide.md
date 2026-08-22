@@ -201,8 +201,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
   the **rendered** markdown — `docs/content/`, `docs/adr/` and the READMEs, never agent
-  guidance or its detailed references — at strict defaults except MD013 and MD060, both declined with reasons in
-  `.markdownlint-cli2.jsonc`. MD051's in-page anchor check is the half Hugo's build does not
+  guidance or its detailed references — at strict defaults except MD013 and MD060 (declined) and MD052's
+  `shortcut_syntax` (enabled for the ADRs' `[#N]` idiom, opted back out for `docs/content/`
+  through the same file's `overrides` entry, micromark being unable to parse a Hugo shortcode
+  destination), each with its reasons in `.markdownlint-cli2.jsonc` (#1035); a nested
+  `.markdownlint.jsonc` is the trap — it replaces the rule set rather than merging. MD051's in-page anchor check is the half Hugo's build does not
   cover (`relref` validates cross-page links only), and a *cross-page* link carrying a
   `#fragment` is checked by **neither** — it can point at nothing while both stay green, which
   is why #90 resolved them by hand against the built `docs/public` and deferred a checker until
@@ -843,7 +846,7 @@ connector gets its own module file rather than a section here.
   reserved-header checks are, rather than exceptions. Everything else takes
   `ResourceNames.checkNotBlank` and no more. Two values sit outside the path rule by their nature
   and not by oversight: `kmsKeyName` *is* a path, and `prefix("")` means the whole table. A new
-  character check states which of the three shapes it is. The gax measurement that settled [#984],
+  character check states which of the three shapes it is. The gax measurement that settled #984,
   the four setters this brought into line, and why restoring `trim().isEmpty()` would be a new
   check rather than a fix, are in the ADR.
 - **A test driving a sink's production `createWriter(WriterInitContext)` sets an emulator

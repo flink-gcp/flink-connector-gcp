@@ -42,10 +42,10 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
-import io.github.flink.gcp.connector.bigtable.source.readrows.RowRanges;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 
@@ -226,7 +226,8 @@ public final class BigtableDynamicSource
                                     ranges,
                                     appProfileId,
                                     serviceAccountKeyFile,
-                                    emulatorEndpoint),
+                                    emulatorEndpoint,
+                                    null),
                             1),
                     lookupOptions.createFullReloadTrigger());
         }

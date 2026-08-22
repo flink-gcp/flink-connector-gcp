@@ -12,6 +12,16 @@
 //   (`|---|`) with spaced content cells; MD060 wants one style for both.
 // - MD025: the Hugo pages carry a front-matter `title` *and* an H1 (the Flink page shape);
 //   front_matter_title "" stops the front matter from counting as a second top-level heading.
+// - MD052 shortcut_syntax: on. The ADRs' issue-link idiom is the shortcut reference —
+//   `[#N]` in prose, `[#N]: url` in a definition block — and MD052's default checks only
+//   full and collapsed references, so a missing definition rendered as literal `[#N]` with
+//   every check green: seven shipped that way, introduced five times in eight days with no
+//   natural fix ever observed (#1035). The override below turns it back off for
+//   docs/content only, where micromark cannot parse a Hugo shortcode destination and
+//   reports every such link as unresolved (measured: 435 false positives in 39 files).
+//   `overrides` (in the pinned 0.23.2) keeps this in one file; a nested
+//   .markdownlint.jsonc was probed first and *replaces* this config object — MD013
+//   silently re-enabled across every docs page — so do not reach for one.
 //
 // MD051 (in-page anchor fragments resolve) is a default-on rule this file exists to keep:
 // Hugo's build validates `relref` cross-page links but never `[text](#anchor)` fragments.
@@ -19,8 +29,16 @@
   "config": {
     "MD013": false,
     "MD025": { "front_matter_title": "" },
+    "MD052": { "shortcut_syntax": true },
     "MD060": false
   },
+  "overrides": [
+    {
+      "filter": ["docs/content/**/*.md"],
+      "config": { "MD052": { "shortcut_syntax": false } },
+      "combine": "merge"
+    }
+  ],
   "globs": [
     "docs/content/**/*.md",
     "docs/adr/**/*.md",
