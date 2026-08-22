@@ -45,3 +45,31 @@ use.
 
 The connector types named on these pages are documented in the
 [Java API reference]({{< param ApiDocsURL >}}).
+
+## What a builder checks
+
+A setter rejects a value when doing so tells you more than the service's own refusal would:
+
+| Rejected when you set it | Which values |
+|---|---|
+| Missing, or `null` | Every required option |
+| Empty, or nothing but whitespace | Every configured name, id or file path. Row-key values are the exception: an empty `prefix` means "scan the whole table" |
+| A `/`, or leading or trailing whitespace | A component the connector concatenates into a resource path: `project`, `dataset`, `table`, `instance`, `database`, `topic`, `subscription`, `location`, `queue`, `parentProject`, `queryResultDataset`, `tempDataset` |
+| Not matching the grammar the connector will read it by | A value it parses itself: an emulator endpoint's `host:port`, a Spanner identifier's quoting, a row-range or row-key literal, a `gs://` staging path, a Cloud Tasks relative URI, an additional field's protobuf name |
+
+The `/` rule is about addressing rather than spelling. A component with a `/` in it does not fail —
+it silently names a *different* resource, and the service then answers accurately about something
+you never typed. A value that genuinely *is* a full path, such as Pub/Sub's `kmsKeyName`, is
+exempt for the same reason.
+
+Two more checks exist because of where the service's own answer would land. A Cloud Tasks target URL
+must be absolute, checked at the builder for a fixed URL and again per record for one an extractor
+produced, so the rejection names the URL rather than the request that carried it. And a reserved App
+Engine header such as `Host` is refused at the setter because it is
+[owned by Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) and cannot take
+effect, which is worth learning where you set it.
+
+Everything else about a name is the service's answer, including whether the resource exists and
+whether the name is one that service accepts. Its rejection names the resource it refused. A copy
+of those naming rules kept here would go stale in the direction that hurts, refusing a name the
+service would have taken.

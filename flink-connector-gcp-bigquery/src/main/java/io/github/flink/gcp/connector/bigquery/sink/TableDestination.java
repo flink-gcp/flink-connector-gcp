@@ -18,10 +18,9 @@ package io.github.flink.gcp.connector.bigquery.sink;
 
 import org.apache.flink.annotation.Public;
 import org.apache.flink.api.connector.sink2.SinkWriter;
-import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.storage.v1.TableName;
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -68,9 +67,9 @@ public final class TableDestination extends DestinationResolution implements Ser
      * @return the destination
      */
     public static TableDestination of(String project, String dataset, String table) {
-        checkComponent(project, "project");
-        checkComponent(dataset, "dataset");
-        checkComponent(table, "table");
+        ResourceNames.checkComponent(project, "project");
+        ResourceNames.checkComponent(dataset, "dataset");
+        ResourceNames.checkComponent(table, "table");
         return new TableDestination(project, dataset, table);
     }
 
@@ -81,18 +80,6 @@ public final class TableDestination extends DestinationResolution implements Ser
             DestinationResolutionDispatcher.Visitor<T> visitor)
             throws IOException {
         visitor.visit(this, element, context);
-    }
-
-    private static void checkComponent(String value, String name) {
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(value), "%s must not be blank", name);
-        Preconditions.checkArgument(
-                value.equals(value.trim()),
-                "%s must not have leading or trailing whitespace: '%s'",
-                name,
-                value);
-        Preconditions.checkArgument(
-                value.indexOf('/') < 0, "%s must not contain '/': '%s'", name, value);
     }
 
     /** Returns the Google Cloud project id. */

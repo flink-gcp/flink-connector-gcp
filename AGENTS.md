@@ -102,6 +102,12 @@ green; use the clean-state procedures in that guide for such changes.
   through `OptionChecks.checkExpressibleInNanos` (ADR-0068). Whether the bound is re-checked where
   a deserialized options instance is relied on is a per-connector decision that ADR-0068 records —
   Pub/Sub re-checks, Bigtable documents why it does not — so read it before assuming either.
+- A configured name is checked only for what this project will do with it: a resource-path component
+  rejects `/` and edge whitespace through `ResourceNames.checkComponent`, a value the connector
+  parses is checked against that grammar, and a value whose service-side failure would be silent or
+  per-record is checked too. Everything else gets presence and blankness, and its validity is the
+  service's (ADR-0127). A new character check names which of those three it is; "the service might
+  reject it" is not one of them.
 - Tests that call a production `createWriter` path must configure an emulator endpoint.
 - `*Test` is a unit test; `*ITCase` runs in the integration-test execution. Credential-gated
   real-GCP tests also carry `@Tag("gated")` and are run only by `just e2e`.

@@ -17,10 +17,9 @@
 package io.github.flink.gcp.connector.pubsub.sink;
 
 import org.apache.flink.annotation.Public;
-import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.StringUtils;
 
 import com.google.pubsub.v1.TopicName;
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 
 import java.io.Serializable;
 import java.util.Objects;
@@ -62,21 +61,9 @@ public final class TopicDestination implements Serializable {
      * @return the destination
      */
     public static TopicDestination of(String project, String topic) {
-        checkComponent(project, "project");
-        checkComponent(topic, "topic");
+        ResourceNames.checkComponent(project, "project");
+        ResourceNames.checkComponent(topic, "topic");
         return new TopicDestination(project, topic);
-    }
-
-    private static void checkComponent(String value, String name) {
-        Preconditions.checkArgument(
-                !StringUtils.isNullOrWhitespaceOnly(value), "%s must not be blank", name);
-        Preconditions.checkArgument(
-                value.equals(value.trim()),
-                "%s must not have leading or trailing whitespace: '%s'",
-                name,
-                value);
-        Preconditions.checkArgument(
-                value.indexOf('/') < 0, "%s must not contain '/': '%s'", name, value);
     }
 
     /** Returns the Google Cloud project id. */
