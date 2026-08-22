@@ -622,35 +622,39 @@ public class BigQuerySourceBuilder<T> {
                 "preferredMinStreamCount must be at most maxStreamCount: %s > %s.",
                 preferredMinStreamCount,
                 maxStreamCount);
-        return new BigQueryStorageReadSource<>(
-                new BigQuerySourceConfig<>(
-                        table,
-                        query,
-                        queryLocation,
-                        queryResultDataset,
-                        reuseQueryResultWithin,
-                        materializeViews,
-                        !runsAQuery
-                                ? null
-                                : (queryRunner == null
-                                        ? new BigQueryQueryRunner(
-                                                serviceAccountKeyFile, emulatorRestEndpoint)
-                                        : queryRunner),
-                        parentProject == null ? table.getProject() : parentProject,
-                        deserializer,
-                        selectedFields,
-                        rowRestriction,
-                        snapshotTime,
-                        maxStreamCount,
-                        preferredMinStreamCount,
-                        maxRecordsPerFetch,
-                        sessionCreator == null
-                                ? new ReadClientSessionCreator(
-                                        serviceAccountKeyFile, emulatorEndpoint)
-                                : sessionCreator,
-                        rowStreamOpener == null
-                                ? new ReadClientRowStreamOpener(
-                                        serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts)
-                                : rowStreamOpener));
+        BigQuerySourceConfig.Builder<T> config =
+                BigQuerySourceConfig.<T>builder()
+                        .table(table)
+                        .query(query)
+                        .queryLocation(queryLocation)
+                        .queryResultDataset(queryResultDataset)
+                        .reuseQueryResultWithin(reuseQueryResultWithin)
+                        .materializeViews(materializeViews)
+                        .parentProject(parentProject == null ? table.getProject() : parentProject)
+                        .deserializer(deserializer)
+                        .selectedFields(selectedFields)
+                        .rowRestriction(rowRestriction)
+                        .snapshotTime(snapshotTime)
+                        .maxStreamCount(maxStreamCount)
+                        .preferredMinStreamCount(preferredMinStreamCount)
+                        .maxRecordsPerFetch(maxRecordsPerFetch);
+        // A source reading a table directly runs no query job, so it is handed no runner at all;
+        // the two seams below are on the read path, which every source has.
+        if (runsAQuery) {
+            config.queryRunner(
+                    queryRunner == null
+                            ? new BigQueryQueryRunner(serviceAccountKeyFile, emulatorRestEndpoint)
+                            : queryRunner);
+        }
+        config.sessionCreator(
+                sessionCreator == null
+                        ? new ReadClientSessionCreator(serviceAccountKeyFile, emulatorEndpoint)
+                        : sessionCreator);
+        config.rowStreamOpener(
+                rowStreamOpener == null
+                        ? new ReadClientRowStreamOpener(
+                                serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts)
+                        : rowStreamOpener);
+        return new BigQueryStorageReadSource<>(config.build());
     }
 }

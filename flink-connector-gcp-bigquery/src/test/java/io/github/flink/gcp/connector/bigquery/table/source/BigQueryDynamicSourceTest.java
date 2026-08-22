@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -55,7 +57,7 @@ class BigQueryDynamicSourceTest {
     }
 
     @Test
-    void comparesEveryConstructorField() {
+    void comparesEveryBuilderField() {
         BigQueryDynamicSource base = source();
 
         variations()
@@ -85,9 +87,9 @@ class BigQueryDynamicSourceTest {
 
     @Test
     void comparesThePhysicalTypeApartFromTheProducedType() {
-        // The constructor initializes producedDataType from physicalDataType, so a constructor
-        // variation cannot separate the two terms; applying the same projection and produced type
-        // to both sides pins the physical half on its own.
+        // A source that was not copied derives producedDataType from physicalDataType, so a
+        // builder variation cannot separate the two terms; applying the same projection and
+        // produced type to both sides pins the physical half on its own.
         DataType produced = DataTypes.ROW(DataTypes.FIELD("id", DataTypes.BIGINT()));
         BigQueryDynamicSource base = source();
         base.applyProjection(new int[][] {{0}}, produced);
@@ -124,12 +126,67 @@ class BigQueryDynamicSourceTest {
         assertThat(otherProduced).as("producedDataType").isNotEqualTo(first);
     }
 
+    @Test
+    void aCopyOfAFullySpecifiedSourceRepeatsEveryFieldOfIt() throws Exception {
+        // The guard ADR-0032 records the sink needing when it took a builder: a dropped positional
+        // argument does not compile, a dropped builder call does. Reflection rather than a list of
+        // getters, because the half worth catching is a field added later and forgotten in copy() —
+        // which the option-driven copies in the factory test catch only if some DDL there happens
+        // to set it.
+        BigQueryDynamicSource source = projected(fullySpecified());
+        BigQueryDynamicSource copy = (BigQueryDynamicSource) source.copy();
+
+        for (Field declared : BigQueryDynamicSource.class.getDeclaredFields()) {
+            if (Modifier.isStatic(declared.getModifiers())) {
+                continue;
+            }
+            declared.setAccessible(true);
+            assertThat(declared.get(copy))
+                    .as("copy() dropped %s", declared.getName())
+                    .isEqualTo(declared.get(source));
+        }
+    }
+
+    @Test
+    void theFullySpecifiedSourceLeavesNoFieldAtItsDefault() throws Exception {
+        // What makes the guard above cover a field added *later*, and the half it does not have on
+        // its own: fullySpecified() takes its values from the hand-written variations() map, so a
+        // new field nobody adds there sits at its default on both sides of the copy and compares
+        // equal however copy() treats it. This is the assertion that fails when that happens.
+        BigQueryDynamicSource base = source();
+        BigQueryDynamicSource full = projected(fullySpecified());
+
+        for (Field declared : BigQueryDynamicSource.class.getDeclaredFields()) {
+            if (Modifier.isStatic(declared.getModifiers())) {
+                continue;
+            }
+            declared.setAccessible(true);
+            assertThat(declared.get(full))
+                    .as("variations() leaves %s at its default", declared.getName())
+                    .isNotEqualTo(declared.get(base));
+        }
+    }
+
+    /** A source with every value set, by applying all of {@link #variations()} to one base. */
+    private static BigQueryDynamicSource fullySpecified() {
+        Args args = new Args();
+        variations().values().forEach(vary -> vary.accept(args));
+        return args.build();
+    }
+
+    /** The same source with the two planner-applied fields set, which no builder value reaches. */
+    private static BigQueryDynamicSource projected(BigQueryDynamicSource source) {
+        source.applyProjection(
+                new int[][] {{0}}, DataTypes.ROW(DataTypes.FIELD("id", DataTypes.BIGINT())));
+        return source;
+    }
+
     /**
-     * One variation per constructor field, each differing from {@link #source()} in that field.
+     * One variation per builder field, each differing from {@link #source()} in that field.
      *
      * <p>Two entries are inherently wider than one field: the table-against-query swap (exactly one
      * of the two may be set — {@link #comparesTwoQuerySourcesByTheirQueries} covers the query term
-     * on its own) and the physical type, which the constructor also copies into the produced type
+     * on its own) and the physical type, which an uncopied source also takes as its produced type
      * ({@link #comparesThePhysicalTypeApartFromTheProducedType} isolates it).
      */
     private static Map<String, Consumer<Args>> variations() {
@@ -176,7 +233,7 @@ class BigQueryDynamicSourceTest {
         return args.build();
     }
 
-    /** The base source's constructor arguments, one field away at a time. */
+    /** The base source's builder values, one field away at a time. */
     private static final class Args {
 
         DataType physicalDataType =
@@ -202,25 +259,26 @@ class BigQueryDynamicSourceTest {
         @Nullable Integer parallelism;
 
         BigQueryDynamicSource build() {
-            return new BigQueryDynamicSource(
-                    physicalDataType,
-                    table,
-                    query,
-                    parentProject,
-                    materializeViews,
-                    queryLocation,
-                    queryResultDataset,
-                    reuseQueryResultWithin,
-                    rowRestriction,
-                    snapshotTime,
-                    maxStreamCount,
-                    preferredMinStreamCount,
-                    maxRecordsPerFetch,
-                    retryMaxAttempts,
-                    serviceAccountKeyFile,
-                    emulatorEndpoint,
-                    emulatorRestEndpoint,
-                    parallelism);
+            return BigQueryDynamicSource.builder()
+                    .physicalDataType(physicalDataType)
+                    .table(table)
+                    .query(query)
+                    .parentProject(parentProject)
+                    .materializeViews(materializeViews)
+                    .queryLocation(queryLocation)
+                    .queryResultDataset(queryResultDataset)
+                    .reuseQueryResultWithin(reuseQueryResultWithin)
+                    .rowRestriction(rowRestriction)
+                    .snapshotTime(snapshotTime)
+                    .maxStreamCount(maxStreamCount)
+                    .preferredMinStreamCount(preferredMinStreamCount)
+                    .maxRecordsPerFetch(maxRecordsPerFetch)
+                    .retryMaxAttempts(retryMaxAttempts)
+                    .serviceAccountKeyFile(serviceAccountKeyFile)
+                    .emulatorEndpoint(emulatorEndpoint)
+                    .emulatorRestEndpoint(emulatorRestEndpoint)
+                    .parallelism(parallelism)
+                    .build();
         }
     }
 }
