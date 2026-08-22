@@ -48,6 +48,7 @@ import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -93,6 +94,7 @@ public final class BigtableDynamicSource
     private final BigtableTableSchema schema;
     private final TableDestination destination;
     private final String nullStringLiteral;
+    private final TrailingBytes trailingBytes;
     @Nullable private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
     private final List<ByteString> prefixes;
@@ -115,6 +117,8 @@ public final class BigtableDynamicSource
         this.nullStringLiteral =
                 Preconditions.checkNotNull(
                         builder.nullStringLiteral, "nullStringLiteral must not be null");
+        this.trailingBytes =
+                Preconditions.checkNotNull(builder.trailingBytes, "trailingBytes must not be null");
         this.appProfileId = builder.appProfileId;
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.prefixes = builder.prefixes;
@@ -169,7 +173,7 @@ public final class BigtableDynamicSource
 
     @Override
     public SupportsFilterPushDown.Result applyFilters(List<ResolvedExpression> filters) {
-        filterState = BigtableFilterPushDown.translate(schema, filters);
+        filterState = BigtableFilterPushDown.translate(schema, filters, trailingBytes);
         return filterState.result();
     }
 
@@ -183,7 +187,8 @@ public final class BigtableDynamicSource
         // interface — what keeps flink-table-runtime off this module's dependencies.
         TypeInformation<RowData> producedTypeInfo = context.createTypeInformation(producedDataType);
         RowToRowDataConverter converter =
-                new RowToRowDataConverter(schema, projectedFields, nullStringLiteral);
+                new RowToRowDataConverter(
+                        schema, projectedFields, nullStringLiteral, trailingBytes);
         List<ByteStringRange> ranges = readRanges();
         BigtableSourceBuilder<RowData> builder =
                 BigtableSource.<RowData>builder()
@@ -222,6 +227,7 @@ public final class BigtableDynamicSource
                                     schema,
                                     projectedFields,
                                     nullStringLiteral,
+                                    trailingBytes,
                                     filter,
                                     ranges,
                                     appProfileId,
@@ -238,6 +244,7 @@ public final class BigtableDynamicSource
                             schema,
                             projectedFields,
                             nullStringLiteral,
+                            trailingBytes,
                             filter,
                             ranges,
                             appProfileId,
@@ -255,6 +262,7 @@ public final class BigtableDynamicSource
                         schema,
                         projectedFields,
                         nullStringLiteral,
+                        trailingBytes,
                         filter,
                         ranges,
                         appProfileId,
@@ -360,6 +368,7 @@ public final class BigtableDynamicSource
                 .schema(schema)
                 .destination(destination)
                 .nullStringLiteral(nullStringLiteral)
+                .trailingBytes(trailingBytes)
                 .appProfileId(appProfileId)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .prefixes(prefixes)
@@ -392,6 +401,7 @@ public final class BigtableDynamicSource
         return schema.equals(that.schema)
                 && destination.equals(that.destination)
                 && nullStringLiteral.equals(that.nullStringLiteral)
+                && trailingBytes == that.trailingBytes
                 && Objects.equals(appProfileId, that.appProfileId)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && prefixes.equals(that.prefixes)
@@ -412,6 +422,7 @@ public final class BigtableDynamicSource
                 schema,
                 destination,
                 nullStringLiteral,
+                trailingBytes,
                 appProfileId,
                 serviceAccountKeyFile,
                 prefixes,
@@ -432,6 +443,7 @@ public final class BigtableDynamicSource
         private BigtableTableSchema schema;
         private TableDestination destination;
         private String nullStringLiteral;
+        private TrailingBytes trailingBytes;
         @Nullable private String appProfileId;
         @Nullable private String serviceAccountKeyFile;
         private List<ByteString> prefixes = Collections.emptyList();
@@ -471,6 +483,15 @@ public final class BigtableDynamicSource
          */
         public Builder nullStringLiteral(String nullStringLiteral) {
             this.nullStringLiteral = nullStringLiteral;
+            return this;
+        }
+
+        /**
+         * @param trailingBytes what a fixed-width decode does with bytes past the declared layout
+         * @return this builder
+         */
+        public Builder trailingBytes(TrailingBytes trailingBytes) {
+            this.trailingBytes = trailingBytes;
             return this;
         }
 

@@ -61,6 +61,14 @@ import java.util.Arrays;
  * declared precision is a decode failure here, where the HBase connector reads {@code null} —
  * silently aliasing real data onto the null convention below (#1038, ADR-0135).
  *
+ * <p>What a fixed-width decoder does with a value longer than its layout is {@link TrailingBytes}'
+ * choice, defaulting to the mirrored contract: {@code Bytes.toLong(byte[])} and its siblings
+ * delegate to their offset-taking overloads, whose only bound is {@code offset + length <=
+ * bytes.length}, so they read the leading bytes of a longer array without complaint (verified
+ * against {@code hbase-common} 2.6.6 on 2026-08-23, ADR-0136). {@code Bytes.toBoolean} is the one
+ * member that checks its length, and the {@code BOOLEAN} decoder mirrors that under either choice.
+ * A value <em>shorter</em> than its layout fails under both.
+ *
  * <p>A null is an empty cell for every type but a character string, where an empty cell is a
  * legitimate value — that column writes the {@code null-string-literal} instead.
  */
@@ -256,10 +264,12 @@ public final class CellValueCodec {
      *
      * @param type the declared type
      * @param nullStringBytes the {@code null-string-literal}, UTF-8 encoded
+     * @param trailingBytes what a fixed-width decode does with bytes past the declared layout
      * @return the decoder
      */
-    public static FieldDecoder nullableDecoder(LogicalType type, byte[] nullStringBytes) {
-        FieldDecoder decoder = decoder(type);
+    public static FieldDecoder nullableDecoder(
+            LogicalType type, byte[] nullStringBytes, TrailingBytes trailingBytes) {
+        FieldDecoder decoder = decoder(type, trailingBytes);
         if (!type.isNullable()) {
             return decoder;
         }
@@ -269,25 +279,53 @@ public final class CellValueCodec {
     }
 
     /**
+     * Whether {@code type}'s cell layout is one the trailing-bytes policy governs — the fixed-width
+     * numeric, temporal and interval layouts decoded through the exact-width check. {@code BOOLEAN}
+     * is outside it (its one-byte rule holds under either policy), and so are the variable-width
+     * and self-delimiting layouts, which have no trailing bytes to decide about.
+     *
+     * @param type the declared type
+     * @return whether the policy decides this type's overlong decode
+     */
+    public static boolean isTrailingBytesGoverned(LogicalType type) {
+        switch (type.getTypeRoot()) {
+            case TINYINT:
+            case SMALLINT:
+            case INTEGER:
+            case DATE:
+            case INTERVAL_YEAR_MONTH:
+            case TIME_WITHOUT_TIME_ZONE:
+            case BIGINT:
+            case INTERVAL_DAY_TIME:
+            case FLOAT:
+            case DOUBLE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
      * Returns a decoder for a cell that is known to hold a value.
      *
      * @param type the declared type
+     * @param trailingBytes what a fixed-width decode does with bytes past the declared layout
      * @return the decoder
      */
-    public static FieldDecoder decoder(LogicalType type) {
-        return new TypedFieldDecoder(type);
+    public static FieldDecoder decoder(LogicalType type, TrailingBytes trailingBytes) {
+        return new TypedFieldDecoder(type, trailingBytes);
     }
 
-    private static FieldDecoder resolveDecoder(LogicalType type) {
+    private static FieldDecoder resolveDecoder(LogicalType type, TrailingBytes trailingBytes) {
         // Ordered as the encoder switch above, whose layouts these reverse.
         switch (type.getTypeRoot()) {
             case CHAR:
             case VARCHAR:
                 return StringData::fromBytes;
             case BOOLEAN:
-                // Any nonzero byte reads as true, which is Bytes.toBoolean's rule — not an
-                // equality test against the 0xFF the encoder writes.
-                return value -> value[0] != 0;
+                return CellValueCodec::toBoolean;
             case BINARY:
             case VARBINARY:
                 return value -> value;
@@ -319,28 +357,60 @@ public final class CellValueCodec {
                     return decimal;
                 };
             case TINYINT:
-                return value -> value[0];
+                return fixedWidth(trailingBytes, 1, value -> value[0]);
             case SMALLINT:
-                return CellValueCodec::toShort;
+                return fixedWidth(trailingBytes, 2, CellValueCodec::toShort);
             case INTEGER:
             case DATE:
             case INTERVAL_YEAR_MONTH:
             case TIME_WITHOUT_TIME_ZONE:
-                return CellValueCodec::toInt;
+                return fixedWidth(trailingBytes, 4, CellValueCodec::toInt);
             case BIGINT:
             case INTERVAL_DAY_TIME:
-                return CellValueCodec::toLong;
+                return fixedWidth(trailingBytes, 8, CellValueCodec::toLong);
             case FLOAT:
-                return value -> Float.intBitsToFloat(toInt(value));
+                return fixedWidth(trailingBytes, 4, value -> Float.intBitsToFloat(toInt(value)));
             case DOUBLE:
-                return value -> Double.longBitsToDouble(toLong(value));
+                return fixedWidth(
+                        trailingBytes, 8, value -> Double.longBitsToDouble(toLong(value)));
             case TIMESTAMP_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                return value -> TimestampData.fromEpochMillis(toLong(value));
+                return fixedWidth(
+                        trailingBytes, 8, value -> TimestampData.fromEpochMillis(toLong(value)));
             default:
                 // Unreachable through the DDL, which is checked by checkSupported above. Kept as
                 // the invariant's backstop rather than as a second user-facing message.
                 throw new IllegalStateException("No cell decoding for type " + type);
+        }
+    }
+
+    /**
+     * Applies the {@link TrailingBytes} choice to one fixed-width decoder: under {@code IGNORE} the
+     * delegate reads its leading bytes as the mirrored {@code Bytes} method would, and under {@code
+     * REJECT} any length but {@code width} fails before the delegate reads a byte — a shorter value
+     * with this message rather than the delegate's bare {@code ArrayIndexOutOfBoundsException}.
+     */
+    private static FieldDecoder fixedWidth(
+            TrailingBytes trailingBytes, int width, FieldDecoder delegate) {
+        // Compared against REJECT rather than IGNORE so an absent value resolves the documented
+        // default: a TypedFieldDecoder serialized before the policy existed deserializes with a
+        // null field, and readObject re-resolves through this method.
+        if (trailingBytes != TrailingBytes.REJECT) {
+            return delegate;
+        }
+        return value -> {
+            checkExactWidth(width, value);
+            return delegate.decode(value);
+        };
+    }
+
+    private static void checkExactWidth(int width, byte[] value) {
+        if (value.length != width) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "The declared type's layout is exactly %d byte(s), but the value"
+                                    + " holds %d.",
+                            width, value.length));
         }
     }
 
@@ -397,18 +467,20 @@ public final class CellValueCodec {
         private static final long serialVersionUID = 1L;
 
         private final LogicalType type;
+        private final TrailingBytes trailingBytes;
 
         private transient FieldDecoder delegate;
 
-        TypedFieldDecoder(LogicalType type) {
+        TypedFieldDecoder(LogicalType type, TrailingBytes trailingBytes) {
             this.type = type;
-            this.delegate = resolveDecoder(type);
+            this.trailingBytes = trailingBytes;
+            this.delegate = resolveDecoder(type, trailingBytes);
         }
 
         private void readObject(ObjectInputStream input)
                 throws IOException, ClassNotFoundException {
             input.defaultReadObject();
-            this.delegate = resolveDecoder(type);
+            this.delegate = resolveDecoder(type, trailingBytes);
         }
 
         @Override
@@ -517,12 +589,30 @@ public final class CellValueCodec {
         return bytes;
     }
 
-    /** {@code Bytes.toShort(byte[])}: two bytes, big-endian two's complement. */
+    /**
+     * {@code Bytes.toBoolean(byte[])}: any nonzero byte reads as true — not an equality test
+     * against the {@code 0xFF} the encoder writes — and, alone among the fixed-width decoders, any
+     * length but one is rejected. Both rules are that method's own.
+     */
+    private static boolean toBoolean(byte[] bytes) {
+        checkExactWidth(1, bytes);
+        return bytes[0] != 0;
+    }
+
+    /**
+     * {@code Bytes.toShort(byte[])}: the leading two bytes, big-endian two's complement. Like the
+     * mirrored method, it reads past nothing and checks nothing — {@code fixedWidth} is where a
+     * length rule attaches.
+     */
     private static short toShort(byte[] bytes) {
         return (short) ((bytes[0] << 8) | (bytes[1] & 0xff));
     }
 
-    /** {@code Bytes.toInt(byte[])}: four bytes, big-endian two's complement. */
+    /**
+     * {@code Bytes.toInt(byte[])}: the leading four bytes, big-endian two's complement. Also the
+     * decimal layout's scale prefix, which is why no length rule lives here — a decimal cell is
+     * legitimately longer.
+     */
     private static int toInt(byte[] bytes) {
         int value = 0;
         for (int i = 0; i < 4; i++) {
@@ -531,7 +621,7 @@ public final class CellValueCodec {
         return value;
     }
 
-    /** {@code Bytes.toLong(byte[])}: eight bytes, big-endian two's complement. */
+    /** {@code Bytes.toLong(byte[])}: the leading eight bytes, big-endian two's complement. */
     private static long toLong(byte[] bytes) {
         long value = 0;
         for (int i = 0; i < 8; i++) {

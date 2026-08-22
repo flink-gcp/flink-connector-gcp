@@ -121,6 +121,25 @@ public final class BigtableConnectorOptions {
                                     + " connector's, so a table written by either is readable by"
                                     + " the other.");
 
+    public static final ConfigOption<TrailingBytes> DECODE_TRAILING_BYTES =
+            ConfigOptions.key("decode.trailing-bytes")
+                    .enumType(TrailingBytes.class)
+                    .defaultValue(TrailingBytes.IGNORE)
+                    .withDescription(
+                            "What a read does with a fixed-width cell or row key longer than the"
+                                    + " declared type's layout — the integral, floating-point,"
+                                    + " temporal and interval types. IGNORE decodes the declared"
+                                    + " width and discards the rest, which is HBase's rule and the"
+                                    + " default; REJECT fails the read instead, so a value written"
+                                    + " under a different encoding cannot silently decode as its"
+                                    + " prefix. A BOOLEAN value of any size but one byte fails"
+                                    + " under either setting, which is also HBase's rule; a"
+                                    + " nullable column's empty cell stays a SQL NULL ahead of"
+                                    + " any decoder. Governs every decode"
+                                    + " path — scans, lookups and the selected-cell primary key —"
+                                    + " and is refused in the envelope Change Streams mode, which"
+                                    + " decodes no cell.");
+
     // ------------------------------------------------------------------------
     //  Scan
     // ------------------------------------------------------------------------

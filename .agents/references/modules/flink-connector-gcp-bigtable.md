@@ -377,8 +377,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
   setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated. Table-owned options have no
-  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The six
-  defaulted table-owned options are `scan.mode`, `null-string-literal`,
+  builder setter behind them and form a separate partition in `BigtableOptionParityTest`. The seven
+  defaulted table-owned options are `scan.mode`, `null-string-literal`, `decode.trailing-bytes`,
   `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
   `sink.insert-only-input-mode`; `scan.change-stream.changelog-mode` is deliberately required so
   selecting either Change Streams interpretation remains explicit. A mapped option gaining a
@@ -414,8 +414,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   are `Bytes` as `HBaseSerde` applies them. `HBaseSerde` is the interop target, **not**
   `HBaseTypeUtils`: the two disagree on `DATE` and `TIME`, and only the first is what a Flink SQL
   HBase job writes. `CellValueCodecTest`'s golden vectors are the record; a round-trip test would
-  pass with the interop broken. Two traps they pin: `true` is `0xFF`, and a `TINYINT` must not go
-  through a numeric overload (a `byte` widens to `short`). **The interop is the byte layouts, not
+  pass with the interop broken. Three traps they pin: `true` is `0xFF`; a `TINYINT` must not go
+  through a numeric overload (a `byte` widens to `short`); and the length rules are HBase's own
+  (ADR-0136, #1037) — `Bytes.toBoolean` rejects any length but one while the other fixed-width
+  decoders read an overlong value's prefix, a tolerance `decode.trailing-bytes = reject` opts out
+  of uniformly. The policy travels beside the declared type through `TypedFieldDecoder`; do not
+  add a decode path that resolves without it. **The interop is the byte layouts, not
   the error policy**: a decimal overflowing its declared `DECIMAL(p, s)` is a decode failure —
   `IllegalArgumentException` from the codec, wrapped by the address-naming guards — never the
   silent `NULL` the HBase connector reads, which aliased real data onto the empty-cell convention
@@ -503,7 +507,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   refinements in `docs/adr/0092` and `docs/adr/0095`). Direct field-literal equality, inequality,
   `IN` and null tests become row ranges when their byte representation is exact. Ordering is
   limited to `VARCHAR` and `VARBINARY`. Fixed-width integer and temporal equality uses a prefix
-  range because their decoders ignore suffix bytes. An empty string or binary literal remains
+  range because their decoders ignore suffix bytes by default — and under
+  `decode.trailing-bytes = reject` those predicates stay residual instead, because no range is
+  exact for a fixed-width key there: the prefix set admits a suffix-bearing key as an `=` match
+  (unvalidated when a projection drops the key) and its complement excludes it from a `<>` scan
+  that must fail on it. The converter validates the row key under `reject` even when the
+  projection dropped it (ADR-0136). An empty string or binary literal remains
   residual because the SDK cannot bound the empty key that the emulator accepts. `CHAR`, `BINARY`,
   `BOOLEAN`, `DECIMAL` and floating point remain residual. Configured prefixes and configured
   ranges remain a union, then intersect with exact SQL ranges. Positive family or qualifier predicates become

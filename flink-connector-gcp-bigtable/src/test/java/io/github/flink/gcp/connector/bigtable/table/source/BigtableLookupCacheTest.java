@@ -41,6 +41,7 @@ import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
@@ -79,7 +80,8 @@ class BigtableLookupCacheTest {
         CachingLookupFunction function =
                 new CachingLookupFunction(
                         partialCache(10, true),
-                        new BigtableRowDataLookupFunction(SCHEMA, null, "null", 0, lookup));
+                        new BigtableRowDataLookupFunction(
+                                SCHEMA, null, "null", TrailingBytes.IGNORE, 0, lookup));
         function.open(functionContext());
         try {
             GenericRowData hit = key("hit");
@@ -102,7 +104,8 @@ class BigtableLookupCacheTest {
         CachingAsyncLookupFunction function =
                 new CachingAsyncLookupFunction(
                         partialCache(10, true),
-                        new BigtableRowDataAsyncLookupFunction(SCHEMA, null, "null", 0, lookup));
+                        new BigtableRowDataAsyncLookupFunction(
+                                SCHEMA, null, "null", TrailingBytes.IGNORE, 0, lookup));
         function.open(functionContext());
         try {
             GenericRowData hit = key("hit");
@@ -125,7 +128,8 @@ class BigtableLookupCacheTest {
         CachingLookupFunction function =
                 new CachingLookupFunction(
                         partialCache(1, false),
-                        new BigtableRowDataLookupFunction(SCHEMA, null, "null", 0, lookup));
+                        new BigtableRowDataLookupFunction(
+                                SCHEMA, null, "null", TrailingBytes.IGNORE, 0, lookup));
         function.open(functionContext());
         try {
             GenericRowData first = key("first");
@@ -150,7 +154,8 @@ class BigtableLookupCacheTest {
         CachingAsyncLookupFunction function =
                 new CachingAsyncLookupFunction(
                         partialCache(1, false),
-                        new BigtableRowDataAsyncLookupFunction(SCHEMA, null, "null", 0, lookup));
+                        new BigtableRowDataAsyncLookupFunction(
+                                SCHEMA, null, "null", TrailingBytes.IGNORE, 0, lookup));
         function.open(functionContext());
         try {
             GenericRowData first = key("first");
@@ -183,6 +188,7 @@ class BigtableLookupCacheTest {
                         SCHEMA,
                         null,
                         "null",
+                        TrailingBytes.IGNORE,
                         Filters.FILTERS.family().exactMatch("cf1"),
                         Collections.singletonList(ByteStringRange.unbounded()),
                         null,

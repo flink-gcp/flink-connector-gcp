@@ -112,6 +112,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.EMULATOR_ENDPOINT,
                         BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         BigtableConnectorOptions.NULL_STRING_LITERAL,
+                        BigtableConnectorOptions.DECODE_TRAILING_BYTES,
                         BigtableConnectorOptions.SCAN_MODE,
                         BigtableConnectorOptions.SCAN_APP_PROFILE_ID,
                         BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
@@ -293,6 +294,7 @@ public class BigtableDynamicTableFactory
                         "A 'bigtable' Change Streams envelope is an insert-only mutation log and"
                                 + " must not declare a primary key.");
             }
+            checkEnvelopeDecodesNoCell(context);
             return BigtableChangeStreamDynamicSource.builder()
                     .destination(destination)
                     .appProfileId(appProfileId)
@@ -346,7 +348,31 @@ public class BigtableDynamicTableFactory
                                         .SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64,
                                 qualifier))
                 .selectedCellSourceClusterId(sourceClusterId)
+                .trailingBytes(config.get(BigtableConnectorOptions.DECODE_TRAILING_BYTES))
                 .build();
+    }
+
+    /**
+     * Rejects {@code decode.trailing-bytes} on an envelope Change Streams table. The envelope
+     * carries the row key as raw bytes and decodes no cell through the fixed-width codec, so the
+     * option would configure nothing — unlike a bounded or selected-cell table, where it governs
+     * every decode. Rejected rather than ignored, as every option of a mode this DDL did not select
+     * is.
+     */
+    private static void checkEnvelopeDecodesNoCell(Context context) {
+        List<String> present =
+                presentOptionKeys(
+                        context,
+                        Collections.singletonList(BigtableConnectorOptions.DECODE_TRAILING_BYTES));
+        if (!present.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Option %s is not valid when '%s' = '%s': the envelope emits the row"
+                                    + " key as raw bytes and decodes no cell. Remove it.",
+                            present.get(0),
+                            BigtableConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE.key(),
+                            ChangeStreamChangelogMode.ENVELOPE));
+        }
     }
 
     /**
@@ -617,6 +643,7 @@ public class BigtableDynamicTableFactory
                                 config.get(BigtableConnectorOptions.INSTANCE),
                                 config.get(BigtableConnectorOptions.TABLE)))
                 .nullStringLiteral(config.get(BigtableConnectorOptions.NULL_STRING_LITERAL))
+                .trailingBytes(config.get(BigtableConnectorOptions.DECODE_TRAILING_BYTES))
                 .appProfileId(
                         optionalNonBlank(config, BigtableConnectorOptions.SCAN_APP_PROFILE_ID))
                 .serviceAccountKeyFile(

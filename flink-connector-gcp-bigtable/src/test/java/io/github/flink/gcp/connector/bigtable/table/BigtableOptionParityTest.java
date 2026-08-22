@@ -222,6 +222,10 @@ class BigtableOptionParityTest {
                 "the cell codec's null marker; the DataStream API has no serializer to configure"
                         + " here, since a DataStream user writes their own");
         map.put(
+                BigtableConnectorOptions.DECODE_TRAILING_BYTES.key(),
+                "the cell codec's fixed-width decode policy, configured for the same reason as the"
+                        + " null marker beside it");
+        map.put(
                 BigtableConnectorOptions.LOOKUP_ASYNC.key(),
                 "selects the table runtime provider shape; the DataStream scan source has no"
                         + " lookup concept");

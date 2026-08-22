@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -82,6 +83,7 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final String selectedCellFamily;
     @Nullable private final ByteString selectedCellQualifier;
     @Nullable private final String selectedCellSourceClusterId;
+    @Nullable private final TrailingBytes trailingBytes;
 
     /** Metadata keys selected by the planner, in the order appended to produced rows. */
     private List<String> metadataKeys;
@@ -114,6 +116,7 @@ public final class BigtableChangeStreamDynamicSource
             this.selectedCellFamily = null;
             this.selectedCellQualifier = null;
             this.selectedCellSourceClusterId = null;
+            this.trailingBytes = null;
         } else {
             Preconditions.checkArgument(
                     builder.physicalDataType == null,
@@ -135,6 +138,9 @@ public final class BigtableChangeStreamDynamicSource
                     Preconditions.checkNotNull(
                             builder.selectedCellSourceClusterId,
                             "selectedCellSourceClusterId must not be null");
+            this.trailingBytes =
+                    Preconditions.checkNotNull(
+                            builder.trailingBytes, "trailingBytes must not be null");
         }
         this.metadataKeys = Collections.emptyList();
         this.producedDataType = physicalDataType;
@@ -162,10 +168,11 @@ public final class BigtableChangeStreamDynamicSource
                 builder.decodingFormat == null
                         && builder.selectedCellFamily == null
                         && builder.selectedCellQualifier == null
-                        && builder.selectedCellSourceClusterId == null,
-                "decodingFormat, selectedCellFamily, selectedCellQualifier and"
-                        + " selectedCellSourceClusterId belong to the selected-cell mode and must"
-                        + " not be set without selectedCellSchema.");
+                        && builder.selectedCellSourceClusterId == null
+                        && builder.trailingBytes == null,
+                "decodingFormat, selectedCellFamily, selectedCellQualifier,"
+                        + " selectedCellSourceClusterId and trailingBytes belong to the"
+                        + " selected-cell mode and must not be set without selectedCellSchema.");
     }
 
     @Override
@@ -217,6 +224,7 @@ public final class BigtableChangeStreamDynamicSource
                                     selectedCellQualifier,
                                     selectedCellSourceClusterId),
                             selectedCellSchema,
+                            trailingBytes,
                             selectedMetadata,
                             typeInformation));
         }
@@ -261,7 +269,8 @@ public final class BigtableChangeStreamDynamicSource
                     .decodingFormat(decodingFormat)
                     .selectedCellFamily(selectedCellFamily)
                     .selectedCellQualifier(selectedCellQualifier)
-                    .selectedCellSourceClusterId(selectedCellSourceClusterId);
+                    .selectedCellSourceClusterId(selectedCellSourceClusterId)
+                    .trailingBytes(trailingBytes);
         }
         BigtableChangeStreamDynamicSource copy = builder.build();
         copy.applyReadableMetadata(metadataKeys, producedDataType);
@@ -298,6 +307,7 @@ public final class BigtableChangeStreamDynamicSource
                 && Objects.equals(selectedCellFamily, that.selectedCellFamily)
                 && Objects.equals(selectedCellQualifier, that.selectedCellQualifier)
                 && Objects.equals(selectedCellSourceClusterId, that.selectedCellSourceClusterId)
+                && trailingBytes == that.trailingBytes
                 && metadataKeys.equals(that.metadataKeys)
                 && producedDataType.equals(that.producedDataType);
     }
@@ -320,6 +330,7 @@ public final class BigtableChangeStreamDynamicSource
                 selectedCellFamily,
                 selectedCellQualifier,
                 selectedCellSourceClusterId,
+                trailingBytes,
                 metadataKeys,
                 producedDataType);
     }
@@ -347,6 +358,7 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private String selectedCellFamily;
         @Nullable private ByteString selectedCellQualifier;
         @Nullable private String selectedCellSourceClusterId;
+        @Nullable private TrailingBytes trailingBytes;
 
         private Builder() {}
 
@@ -508,6 +520,18 @@ public final class BigtableChangeStreamDynamicSource
          */
         public Builder selectedCellSourceClusterId(String selectedCellSourceClusterId) {
             this.selectedCellSourceClusterId = selectedCellSourceClusterId;
+            return this;
+        }
+
+        /**
+         * Sets what the primary-key decode does with bytes past the declared layout. Required in
+         * the selected-cell mode, which is the only mode that decodes through the cell codec.
+         *
+         * @param trailingBytes the fixed-width decode policy
+         * @return this builder
+         */
+        public Builder trailingBytes(TrailingBytes trailingBytes) {
+            this.trailingBytes = trailingBytes;
             return this;
         }
 

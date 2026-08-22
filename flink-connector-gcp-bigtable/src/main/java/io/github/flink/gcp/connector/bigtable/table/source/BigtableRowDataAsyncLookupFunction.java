@@ -31,6 +31,7 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
@@ -55,6 +56,7 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
             BigtableTableSchema schema,
             @Nullable int[] projectedFields,
             String nullStringLiteral,
+            TrailingBytes trailingBytes,
             Filters.Filter filter,
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
@@ -67,6 +69,7 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
                         schema,
                         projectedFields,
                         nullStringLiteral,
+                        trailingBytes,
                         filter,
                         ranges,
                         appProfileId,
@@ -80,9 +83,12 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
             BigtableTableSchema schema,
             @Nullable int[] projectedFields,
             String nullStringLiteral,
+            TrailingBytes trailingBytes,
             int maxRetries,
             BigtableRowLookup lookup) {
-        this.lookup = new BigtableRowDataLookup(schema, projectedFields, nullStringLiteral, lookup);
+        this.lookup =
+                new BigtableRowDataLookup(
+                        schema, projectedFields, nullStringLiteral, trailingBytes, lookup);
         this.maxRetries = maxRetries;
     }
 

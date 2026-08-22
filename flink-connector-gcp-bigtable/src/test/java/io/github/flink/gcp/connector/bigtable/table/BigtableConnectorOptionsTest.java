@@ -45,6 +45,7 @@ class BigtableConnectorOptionsTest {
             new HashSet<>(
                     Arrays.asList(
                             BigtableConnectorOptions.NULL_STRING_LITERAL.key(),
+                            BigtableConnectorOptions.DECODE_TRAILING_BYTES.key(),
                             BigtableConnectorOptions.SCAN_MODE.key(),
                             BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING.key(),
                             BigtableConnectorOptions.LOOKUP_ASYNC.key(),
