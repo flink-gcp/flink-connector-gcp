@@ -47,6 +47,20 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   observed once on a development laptop, 2026-08-16, during the #755 series: the emulator ITs
   contended and one build stalled without failing or progressing. The ~8-10 minute local figure is
   from the same machine and session; ADR-0058 carries the CI lane's measured 4:09.
+- **A published container port is not proof the container owns it.** Docker publishes on the
+  wildcard address, which coexists with a process already bound to `127.0.0.1:<port>` — and that
+  process keeps the more specific bind, so anything resolving `localhost` to the IPv4 loopback
+  reaches it rather than the container. The JVM does exactly that by default (`127.0.0.1` ahead of
+  `::1`), while `curl` reaches `::1` and so reaches the container. **On a default macOS/Docker
+  Desktop setup the tell is therefore that `curl` says the endpoint is fine and the test says it is
+  not** — reproduced 2026-08-22 with a holder on `127.0.0.1:<port>` and the container published on
+  `0.0.0.0`: 200 to `curl`, `401` to a Java client on the same URL. Every leg of that is
+  configurable (Docker's default bind, `java.net.preferIPv6Addresses`, whether `curl` has IPv6), so
+  confirm the split rather than assuming it. #1003 was that, an unrelated desktop application's loopback API answering
+  `401 Unauthorized` to a `tables.insert` the emulator has no code path to produce. `lsof -nP
+  -iTCP:<port> -sTCP:LISTEN` names the occupant. The BigQuery harness now makes its emulator
+  identify itself before any test runs (`BigQueryEmulatorContainers.newContainer`); the other
+  emulator harnesses have no equivalent probe today, so on those the diagnosis is still by hand.
 - **A local build is only as honest as the local state**: a primed `~/.m2` (this project's own
   SNAPSHOTs from any `install`) and a stale `target/` make reactor, packaging and
   plugin-execution changes look green locally while CI — which starts clean — fails. Verify

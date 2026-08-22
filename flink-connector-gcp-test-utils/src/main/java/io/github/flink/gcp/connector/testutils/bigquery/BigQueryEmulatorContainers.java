@@ -25,6 +25,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
+
+import java.time.Duration;
 
 /**
  * The BigQuery emulator image and its two endpoints, shared by every harness that starts the
@@ -49,6 +52,13 @@ public final class BigQueryEmulatorContainers {
 
     private static final int GRPC_PORT = 9060;
 
+    /**
+     * Testcontainers' own per-strategy default, restated because nesting a strategy silently
+     * replaces it: {@code WaitAllStrategy} hands each child whatever ceiling it is carrying, which
+     * defaults to 30 s rather than the 60 s a strategy passed straight to {@code waitingFor} keeps.
+     */
+    private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(60);
+
     private BigQueryEmulatorContainers() {}
 
     /**
@@ -58,13 +68,14 @@ public final class BigQueryEmulatorContainers {
      * <p>The dataset comes from a command-line flag because the emulator creates it at startup;
      * tables are created by the test, or by the connector under {@code create-if-needed}.
      *
-     * <p>Waiting for the two ports is enough to reach that dataset, and what makes it enough is the
-     * emulator's startup order rather than timing: 0.8.1 applies {@code --dataset} in {@code
-     * Server.Load} and enters {@code Server.Serve} — where {@code net.Listen} runs — only
-     * afterwards, so neither socket exists until the dataset does (#439). Measured 2026-08-09 over
-     * 20 starts of this image: the first HTTP response the emulator ever gave was a 200 on the
-     * dataset in 20 of 20, against a control arm started without {@code --dataset} where the same
-     * probe read 404 with both ports open in 3 of 3.
+     * <p>Waiting for the two ports is enough to reach that dataset — on a container whose ports are
+     * its own, which is the paragraph after next — and what makes it enough is the emulator's
+     * startup order rather than timing: 0.8.1 applies {@code --dataset} in {@code Server.Load} and
+     * enters {@code Server.Serve} — where {@code net.Listen} runs — only afterwards, so neither
+     * socket exists until the dataset does (#439). Measured 2026-08-09 over 20 starts of this
+     * image: the first HTTP response the emulator ever gave was a 200 on the dataset in 20 of 20,
+     * against a control arm started without {@code --dataset} where the same probe read 404 with
+     * both ports open in 3 of 3.
      *
      * <p>A host-side connect does land 0.075–0.281 s (median 0.105 s) ahead of any answer from the
      * emulator, Docker's port forwarder accepting before the process is up; the probe got no HTTP
@@ -72,12 +83,85 @@ public final class BigQueryEmulatorContainers {
      * side alone in any case — testcontainers 1.21.4 also execs a listen check that blocks inside
      * the container until the port answers, and returns only once it has, which needs the {@code
      * /bin/sh} this image carries.
+     *
+     * <p>What that leaves open, and what the HTTP probe below closes, is <em>who</em> owns the
+     * published host port. Docker publishes on the wildcard address, which coexists with a process
+     * already listening on {@code 127.0.0.1:<port>} — and that process keeps the more specific
+     * bind, so a client resolving {@code localhost} to the IPv4 loopback reaches it instead of the
+     * container. The JVM does resolve that way by default — {@code InetAddress.getAllByName(
+     * "localhost")} returns {@code 127.0.0.1} ahead of {@code ::1}, absent {@code
+     * java.net.preferIPv6Addresses}. Meanwhile the container is healthy, the in-container listen
+     * check passes, and the host-side connect passes because something did accept it.
+     *
+     * <p>Reproduced end to end 2026-08-22 on Docker Desktop for macOS with this project's JDK,
+     * holding {@code 127.0.0.1:<port>} while Docker published the same port on {@code 0.0.0.0}: the
+     * container ran and served, {@code curl} read 200 from it — it reached {@code ::1} — and a Java
+     * client on the same URL read the other process's {@code 401}. <b>On a default setup that
+     * disagreement is the diagnostic</b>: an endpoint answering correctly to {@code curl} and
+     * wrongly to the test is this, not a connector bug. Each leg of it is configurable — Docker's
+     * default bind address, the JVM's address preference, and whether {@code curl} has IPv6 to
+     * prefer — so treat it as the tell on the setup it was measured on rather than as a law. It is
+     * what #1003 turned out to be, an unrelated desktop application's loopback API answering {@code
+     * 401 Unauthorized} to a {@code tables.insert} the emulator never saw. The probe below is
+     * itself a Java client of the same URL, so it resolves the way the test does and sees what the
+     * test would see, whichever way that is. Asking the emulator to identify itself turns that into
+     * a container that fails to start, naming the URL it could not satisfy, instead of an
+     * unattributable failure inside a test. The 2026-08-09 control arm above <em>is</em> this
+     * probe, which is why no second measurement is recorded here: a 200 on the dataset the
+     * container was started with is exactly what that arm showed a dataset-carrying emulator gives
+     * and a dataset-less one does not.
+     *
+     * <p>The body is checked as well as the status, because a status alone identifies nothing: any
+     * server answering 200 to an unknown path would pass. Verified by dropping {@code --dataset}
+     * from the command below, which fails the container's start with {@code
+     * ContainerLaunchException: Timed out waiting for URL to be accessible (…/datasets/… should
+     * return HTTP [200])} rather than handing a test an endpoint that leads elsewhere.
+     *
+     * <p>The gRPC port has no equivalent probe, so a {@code GRPC_PORT} shadowed the same way still
+     * surfaces as whatever the Storage Write API client makes of a stranger's answer.
      */
     public static GenericContainer<?> newContainer(String project, String dataset) {
         return new GenericContainer<>(IMAGE)
                 .withCommand("--project=" + project, "--dataset=" + dataset)
                 .withExposedPorts(REST_PORT, GRPC_PORT)
-                .waitingFor(Wait.forListeningPorts(REST_PORT, GRPC_PORT));
+                .waitingFor(
+                        // Individual timeouts rather than an outer one: WITH_OUTER_TIMEOUT wraps
+                        // both children in a ducttape timeout that cannot fire later than theirs
+                        // and discards whichever one it interrupted, so what reaches a reader is a
+                        // bare TimeoutException. Measured: under that mode the failure names
+                        // nothing, under this one it is "Timed out waiting for URL to be accessible
+                        // (… should return HTTP [200])". It would have swallowed the port check's
+                        // own message too, which reaches a reader today. The cost is that a
+                        // container hanging both checks takes them in sequence.
+                        new WaitAllStrategy(WaitAllStrategy.Mode.WITH_INDIVIDUAL_TIMEOUTS_ONLY)
+                                .withStrategy(
+                                        Wait.forListeningPorts(REST_PORT, GRPC_PORT)
+                                                .withStartupTimeout(STARTUP_TIMEOUT))
+                                .withStrategy(
+                                        Wait.forHttp(
+                                                        "/bigquery/v2/projects/"
+                                                                + project
+                                                                + "/datasets/"
+                                                                + dataset)
+                                                .forPort(REST_PORT)
+                                                .forStatusCode(200)
+                                                // The emulator echoes a datasetReference back, so
+                                                // the body is what names it; a status alone would
+                                                // be satisfied by anything answering 200 to an
+                                                // unknown path, which is the same defect in a
+                                                // narrower form. The field name is checked beside
+                                                // the two ids because those two appear in the
+                                                // request path as well, so a service that merely
+                                                // echoes what it was asked for would otherwise
+                                                // pass. Substrings rather than parsed JSON: this
+                                                // module has no JSON dependency, and the pinned
+                                                // image's response shape is pinned with it.
+                                                .forResponsePredicate(
+                                                        body ->
+                                                                body.contains("datasetReference")
+                                                                        && body.contains(project)
+                                                                        && body.contains(dataset))
+                                                .withStartupTimeout(STARTUP_TIMEOUT)));
     }
 
     /** The Storage Write API endpoint as {@code host:port}, for {@code emulatorEndpoint}. */
