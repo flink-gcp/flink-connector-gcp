@@ -292,16 +292,17 @@ public class BigtableDynamicTableFactory
                         "A 'bigtable' Change Streams envelope is an insert-only mutation log and"
                                 + " must not declare a primary key.");
             }
-            return new BigtableChangeStreamDynamicSource(
-                    destination,
-                    appProfileId,
-                    serviceAccountKeyFile,
-                    startPosition,
-                    resumeFallback,
-                    endTime,
-                    maxConcurrentStreams,
-                    parallelism,
-                    physicalDataType);
+            return BigtableChangeStreamDynamicSource.builder()
+                    .destination(destination)
+                    .appProfileId(appProfileId)
+                    .serviceAccountKeyFile(serviceAccountKeyFile)
+                    .startPosition(startPosition)
+                    .resumeFallback(resumeFallback)
+                    .endTime(endTime)
+                    .maxConcurrentStreamsPerSubtask(maxConcurrentStreams)
+                    .parallelism(parallelism)
+                    .physicalDataType(physicalDataType)
+                    .build();
         }
 
         if (!decodingFormat.getChangelogMode().equals(ChangelogMode.insertOnly())) {
@@ -326,22 +327,25 @@ public class BigtableDynamicTableFactory
                         config,
                         BigtableConnectorOptions
                                 .SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID);
-        return new BigtableChangeStreamDynamicSource(
-                destination,
-                appProfileId,
-                serviceAccountKeyFile,
-                startPosition,
-                resumeFallback,
-                endTime,
-                maxConcurrentStreams,
-                parallelism,
-                schema,
-                decodingFormat,
-                family,
-                RowKeyDecoder.decodeBase64(
-                        BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64,
-                        qualifier),
-                sourceClusterId);
+        return BigtableChangeStreamDynamicSource.builder()
+                .destination(destination)
+                .appProfileId(appProfileId)
+                .serviceAccountKeyFile(serviceAccountKeyFile)
+                .startPosition(startPosition)
+                .resumeFallback(resumeFallback)
+                .endTime(endTime)
+                .maxConcurrentStreamsPerSubtask(maxConcurrentStreams)
+                .parallelism(parallelism)
+                .selectedCellSchema(schema)
+                .decodingFormat(decodingFormat)
+                .selectedCellFamily(family)
+                .selectedCellQualifier(
+                        RowKeyDecoder.decodeBase64(
+                                BigtableConnectorOptions
+                                        .SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64,
+                                qualifier))
+                .selectedCellSourceClusterId(sourceClusterId)
+                .build();
     }
 
     /**

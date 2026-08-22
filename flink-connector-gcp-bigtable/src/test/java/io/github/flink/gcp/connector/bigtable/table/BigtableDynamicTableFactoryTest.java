@@ -601,6 +601,17 @@ class BigtableDynamicTableFactoryTest {
         return options;
     }
 
+    /**
+     * A builder carrying what every envelope expectation here shares, so each test names only what
+     * its options are supposed to change.
+     */
+    private static BigtableChangeStreamDynamicSource.Builder expectedEnvelopeSource() {
+        return BigtableChangeStreamDynamicSource.builder()
+                .destination(DESTINATION)
+                .appProfileId("single-cluster-profile")
+                .physicalDataType(BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull());
+    }
+
     private static Map<String, String> minimalSelectedCellOptions() {
         Map<String, String> options = minimalChangeStreamOptions();
         options.put("scan.change-stream.changelog-mode", "selected-cell");
@@ -860,33 +871,21 @@ class BigtableDynamicTableFactoryTest {
 
         DynamicTableSource actual = source(CHANGE_STREAM_SCHEMA, configured);
         BigtableChangeStreamDynamicSource expected =
-                new BigtableChangeStreamDynamicSource(
-                        DESTINATION,
-                        "single-cluster-profile",
-                        "/var/run/secrets/bigtable.json",
-                        StartPosition.at(Instant.ofEpochMilli(1000L)),
-                        StartPosition.earliest(),
-                        Instant.ofEpochMilli(2000L),
-                        5,
-                        3,
-                        BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull());
+                expectedEnvelopeSource()
+                        .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
+                        .startPosition(StartPosition.at(Instant.ofEpochMilli(1000L)))
+                        .resumeFallback(StartPosition.earliest())
+                        .endTime(Instant.ofEpochMilli(2000L))
+                        .maxConcurrentStreamsPerSubtask(5)
+                        .parallelism(3)
+                        .build();
 
         assertThat(actual).isEqualTo(expected);
         assertThat(actual.copy()).isEqualTo(actual).hasSameHashCodeAs(actual);
 
         Map<String, String> defaults = minimalChangeStreamOptions();
         assertThat(source(CHANGE_STREAM_SCHEMA, defaults))
-                .isEqualTo(
-                        new BigtableChangeStreamDynamicSource(
-                                DESTINATION,
-                                "single-cluster-profile",
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                null,
-                                BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull()));
+                .isEqualTo(expectedEnvelopeSource().build());
         assertThat(actual).isNotEqualTo(source(CHANGE_STREAM_SCHEMA, defaults));
     }
 
@@ -895,33 +894,16 @@ class BigtableDynamicTableFactoryTest {
         Map<String, String> latest = minimalChangeStreamOptions();
         latest.put("scan.startup.mode", "latest");
         assertThat(source(CHANGE_STREAM_SCHEMA, latest))
-                .isEqualTo(
-                        new BigtableChangeStreamDynamicSource(
-                                DESTINATION,
-                                "single-cluster-profile",
-                                null,
-                                StartPosition.latest(),
-                                null,
-                                null,
-                                null,
-                                null,
-                                BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull()));
+                .isEqualTo(expectedEnvelopeSource().startPosition(StartPosition.latest()).build());
 
         Map<String, String> timestampFallback = minimalChangeStreamOptions();
         timestampFallback.put("scan.resume-fallback.mode", "timestamp");
         timestampFallback.put("scan.resume-fallback.timestamp-millis", "3000");
         assertThat(source(CHANGE_STREAM_SCHEMA, timestampFallback))
                 .isEqualTo(
-                        new BigtableChangeStreamDynamicSource(
-                                DESTINATION,
-                                "single-cluster-profile",
-                                null,
-                                null,
-                                StartPosition.at(Instant.ofEpochMilli(3000L)),
-                                null,
-                                null,
-                                null,
-                                BigtableChangeStreamEnvelopeSchema.DATA_TYPE.notNull()));
+                        expectedEnvelopeSource()
+                                .resumeFallback(StartPosition.at(Instant.ofEpochMilli(3000L)))
+                                .build());
     }
 
     @Test

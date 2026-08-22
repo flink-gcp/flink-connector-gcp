@@ -46,7 +46,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** Table changelog source backed by the DataStream Change Streams source. */
+/**
+ * Table changelog source backed by the DataStream Change Streams source.
+ *
+ * <p>Built through {@link #builder()} rather than a constructor, for the reason {@link
+ * io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink} records and this class
+ * carries further: the positional list was repeated across three constructors, {@link #copy()},
+ * {@link #equals(Object)} and {@link #hashCode()} with no compiler check that the repetitions
+ * agree, and four of the private constructor's fifteen parameters were {@code String}s — {@code
+ * appProfileId} and {@code serviceAccountKeyFile} side by side, then {@code selectedCellFamily} and
+ * {@code selectedCellSourceClusterId} two apart — so transposing any two of them compiled.
+ *
+ * <p>The changelog mode is derived rather than passed: setting {@code selectedCellSchema} selects
+ * it, and the builder then requires the rest of the selected-cell group and rejects a {@code
+ * physicalDataType} the schema already supplies.
+ */
 @Internal
 public final class BigtableChangeStreamDynamicSource
         implements ScanTableSource, SupportsReadingMetadata {
@@ -73,108 +87,83 @@ public final class BigtableChangeStreamDynamicSource
     /** The physical envelope plus the metadata selected by the planner. */
     private DataType producedDataType;
 
-    public BigtableChangeStreamDynamicSource(
-            TableDestination destination,
-            String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable StartPosition startPosition,
-            @Nullable StartPosition resumeFallback,
-            @Nullable Instant endTime,
-            @Nullable Integer maxConcurrentStreamsPerSubtask,
-            @Nullable Integer parallelism,
-            DataType producedDataType) {
-        this(
-                destination,
-                appProfileId,
-                serviceAccountKeyFile,
-                startPosition,
-                resumeFallback,
-                endTime,
-                maxConcurrentStreamsPerSubtask,
-                parallelism,
-                producedDataType,
-                ChangeStreamChangelogMode.ENVELOPE,
-                null,
-                null,
-                null,
-                null,
-                null);
-    }
-
-    public BigtableChangeStreamDynamicSource(
-            TableDestination destination,
-            String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable StartPosition startPosition,
-            @Nullable StartPosition resumeFallback,
-            @Nullable Instant endTime,
-            @Nullable Integer maxConcurrentStreamsPerSubtask,
-            @Nullable Integer parallelism,
-            SelectedCellTableSchema selectedCellSchema,
-            DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
-            String selectedCellFamily,
-            ByteString selectedCellQualifier,
-            String selectedCellSourceClusterId) {
-        this(
-                destination,
-                appProfileId,
-                serviceAccountKeyFile,
-                startPosition,
-                resumeFallback,
-                endTime,
-                maxConcurrentStreamsPerSubtask,
-                parallelism,
-                Preconditions.checkNotNull(
-                                selectedCellSchema, "selectedCellSchema must not be null")
-                        .getPhysicalDataType(),
-                ChangeStreamChangelogMode.SELECTED_CELL,
-                Preconditions.checkNotNull(decodingFormat, "decodingFormat must not be null"),
-                selectedCellSchema,
-                Preconditions.checkNotNull(
-                        selectedCellFamily, "selectedCellFamily must not be null"),
-                Preconditions.checkNotNull(
-                        selectedCellQualifier, "selectedCellQualifier must not be null"),
-                Preconditions.checkNotNull(
-                        selectedCellSourceClusterId,
-                        "selectedCellSourceClusterId must not be null"));
-    }
-
-    private BigtableChangeStreamDynamicSource(
-            TableDestination destination,
-            String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            @Nullable StartPosition startPosition,
-            @Nullable StartPosition resumeFallback,
-            @Nullable Instant endTime,
-            @Nullable Integer maxConcurrentStreamsPerSubtask,
-            @Nullable Integer parallelism,
-            DataType physicalDataType,
-            ChangeStreamChangelogMode changelogMode,
-            @Nullable DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
-            @Nullable SelectedCellTableSchema selectedCellSchema,
-            @Nullable String selectedCellFamily,
-            @Nullable ByteString selectedCellQualifier,
-            @Nullable String selectedCellSourceClusterId) {
-        this.destination = Preconditions.checkNotNull(destination, "destination must not be null");
+    private BigtableChangeStreamDynamicSource(Builder builder) {
+        this.destination =
+                Preconditions.checkNotNull(builder.destination, "destination must not be null");
         this.appProfileId =
-                Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
-        this.serviceAccountKeyFile = serviceAccountKeyFile;
-        this.startPosition = startPosition;
-        this.resumeFallback = resumeFallback;
-        this.endTime = endTime;
-        this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
-        this.parallelism = parallelism;
-        this.physicalDataType =
-                Preconditions.checkNotNull(physicalDataType, "physicalDataType must not be null");
+                Preconditions.checkNotNull(builder.appProfileId, "appProfileId must not be null");
+        this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
+        this.startPosition = builder.startPosition;
+        this.resumeFallback = builder.resumeFallback;
+        this.endTime = builder.endTime;
+        this.maxConcurrentStreamsPerSubtask = builder.maxConcurrentStreamsPerSubtask;
+        this.parallelism = builder.parallelism;
         this.changelogMode =
-                Preconditions.checkNotNull(changelogMode, "changelogMode must not be null");
-        this.decodingFormat = decodingFormat;
-        this.selectedCellSchema = selectedCellSchema;
-        this.selectedCellFamily = selectedCellFamily;
-        this.selectedCellQualifier = selectedCellQualifier;
-        this.selectedCellSourceClusterId = selectedCellSourceClusterId;
+                builder.selectedCellSchema == null
+                        ? ChangeStreamChangelogMode.ENVELOPE
+                        : ChangeStreamChangelogMode.SELECTED_CELL;
+        if (changelogMode == ChangeStreamChangelogMode.ENVELOPE) {
+            checkEnvelopeCarriesNoSelectedCell(builder);
+            this.physicalDataType =
+                    Preconditions.checkNotNull(
+                            builder.physicalDataType, "physicalDataType must not be null");
+            this.decodingFormat = null;
+            this.selectedCellSchema = null;
+            this.selectedCellFamily = null;
+            this.selectedCellQualifier = null;
+            this.selectedCellSourceClusterId = null;
+        } else {
+            Preconditions.checkArgument(
+                    builder.physicalDataType == null,
+                    "physicalDataType must not be set beside selectedCellSchema: the selected-cell"
+                            + " physical type is the schema's.");
+            this.physicalDataType = builder.selectedCellSchema.getPhysicalDataType();
+            this.decodingFormat =
+                    Preconditions.checkNotNull(
+                            builder.decodingFormat, "decodingFormat must not be null");
+            this.selectedCellSchema = builder.selectedCellSchema;
+            this.selectedCellFamily =
+                    Preconditions.checkNotNull(
+                            builder.selectedCellFamily, "selectedCellFamily must not be null");
+            this.selectedCellQualifier =
+                    Preconditions.checkNotNull(
+                            builder.selectedCellQualifier,
+                            "selectedCellQualifier must not be null");
+            this.selectedCellSourceClusterId =
+                    Preconditions.checkNotNull(
+                            builder.selectedCellSourceClusterId,
+                            "selectedCellSourceClusterId must not be null");
+        }
         this.metadataKeys = Collections.emptyList();
         this.producedDataType = physicalDataType;
+    }
+
+    /**
+     * Returns a builder for this source.
+     *
+     * @return a builder with nothing set
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Rejects a selected-cell value left on an envelope source.
+     *
+     * <p>Two positional constructors could not express this, which is exactly why it has to be
+     * checked now: with one builder, a caller that sets {@code selectedCellFamily} and forgets
+     * {@code selectedCellSchema} would otherwise build an envelope source carrying selected-cell
+     * configuration that nothing reads.
+     */
+    private static void checkEnvelopeCarriesNoSelectedCell(Builder builder) {
+        Preconditions.checkArgument(
+                builder.decodingFormat == null
+                        && builder.selectedCellFamily == null
+                        && builder.selectedCellQualifier == null
+                        && builder.selectedCellSourceClusterId == null,
+                "decodingFormat, selectedCellFamily, selectedCellQualifier and"
+                        + " selectedCellSourceClusterId belong to the selected-cell mode and must"
+                        + " not be set without selectedCellSchema.");
     }
 
     @Override
@@ -249,36 +238,29 @@ public final class BigtableChangeStreamDynamicSource
 
     @Override
     public DynamicTableSource copy() {
-        BigtableChangeStreamDynamicSource copy;
+        Builder builder =
+                builder()
+                        .destination(destination)
+                        .appProfileId(appProfileId)
+                        .serviceAccountKeyFile(serviceAccountKeyFile)
+                        .startPosition(startPosition)
+                        .resumeFallback(resumeFallback)
+                        .endTime(endTime)
+                        .maxConcurrentStreamsPerSubtask(maxConcurrentStreamsPerSubtask)
+                        .parallelism(parallelism);
+        // One branch, over the two fields that decide the mode rather than over two argument
+        // lists: everything above is shared, and the constructor re-derives the mode from what
+        // this sets.
         if (changelogMode == ChangeStreamChangelogMode.ENVELOPE) {
-            copy =
-                    new BigtableChangeStreamDynamicSource(
-                            destination,
-                            appProfileId,
-                            serviceAccountKeyFile,
-                            startPosition,
-                            resumeFallback,
-                            endTime,
-                            maxConcurrentStreamsPerSubtask,
-                            parallelism,
-                            physicalDataType);
+            builder.physicalDataType(physicalDataType);
         } else {
-            copy =
-                    new BigtableChangeStreamDynamicSource(
-                            destination,
-                            appProfileId,
-                            serviceAccountKeyFile,
-                            startPosition,
-                            resumeFallback,
-                            endTime,
-                            maxConcurrentStreamsPerSubtask,
-                            parallelism,
-                            selectedCellSchema,
-                            decodingFormat,
-                            selectedCellFamily,
-                            selectedCellQualifier,
-                            selectedCellSourceClusterId);
+            builder.selectedCellSchema(selectedCellSchema)
+                    .decodingFormat(decodingFormat)
+                    .selectedCellFamily(selectedCellFamily)
+                    .selectedCellQualifier(selectedCellQualifier)
+                    .selectedCellSourceClusterId(selectedCellSourceClusterId);
         }
+        BigtableChangeStreamDynamicSource copy = builder.build();
         copy.applyReadableMetadata(metadataKeys, producedDataType);
         return copy;
     }
@@ -337,5 +319,202 @@ public final class BigtableChangeStreamDynamicSource
                 selectedCellSourceClusterId,
                 metadataKeys,
                 producedDataType);
+    }
+
+    /**
+     * Builds a {@link BigtableChangeStreamDynamicSource}.
+     *
+     * <p>Setting {@link #selectedCellSchema(SelectedCellTableSchema)} selects the selected-cell
+     * changelog mode and makes the rest of that group required; leaving it unset selects the
+     * envelope mode and makes {@link #physicalDataType(DataType)} required.
+     */
+    public static final class Builder {
+
+        @Nullable private TableDestination destination;
+        @Nullable private String appProfileId;
+        @Nullable private String serviceAccountKeyFile;
+        @Nullable private StartPosition startPosition;
+        @Nullable private StartPosition resumeFallback;
+        @Nullable private Instant endTime;
+        @Nullable private Integer maxConcurrentStreamsPerSubtask;
+        @Nullable private Integer parallelism;
+        @Nullable private DataType physicalDataType;
+        @Nullable private DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
+        @Nullable private SelectedCellTableSchema selectedCellSchema;
+        @Nullable private String selectedCellFamily;
+        @Nullable private ByteString selectedCellQualifier;
+        @Nullable private String selectedCellSourceClusterId;
+
+        private Builder() {}
+
+        /**
+         * Sets the table to read. Required.
+         *
+         * @param destination the table
+         * @return this builder
+         */
+        public Builder destination(TableDestination destination) {
+            this.destination = destination;
+            return this;
+        }
+
+        /**
+         * Sets the single-cluster application profile to route through. Required.
+         *
+         * @param appProfileId the application profile
+         * @return this builder
+         */
+        public Builder appProfileId(String appProfileId) {
+            this.appProfileId = appProfileId;
+            return this;
+        }
+
+        /**
+         * Sets the service-account key-file path, or {@code null} to keep ADC.
+         *
+         * @param serviceAccountKeyFile the path
+         * @return this builder
+         */
+        public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
+            this.serviceAccountKeyFile = serviceAccountKeyFile;
+            return this;
+        }
+
+        /**
+         * Sets where a fresh run starts, or {@code null} for the source's default.
+         *
+         * @param startPosition the start position
+         * @return this builder
+         */
+        public Builder startPosition(@Nullable StartPosition startPosition) {
+            this.startPosition = startPosition;
+            return this;
+        }
+
+        /**
+         * Sets where a restored position that has expired restarts, or {@code null} to fail
+         * instead.
+         *
+         * @param resumeFallback the fallback position
+         * @return this builder
+         */
+        public Builder resumeFallback(@Nullable StartPosition resumeFallback) {
+            this.resumeFallback = resumeFallback;
+            return this;
+        }
+
+        /**
+         * Sets the end timestamp that bounds the run, or {@code null} for an unbounded one.
+         *
+         * @param endTime the end timestamp
+         * @return this builder
+         */
+        public Builder endTime(@Nullable Instant endTime) {
+            this.endTime = endTime;
+            return this;
+        }
+
+        /**
+         * Sets how many partition streams one subtask opens at once, or {@code null} for the
+         * source's default.
+         *
+         * @param maxConcurrentStreamsPerSubtask the maximum
+         * @return this builder
+         */
+        public Builder maxConcurrentStreamsPerSubtask(
+                @Nullable Integer maxConcurrentStreamsPerSubtask) {
+            this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
+            return this;
+        }
+
+        /**
+         * Sets the source parallelism, or {@code null} to leave it to the planner.
+         *
+         * @param parallelism the parallelism
+         * @return this builder
+         */
+        public Builder parallelism(@Nullable Integer parallelism) {
+            this.parallelism = parallelism;
+            return this;
+        }
+
+        /**
+         * Sets the physical envelope type. Required in the envelope mode, and rejected in the
+         * selected-cell mode, where {@link #selectedCellSchema(SelectedCellTableSchema)} supplies
+         * it.
+         *
+         * @param physicalDataType the physical envelope type
+         * @return this builder
+         */
+        public Builder physicalDataType(DataType physicalDataType) {
+            this.physicalDataType = physicalDataType;
+            return this;
+        }
+
+        /**
+         * Sets the selected-cell schema, which selects the selected-cell changelog mode.
+         *
+         * @param selectedCellSchema the schema
+         * @return this builder
+         */
+        public Builder selectedCellSchema(SelectedCellTableSchema selectedCellSchema) {
+            this.selectedCellSchema = selectedCellSchema;
+            return this;
+        }
+
+        /**
+         * Sets the format decoding the selected cell's payload. Required in the selected-cell mode.
+         *
+         * @param decodingFormat the format
+         * @return this builder
+         */
+        public Builder decodingFormat(
+                DecodingFormat<DeserializationSchema<RowData>> decodingFormat) {
+            this.decodingFormat = decodingFormat;
+            return this;
+        }
+
+        /**
+         * Sets the column family holding the selected cell. Required in the selected-cell mode.
+         *
+         * @param selectedCellFamily the family
+         * @return this builder
+         */
+        public Builder selectedCellFamily(String selectedCellFamily) {
+            this.selectedCellFamily = selectedCellFamily;
+            return this;
+        }
+
+        /**
+         * Sets the qualifier of the selected cell. Required in the selected-cell mode.
+         *
+         * @param selectedCellQualifier the qualifier
+         * @return this builder
+         */
+        public Builder selectedCellQualifier(ByteString selectedCellQualifier) {
+            this.selectedCellQualifier = selectedCellQualifier;
+            return this;
+        }
+
+        /**
+         * Sets the cluster whose writes are read as source-of-truth. Required in the selected-cell
+         * mode.
+         *
+         * @param selectedCellSourceClusterId the cluster id
+         * @return this builder
+         */
+        public Builder selectedCellSourceClusterId(String selectedCellSourceClusterId) {
+            this.selectedCellSourceClusterId = selectedCellSourceClusterId;
+            return this;
+        }
+
+        /**
+         * Builds the source.
+         *
+         * @return the source
+         */
+        public BigtableChangeStreamDynamicSource build() {
+            return new BigtableChangeStreamDynamicSource(this);
+        }
     }
 }
