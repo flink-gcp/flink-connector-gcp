@@ -84,6 +84,41 @@ public class Builder {
     assert "`#handler(Handler)`" in problems[0]
 
 
+def test_a_class_javadoc_is_read_through_an_annotation_with_arguments(
+    tree, check_javadoc_links
+):
+    """Annotation arguments are no more a declaration than the annotation name.
+
+    Removing only ``@TypeInfo`` leaves ``(Factory.class)`` between the comment
+    and the declaration, so the class javadoc loses its context and a bare
+    reference in it is skipped.
+    """
+    write(
+        tree / "Builder.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Entry point, configured through {@link #handler}. */
+@Public
+@TypeInfo(Factory.class)
+public class Builder {
+    private Handler handler;
+
+    public Builder handler(Handler handler) {
+        return this;
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "Builder.java:5" in problems[0]
+    assert "`#handler(Handler)`" in problems[0]
+
+
 def test_a_reference_to_a_private_field_offers_a_code_span(tree, check_javadoc_links):
     """No method of the name means no parameter list to suggest.
 

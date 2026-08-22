@@ -454,14 +454,16 @@ def enclosing_type(source: SourceFile, start: int, end: int) -> JavaType | None:
     type, so its ``#member`` references resolve against it; anything else
     resolves against the type whose body holds the comment.
 
-    "Immediately before" has to step over the type's annotations. Every public
-    type in this repository carries a Flink API-tier one, so reading `@Public`
-    as something other than whitespace left every class javadoc without a
-    context and every bare reference in one unchecked (issue #930).
+    "Immediately before" has to step over the type's annotations, including
+    their arguments. Every public type in this repository carries a Flink
+    API-tier annotation, and types with custom type information add an
+    argument-bearing annotation after it. Reading either as something other
+    than part of the declaration leaves the class javadoc without a context and
+    every bare reference in it unchecked (issues #930 and #992).
     """
+    following_declaration = skip_annotations(source.masked, end)
     for candidate in all_types(source):
-        between = source.masked[end : candidate.decl_start]
-        if candidate.decl_start >= end and not ANNOTATION.sub("", between).strip():
+        if candidate.decl_start == following_declaration:
             return candidate
     containing = [
         candidate
