@@ -117,10 +117,12 @@ class PubSubConnectorOptionsTest {
         // of these had accumulated by the time #778 read the file, all three deleted by #838, and
         // every check stayed green throughout — which is how they arrived.
         //
-        // The two phrases are the ones those three used ("Off by default:", "Defaults to twice the
-        // effective flow-control message limit", "Defaults to twice the effective flow-control byte
-        // limit"), not the bare word: 'service-account-key-file' says "application-default
-        // credentials" and must keep passing.
+        // The first two phrases are the ones those three used ("Off by default:", "Defaults to
+        // twice the effective flow-control message limit", "Defaults to twice the effective
+        // flow-control byte limit"). A later review found two descriptions that still stated the
+        // absent-value behaviour as "when unset" and "Unset means" while this test passed. Match
+        // those forms too, but not the bare word: "application-default" can name a credential kind
+        // without saying that it is the option's default.
         //
         // When this fires, the description is what changes. reference/pubsub.md is where a default
         // is written — a derived one included, carrying both its derivation and its resolved
@@ -139,6 +141,8 @@ class PubSubConnectorOptionsTest {
                                                         + " is written",
                                                 option.key())
                                         .doesNotContainIgnoringCase("by default")
-                                        .doesNotContainIgnoringCase("defaults to"));
+                                        .doesNotContainIgnoringCase("defaults to")
+                                        .doesNotContainIgnoringCase("when unset")
+                                        .doesNotContainIgnoringCase("unset means"));
     }
 }

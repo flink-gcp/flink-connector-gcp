@@ -58,9 +58,8 @@ import java.util.Map;
  * the SDK's default", with no third state to invent. No default value is restated in a description
  * either — including one derived from another option rather than declared: {@code
  * reference/pubsub.md} carries the derivation and the resolved value, and the option table's "Maps
- * to" column is the pointer there. A test holds both halves of that rule, the second by matching
- * the phrases a restatement uses, because three descriptions had drifted into one before anything
- * looked.
+ * to" column is the pointer there. A test rejects the default-restating phrases found in this file;
+ * it is a regression guard over those forms, not a semantic parser for arbitrary prose.
  *
  * <p>Byte-valued options are {@link MemorySize}, so they can be written as {@code 64mb}. The value
  * is converted to a {@code long} where it is applied and never reaches the connector's public API.
@@ -98,8 +97,7 @@ public final class PubSubConnectorOptions {
                             "Path to a service-account JSON key file readable from every eligible"
                                     + " runtime process: sink writers on task managers, or a source"
                                     + " enumerator on the job manager and readers on task managers."
-                                    + " Uses application-default credentials when unset and cannot"
-                                    + " be combined with emulator-endpoint.");
+                                    + " Cannot be combined with emulator-endpoint.");
 
     // ------------------------------------------------------------------------
     //  Source — subscriptions
@@ -209,7 +207,7 @@ public final class PubSubConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "How long a completing checkpoint waits for the service to confirm its"
-                                    + " acknowledgements. Unset means it does not wait.");
+                                    + " acknowledgements.");
 
     public static final ConfigOption<Duration> SCAN_SHUTDOWN_TIMEOUT =
             ConfigOptions.key("scan.shutdown-timeout")
