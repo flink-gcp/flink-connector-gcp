@@ -278,10 +278,18 @@ still accepted and still unused; a malformed one is now refused where it was ign
 cannot be an endpoint at all is a typo wherever it sits, and the same DDL used as a sink was already
 refused.
 
-What that leaves untouched is the asymmetry underneath: `BigQuerySourceBuilder.build()` *rejects*
-`emulatorRestEndpoint(...)` without `query(...)` or `materializeViews()`, while the table factory
-silently ignores the key. That is a separate defect about which options a direction accepts, not
-about what a rejection names, and it is not decided here.
+What it leaves in place is the drop itself, and — correcting what [#1019]'s change first wrote
+here — that is not a defect the two layers disagree about. `BigQuerySourceBuilder.build()`
+*rejects* `emulatorRestEndpoint(...)` without `query(...)` or `materializeViews()`, while the
+table factory ignores the key on a direct-table read; the two answers differ because the
+situations do. A source builder is source-only, so a caller who sets that setter with nothing to
+spend it on has made a mistake nothing else will report. A `WITH` clause is not: one serves both
+directions, and refusing the key on the source path would break a table whose sink half
+legitimately needs it — which is what `directTableSourceLeavesTheSinkRestEndpointUnused` holds.
+Every configuration the factory ignores is one where the value has no work to do, because a
+direct-table read makes no query job and no view lookup, so no traffic reaches a destination the
+DDL did not ask for. What the shape check adds is the one thing the drop never covered: whether
+the value could be an endpoint at all.
 
 ## A checker was built for this, and withdrawn
 
