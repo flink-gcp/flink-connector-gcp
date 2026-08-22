@@ -415,7 +415,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `HBaseTypeUtils`: the two disagree on `DATE` and `TIME`, and only the first is what a Flink SQL
   HBase job writes. `CellValueCodecTest`'s golden vectors are the record; a round-trip test would
   pass with the interop broken. Two traps they pin: `true` is `0xFF`, and a `TINYINT` must not go
-  through a numeric overload (a `byte` widens to `short`).
+  through a numeric overload (a `byte` widens to `short`). **The interop is the byte layouts, not
+  the error policy**: a decimal overflowing its declared `DECIMAL(p, s)` is a decode failure —
+  `IllegalArgumentException` from the codec, wrapped by the address-naming guards — never the
+  silent `NULL` the HBase connector reads, which aliased real data onto the empty-cell convention
+  and put a null in a NOT NULL row key (#1038, ADR-0135). Rescaling to the declared scale rounds
+  and is not an overflow by itself; the overflow is judged after rounding, so a rounding carry
+  can overflow a value whose stored digits look representable.
 - `BigtableTableSchema` and `CellValueCodec` sit at the **`table` root**, not in a subpackage: both
   directions share them and neither may import the other (ADR-0055's module-root rule one level
   down). A colon in a family name is rejected there — `familyNameRegexFilter` refuses one even

@@ -36,6 +36,7 @@ import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.Arrays;
 
 /**
@@ -55,6 +56,10 @@ import java.util.Arrays;
  * that connector disagree, and this follows the {@code RowData} one because that is what a Flink
  * SQL job writes today: {@code DATE} is a four-byte day count, not an eight-byte epoch-millis
  * value, and {@code TIME} is a four-byte millisecond-of-day.
+ *
+ * <p>What is normative is the byte layouts, not the error policy: a decimal cell overflowing its
+ * declared precision is a decode failure here, where the HBase connector reads {@code null} —
+ * silently aliasing real data onto the null convention below (#1038, ADR-0135).
  *
  * <p>A null is an empty cell for every type but a character string, where an empty cell is a
  * legitimate value — that column writes the {@code null-string-literal} instead.
@@ -289,7 +294,30 @@ public final class CellValueCodec {
             case DECIMAL:
                 final int precision = ((DecimalType) type).getPrecision();
                 final int scale = ((DecimalType) type).getScale();
-                return value -> DecimalData.fromBigDecimal(toBigDecimal(value), precision, scale);
+                return value -> {
+                    BigDecimal decoded = toBigDecimal(value);
+                    DecimalData decimal = DecimalData.fromBigDecimal(decoded, precision, scale);
+                    if (decimal == null) {
+                        // fromBigDecimal answers an overflow with null rather than throwing, and
+                        // a null here would alias real data onto the empty-cell null convention —
+                        // or land in a NOT NULL field (#1038, ADR-0135). The message reports the
+                        // rounded precision as well as the stored dimensions, because a rounding
+                        // carry can overflow a value whose stored digits look representable; the
+                        // rescale mirrors fromBigDecimal's own, and the value itself stays out.
+                        BigDecimal rescaled = decoded.setScale(scale, RoundingMode.HALF_UP);
+                        throw new IllegalArgumentException(
+                                String.format(
+                                        "A decimal cell stores a value of precision %d and scale"
+                                                + " %d, which needs precision %d once rescaled to"
+                                                + " the declared scale — more than the declared"
+                                                + " %s can hold.",
+                                        decoded.precision(),
+                                        decoded.scale(),
+                                        rescaled.precision(),
+                                        type.asSummaryString()));
+                    }
+                    return decimal;
+                };
             case TINYINT:
                 return value -> value[0];
             case SMALLINT:

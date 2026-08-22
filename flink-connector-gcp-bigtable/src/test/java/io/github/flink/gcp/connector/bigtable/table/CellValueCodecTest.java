@@ -259,12 +259,29 @@ class CellValueCodecTest {
         }
 
         @Test
-        void aDecimalTooWideForTheDeclaredTypeDecodesAsNull() {
-            // DecimalData.fromBigDecimal answers an overflow with null, so a cell holding
-            // 12345678.90 read through DECIMAL(5, 2) is a SQL NULL — silently aliased onto the
-            // null convention, exactly as Flink's HBase connector reads it. Pinned so the
-            // behaviour is a documented choice rather than an accident; the docs page states it.
-            assertThat(decodeHex(DataTypes.DECIMAL(5, 2), "00000002" + "499602d2")).isNull();
+        void aDecimalTooWideForTheDeclaredTypeIsRejected() {
+            // DecimalData.fromBigDecimal answers an overflow with null, which Flink's HBase
+            // connector passes through as a SQL NULL — aliasing a cell holding 12345678.90 onto
+            // the empty-cell null convention, or handing a NOT NULL field a null the planner was
+            // told cannot exist. Here it is a decode failure instead (#1038); the docs page
+            // states the divergence. The message names the stored value's dimensions and the
+            // declared type, never the value itself.
+            assertThatThrownBy(() -> decodeHex(DataTypes.DECIMAL(5, 2), "00000002" + "499602d2"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("precision 10 and scale 2")
+                    .hasMessageContaining("DECIMAL(5, 2)")
+                    .message()
+                    .doesNotContain("12345678");
+            // The bound is exact: a value filling the declared precision still decodes.
+            assertThat(decodeHex(DataTypes.DECIMAL(5, 2), "00000002" + "01869f"))
+                    .isEqualTo(DecimalData.fromBigDecimal(new BigDecimal("999.99"), 5, 2));
+            // And it is judged after rounding: 999.995 stored at scale 3 rounds to 1000.00,
+            // which no longer fits — the stored digits alone look representable, which is why
+            // the message reports the rounded precision too.
+            assertThatThrownBy(() -> decodeHex(DataTypes.DECIMAL(5, 2), "00000003" + "0f423b"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("precision 6 and scale 3")
+                    .hasMessageContaining("needs precision 6");
         }
 
         @Test
