@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0133: A Table option value the builder rejects is renamed to its option key
 
 - Status: Accepted
-- Date: 2026-08-22, revised by [#1027] (2026-08-22)
-- Issues: [#1030], [#1019], [#895], [#235], [#1027]
+- Date: 2026-08-22, revised by [#1027] (2026-08-22) and [#1047] (2026-08-23)
+- Issues: [#1030], [#1019], [#895], [#235], [#1027], [#1047]
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner (table layers)
 - Current behavior: each module's `table.OptionSetters` and the mapper javadocs that cite it
 
@@ -55,7 +55,7 @@ the `ConfigOption` constants. A two-value call is split so each value's rejectio
 to its own key.
 
 The mirror case — one value fed by either of two options, the BigQuery source's `parentProject`
-from `source.parent-project` or `project` — was first left alone, on the grounds that attributing
+from `scan.parent-project` or `project` — was first left alone, on the grounds that attributing
 it at the seam would add a plan-state field whose only job is an error message's noun, and that
 `parentProject` is legible against both keys. [#1027] falsified the second ground for the arm that
 matters: a caller who wrote only `project` was answered `parentProject must not contain '/'` —
@@ -130,5 +130,6 @@ method parameter rather than their setter — `absentRetentionFallback`, `heartb
 [#1026]: https://github.com/flink-gcp/flink-connector-gcp/pull/1026
 [#1027]: https://github.com/flink-gcp/flink-connector-gcp/issues/1027
 [#1030]: https://github.com/flink-gcp/flink-connector-gcp/issues/1030
+[#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047
 [ADR-0007]: 0007-the-publisher-teardown-is-two-phase-and-its-bound-is-real.md
 [ADR-0068]: 0068-duration-budgets-are-bounded-at-the-setter-by-what-a-nanosecond-clock-can-express.md

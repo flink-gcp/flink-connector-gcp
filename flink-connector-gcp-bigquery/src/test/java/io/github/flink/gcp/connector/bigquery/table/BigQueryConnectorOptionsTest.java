@@ -99,6 +99,43 @@ class BigQueryConnectorOptionsTest {
     }
 
     @Test
+    void readSideOptionsUseScanVocabulary() {
+        List<ConfigOption<?>> scanOptions =
+                java.util.Arrays.asList(
+                        BigQueryConnectorOptions.SCAN_PARENT_PROJECT,
+                        BigQueryConnectorOptions.SCAN_QUERY,
+                        BigQueryConnectorOptions.SCAN_MATERIALIZE_VIEWS,
+                        BigQueryConnectorOptions.SCAN_QUERY_LOCATION,
+                        BigQueryConnectorOptions.SCAN_QUERY_RESULT_DATASET,
+                        BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN,
+                        BigQueryConnectorOptions.SCAN_ROW_RESTRICTION,
+                        BigQueryConnectorOptions.SCAN_SNAPSHOT_TIME,
+                        BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT,
+                        BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT,
+                        BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
+                        BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS);
+
+        assertThat(scanOptions)
+                .extracting(ConfigOption::key)
+                .containsExactlyInAnyOrder(
+                        "scan.parent-project",
+                        "scan.query",
+                        "scan.materialize-views",
+                        "scan.query-location",
+                        "scan.query-result-dataset",
+                        "scan.reuse-query-result-within",
+                        "scan.row-restriction",
+                        "scan.snapshot-time",
+                        "scan.max-stream-count",
+                        "scan.preferred-min-stream-count",
+                        "scan.max-records-per-fetch",
+                        "scan.retry.max-attempts");
+        assertThat(declaredOptions())
+                .extracting(ConfigOption::key)
+                .noneMatch(key -> key.startsWith("source."));
+    }
+
+    @Test
     void noOptionCarriesADefault() {
         // The connector's defaults live in its own options objects and are applied by not calling a
         // setter. A default here would be a second copy that nothing keeps in step.

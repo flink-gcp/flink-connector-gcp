@@ -95,9 +95,10 @@ Four cases the seam does not cover, each settled rather than open:
   attributed to one key. Restate those by hand where the vocabulary needs it — the precedent is
   `PublisherOptionsMapper.rejectBoundedRetriesWithMessageOrdering` — and leave them where it does
   not.
-- **A value fed by either of two options is left alone.** BigQuery's `parentProject` comes from
-  `source.parent-project` or `project`; attributing it would add plan state whose only job is a
-  noun, and the setter's name is legible against both keys.
+- **A value fed by either of two options is renamed where the supplier is resolved.** BigQuery's
+  `parentProject` comes from `scan.parent-project` or `project`; the factory's
+  `parentProject(ReadableConfig)` applies the builder check through `OptionSetters` under the
+  supplying key before that origin is erased from plan state.
 - **A value this connector *parses* is checked in the factory, not only at the setter** — ADR-0127's
   shape 2. `EmulatorEndpoint.parse(value, EMULATOR_ENDPOINT.key())` runs at
   `createDynamicTable{Source,Sink}` so a malformed endpoint fails at `CREATE TABLE` rather than on a

@@ -101,7 +101,7 @@ public class BigQueryDynamicTableFactory
     @Override
     public Set<ConfigOption<?>> requiredOptions() {
         // Every destination component is conditional: a sink and direct source require all three,
-        // while a query source may name only source.parent-project. The creation methods report
+        // while a query source may name only scan.parent-project. The creation methods report
         // the missing direction-specific keys before constructing a connector builder.
         return Collections.emptySet();
     }
@@ -116,18 +116,18 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.EMULATOR_ENDPOINT,
                         BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT,
                         BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
-                        BigQueryConnectorOptions.SOURCE_PARENT_PROJECT,
-                        BigQueryConnectorOptions.SOURCE_QUERY,
-                        BigQueryConnectorOptions.SOURCE_MATERIALIZE_VIEWS,
-                        BigQueryConnectorOptions.SOURCE_QUERY_LOCATION,
-                        BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET,
-                        BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN,
-                        BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION,
-                        BigQueryConnectorOptions.SOURCE_SNAPSHOT_TIME,
-                        BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT,
-                        BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT,
-                        BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH,
-                        BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS,
+                        BigQueryConnectorOptions.SCAN_PARENT_PROJECT,
+                        BigQueryConnectorOptions.SCAN_QUERY,
+                        BigQueryConnectorOptions.SCAN_MATERIALIZE_VIEWS,
+                        BigQueryConnectorOptions.SCAN_QUERY_LOCATION,
+                        BigQueryConnectorOptions.SCAN_QUERY_RESULT_DATASET,
+                        BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN,
+                        BigQueryConnectorOptions.SCAN_ROW_RESTRICTION,
+                        BigQueryConnectorOptions.SCAN_SNAPSHOT_TIME,
+                        BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT,
+                        BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT,
+                        BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
+                        BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
@@ -362,21 +362,21 @@ public class BigQueryDynamicTableFactory
 
         ReadableConfig config = helper.getOptions();
         checkCredentials(config);
-        Optional<String> query = config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY);
+        Optional<String> query = config.getOptional(BigQueryConnectorOptions.SCAN_QUERY);
         if (query.isPresent() && query.get().isBlank()) {
             throw new ValidationException(
                     "Option '"
-                            + BigQueryConnectorOptions.SOURCE_QUERY.key()
+                            + BigQueryConnectorOptions.SCAN_QUERY.key()
                             + "' must not be blank.");
         }
         boolean materializeViews =
-                config.getOptional(BigQueryConnectorOptions.SOURCE_MATERIALIZE_VIEWS).orElse(false);
+                config.getOptional(BigQueryConnectorOptions.SCAN_MATERIALIZE_VIEWS).orElse(false);
         if (query.isPresent() && materializeViews) {
             throw new ValidationException(
                     "Options '"
-                            + BigQueryConnectorOptions.SOURCE_QUERY.key()
+                            + BigQueryConnectorOptions.SCAN_QUERY.key()
                             + "' and '"
-                            + BigQueryConnectorOptions.SOURCE_MATERIALIZE_VIEWS.key()
+                            + BigQueryConnectorOptions.SCAN_MATERIALIZE_VIEWS.key()
                             + "' cannot be combined: a query is already materialized.");
         }
 
@@ -400,31 +400,29 @@ public class BigQueryDynamicTableFactory
                 .parentProject(parentProject)
                 .materializeViews(materializeViews)
                 .queryLocation(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_LOCATION)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_QUERY_LOCATION)
                                 .orElse(null))
                 .queryResultDataset(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_QUERY_RESULT_DATASET)
                                 .orElse(null))
                 .reuseQueryResultWithin(
-                        config.getOptional(
-                                        BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN)
                                 .orElse(null))
                 .rowRestriction(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_ROW_RESTRICTION)
                                 .orElse(null))
                 .snapshotTime(snapshotTime(config))
                 .maxStreamCount(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT)
                                 .orElse(null))
                 .preferredMinStreamCount(
-                        config.getOptional(
-                                        BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT)
                                 .orElse(null))
                 .maxRecordsPerFetch(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH)
                                 .orElse(null))
                 .retryMaxAttempts(
-                        config.getOptional(BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS)
+                        config.getOptional(BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS)
                                 .orElse(null))
                 .serviceAccountKeyFile(
                         config.getOptional(BigQueryConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
@@ -464,7 +462,7 @@ public class BigQueryDynamicTableFactory
 
     @Nullable
     private static Instant snapshotTime(ReadableConfig config) {
-        Optional<String> value = config.getOptional(BigQueryConnectorOptions.SOURCE_SNAPSHOT_TIME);
+        Optional<String> value = config.getOptional(BigQueryConnectorOptions.SCAN_SNAPSHOT_TIME);
         if (!value.isPresent()) {
             return null;
         }
@@ -473,7 +471,7 @@ public class BigQueryDynamicTableFactory
         } catch (DateTimeParseException e) {
             throw new ValidationException(
                     "Option '"
-                            + BigQueryConnectorOptions.SOURCE_SNAPSHOT_TIME.key()
+                            + BigQueryConnectorOptions.SCAN_SNAPSHOT_TIME.key()
                             + "' must be an ISO-8601 instant: "
                             + value.get(),
                     e);
@@ -749,9 +747,9 @@ public class BigQueryDynamicTableFactory
     /**
      * Resolves the Storage Read and query billing project.
      *
-     * <p>{@code source.parent-project} when set, else {@code project}. A direct-table source that
-     * did not name {@code project} has already been rejected by {@code destination(config,
-     * "source")}, so only a query source can reach the failure below.
+     * <p>{@code scan.parent-project} when set, else {@code project}. A direct-table source that did
+     * not name {@code project} has already been rejected by {@code destination(config, "source")},
+     * so only a query source can reach the failure below.
      *
      * <p>This is the one value fed by either of two options, so its rejection cannot be renamed at
      * the setter seam the way ADR-0133 renames everything else: by the time the dynamic source
@@ -767,11 +765,10 @@ public class BigQueryDynamicTableFactory
      */
     private static String parentProject(ReadableConfig config) {
         Optional<String> project = config.getOptional(BigQueryConnectorOptions.PROJECT);
-        Optional<String> parent =
-                config.getOptional(BigQueryConnectorOptions.SOURCE_PARENT_PROJECT);
+        Optional<String> parent = config.getOptional(BigQueryConnectorOptions.SCAN_PARENT_PROJECT);
         if (parent.isPresent()) {
             OptionSetters.accept(
-                    BigQueryConnectorOptions.SOURCE_PARENT_PROJECT.key(),
+                    BigQueryConnectorOptions.SCAN_PARENT_PROJECT.key(),
                     parent.get(),
                     value -> ResourceNames.checkComponent(value, "parentProject"));
             return parent.get();
@@ -787,7 +784,7 @@ public class BigQueryDynamicTableFactory
                 "A 'bigquery' query source requires option '"
                         + BigQueryConnectorOptions.PROJECT.key()
                         + "' or '"
-                        + BigQueryConnectorOptions.SOURCE_PARENT_PROJECT.key()
+                        + BigQueryConnectorOptions.SCAN_PARENT_PROJECT.key()
                         + "'.");
     }
 }

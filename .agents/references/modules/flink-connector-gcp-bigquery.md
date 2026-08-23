@@ -246,16 +246,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   holds both halves; `reference/bigquery.md` carries a default with its derivation, the
   FILE_LOADS location derivation included. A guard failure edits the description, not the test.
 - The factory serves both directions.
-  A sink and direct table source require `project`, `dataset`, and `table`; `source.query` requires
-  either `project` or `source.parent-project` and is mutually exclusive with
-  `source.materialize-views`.
-  `source.parent-project` separates the Storage Read/query billing project from the table-owning
+  A sink and direct table source require `project`, `dataset`, and `table`; `scan.query` requires
+  either `project` or `scan.parent-project` and is mutually exclusive with
+  `scan.materialize-views`.
+  `scan.parent-project` separates the Storage Read/query billing project from the table-owning
   `project`; absent, it defaults to `project`.
   The bounded source maps every DDL option onto `BigQuerySource.builder()` and converts Storage
   Read Avro values to `RowData` by physical field name (`docs/adr/0100`).
 - The table source pushes down top-level projection through `selectedFields(...)`, including the
   first physical column as a carrier for a zero-column planner projection.
-  It does not advertise nested projection or filter pushdown; `source.row-restriction` is the raw
+  It does not advertise nested projection or filter pushdown; `scan.row-restriction` is the raw
   BigQuery expression surface, not an attempted translation of Flink predicates.
 - Storage Read `RANGE<DATE>`, `RANGE<DATETIME>` and `RANGE<TIMESTAMP>` are source-only rows whose
   nullable `start` and `end` fields use `DATE`, `TIMESTAMP` and `TIMESTAMP_LTZ`, respectively

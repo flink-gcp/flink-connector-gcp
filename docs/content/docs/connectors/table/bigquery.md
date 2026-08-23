@@ -60,8 +60,8 @@ CREATE TABLE recent_events (
 ) WITH (
   'connector' = 'bigquery',
   'project' = 'my-project',
-  'source.query' = 'SELECT id, amount FROM `analytics.events` WHERE event_date = CURRENT_DATE()',
-  'source.query-location' = 'US'
+  'scan.query' = 'SELECT id, amount FROM `analytics.events` WHERE event_date = CURRENT_DATE()',
+  'scan.query-location' = 'US'
 );
 ```
 
@@ -163,11 +163,11 @@ bare templates, and the copyright holder is part of a BSD or MIT text.
 ## Options
 
 Every connector-owned runtime option maps onto the DataStream API, which stays the source of
-truth; destination components are assembled together, and `source.parent-project` overrides the
+truth; destination components are assembled together, and `scan.parent-project` overrides the
 `project` fallback passed to `parentProject(...)`.
 Flink's `scan.parallelism` and `sink.parallelism` configure the corresponding runtime provider
 instead.
-Except for the documented `project` fallback into `source.parent-project`, leaving an optional
+Except for the documented `project` fallback into `scan.parent-project`, leaving an optional
 runtime option out of the DDL leaves its setter uncalled, so its default is whatever the connector
 or SDK already uses. The full list of defaults is in the
 [configuration reference]({{< relref "docs/reference/bigquery" >}}).
@@ -176,7 +176,7 @@ or SDK already uses. The full list of defaults is in the
 
 | Option | Type | Maps to |
 |---|---|---|
-| `project` | String | The project part of `table(...)`; also the source billing project unless `source.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `source.parent-project` |
+| `project` | String | The project part of `table(...)`; also the source billing project unless `scan.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `scan.parent-project` |
 | `dataset` | String | The dataset part of `table(...)`; required for a sink or direct table source, unused by a query source |
 | `table` | String | The table part of `table(...)`; required for a sink or direct table source. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Read or Write API's gRPC endpoint as `host:port`. Parsed when the statement is planned, so a malformed value fails on the client in either direction, and the rejection names `emulator-endpoint` — the key written in the DDL. Refused outright under `file-loads`, before its shape is looked at |
@@ -186,29 +186,29 @@ or SDK already uses. The full list of defaults is in the
 ### Source
 
 The source is bounded and insert-only. A direct source names `project`, `dataset`, and `table`.
-`source.query` switches to the query-result path, where either `project` or
-`source.parent-project` is required. Projection
+`scan.query` switches to the query-result path, where either `project` or
+`scan.parent-project` is required. Projection
 pushdown sends the planner's retained top-level column names to the Storage Read session. It prunes
 the direct table read and the generated SQL used to materialize a named view. A user-supplied query
 is left unchanged, so projection prunes only its result-table read and does not reduce what the
 query itself scans. A plan needing no output column retains the first physical column as a carrier;
 the planner discards it above the source. Nested projection and SQL filter pushdown are not
-advertised; use `source.row-restriction` when a BigQuery-native server-side predicate is needed.
+advertised; use `scan.row-restriction` when a BigQuery-native server-side predicate is needed.
 
 | Option | Type | Maps to |
 |---|---|---|
-| `source.parent-project` | String | `parentProject(...)`; the project that owns and is billed for the Storage Read session. *Unset ⇒ `project`*. Set it independently when the table belongs to another project, such as a public dataset |
-| `source.query` | String | `query(...)`; reads the query's result instead of the configured table |
-| `source.materialize-views` | Boolean | `materializeViews()`; checks a configured table name and materializes it when it is a logical or materialized view. Cannot be combined with `source.query` |
-| `source.query-location` | String | `queryLocation(...)`; query or view materialization only |
-| `source.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
-| `source.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `source.query-location` |
-| `source.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword |
-| `source.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
-| `source.max-stream-count` | Integer | `maxStreamCount(...)` |
-| `source.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |
-| `source.max-records-per-fetch` | Integer | `maxRecordsPerFetch(...)` |
-| `source.retry-max-attempts` | Integer | `retryMaxAttempts(...)` |
+| `scan.parent-project` | String | `parentProject(...)`; the project that owns and is billed for the Storage Read session. *Unset ⇒ `project`*. Set it independently when the table belongs to another project, such as a public dataset |
+| `scan.query` | String | `query(...)`; reads the query's result instead of the configured table |
+| `scan.materialize-views` | Boolean | `materializeViews()`; checks a configured table name and materializes it when it is a logical or materialized view. Cannot be combined with `scan.query` |
+| `scan.query-location` | String | `queryLocation(...)`; query or view materialization only |
+| `scan.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
+| `scan.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `scan.query-location` |
+| `scan.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword |
+| `scan.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
+| `scan.max-stream-count` | Integer | `maxStreamCount(...)` |
+| `scan.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |
+| `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch(...)` |
+| `scan.retry.max-attempts` | Integer | `retryMaxAttempts(...)` |
 | `scan.parallelism` | Integer | The bounded source's parallelism (Flink's own option) |
 
 ### Sink
