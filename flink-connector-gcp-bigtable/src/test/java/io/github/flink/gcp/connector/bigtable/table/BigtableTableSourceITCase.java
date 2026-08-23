@@ -541,7 +541,7 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                         + withOptions("sql-trailing-bytes", "decode.trailing-bytes", "reject"));
 
         assertThat(collect(tEnv, "SELECT rowkey FROM ignoring")).containsExactly(Row.of(7L));
-        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM rejecting"))
+        assertThat(TableJobFailures.awaitFailure(tEnv, "SELECT rowkey FROM rejecting"))
                 .hasStackTraceContaining("holds 9 byte(s)")
                 .hasStackTraceContaining("row-key column type cannot decode");
         // The pushdown interaction ADR-0136 settles, remeasured after the independent review
@@ -553,11 +553,15 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
         assertThat(collect(tEnv, "SELECT rowkey FROM ignoring WHERE rowkey = 7"))
                 .containsExactly(Row.of(7L));
         assertThat(collect(tEnv, "SELECT rowkey FROM ignoring WHERE rowkey <> 7")).isEmpty();
-        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM rejecting WHERE rowkey = 7"))
+        assertThat(
+                        TableJobFailures.awaitFailure(
+                                tEnv, "SELECT rowkey FROM rejecting WHERE rowkey = 7"))
                 .hasStackTraceContaining("holds 9 byte(s)");
-        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM rejecting WHERE rowkey <> 7"))
+        assertThat(
+                        TableJobFailures.awaitFailure(
+                                tEnv, "SELECT rowkey FROM rejecting WHERE rowkey <> 7"))
                 .hasStackTraceContaining("holds 9 byte(s)");
-        assertThatThrownBy(() -> collect(tEnv, "SELECT cf.q FROM rejecting"))
+        assertThat(TableJobFailures.awaitFailure(tEnv, "SELECT cf.q FROM rejecting"))
                 .hasStackTraceContaining("holds 9 byte(s)");
     }
 

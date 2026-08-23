@@ -40,7 +40,6 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The table source against real Cloud Bigtable, driven through SQL with <b>no</b> {@code
@@ -164,7 +163,7 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
         assertThat(collect(tEnv, "SELECT rowkey FROM without_profile"))
                 .containsExactly(Row.of("r1"));
 
-        assertThatThrownBy(() -> collect(tEnv, "SELECT rowkey FROM with_profile"))
+        assertThat(TableJobFailures.awaitFailure(tEnv, "SELECT rowkey FROM with_profile"))
                 .satisfies(
                         thrown -> ExceptionUtils.assertThrowableWithMessage(thrown, "NOT_FOUND"));
     }
@@ -184,7 +183,7 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                         "rowkey STRING,\n  " + declaredFamily() + ",\n  absent ROW<q STRING>",
                         "table-source-absent-family"));
 
-        assertThatThrownBy(() -> collect(tEnv, "SELECT * FROM bt"))
+        assertThat(TableJobFailures.awaitFailure(tEnv, "SELECT * FROM bt"))
                 .satisfies(
                         thrown -> ExceptionUtils.assertThrowableWithMessage(thrown, "NOT_FOUND"));
         assertThat(collect(tEnv, "SELECT rowkey FROM bt")).containsExactly(Row.of("r1"));
