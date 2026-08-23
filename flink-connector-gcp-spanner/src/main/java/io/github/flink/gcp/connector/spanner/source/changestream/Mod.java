@@ -35,6 +35,18 @@ public final class Mod implements Serializable {
     @Nullable private final String newValuesJson;
     @Nullable private final String oldValuesJson;
 
+    /**
+     * Creates a mod from the JSON values Spanner reported. Each value is normalized on the way in,
+     * with object members sorted recursively, so that equal values compare equal.
+     *
+     * @param keysJson the JSON object holding the row's primary-key values
+     * @param newValuesJson the JSON value reported for {@code new_values}, or {@code null} when the
+     *     member was absent; an explicit JSON {@code null} is preserved and stays distinct from
+     *     absence
+     * @param oldValuesJson the JSON value reported for {@code old_values}, with the same
+     *     absent-versus-null distinction
+     * @throws IllegalArgumentException if {@code keysJson} is not a JSON object
+     */
     public Mod(String keysJson, @Nullable String newValuesJson, @Nullable String oldValuesJson) {
         this.keysJson =
                 SpannerChangeStreamJsonNormalizer.normalizeObject(

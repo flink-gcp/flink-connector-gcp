@@ -21,7 +21,13 @@ import org.apache.flink.annotation.PublicEvolving;
 /** The operation represented by one Spanner change-stream modification. */
 @PublicEvolving
 public enum ModType {
+
+    /** A row was inserted. */
     INSERT,
+
+    /** A row was updated. */
     UPDATE,
+
+    /** A row was deleted. */
     DELETE
 }

@@ -38,7 +38,11 @@ import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeSt
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerChangeStreamReader;
 
-/** FLIP-27 source for Cloud Spanner Change Streams. */
+/**
+ * FLIP-27 source for Cloud Spanner Change Streams.
+ *
+ * @param <T> the record type produced
+ */
 @PublicEvolving
 public final class SpannerChangeStreamSource<T>
         implements Source<T, ChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>,
@@ -52,6 +56,12 @@ public final class SpannerChangeStreamSource<T>
         this.config = config;
     }
 
+    /**
+     * Returns a builder for a Cloud Spanner Change Streams source.
+     *
+     * @param <T> the record type produced
+     * @return the builder
+     */
     public static <T> SpannerChangeStreamSourceBuilder<T> builder() {
         return new SpannerChangeStreamSourceBuilder<>();
     }

@@ -123,54 +123,90 @@ public final class DataChangeRecord implements Serializable {
                 .systemTransaction(systemTransaction);
     }
 
+    /**
+     * Returns the timestamp at which Spanner committed the change, preserved at nanosecond
+     * precision rather than truncated.
+     */
     public Instant getCommitTimestamp() {
         return commitTimestamp;
     }
 
+    /**
+     * Returns the record's sequence: unique and monotonically increasing within its transaction,
+     * across that transaction's partitions. It does not order records of different transactions.
+     */
     public String getRecordSequence() {
         return recordSequence;
     }
 
+    /** Returns the transaction identifier Spanner assigned. */
     public String getServerTransactionId() {
         return serverTransactionId;
     }
 
+    /**
+     * Returns whether this is the transaction's final record in the originating partition. It marks
+     * the transaction's boundary within that partition only; records of the same transaction may
+     * still arrive on other partitions.
+     */
     public boolean isLastRecordInTransactionInPartition() {
         return lastRecordInTransactionInPartition;
     }
 
+    /** Returns the name of the table the change applies to, as Spanner reported it. */
     public String getTableName() {
         return tableName;
     }
 
+    /**
+     * Returns this record's column descriptors, as an unmodifiable list. The set is record-local:
+     * the value-capture policy and the connector's column projection decide which columns appear,
+     * so it is not the change stream's full watched set.
+     */
     public List<ColumnType> getColumnTypes() {
         return Collections.unmodifiableList(columnTypes);
     }
 
+    /** Returns the row modifications this record reports, as an unmodifiable list. */
     public List<Mod> getMods() {
         return Collections.unmodifiableList(mods);
     }
 
+    /** Returns the operation the record represents. */
     public ModType getModType() {
         return modType;
     }
 
+    /**
+     * Returns the value-capture policy that was active when the change was recorded; it decides
+     * which old and new values the {@link Mod}s carry.
+     */
     public ValueCaptureType getValueCaptureType() {
         return valueCaptureType;
     }
 
+    /**
+     * Returns how many data-change records the originating transaction produced, across all of the
+     * change stream's partitions.
+     */
     public long getNumberOfRecordsInTransaction() {
         return numberOfRecordsInTransaction;
     }
 
+    /** Returns how many change-stream partitions contained the originating transaction. */
     public long getNumberOfPartitionsInTransaction() {
         return numberOfPartitionsInTransaction;
     }
 
+    /** Returns the transaction tag, or an empty string when Spanner supplied none. */
     public String getTransactionTag() {
         return transactionTag;
     }
 
+    /**
+     * Returns whether Spanner identifies the originating transaction as a system transaction, such
+     * as a row deletion applied by a TTL policy.
+     */
     public boolean isSystemTransaction() {
         return systemTransaction;
     }
@@ -255,7 +291,8 @@ public final class DataChangeRecord implements Serializable {
         }
 
         /**
-         * Sets the record's sequence within its partition, commit timestamp and transaction.
+         * Sets the record's sequence, unique and monotonically increasing within its transaction
+         * across that transaction's partitions.
          *
          * @param recordSequence the record sequence
          * @return this builder
@@ -304,7 +341,7 @@ public final class DataChangeRecord implements Serializable {
         }
 
         /**
-         * Sets the watched columns and their type descriptors.
+         * Sets the record's column descriptors.
          *
          * @param columnTypes the column descriptors, none of them null
          * @return this builder
@@ -464,6 +501,17 @@ public final class DataChangeRecord implements Serializable {
         private final boolean primaryKey;
         private final long ordinalPosition;
 
+        /**
+         * Creates a column description.
+         *
+         * @param name the column name
+         * @param typeDescriptorJson the column's type descriptor as JSON; normalized on the way in
+         *     so that equal descriptors compare equal
+         * @param primaryKey whether the column is part of the table's primary key
+         * @param ordinalPosition the column's position in the table definition, starting at 1
+         * @throws IllegalArgumentException if {@code typeDescriptorJson} is not a JSON object or
+         *     {@code ordinalPosition} is not positive
+         */
         public ColumnType(
                 String name, String typeDescriptorJson, boolean primaryKey, long ordinalPosition) {
             this.name = Preconditions.checkNotNull(name, "name must not be null");
@@ -477,6 +525,7 @@ public final class DataChangeRecord implements Serializable {
             this.ordinalPosition = ordinalPosition;
         }
 
+        /** Returns the column's name, as the record's {@code column_types} member reported it. */
         public String getName() {
             return name;
         }
@@ -501,10 +550,12 @@ public final class DataChangeRecord implements Serializable {
                     : Optional.empty();
         }
 
+        /** Returns whether the column is part of the table's primary key. */
         public boolean isPrimaryKey() {
             return primaryKey;
         }
 
+        /** Returns the column's position in the table definition, starting at 1. */
         public long getOrdinalPosition() {
             return ordinalPosition;
         }

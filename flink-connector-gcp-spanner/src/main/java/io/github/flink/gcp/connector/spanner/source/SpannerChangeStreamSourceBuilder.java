@@ -44,12 +44,30 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
-/** Builds a {@link SpannerChangeStreamSource}. */
+/**
+ * Builds a {@link SpannerChangeStreamSource}.
+ *
+ * @param <T> the record type produced
+ */
 @PublicEvolving
 public final class SpannerChangeStreamSourceBuilder<T> {
 
+    /**
+     * Default heartbeat interval. Heartbeats are what advance a quiet partition's watermark; see
+     * {@link #heartbeatInterval(Duration)}.
+     */
     public static final Duration DEFAULT_HEARTBEAT_INTERVAL = Duration.ofSeconds(2);
+
+    /**
+     * Default retention assumed when the change stream declares no explicit retention; see {@link
+     * #absentRetentionFallback(Duration)}.
+     */
     public static final Duration DEFAULT_ABSENT_RETENTION_FALLBACK = Duration.ofDays(7);
+
+    /**
+     * Default bound on the open change-stream queries in one source subtask; see {@link
+     * #maxConcurrentQueriesPerSubtask(int)}.
+     */
     public static final int DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK = 8;
 
     private static final Duration MIN_HEARTBEAT_INTERVAL = Duration.ofSeconds(1);
@@ -367,6 +385,14 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Builds the source.
+     *
+     * @return the source
+     * @throws IllegalStateException if a required option was not set, if both sides of a mutually
+     *     exclusive filter pair were set, or if a service-account key file was combined with an
+     *     emulator endpoint
+     */
     public SpannerChangeStreamSource<T> build() {
         Preconditions.checkState(database != null, "A database is required: set database(...).");
         Preconditions.checkState(

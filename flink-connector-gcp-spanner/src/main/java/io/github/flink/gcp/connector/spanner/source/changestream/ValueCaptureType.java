@@ -18,11 +18,25 @@ package io.github.flink.gcp.connector.spanner.source.changestream;
 
 import org.apache.flink.annotation.PublicEvolving;
 
-/** The value-capture policy that was active when a data change was recorded. */
+/**
+ * The value-capture policy that was active when a data change was recorded. Together with the
+ * operation, it decides which old and new values a record's {@link Mod}s carry: a delete carries no
+ * new values under any policy, and primary-key values are always carried in each mod's keys member.
+ */
 @PublicEvolving
 public enum ValueCaptureType {
+
+    /** Captures the old and new values of the modified columns. */
     OLD_AND_NEW_VALUES,
+
+    /** Captures only the new values of the modified non-key columns, and no old values. */
     NEW_VALUES,
+
+    /** Captures the new values of every watched column, modified or not, and no old values. */
     NEW_ROW,
+
+    /**
+     * Captures the new values of every watched column plus the old values of the modified columns.
+     */
     NEW_ROW_AND_OLD_VALUES
 }
