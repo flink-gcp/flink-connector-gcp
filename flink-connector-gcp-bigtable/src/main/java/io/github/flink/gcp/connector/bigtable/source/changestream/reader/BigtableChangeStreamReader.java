@@ -68,7 +68,7 @@ public final class BigtableChangeStreamReader<T>
     private final ChangeStreamOpener opener;
     private final ChangeStreamRestoreResolver restoreResolver;
     @Nullable private final StartPosition resumeFallback;
-    @Nullable private final Instant endTime;
+    @Nullable private final Instant boundedTimestamp;
     private final int maximumStreams;
     private final BigtableChangeStreamRecordEmitter<T> emitter;
     private final BigtableChangeStreamReaderMetrics metrics;
@@ -92,7 +92,7 @@ public final class BigtableChangeStreamReader<T>
                 config.getOpener(),
                 config.getRestoreResolver(),
                 config.getResumeFallback(),
-                config.getEndTime(),
+                config.getBoundedTimestamp(),
                 config.getMaxConcurrentStreamsPerSubtask(),
                 config.getMutationFilter(),
                 new BigtableChangeStreamReaderMetrics(context.metricGroup()));
@@ -106,7 +106,7 @@ public final class BigtableChangeStreamReader<T>
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
             @Nullable StartPosition resumeFallback,
-            @Nullable Instant endTime,
+            @Nullable Instant boundedTimestamp,
             int maximumStreams,
             BigtableChangeStreamReaderMetrics metrics) {
         this(
@@ -116,7 +116,7 @@ public final class BigtableChangeStreamReader<T>
                 opener,
                 restoreResolver,
                 resumeFallback,
-                endTime,
+                boundedTimestamp,
                 maximumStreams,
                 BigtableChangeStreamMutationFilter.none(),
                 metrics);
@@ -130,7 +130,7 @@ public final class BigtableChangeStreamReader<T>
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
             @Nullable StartPosition resumeFallback,
-            @Nullable Instant endTime,
+            @Nullable Instant boundedTimestamp,
             int maximumStreams,
             BigtableChangeStreamMutationFilter mutationFilter,
             BigtableChangeStreamReaderMetrics metrics) {
@@ -140,7 +140,7 @@ public final class BigtableChangeStreamReader<T>
         this.restoreResolver =
                 Preconditions.checkNotNull(restoreResolver, "restoreResolver must not be null");
         this.resumeFallback = resumeFallback;
-        this.endTime = endTime;
+        this.boundedTimestamp = boundedTimestamp;
         Preconditions.checkArgument(maximumStreams > 0, "maximumStreams must be positive");
         this.maximumStreams = maximumStreams;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
@@ -334,7 +334,7 @@ public final class BigtableChangeStreamReader<T>
             ActiveRead read = new ActiveRead(split);
             active.put(split.splitId(), read);
             try {
-                opener.open(table, split, endTime, read);
+                opener.open(table, split, boundedTimestamp, read);
             } catch (Exception e) {
                 read.cancel(CancellationReason.CLOSE);
                 active.remove(split.splitId());

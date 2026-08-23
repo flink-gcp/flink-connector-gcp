@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.api.core.ApiFuture;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
@@ -32,6 +34,7 @@ import java.io.Serializable;
  * ranges is the same answer, because the connector does not read a row it would then have to
  * discard.
  */
+@Internal
 interface BigtableRowLookup extends Serializable, AutoCloseable {
 
     /** Opens the client resources used by the point reads. */

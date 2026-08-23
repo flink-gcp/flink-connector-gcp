@@ -34,7 +34,7 @@ final class BigtableExamplesBoundingMemory {
                 .writerOptions(
                         BigtableWriterOptions.builder()
                                 .maxInFlightBytes(16L * 1024 * 1024)
-                                .batchElementCount(50)
+                                .batchElementCountThreshold(50)
                                 .build())
                 .build();
         // end::bigtable-examples-bounding-memory[]

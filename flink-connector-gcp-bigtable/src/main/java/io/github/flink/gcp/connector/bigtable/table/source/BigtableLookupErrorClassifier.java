@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.ExceptionUtils;
 
 import com.google.api.gax.rpc.StatusCode;
@@ -25,6 +26,7 @@ import java.util.EnumSet;
 import java.util.Set;
 
 /** Classifies whether a point-read failure is transient and eligible for another client call. */
+@Internal
 final class BigtableLookupErrorClassifier {
 
     /**

@@ -43,23 +43,25 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - **Every count this connector exposes counts entries; Bigtable's own limit counts mutations**, and
   the two are never reconciled here because **the client does it** — `MutateRowsBatchResource`
-  flushes past 100,000 mutations whatever `batchElementCount` says, and `Mutation` refuses to build
-  a single entry that large. So a mutation-counting layer on this side (the Spanner cell-weight
-  shape, `docs/adr/0077`) is duplication, not a gap, and an over-limit `MutateRows` cannot be
-  produced through this sink to be measured. **`BulkMutation` is not a second guard**: its running
-  count is on the `add(ByteString, Mutation)` overload, and the batcher calls
-  `add(RowMutationEntry)`, which counts nothing — so the batch-level invariant rests on that flush
-  alone, which is why `BigtableClientMutationLimitTest` pins it rather than trusting it.
+  flushes past 100,000 mutations whatever `batchElementCountThreshold` says, and `Mutation`
+  refuses to build a single entry that large. So a mutation-counting layer on this side (the
+  Spanner cell-weight shape, `docs/adr/0077`) is duplication, not a gap, and an over-limit
+  `MutateRows` cannot be produced through this sink to be measured. **`BulkMutation` is no second
+  guard.** Its running count is on the `add(ByteString, Mutation)` overload, and the batcher
+  calls `add(RowMutationEntry)`, which counts nothing. The batch-level invariant therefore rests on
+  that flush alone, which is why `BigtableClientMutationLimitTest` pins it rather than trusting it.
 - The knobs that count are spelled for it: `maxInFlightEntries`, `inFlightEntries`,
   `parkedEntries`. "Mutation" stays the word for the *thing* — `FailedMutation`, `MutationBatcher`,
   a mutation the service refused — and "entry" is the word for what is *counted*. A new counter
   picks by that rule rather than by which reads better.
-- **`batchElementCount` ≤ 19,999 and `batchByteSize` ≤ 100 MiB − 1, at the setter**, with
-  package-private `*_LIMIT` constants and the figure in the `@param` (`OptionChecks`' rule: a
-  public compile-time constant inlines into callers). **Both are one under the client's
-  flow-control budget** (20,000 entries / 100 MiB), written as that subtraction rather than as
-  literals, because `BigtableBatchingCallSettings.Builder.build()` requires each threshold to be
-  *strictly* below its budget and throws otherwise — so a value past either ceiling is not a loose
+- **Both thresholds are bounded at the setter: `batchElementCountThreshold` ≤ 19,999 and
+  `batchRequestByteThreshold` ≤ 100 MiB − 1**, with package-private `*_LIMIT` constants and the
+  figure in the `@param`, following `OptionChecks`' rule that a public compile-time constant inlines
+  into callers.
+  **Both sit one below the client's flow-control budget**, at 20,000 entries / 100 MiB.
+  The constants are written as subtractions rather than literals.
+  `BigtableBatchingCallSettings.Builder.build()` requires each threshold
+  to be *strictly* below its budget and throws otherwise. A value past either ceiling is not a loose
   batch but `Failed to create a Bigtable mutation batcher` on a task manager. Neither ceiling is a
   service figure, and none exists: Bigtable documents no per-request size at all. The pair
   `DefaultMutationBatcherFactoryTest` (the client accepts them) and `BigtableWriterOptionsTest`
@@ -181,7 +183,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   make a compound operation atomic.
 
 - **One sampler belongs to one enumerator** (`docs/adr/0128`). `BigtableSourceConfig` carries a
-  `RowKeySamplerFactory`, not a sampler, and `BigtableReadRowsSource` mints one in both
+  `RowKeySamplerFactory`, not a sampler, and `BigtableScanSource` mints one in both
   `createEnumerator` and `restoreEnumerator`, closing it itself if the enumerator's constructor
   throws before taking it. `RowKeySampler` is deliberately not `Serializable`. The sticky flag is a
   level down, in `LazyBigtableDataClient`, whose reader-side holders —
@@ -309,8 +311,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   reported for it, and its first never matches the `MissingPartition` remembered from the previous
   scan, so neither grace period elapses and the partition is never restarted.
 - **A bounded run's finished ranges stay in the reconciliation ledger** (#951). A partition that
-  reaches `endTime` closes with no successor, so it leaves `assigned` and nothing replaces it,
-  while `generateInitialPartitions` goes on reporting that keyspace for as long as the table exists.
+  reaches `boundedTimestamp` closes with no successor, so it leaves `assigned` and nothing replaces
+  it, while `generateInitialPartitions` goes on reporting that keyspace for as long as the table
+  exists.
   The
   enumerator therefore records those ranges under `bounded`, the reconciler counts them as covered,
   and they are checkpointed so a restore keeps the account. Skipping it deadlocks the run: a
@@ -490,17 +493,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   applied in any order, even for the same row) and, inside a millisecond, no second cell version
   either. An integration test that needs an order sends them from **separate jobs**; one that
   batches them is asserting the emulator's submission order. **Separate *requests* are not enough,
-  and `sink.batching.element-count` = `1` is not the escape hatch it looks like** — measured on
-  #470's follow-up, one entry per request made a delete stop taking effect on the 1.20 build,
-  because the requests one job has in flight are concurrent rather than ordered. A test that cannot
-  use two jobs — the table layer's delete test, since `ChangelogNormalize` knows only what its own
-  job has seen — asserts something order-independent instead. Writable `timestamp` metadata is a
-  nullable `TIMESTAMP_LTZ(6)` applied identically to every cell a row writes and ignored by a
-  delete; absent or null metadata keeps the three-argument `setCell` writer clock. The client
-  reuses one mutation for its own retry, but Flink replay serializes again, so replay idempotence
-  requires a stable explicit record timestamp. Bigtable validates millisecond granularity by
-  default; `sink.cell-timestamp.truncate-to-millis=true` explicitly opts into dropping the final
-  three microsecond digits. **#471 measured but did not convert the
+  and `sink.batching.element-count-threshold` = `1` is not the escape hatch it looks like** —
+  measured on #470's follow-up, one entry per request made a delete stop taking effect on the 1.20
+  build, because the requests one job has in flight are concurrent rather than ordered. A test that
+  cannot use two jobs — the table layer's delete test, since `ChangelogNormalize` knows only what
+  its own job has seen — asserts something order-independent instead. Writable `timestamp`
+  metadata is a nullable `TIMESTAMP_LTZ(6)` applied identically to every cell a row writes and
+  ignored by a delete; absent or null metadata keeps the three-argument `setCell` writer clock.
+  The client reuses one mutation for its own retry, but Flink replay serializes again, so replay
+  idempotence requires a stable explicit record timestamp. Bigtable validates millisecond
+  granularity by default; `sink.cell-timestamp.truncate-to-millis=true` explicitly opts into
+  dropping the final three microsecond digits. **#471 measured but did not convert the
   observation into a guarantee** (ADR-0093): 86,196 same-row pairs, mirrored across request sizes
   2 through 19,998, produced zero reversals on real Bigtable. The sink retains the bulk path and
   the caveat; a permanent test asserting submission order would contradict the service contract.

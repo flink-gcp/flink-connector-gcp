@@ -204,8 +204,7 @@ class BigtableSourceBuilderTest {
     @Test
     void serviceAccountKeyFilePropagatesWithoutBeingParsedAtBuildTime() {
         BigtableSourceConfig<String> config =
-                ((io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource<
-                                        String>)
+                ((io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource<String>)
                                 BigtableSource.<String>builder()
                                         .table(TestSources.TABLE)
                                         .deserializer(new TestSources.RowKeyDeserializer())

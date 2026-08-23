@@ -29,8 +29,8 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
-import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DefaultRowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
@@ -305,7 +305,7 @@ public class BigtableSourceBuilder<T> {
                         + " emulator uses a plaintext channel with no credentials. Remove one of"
                         + " the two settings.");
         checkFilterFits();
-        return new BigtableReadRowsSource<>(
+        return new BigtableScanSource<>(
                 new BigtableSourceConfig<>(
                         table,
                         deserializer,

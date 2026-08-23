@@ -50,9 +50,9 @@ depending on what the serializer set.
 row; concurrent requests are unordered too. A 2026-08-11 real-service campaign observed zero
 reversals in 86,196 mirrored same-row pairs, but that bounded observation does not replace the
 contract. If dependent mutations need a defined winner, encode the version in the row key or split
-them into writes whose completion is awaited before the next begins. `batchElementCount(1)` only
-makes concurrent one-entry requests and does not establish order. ADR-0093 records the measurement
-and decision.
+them into writes whose completion is awaited before the next begins.
+`batchElementCountThreshold(1)` only makes concurrent one-entry requests and does not establish
+order. ADR-0093 records the measurement and decision.
 
 ## API notes
 
@@ -306,20 +306,21 @@ count. Bigtable's own documented limit is stated in the other unit: no more than
 [100,000 mutations](https://cloud.google.com/bigtable/quotas) in a batch. **The two never have to be
 reconciled by a job**, because the client enforces the mutation limit itself and unconditionally: it
 flushes the accumulated batch as soon as one more entry would carry it past 100,000 mutations,
-whatever `batchElementCount` says, and refuses to build a single entry carrying more than that on
-its own. So no setting of these knobs produces an over-limit request, and a test pins both facts so
-that a client upgrade moving either one goes red.
+whatever `batchElementCountThreshold` says, and refuses to build a single entry carrying more than
+that on its own. So no setting of these knobs produces an over-limit request, and a test pins both
+facts so that a client upgrade moving either one goes red.
 
-**The batch thresholds** (`batchElementCount`, `batchByteSize`) are handed to the client and decide
-when it sends a batch. Both are unset by default, which leaves the client's own values (100
-entries, 20 MiB, and a one-second timer) in place — recorded in the reference for sizing rather
-than restated in this project's code, so a client upgrade that retunes them is inherited. A batch
-goes out on whichever of five conditions arrives first: those two, the one-second timer, the
-client's 100,000-mutation guard, and a full writer sending every batcher. Any claim of the form
-"setting `batchElementCount` to *N* makes batches of *N*" has to name the condition that *binds*,
-or it is false — no batch ever holds more than `maxInFlightEntries` entries whatever this knob
-says, because an entry counts as unacknowledged from the moment the batcher accepts it, so what a
-batcher is still accumulating is part of a total the writer stops admitting past.
+**The batch thresholds** (`batchElementCountThreshold`, `batchRequestByteThreshold`) are handed to
+the client and decide when it sends a batch. Both are unset by default, which leaves the client's
+own values (100 entries, 20 MiB, and a one-second timer) in place — recorded in the reference for
+sizing rather than restated in this project's code, so a client upgrade that retunes them is
+inherited. A batch goes out on whichever of five conditions arrives first: those two, the
+one-second timer, the client's 100,000-mutation guard, and a full writer sending every batcher.
+Any claim of the form
+"setting `batchElementCountThreshold` to *N* makes batches of *N*" has to name the condition that
+*binds*, or it is false — no batch ever holds more than `maxInFlightEntries` entries whatever this
+knob says, because an entry counts as unacknowledged from the moment the batcher accepts it, so
+what a batcher is still accumulating is part of a total the writer stops admitting past.
 
 **The in-flight bounds** (`maxInFlightEntries`, `maxInFlightBytes`) are the writer's own, and they
 are what backpressures the stream: at either cap `write()` yields to the task mailbox until
@@ -732,8 +733,8 @@ retention, restore fails by default; `resumeFallback(...)` explicitly accepts th
 restarts the affected partition without its stale token. The check covers every restored position:
 assigned and unassigned partitions, pending merges, and the reconciler's checkpointed
 missing-partition ledger. A bounded run's completed ranges are restored without one, because a
-range that has already been read to the end time is never resumed from. `endTime(...)` makes the
-source bounded.
+range that has already been read to the end time is never resumed from.
+`boundedTimestamp(...)` makes the source bounded.
 
 Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may produce zero or more
 records. Every produced record carries the mutation's commit time as its Flink timestamp. A
@@ -756,13 +757,12 @@ its first-observed time. Compatible parent tokens may reconstruct it after two m
 low watermark, emit a WARN naming that ledger, and increment `changeStreamTokenlessRestarts`.
 These intervals are internal protocol constants rather than public tuning options.
 
-Under `endTime(...)` the comparison also counts the ranges the run has already read to that end
-time. A bounded partition ends by closing without a successor, which retires its range from the
-live ledger, while the service goes on reporting that keyspace for as long as the table exists.
-Those
-completed ranges are checkpointed beside the rest of the ledger, so a bounded run neither reports
-its own finished work as missing nor re-reads it, and a restore resumes with the same account of
-what is left to do.
+Under `boundedTimestamp(...)` the comparison also counts the ranges the run has already read to
+that end time. A bounded partition ends by closing without a successor, which retires its range
+from the live ledger, while the service goes on reporting that keyspace for as long as the table
+exists. Those completed ranges are checkpointed beside the rest of the ledger.
+A bounded run neither reports its own finished work as missing nor re-reads it.
+A restore resumes with the same account of what is left to do.
 
 A tracked low watermark that falls before one minute inside the retention window is moved forward
 to that point, because the service answers no request for a position it no longer retains. Such a

@@ -18,11 +18,13 @@ limitations under the License.
 
 - Status: Superseded by ADR-0102
 - Date: 2026-08-10; revised by [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473) (2026-08-11),
-  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543) (2026-08-12)
+  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543) (2026-08-12) and
+  [#1052](https://github.com/flink-gcp/flink-connector-gcp/issues/1052) (2026-08-23)
 - Issues: [#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458) (under
   [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217); ADR-0014 holds the
   shared mapping rules), [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473),
-  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543)
+  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543),
+  [#1052](https://github.com/flink-gcp/flink-connector-gcp/issues/1052)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -246,7 +248,7 @@ order); a test asserting an in-batch winner would be asserting
 the emulator's submission order, which is why the integration tests that need an order use separate
 **jobs**.
 
-Separate *requests* are not enough, and `sink.batching.element-count` = `1` is not the escape hatch
+Separate *requests* are not enough, and `sink.batching.element-count-threshold` = `1` is not the escape hatch
 it looks like: measured on #470's follow-up, forcing one entry per request made a delete stop taking
 effect on the 1.20 build, because the requests one job has in flight are concurrent rather than
 ordered. Where two jobs are impossible — the table layer's delete test, since `ChangelogNormalize`

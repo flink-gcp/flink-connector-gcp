@@ -31,8 +31,8 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChange
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.ChangeStreamRestoreResolver;
-import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySample;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
@@ -72,8 +72,8 @@ class BigtableSourceRuntimeCredentialsTest {
 
     @Test
     void scanReaderAndEnumeratorLoadCredentialsAtRuntime() {
-        BigtableReadRowsSource<String> source =
-                (BigtableReadRowsSource<String>)
+        BigtableScanSource<String> source =
+                (BigtableScanSource<String>)
                         BigtableSource.<String>builder()
                                 .table(TestSources.TABLE)
                                 .deserializer(new TestSources.RowKeyDeserializer())
@@ -102,8 +102,8 @@ class BigtableSourceRuntimeCredentialsTest {
     @Test
     void nothingIsMintedWhenTheKeyFileCannotBeRead() {
         ScriptedRowKeySampler.Factory samplers = ScriptedRowKeySampler.Factory.answering();
-        BigtableReadRowsSource<String> source =
-                (BigtableReadRowsSource<String>)
+        BigtableScanSource<String> source =
+                (BigtableScanSource<String>)
                         TestSources.withSamplerFactory(
                                         BigtableSource.<String>builder()
                                                 .table(TestSources.TABLE)
@@ -175,8 +175,8 @@ class BigtableSourceRuntimeCredentialsTest {
         // different processes, so whether they share an instance here says nothing.
         CapturingRowStreamOpener opener = new CapturingRowStreamOpener();
         CapturingRowKeySamplerFactory samplers = new CapturingRowKeySamplerFactory();
-        BigtableReadRowsSource<String> source =
-                (BigtableReadRowsSource<String>)
+        BigtableScanSource<String> source =
+                (BigtableScanSource<String>)
                         BigtableSource.<String>builder()
                                 .table(TestSources.TABLE)
                                 .deserializer(new TestSources.RowKeyDeserializer())
@@ -219,7 +219,7 @@ class BigtableSourceRuntimeCredentialsTest {
         public void open(
                 TableDestination table,
                 ChangeStreamPartitionSplit split,
-                @Nullable Instant endTime,
+                @Nullable Instant boundedTimestamp,
                 ResponseObserver<ChangeStreamRecord> observer) {}
 
         @Override

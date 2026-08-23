@@ -54,7 +54,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private String serviceAccountKeyFile;
     private StartPosition startPosition = StartPosition.latest();
     @Nullable private StartPosition resumeFallback;
-    @Nullable private Instant endTime;
+    @Nullable private Instant boundedTimestamp;
     private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
     private List<Pattern> familyIncludeList = Collections.emptyList();
     private List<Pattern> familyExcludeList = Collections.emptyList();
@@ -134,8 +134,15 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
-    public BigtableChangeStreamSourceBuilder<T> endTime(Instant endTime) {
-        this.endTime = Preconditions.checkNotNull(endTime, "endTime must not be null");
+    /**
+     * Makes the source bounded at a change-stream timestamp.
+     *
+     * @param boundedTimestamp the timestamp at which the source stops
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> boundedTimestamp(Instant boundedTimestamp) {
+        this.boundedTimestamp =
+                Preconditions.checkNotNull(boundedTimestamp, "boundedTimestamp must not be null");
         return this;
     }
 
@@ -257,7 +264,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         serviceAccountKeyFile,
                         startPosition,
                         resumeFallback,
-                        endTime,
+                        boundedTimestamp,
                         maxConcurrentStreamsPerSubtask,
                         new BigtableChangeStreamMutationFilter(
                                 familyIncludeList,

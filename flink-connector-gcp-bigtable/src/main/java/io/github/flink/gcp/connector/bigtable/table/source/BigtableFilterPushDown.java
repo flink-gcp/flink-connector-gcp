@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
@@ -58,6 +59,7 @@ import java.util.Optional;
 import static com.google.cloud.bigtable.data.v2.models.Filters.FILTERS;
 
 /** Translates Flink SQL predicates into the safe subset Bigtable can serve. */
+@Internal
 final class BigtableFilterPushDown {
 
     private BigtableFilterPushDown() {}

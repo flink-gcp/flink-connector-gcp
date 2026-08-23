@@ -437,7 +437,7 @@ If a restored position has expired, the job fails unless
 with `scan.resume-fallback.timestamp-millis`.
 This restore contract is [ADR-0094]({{< param BookRepo >}}/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
 
-Set `scan.end-timestamp-millis` to make the source bounded; without it the source is continuous.
+Set `scan.bounded.timestamp-millis` to make the source bounded; without it the source is continuous.
 `scan.max-concurrent-streams-per-subtask` bounds open partition reads in each source subtask and
 keeps the DataStream builder's default of two when absent.
 Source parallelism multiplied by that value is configured job capacity, not a Bigtable quota.
@@ -672,7 +672,7 @@ DataStream builder.
 | `scan.startup.timestamp-millis` | Long | Epoch-millisecond instant paired with startup mode `timestamp` |
 | `scan.resume-fallback.mode` | Enum | `resumeFallback(...)`: explicit fallback for an expired restored continuation; uses the same three modes |
 | `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
-| `scan.end-timestamp-millis` | Long | `endTime(...)`; makes Change Streams bounded at the epoch-millisecond instant |
+| `scan.bounded.timestamp-millis` | Long | `boundedTimestamp(...)`; makes Change Streams bounded at the epoch-millisecond instant. Requires `scan.mode = change-stream`; the separate `scan.mode = bounded` value selects a finite scan of the current table |
 | `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
@@ -701,8 +701,8 @@ DataStream builder.
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
 | `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
-| `sink.batching.element-count` | Long | `BigtableWriterOptions.batchElementCount(...)`. Counts **entries** — one row's mutations — not mutations |
-| `sink.batching.byte-size` | MemorySize | `BigtableWriterOptions.batchByteSize(...)` |
+| `sink.batching.element-count-threshold` | Long | `BigtableWriterOptions.batchElementCountThreshold(...)`. Counts **entries** — one row's mutations — not mutations |
+| `sink.batching.request-byte-threshold` | MemorySize | `BigtableWriterOptions.batchRequestByteThreshold(...)` |
 | `sink.in-flight.max-entries` | Integer | `BigtableWriterOptions.maxInFlightEntries(...)` |
 | `sink.in-flight.max-bytes` | MemorySize | `BigtableWriterOptions.maxInFlightBytes(...)` |
 | `sink.max-consecutive-rejections` | Integer | `BigtableWriterOptions.maxConsecutiveRejections(...)`. **Inert from SQL**: a DDL has no failure-policy option, so the sink fails the job on the first confirmed rejection and never reaches a bound. It exists so the DDL surface stays one key per writer knob |
@@ -853,12 +853,13 @@ same row)". So when a job produces two changelog rows for the same key close eno
 share a request, which one lands last is not defined — and if they share a millisecond they also
 share a cell timestamp, so they collapse to one version rather than two.
 
-**Separate requests are not the fix**, and setting `sink.batching.element-count` to `1` to force one
-entry per request is the shape that looks like it. The batcher sends each request without waiting
-for the previous one's response, so requests a single job has in flight are concurrent rather than
-ordered — measured, forcing one entry per request made a delete stop taking effect. What has a
-defined order is separate *writes*: a request whose response has been awaited before the next is
-issued, which is what successive jobs give you.
+**Separate requests are not the fix**, and setting `sink.batching.element-count-threshold` to `1`
+to force one entry per request is the shape that looks like it. The batcher sends each request
+without waiting for the previous one's response, so requests a single job has in flight are
+concurrent rather than ordered — measured, forcing one entry per request made a delete stop taking
+effect. What has a defined order is separate *writes*.
+A request whose response has been awaited before the next is issued is ordered, which is what
+successive jobs give you.
 
 A job that needs last-write-wins per key cannot obtain it from this sink's submission order. It can
 put the version in the row key, or separate dependent mutations into writes whose completion is

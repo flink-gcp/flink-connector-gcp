@@ -92,8 +92,8 @@ class DefaultMutationBatcherFactoryTest {
         BatchingSettings batching =
                 batchingSettings(
                         BigtableWriterOptions.builder()
-                                .batchElementCount(7)
-                                .batchByteSize(4096)
+                                .batchElementCountThreshold(7)
+                                .batchRequestByteThreshold(4096)
                                 .build());
 
         assertThat(batching.getElementCountThreshold()).isEqualTo(7L);
@@ -114,8 +114,8 @@ class DefaultMutationBatcherFactoryTest {
         // moving one without coming here fails there.
         BigtableWriterOptions atTheCeilings =
                 BigtableWriterOptions.builder()
-                        .batchElementCount(19_999)
-                        .batchByteSize(100L * 1024 * 1024 - 1)
+                        .batchElementCountThreshold(19_999)
+                        .batchRequestByteThreshold(100L * 1024 * 1024 - 1)
                         .build();
 
         assertThatCode(() -> batchingSettings(atTheCeilings)).doesNotThrowAnyException();
@@ -127,7 +127,8 @@ class DefaultMutationBatcherFactoryTest {
         // Only one of the two is set, so the other has to keep the client's value rather than be
         // reset alongside it.
         BatchingSettings batching =
-                batchingSettings(BigtableWriterOptions.builder().batchElementCount(7).build());
+                batchingSettings(
+                        BigtableWriterOptions.builder().batchElementCountThreshold(7).build());
 
         assertThat(batching.getElementCountThreshold()).isEqualTo(7L);
         assertThat(batching.getRequestByteThreshold())

@@ -44,7 +44,7 @@ public interface ChangeStreamOpener extends Serializable, AutoCloseable {
     void open(
             TableDestination table,
             ChangeStreamPartitionSplit split,
-            @Nullable Instant endTime,
+            @Nullable Instant boundedTimestamp,
             ResponseObserver<ChangeStreamRecord> observer)
             throws IOException;
 

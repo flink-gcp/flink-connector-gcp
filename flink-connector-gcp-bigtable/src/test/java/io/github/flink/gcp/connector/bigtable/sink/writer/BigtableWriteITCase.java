@@ -112,7 +112,7 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
                         table,
                         BigtableWriterOptions.builder()
                                 .maxInFlightEntries(4)
-                                .batchElementCount(2)
+                                .batchElementCountThreshold(2)
                                 .build(),
                         SERIALIZER);
 

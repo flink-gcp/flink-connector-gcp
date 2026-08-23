@@ -548,7 +548,7 @@ class BigtableChangeStreamReaderTest {
         public void open(
                 TableDestination table,
                 ChangeStreamPartitionSplit split,
-                @Nullable Instant endTime,
+                @Nullable Instant boundedTimestamp,
                 ResponseObserver<ChangeStreamRecord> observer) {
             ScriptedController controller = new ScriptedController(observer, this);
             opened.add(split);

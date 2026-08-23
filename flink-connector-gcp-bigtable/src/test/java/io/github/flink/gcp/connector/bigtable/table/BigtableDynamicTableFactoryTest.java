@@ -53,7 +53,7 @@ import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
-import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamEnvelopeSchema;
@@ -108,7 +108,7 @@ class BigtableDynamicTableFactoryTest {
                     Map.entry("scan.startup.timestamp-millis", "1000"),
                     Map.entry("scan.resume-fallback.mode", "earliest"),
                     Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
-                    Map.entry("scan.end-timestamp-millis", "2000"),
+                    Map.entry("scan.bounded.timestamp-millis", "2000"),
                     Map.entry("scan.max-concurrent-streams-per-subtask", "1"),
                     Map.entry("scan.change-stream.selected-cell.family", "state"),
                     Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
@@ -266,7 +266,7 @@ class BigtableDynamicTableFactoryTest {
         options.put("emulator-endpoint", "localhost:8086");
         options.put("sink.parallelism", "3");
         options.put("null-string-literal", "<none>");
-        options.put("sink.batching.element-count", "250");
+        options.put("sink.batching.element-count-threshold", "250");
         options.put("sink.create-disposition", "create-if-needed");
         options.put("sink.table-create.gc-rule.max-versions", "2");
         options.put("sink.cell-timestamp.truncate-to-millis", "true");
@@ -327,9 +327,13 @@ class BigtableDynamicTableFactoryTest {
     @Test
     void carriesTheWriterTuning() {
         Map<String, String> options = minimalOptions();
-        options.put("sink.batching.element-count", "250");
+        options.put("sink.batching.element-count-threshold", "250");
 
-        assertThat(built(SCHEMA, options).getConfig().getWriterOptions().getBatchElementCount())
+        assertThat(
+                        built(SCHEMA, options)
+                                .getConfig()
+                                .getWriterOptions()
+                                .getBatchElementCountThreshold())
                 .isEqualTo(250L);
     }
 
@@ -765,7 +769,7 @@ class BigtableDynamicTableFactoryTest {
                 (SourceProvider)
                         ((ScanTableSource) FactoryMocks.createTableSource(schema, options))
                                 .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
-        return ((BigtableReadRowsSource<?>) provider.createSource()).getConfig();
+        return ((BigtableScanSource<?>) provider.createSource()).getConfig();
     }
 
     @Test
@@ -982,7 +986,7 @@ class BigtableDynamicTableFactoryTest {
         configured.put("scan.startup.mode", "timestamp");
         configured.put("scan.startup.timestamp-millis", "1000");
         configured.put("scan.resume-fallback.mode", "earliest");
-        configured.put("scan.end-timestamp-millis", "2000");
+        configured.put("scan.bounded.timestamp-millis", "2000");
         configured.put("scan.max-concurrent-streams-per-subtask", "5");
         configured.put("scan.parallelism", "3");
 
@@ -992,7 +996,7 @@ class BigtableDynamicTableFactoryTest {
                         .serviceAccountKeyFile("/var/run/secrets/bigtable.json")
                         .startPosition(StartPosition.at(Instant.ofEpochMilli(1000L)))
                         .resumeFallback(StartPosition.earliest())
-                        .endTime(Instant.ofEpochMilli(2000L))
+                        .boundedTimestamp(Instant.ofEpochMilli(2000L))
                         .maxConcurrentStreamsPerSubtask(5)
                         .parallelism(3)
                         .build();
@@ -1039,7 +1043,7 @@ class BigtableDynamicTableFactoryTest {
     @Test
     void buildsTheExistingDataStreamSourceWithBoundednessAndParallelism() {
         Map<String, String> options = minimalChangeStreamOptions();
-        options.put("scan.end-timestamp-millis", "2000");
+        options.put("scan.bounded.timestamp-millis", "2000");
         options.put("scan.parallelism", "4");
         SourceProvider provider =
                 (SourceProvider)
@@ -1059,7 +1063,7 @@ class BigtableDynamicTableFactoryTest {
         options.put("scan.startup.mode", "timestamp");
         options.put("scan.startup.timestamp-millis", "1000");
         options.put("scan.resume-fallback.mode", "earliest");
-        options.put("scan.end-timestamp-millis", "2000");
+        options.put("scan.bounded.timestamp-millis", "2000");
         options.put("scan.max-concurrent-streams-per-subtask", "5");
         SourceProvider provider =
                 (SourceProvider)
@@ -1073,7 +1077,7 @@ class BigtableDynamicTableFactoryTest {
                         "config.serviceAccountKeyFile",
                         "config.startPosition",
                         "config.resumeFallback",
-                        "config.endTime",
+                        "config.boundedTimestamp",
                         "config.maxConcurrentStreamsPerSubtask")
                 .containsExactly(
                         DESTINATION,
@@ -1198,6 +1202,22 @@ class BigtableDynamicTableFactoryTest {
                     .isInstanceOf(ValidationException.class)
                     .hasStackTraceContaining("not valid when 'scan.mode' = 'change-stream'");
         }
+    }
+
+    @Test
+    void explainsThatBoundedTimestampBelongsToChangeStreams() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.bounded.timestamp-millis", "1760000000000");
+
+        assertThatThrownBy(() -> source(options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "'scan.mode' = 'bounded', which selects a finite scan of the current"
+                                + " table")
+                .hasStackTraceContaining(
+                        "The 'bounded' segment in 'scan.bounded.timestamp-millis' names its Change"
+                                + " Streams stop position, not the scan mode")
+                .hasStackTraceContaining("set 'scan.mode' = 'change-stream'");
     }
 
     @Test

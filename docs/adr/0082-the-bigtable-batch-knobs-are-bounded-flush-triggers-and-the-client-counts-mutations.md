@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0082: The Bigtable batch knobs are bounded flush triggers, and the client is what counts mutations
 
 - Status: Accepted
-- Date: 2026-08-10
-- Issues: [#436]
+- Date: 2026-08-10; revised by [#1052] (2026-08-23)
+- Issues: [#436], [#1052]
 - Modules: bigtable (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Tuning,
   `docs/content/docs/reference/bigtable.md` § `BigtableWriterOptions`
@@ -27,8 +27,8 @@ limitations under the License.
 
 [#436] is the sibling of [#435], which bounded the Spanner sink's batch knobs (ADR-0077), and it
 asked the same question of the sink that shipped first. It found three things: no upper guard on
-`batchElementCount` or `batchByteSize`, a units mismatch — the knob counts `RowMutationEntry`
-objects while Bigtable's limit counts *mutations* — and one javadoc sentence
+`batchElementCountThreshold` or `batchRequestByteThreshold`, a units mismatch — the knob counts
+`RowMutationEntry` objects while Bigtable's limit counts *mutations* — and one javadoc sentence
 ("Bigtable accepts up to 100 MB of mutations per request") it could not source.
 
 The units half turned out to rest on a premise that measurement retires.
@@ -50,9 +50,9 @@ and `gax` 2.82.0 on 2026-08-10:
   `MAX_MUTATIONS = 100_000` ("Too many mutations per row"), and `RowMutationEntry.toProto()`
   re-checks the same per-entry number.
 
-So `batchElementCount(50_000)` on a job writing ten cells per record does **not** send 500,000
-mutations in a request, which is what [#436] §1 predicted. The knob is a flush *trigger*; the
-service's limit is enforced a layer below it, in a unit this connector never has to convert to.
+So `batchElementCountThreshold(50_000)` on a job writing ten cells per record does **not** send
+500,000 mutations in a request, which is what [#436] §1 predicted. The knob is a flush *trigger*;
+the service's limit is enforced a layer below it, in a unit this connector never has to convert to.
 
 **There is no second guard at the batch level, and the issue's blast-radius paragraph is why that
 is tolerable.** `BulkMutation` does keep a running `mutationCountSum` with a precondition refusal —
@@ -81,8 +81,9 @@ built with. Past either, `BigtableDataSettings.Builder.build()` throws
 `IllegalArgumentException` — inside `DefaultMutationBatcherFactory.client(...)`, on a task manager,
 as the writer opens, surfacing as `Failed to create a Bigtable mutation batcher for table …`.
 
-This was found by running the ceiling this ADR first proposed. `batchElementCount(50_000)` — [#436]'s
-own example of a value that "looks like half the documented limit" — does not send an over-limit
+This was found by running the ceiling this ADR first proposed.
+`batchElementCountThreshold(50_000)` — [#436]'s own example of a value that "looks like half the
+documented limit" — does not send an over-limit
 request and never has; it fails the job at the first record. So [#436] §2's shape is right ("a value
 past the limit is accepted at submission and only refused on a task manager") for a reason the issue
 did not have: not the service's refusal, but the client's.
@@ -98,8 +99,8 @@ than was claimed.
 ## Decision
 
 **1. Both batch knobs are bounded at the setter**, in ADR-0077's shape — a package-private
-`*_LIMIT` constant, the figure named in the `@param` rather than the symbol (a public compile-time
-constant inlines into callers), and a reject/accept test pair.
+`*_LIMIT` constant, with the figure named in the `@param` rather than the symbol (a public
+compile-time constant inlines into callers), and a reject/accept test pair.
 
 Both ceilings are **one under the client's matching flow-control budget**, and both are written as
 that subtraction — `CLIENT_MAX_OUTSTANDING_ENTRIES - 1`, `CLIENT_MAX_OUTSTANDING_BYTES - 1` —
@@ -197,7 +198,7 @@ that moves one fails a test rather than a job.
   writer cannot observe the batcher's own sends (the element threshold, the byte threshold, the
   one-second timer), so its running count would over-estimate and force sends the service never
   needed.
-- **Bounding `batchByteSize` at a service figure.** There is none to bound at.
+- **Bounding `batchRequestByteThreshold` at a service figure.** There is none to bound at.
 - **Leaving both knobs unbounded and correcting only the record.** Defensible while the ceilings
   were thought to be precautionary; not once the client turned out to refuse a job outright, which
   is exactly the "accepted at submission, refused on a task manager" shape ADR-0068 and [#435] were
@@ -222,4 +223,5 @@ that moves one fails a test rather than a job.
 [#218]: https://github.com/laughingman7743/flink-connector-gcp/issues/218
 [#435]: https://github.com/laughingman7743/flink-connector-gcp/issues/435
 [#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436
+[#1052]: https://github.com/flink-gcp/flink-connector-gcp/issues/1052
 [quotas page]: https://cloud.google.com/bigtable/quotas

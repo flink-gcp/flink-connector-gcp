@@ -59,7 +59,7 @@ import java.util.function.Supplier;
  * @param <T> the record type produced
  */
 @Internal
-public final class BigtableReadRowsSource<T>
+public final class BigtableScanSource<T>
         implements Source<T, RowRangeSplit, BigtableScanEnumeratorState>, ResultTypeQueryable<T> {
 
     private static final long serialVersionUID = 1L;
@@ -71,7 +71,7 @@ public final class BigtableReadRowsSource<T>
      *
      * @param config the configuration the builder assembled
      */
-    public BigtableReadRowsSource(BigtableSourceConfig<T> config) {
+    public BigtableScanSource(BigtableSourceConfig<T> config) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
     }
 
