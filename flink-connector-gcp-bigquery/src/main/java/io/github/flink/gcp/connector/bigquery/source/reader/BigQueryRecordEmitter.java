@@ -23,7 +23,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitState;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitState;
 import org.apache.avro.generic.GenericRecord;
 
 /**
@@ -40,7 +40,7 @@ import org.apache.avro.generic.GenericRecord;
  */
 @Internal
 public class BigQueryRecordEmitter<T>
-        implements RecordEmitter<GenericRecord, T, BigQueryReadStreamSplitState> {
+        implements RecordEmitter<GenericRecord, T, ReadStreamSplitState> {
 
     private final BigQueryRowDeserializer<T> deserializer;
     private final BigQuerySourceReaderMetrics metrics;
@@ -59,8 +59,7 @@ public class BigQueryRecordEmitter<T>
     }
 
     @Override
-    public void emitRecord(
-            GenericRecord row, SourceOutput<T> output, BigQueryReadStreamSplitState state)
+    public void emitRecord(GenericRecord row, SourceOutput<T> output, ReadStreamSplitState state)
             throws Exception {
         long emittedCount =
                 SynchronousDeserializationCollector.<T, Exception>deserialize(

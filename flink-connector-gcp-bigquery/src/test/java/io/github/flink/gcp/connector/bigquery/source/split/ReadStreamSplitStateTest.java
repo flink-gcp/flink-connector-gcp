@@ -22,8 +22,8 @@ import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Tests for {@link BigQueryReadStreamSplitState}. */
-class BigQueryReadStreamSplitStateTest {
+/** Tests for {@link ReadStreamSplitState}. */
+class ReadStreamSplitStateTest {
 
     private static final String STREAM = "projects/p/locations/l/sessions/s/streams/one";
     private static final String SCHEMA =
@@ -36,9 +36,8 @@ class BigQueryReadStreamSplitStateTest {
         // would survive the first read and disappear at the first checkpoint, which is the point at
         // which nothing is looking: the schema would fail the next reader outright, and the expiry
         // would quietly stop explaining an expired-session failure.
-        BigQueryReadStreamSplitState state =
-                new BigQueryReadStreamSplitState(
-                        new ReadStreamSplit(STREAM, 7, SCHEMA, EXPIRE_TIME));
+        ReadStreamSplitState state =
+                new ReadStreamSplitState(new ReadStreamSplit(STREAM, 7, SCHEMA, EXPIRE_TIME));
 
         state.recordConsumed();
 
@@ -47,8 +46,8 @@ class BigQueryReadStreamSplitStateTest {
 
     @Test
     void keepsAMissingExpiryMissing() {
-        BigQueryReadStreamSplitState state =
-                new BigQueryReadStreamSplitState(new ReadStreamSplit(STREAM, 0, SCHEMA, null));
+        ReadStreamSplitState state =
+                new ReadStreamSplitState(new ReadStreamSplit(STREAM, 0, SCHEMA, null));
 
         assertThat(state.toSplit().getSessionExpireTime()).isNull();
     }

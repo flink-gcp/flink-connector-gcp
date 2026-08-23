@@ -24,8 +24,8 @@ import org.apache.flink.connector.base.source.reader.SingleThreadMultiplexSource
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitState;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitState;
 import org.apache.avro.generic.GenericRecord;
 
 import java.util.Map;
@@ -47,7 +47,7 @@ import java.util.function.Supplier;
 @Internal
 public class BigQuerySourceReader<T>
         extends SingleThreadMultiplexSourceReaderBase<
-                GenericRecord, T, ReadStreamSplit, BigQueryReadStreamSplitState> {
+                GenericRecord, T, ReadStreamSplit, ReadStreamSplitState> {
 
     private final RowStreamOpener opener;
 
@@ -62,7 +62,7 @@ public class BigQuerySourceReader<T>
      */
     public BigQuerySourceReader(
             Supplier<SplitReader<GenericRecord, ReadStreamSplit>> splitReaderSupplier,
-            RecordEmitter<GenericRecord, T, BigQueryReadStreamSplitState> recordEmitter,
+            RecordEmitter<GenericRecord, T, ReadStreamSplitState> recordEmitter,
             Configuration config,
             SourceReaderContext context,
             RowStreamOpener opener) {
@@ -80,17 +80,17 @@ public class BigQuerySourceReader<T>
     }
 
     @Override
-    protected BigQueryReadStreamSplitState initializedState(ReadStreamSplit split) {
-        return new BigQueryReadStreamSplitState(split);
+    protected ReadStreamSplitState initializedState(ReadStreamSplit split) {
+        return new ReadStreamSplitState(split);
     }
 
     @Override
-    protected ReadStreamSplit toSplitType(String splitId, BigQueryReadStreamSplitState splitState) {
+    protected ReadStreamSplit toSplitType(String splitId, ReadStreamSplitState splitState) {
         return splitState.toSplit();
     }
 
     @Override
-    protected void onSplitFinished(Map<String, BigQueryReadStreamSplitState> finishedSplits) {
+    protected void onSplitFinished(Map<String, ReadStreamSplitState> finishedSplits) {
         context.sendSplitRequest();
     }
 

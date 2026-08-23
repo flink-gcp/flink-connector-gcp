@@ -30,7 +30,7 @@ import org.apache.flink.util.Preconditions;
  * <p>Not thread-safe, and does not need to be: every method here is called from the task thread.
  */
 @Internal
-public final class BigQueryReadStreamSplitState {
+public final class ReadStreamSplitState {
 
     private final ReadStreamSplit split;
 
@@ -41,7 +41,7 @@ public final class BigQueryReadStreamSplitState {
      *
      * @param split the split being read
      */
-    public BigQueryReadStreamSplitState(ReadStreamSplit split) {
+    public ReadStreamSplitState(ReadStreamSplit split) {
         this.split = Preconditions.checkNotNull(split, "split must not be null");
         this.offset = split.getOffset();
     }
