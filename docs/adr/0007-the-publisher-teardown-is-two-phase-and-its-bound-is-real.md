@@ -145,7 +145,7 @@ the settings either way. The check is advisory, and that is the whole of it.
   registering a gauge: a cumulative count of events is a counter by the base module's naming
   rule, and a caller-supplied `Counter` reading the connector's adder registers the same number
   — so the name is `publisherShutdownsAbandoned`, not `abandonedPublisherShutdowns`. Registered
-  in the `PubSubSinkWriterMetrics` **constructor**, not `bindWriterState`, since it reads no
+  in the `PubSubWriterMetrics` **constructor**, not `bindWriterState`, since it reads no
   writer state.
 - **What it counts is closes that overran their budget, not stranded threads**: after give-up
   the background thread exits as soon as the client's shutdown returns, so an overrun of one

@@ -59,7 +59,7 @@ import javax.annotation.Nullable;
  * bookkeeping rather than the service's latency.
  */
 @Internal
-public final class PubSubSinkWriterMetrics {
+final class PubSubWriterMetrics {
 
     private final SinkWriterMetricGroup metricGroup;
     private final Counter numRecordsSend;
@@ -77,8 +77,7 @@ public final class PubSubSinkWriterMetrics {
      * @param perDestinationMetrics whether {@code PubSubPublisherOptions.perDestinationMetrics} is
      *     set
      */
-    public PubSubSinkWriterMetrics(
-            SinkWriterMetricGroup metricGroup, boolean perDestinationMetrics) {
+    PubSubWriterMetrics(SinkWriterMetricGroup metricGroup, boolean perDestinationMetrics) {
         this.metricGroup = metricGroup;
         this.numRecordsSend = metricGroup.getNumRecordsSendCounter();
         this.numBytesSend = metricGroup.getNumBytesSendCounter();
@@ -113,7 +112,7 @@ public final class PubSubSinkWriterMetrics {
      * @param inFlightBytes serialized size of those publishes
      * @param parkedMessages messages held for a destination's next repair
      */
-    public void bindWriterState(
+    void bindWriterState(
             Gauge<Integer> inFlightMessages,
             Gauge<Long> inFlightBytes,
             Gauge<Integer> parkedMessages) {
@@ -129,7 +128,7 @@ public final class PubSubSinkWriterMetrics {
      * @param destination the topic
      * @return its counters, a no-op unless per-destination metrics are switched on
      */
-    public DestinationMetrics.Counters forTopic(TopicDestination destination) {
+    DestinationMetrics.Counters forTopic(TopicDestination destination) {
         return destinations.forDestination(destination.toTopicPath());
     }
 
@@ -139,7 +138,7 @@ public final class PubSubSinkWriterMetrics {
      * @param topic the destination's counters, from {@link #forTopic}
      * @param serializedSize the message's serialized size
      */
-    public void messagePublished(DestinationMetrics.Counters topic, int serializedSize) {
+    void messagePublished(DestinationMetrics.Counters topic, int serializedSize) {
         numRecordsSend.inc();
         numBytesSend.inc(serializedSize);
         topic.recordSent();
@@ -151,7 +150,7 @@ public final class PubSubSinkWriterMetrics {
      *
      * @param topic the destination's counters, from {@link #forTopic}
      */
-    public void messageFailed(DestinationMetrics.Counters topic) {
+    void messageFailed(DestinationMetrics.Counters topic) {
         numRecordsSendErrors.inc();
         topic.sendFailed();
     }
@@ -169,7 +168,7 @@ public final class PubSubSinkWriterMetrics {
      * decision cannot depend on the destination, and attributing a skip to the topic the record
      * would have gone to would read as a property of that topic.
      */
-    public void recordSkipped() {
+    void recordSkipped() {
         recordsSkipped.inc();
     }
 
@@ -178,7 +177,7 @@ public final class PubSubSinkWriterMetrics {
      *
      * @param code the status code, or {@code null} for a failure carrying none
      */
-    public void publishFailure(@Nullable StatusCode.Code code) {
+    void publishFailure(@Nullable StatusCode.Code code) {
         errorClasses.count(code);
     }
 
@@ -190,7 +189,7 @@ public final class PubSubSinkWriterMetrics {
      * repaired for it. Reading it as "how often did a missing topic stall this subtask" is right;
      * reading it as "how many topics exist" is not.
      */
-    public void topicCreated() {
+    void topicCreated() {
         topicsCreated.inc();
     }
 }

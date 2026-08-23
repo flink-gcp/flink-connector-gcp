@@ -326,8 +326,7 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
             SubscriptionDestination... subscriptions) {
         return PubSubSource.<String>builder()
                 .subscriptions(subscriptions)
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emulatorEndpoint(emulatorEndpoint())
                 .build();
     }
@@ -336,7 +335,7 @@ class PubSubSourceRecoveryITCase extends AbstractPubSubSourceEmulatorITCase {
             SubscriptionDestination... subscriptions) {
         return PubSubSource.<String>builder()
                 .subscriptions(subscriptions)
-                .deserializationSchema(new SubscriptionTaggingSchema())
+                .deserializer(new SubscriptionTaggingSchema())
                 .emulatorEndpoint(emulatorEndpoint())
                 .build();
     }

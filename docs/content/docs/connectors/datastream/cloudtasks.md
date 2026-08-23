@@ -557,12 +557,12 @@ envelope (it has no bounded string form); enable `DEBUG` logging on `PubSubDeadL
 untruncated errors in the job logs.
 
 Publishes are batched and awaited in `flush()`, so a rare failure costs no round trip of its own.
-`maxOutstandingMessages` bounds what one checkpoint interval can accumulate when *every* record
+`maxInFlightMessages` bounds what one checkpoint interval can accumulate when *every* record
 fails — the default is 1000, `0` publishes each element synchronously (the narrowest loss window,
 one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
 queue never creates one, because a dead-letter destination created on the fly is one nothing is
 consuming. `flushTimeout` (60 s by default) bounds each wait a running job makes for those publishes
-— at a checkpoint barrier, and whenever the outstanding bound fills — as one deadline covering all of
+— at a checkpoint barrier, and whenever the in-flight bound fills — as one deadline covering all of
 that wait's publishes. It bounds one wait, not what an interval spends. On expiry the wait throws and
 the job fails, dropping nothing; the records behind the unpublished dead letters are replayed from
 the last completed checkpoint. A Pub/Sub disturbance longer than the budget therefore fails the job

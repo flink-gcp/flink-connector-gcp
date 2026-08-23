@@ -46,7 +46,7 @@ import org.apache.flink.annotation.Internal;
 @Internal
 public final class PubSubMetricNames {
 
-    // Registered by the sink writer (PubSubSinkWriterMetrics).
+    // Registered by the sink writer (PubSubWriterMetrics).
     public static final String IN_FLIGHT_MESSAGES = "inFlightMessages";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_MESSAGES = "parkedMessages";
@@ -161,15 +161,15 @@ public final class PubSubMetricNames {
 
     /**
      * The <em>state</em> the confirmed count is read against: dead letters handed to the client
-     * library and not yet resolved, which {@code maxOutstandingMessages} bounds.
+     * library and not yet resolved, which {@code maxInFlightMessages} bounds.
      */
-    public static final String OUTSTANDING_DEAD_LETTERS = "outstandingDeadLetters";
+    public static final String IN_FLIGHT_DEAD_LETTERS = "inFlightDeadLetters";
 
     /**
      * How long the most recently completed wait for those publishes took, in milliseconds — the
      * state to read against {@code flushTimeout}, which is what a checkpoint's flush is spending.
      * Both waits the budget covers report here, the one in {@code flush()} and the one {@code
-     * maxOutstandingMessages} triggers inside an offer.
+     * maxInFlightMessages} triggers inside an offer.
      */
     public static final String DEAD_LETTER_FLUSH_MILLIS = "deadLetterFlushMillis";
 

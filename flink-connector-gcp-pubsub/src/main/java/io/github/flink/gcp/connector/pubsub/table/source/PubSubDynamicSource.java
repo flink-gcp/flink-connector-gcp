@@ -35,8 +35,8 @@ import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
@@ -69,7 +69,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     private final DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
     private final List<SubscriptionDestination> subscriptions;
     private final Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions;
-    @Nullable private final StartPosition startPosition;
+    @Nullable private final PubSubStartPosition startPosition;
     @Nullable private final OrderingMode orderingMode;
     @Nullable private final DeserializationFailurePolicy deserializationFailurePolicy;
     private final PubSubSubscriberOptions subscriberOptions;
@@ -107,7 +107,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             DecodingFormat<DeserializationSchema<RowData>> decodingFormat,
             List<SubscriptionDestination> subscriptions,
             Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions,
-            @Nullable StartPosition startPosition,
+            @Nullable PubSubStartPosition startPosition,
             @Nullable OrderingMode orderingMode,
             @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
             PubSubSubscriberOptions subscriberOptions,
@@ -209,7 +209,7 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
 
         PubSubSourceBuilder<RowData> builder =
                 PubSubSource.<RowData>builder()
-                        .deserializationSchema(
+                        .deserializer(
                                 new RowDataDeserializationSchema(
                                         physical, selected, producedTypeInfo))
                         .subscriberOptions(subscriberOptions);

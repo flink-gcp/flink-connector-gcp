@@ -51,8 +51,8 @@ class TopicRepairerTest {
             TopicCreateOptions.builder().messageRetention(Duration.ofDays(7)).build();
 
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
-    private final PubSubSinkWriterMetrics metrics =
-            new PubSubSinkWriterMetrics(TestSinkWriterMetricGroup.create(), false);
+    private final PubSubWriterMetrics metrics =
+            new PubSubWriterMetrics(TestSinkWriterMetricGroup.create(), false);
     private final Logger log = LoggerFactory.getLogger(TopicRepairerTest.class);
 
     /** One ordered log of everything the repair touches, shared by the context and publisher. */

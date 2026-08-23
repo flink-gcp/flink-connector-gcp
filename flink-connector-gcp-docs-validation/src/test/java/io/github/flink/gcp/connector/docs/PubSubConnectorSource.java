@@ -39,8 +39,7 @@ final class PubSubConnectorSource {
                         .subscriptions(
                                 SubscriptionDestination.of("my-project", "orders"),
                                 SubscriptionDestination.of("my-project", "returns"))
-                        .deserializationSchema(
-                                PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                        .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                         .subscriberOptions(
                                 PubSubSubscriberOptions.builder()
                                         .flowControlMaxOutstandingElementCount(5_000)

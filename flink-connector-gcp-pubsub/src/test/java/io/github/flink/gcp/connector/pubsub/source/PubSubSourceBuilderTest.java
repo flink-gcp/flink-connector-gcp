@@ -125,19 +125,15 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
-    void requiresADeserializationSchema() {
+    void requiresADeserializer() {
         assertThatThrownBy(() -> PubSubSource.<String>builder().subscription(SUB_A).build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessage("A deserialization schema is required.");
+                .hasMessage("A deserializer is required: set deserializer(...).");
     }
 
     @Test
     void requiresAtLeastOneSubscription() {
-        assertThatThrownBy(
-                        () ->
-                                PubSubSource.<String>builder()
-                                        .deserializationSchema(schema())
-                                        .build())
+        assertThatThrownBy(() -> PubSubSource.<String>builder().deserializer(schema()).build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("At least one subscription is required");
     }
@@ -157,10 +153,10 @@ class PubSubSourceBuilderTest {
     }
 
     @Test
-    void rejectsNullDeserializationSchema() {
-        assertThatThrownBy(() -> PubSubSource.<String>builder().deserializationSchema(null))
+    void rejectsNullDeserializer() {
+        assertThatThrownBy(() -> PubSubSource.<String>builder().deserializer(null))
                 .isInstanceOf(NullPointerException.class)
-                .hasMessage("deserializationSchema must not be null");
+                .hasMessage("deserializer must not be null");
     }
 
     @Test
@@ -285,7 +281,8 @@ class PubSubSourceBuilderTest {
                         .enableMessageOrdering(true)
                         .ackDeadline(Duration.ofSeconds(30))
                         .build();
-        StartPosition startPosition = StartPosition.fromTimestamp(Instant.ofEpochMilli(1_000L));
+        PubSubStartPosition startPosition =
+                PubSubStartPosition.fromTimestamp(Instant.ofEpochMilli(1_000L));
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
                 builder()
                         .subscription(SUB_A, createOptions)
@@ -315,7 +312,7 @@ class PubSubSourceBuilderTest {
     @Test
     void defaultsToContinuingFromTheSubscription() {
         assertThat(config(builder().subscription(SUB_A).build()).getStartPosition())
-                .isEqualTo(StartPosition.continueFromSubscription());
+                .isEqualTo(PubSubStartPosition.continueFromSubscription());
     }
 
     @Test
@@ -409,7 +406,7 @@ class PubSubSourceBuilderTest {
     }
 
     private static PubSubSourceBuilder<String> builder() {
-        return PubSubSource.<String>builder().deserializationSchema(schema());
+        return PubSubSource.<String>builder().deserializer(schema());
     }
 
     private static PubSubDeserializationSchema<String> schema() {

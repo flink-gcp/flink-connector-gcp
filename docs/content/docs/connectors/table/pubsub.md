@@ -285,8 +285,8 @@ under the same "absent means default" rule as the sink.
 | `scan.shutdown-timeout` | Duration | `shutdownTimeout` |
 | `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch` |
 | `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
-| `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `StartPosition.of(mode, ...)` |
-| `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `StartPosition.of(...)` |
+| `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `PubSubStartPosition.of(mode, ...)` |
+| `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `PubSubStartPosition.of(...)` |
 | `scan.auto-create.topics` | Map<String, String> | each subscription key maps to its `topic(...)` — see [Subscription auto-creation](#subscription-auto-creation-maps-every-subscription-to-its-topic) for both accepted syntaxes |
 | `scan.auto-create.ack-deadline` | Duration | `ackDeadline` |
 | `scan.auto-create.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
@@ -506,7 +506,7 @@ sets match so neither can drift.
 option by matching the configured value against `toString()` — case-insensitively, but with no
 other normalization, so an underscore in the constant name would be an underscore in the DDL. The
 connector's four enums (`CreateDisposition`, `OrderingMode`, `DeserializationFailurePolicy` and
-`StartPosition.Mode`) therefore carry their option spelling in `toString()`, as Flink's own
+`PubSubStartPosition.Mode`) therefore carry their option spelling in `toString()`, as Flink's own
 `DeliveryGuarantee` does. Duplicating them as table-local enums was the alternative and was
 declined: it would add four types and a conversion step for no gain.
 

@@ -131,7 +131,7 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
         Source<String, SubscriptionSplit, PubSubEnumeratorState> source =
                 sourceBuilder()
                         .subscription(subscription)
-                        .startPosition(StartPosition.earliestRetained())
+                        .startPosition(PubSubStartPosition.earliestRetained())
                         .build();
 
         assertThat(collect(source, 3)).containsExactlyInAnyOrder("one", "two", "three");
@@ -148,8 +148,7 @@ class PubSubSourceStartupITCase extends AbstractPubSubSourceEmulatorITCase {
 
     private static PubSubSourceBuilder<String> sourceBuilder() {
         return PubSubSource.<String>builder()
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emulatorEndpoint(emulatorEndpoint());
     }
 

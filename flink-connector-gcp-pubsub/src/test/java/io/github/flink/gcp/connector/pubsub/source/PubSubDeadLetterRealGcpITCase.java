@@ -93,7 +93,7 @@ class PubSubDeadLetterRealGcpITCase extends AbstractPubSubRealGcpITCase {
                                                         deadLetterTopic, MAX_DELIVERY_ATTEMPTS)
                                                 .build())
                                 .deserializationFailurePolicy(DeserializationFailurePolicy.NACK)
-                                .deserializationSchema(new PoisonRejectingSchema())
+                                .deserializer(new PoisonRejectingSchema())
                                 .build(),
                         WatermarkStrategy.noWatermarks(),
                         "pubsub")

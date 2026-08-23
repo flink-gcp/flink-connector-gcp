@@ -128,7 +128,7 @@ the sink creates. See
 | Option | Default | What it does |
 |---|---|---|
 | `subscription` / `subscriptions` | **required**, at least one | The subscriptions to consume. The two-argument `subscription(...)` also [authorises creating it](#subscriptioncreateoptions) |
-| `deserializationSchema` | **required** | Converts each `PubsubMessage` into zero or more non-null records. Emit synchronously during the call; do not retain the collector |
+| `deserializer` | **required** | Converts each `PubsubMessage` into zero or more non-null records. Emit synchronously during the call; do not retain the collector |
 | `orderingMode` | `NONE` | `PER_KEY` preserves per-ordering-key order, at the cost of one subtask per subscription and one pull connection |
 | `subscriberOptions` | [defaults](#pubsubsubscriberoptions) | Subscriber and reader tuning |
 | `deserializationFailurePolicy` | `FAIL` | What happens to a message the schema cannot convert — fail, drop, or nack |
@@ -193,7 +193,7 @@ each option is *for*, and how to size the two budgets against a checkpoint inter
 |---|---|---|
 | `topic` | **required** | Publishes every dead letter to one topic, which must already exist — this queue never creates one |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when each host sink writer opens the queue. Every eligible TaskManager must see the same path. Independent of the host connector's credentials and rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) |
-| `maxOutstandingMessages` | `1000` | How many publishes may be outstanding before an offer waits for them. `WRITE_THROUGH` (`0`) publishes each element synchronously, the narrowest loss window at one round trip per element; `UNBOUNDED` (`-1`) buffers until the flush |
-| `flushTimeout` | 60 s | How long **one wait** for outstanding publishes may take — the wait in `flush()`, and the one an offer makes when the bound above is full. One deadline per wait rather than per publish, and there is no unbounded setting. Expiry throws, failing the checkpoint or the task |
+| `maxInFlightMessages` | `1000` | How many publishes may be in flight before an offer waits for them. `WRITE_THROUGH` (`0`) publishes each element synchronously, the narrowest loss window at one round trip per element; `UNBOUNDED` (`-1`) buffers until the flush |
+| `flushTimeout` | 60 s | How long **one wait** for in-flight publishes may take — the wait in `flush()`, and the one an offer makes when the bound above is full. One deadline per wait rather than per publish, and there is no unbounded setting. Expiry throws, failing the checkpoint or the task |
 | `shutdownTimeout` | 30 s | How long the queue's own close waits for its publisher. Spent *after* the sink's own `shutdownTimeout`, so keep the sum under Flink's `task.cancellation.timeout` (180 s by default) |
 | `emulatorEndpoint` | — | Points the queue at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |

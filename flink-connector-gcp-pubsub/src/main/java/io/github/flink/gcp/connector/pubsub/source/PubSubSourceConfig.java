@@ -44,7 +44,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private final OrderingMode orderingMode;
     private final PubSubSubscriberOptions subscriberOptions;
     private final DeserializationFailurePolicy deserializationFailurePolicy;
-    private final StartPosition startPosition;
+    private final PubSubStartPosition startPosition;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
@@ -55,7 +55,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
             OrderingMode orderingMode,
             PubSubSubscriberOptions subscriberOptions,
             DeserializationFailurePolicy deserializationFailurePolicy,
-            StartPosition startPosition,
+            PubSubStartPosition startPosition,
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.subscriptions = subscriptions;
@@ -83,7 +83,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
     }
 
     /** Returns where the source starts consuming. */
-    public StartPosition getStartPosition() {
+    public PubSubStartPosition getStartPosition() {
         return startPosition;
     }
 

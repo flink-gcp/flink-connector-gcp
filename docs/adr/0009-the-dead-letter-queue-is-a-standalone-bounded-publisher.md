@@ -45,7 +45,7 @@ Decisions worth keeping from [#211]:
   is a `CharsetDecoder` with `IGNORE` rather than arithmetic on code point widths.
 - The cause chain is deliberately **not** in the envelope (no bounded string form) and reaches
   the job log at DEBUG instead.
-- `maxOutstandingMessages` **bounds what one checkpoint interval accumulates** (default 1000,
+- `maxInFlightMessages` **bounds what one checkpoint interval accumulates** (default 1000,
   `0` = write through per element, `-1` = unbounded, one predicate covering all three) because a
   systematic failure turns every record into a dead letter and the SDK publisher has no flow
   control by default — the issue text said buffer-until-flush, and that shape can OOM where the
@@ -75,7 +75,7 @@ Decisions worth keeping from [#211]:
 
 **The flush is bounded on the wait side, by one deadline per wait rather than one per publish**
 ([#321]). `Builder.flushTimeout(Duration)`, 60 s, covering both waits — `flush()`, which runs at
-every checkpoint barrier, and the `maxOutstandingMessages` drain — and the publisher hand-off
+every checkpoint barrier, and the `maxInFlightMessages` drain — and the publisher hand-off
 with them.
 
 ## Alternatives declined ([#321])
@@ -92,7 +92,7 @@ Note what that argument does **not** establish — unpinnability alone does not 
 because [#310] shipped exactly that unpinnable `retryTotalTimeout` on the *sink's* publisher;
 and `Publisher.Builder.MIN_TOTAL_TIMEOUT` (10 s, message-less `checkArgument`) forbids nothing
 this knob wanted to express. **No unbounded opt-out**: `UNBOUNDED` is already taken here by
-`maxOutstandingMessages`, `shutdownTimeout` rejects zero and negative alike, and an effectively
+`maxInFlightMessages`, `shutdownTimeout` rejects zero and negative alike, and an effectively
 infinite budget stays expressible as a large `Duration` without being a mode.
 
 ## Consequences
@@ -106,7 +106,7 @@ infinite budget stays expressible as a large `Duration` without being a mode.
   already says a throwing `flush()` fails the checkpoint. The futures are deliberately **not**
   cancelled, so a message the SDK still delivers is a duplicate the contract covers rather than
   a loss.
-- **One deadline for the whole list, never one per future**: `maxOutstandingMessages` defaults
+- **One deadline for the whole list, never one per future**: `maxInFlightMessages` defaults
   to 1000, so a per-future budget would be a thousandfold multiple of the number it claims to be
   — [#265]'s teardown mistake in a new place.
 - **A budget is per call, and a checkpoint interval may make several** — `flush()` runs at a
@@ -194,7 +194,7 @@ each of the four carries `deadLetter` in its name.
   have cost the checker, its tests and its skill.
 - The read-only `Counter` view over a residue adder became a top-level `ResidueCounter`
   taking the adder as an argument, since there are now two registrars; it was a private class
-  inside `PubSubSinkWriterMetrics`.
+  inside `PubSubWriterMetrics`.
 
 [#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119

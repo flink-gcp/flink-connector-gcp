@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 import javax.annotation.Nullable;
@@ -29,13 +29,13 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * Builds a {@link StartPosition} from the table options.
+ * Builds a {@link PubSubStartPosition} from the table options.
  *
  * <p>A start position is a mode plus, for one mode, an instant, which is why it is two options
- * rather than one. {@link StartPosition#of(StartPosition.Mode, Instant)} is the entry point its
- * javadoc names for exactly this, and it already rejects a missing instant under {@code timestamp}
- * and a present one under every other mode — so those two messages are the DataStream API's, not
- * this layer's.
+ * rather than one. {@link PubSubStartPosition#of(PubSubStartPosition.Mode, Instant)} is the entry
+ * point its javadoc names for exactly this, and it already rejects a missing instant under {@code
+ * timestamp} and a present one under every other mode — so those two messages are the DataStream
+ * API's, not this layer's.
  *
  * <p>The one rule that has to live here is a timestamp given with no mode. {@code of} never runs in
  * that case, so nothing downstream would notice, and the option would be silently ignored.
@@ -53,11 +53,11 @@ public final class StartPositionMapper {
      *     source builder's own default
      */
     @Nullable
-    public static StartPosition map(ReadableConfig config) {
+    public static PubSubStartPosition map(ReadableConfig config) {
         Optional<Instant> timestamp =
                 config.getOptional(PubSubConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS)
                         .map(Instant::ofEpochMilli);
-        Optional<StartPosition.Mode> mode =
+        Optional<PubSubStartPosition.Mode> mode =
                 config.getOptional(PubSubConnectorOptions.SCAN_STARTUP_MODE);
         if (!mode.isPresent()) {
             if (timestamp.isPresent()) {
@@ -68,10 +68,10 @@ public final class StartPositionMapper {
                                 PubSubConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS.key(),
                                 PubSubConnectorOptions.SCAN_STARTUP_MODE.key(),
                                 PubSubConnectorOptions.SCAN_STARTUP_MODE.key(),
-                                StartPosition.Mode.TIMESTAMP));
+                                PubSubStartPosition.Mode.TIMESTAMP));
             }
             return null;
         }
-        return StartPosition.of(mode.get(), timestamp.orElse(null));
+        return PubSubStartPosition.of(mode.get(), timestamp.orElse(null));
     }
 }

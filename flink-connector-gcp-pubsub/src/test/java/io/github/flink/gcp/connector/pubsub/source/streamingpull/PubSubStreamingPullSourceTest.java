@@ -167,8 +167,7 @@ class PubSubStreamingPullSourceTest {
     private Source<String, SubscriptionSplit, PubSubEnumeratorState> sourceWithMissingKeyFile() {
         return PubSubSource.<String>builder()
                 .subscription(SubscriptionDestination.of("test-project", "test-subscription"))
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .serviceAccountKeyFile(tempDir.resolve("missing-key.json").toString())
                 .build();
     }

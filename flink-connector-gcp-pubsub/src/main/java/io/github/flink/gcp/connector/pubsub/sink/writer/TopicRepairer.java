@@ -77,7 +77,7 @@ final class TopicRepairer {
     private final TopicAdmin topicAdmin;
     @Nullable private final TopicCreateOptions topicCreateOptions;
     private final RetrySchedule recoverySchedule;
-    private final PubSubSinkWriterMetrics metrics;
+    private final PubSubWriterMetrics metrics;
     private final boolean orderingEnabled;
     private final Logger log;
     private final RepairContext context;
@@ -100,7 +100,7 @@ final class TopicRepairer {
             TopicAdmin topicAdmin,
             @Nullable TopicCreateOptions topicCreateOptions,
             RetrySchedule recoverySchedule,
-            PubSubSinkWriterMetrics metrics,
+            PubSubWriterMetrics metrics,
             boolean orderingEnabled,
             Logger log,
             RepairContext context) {

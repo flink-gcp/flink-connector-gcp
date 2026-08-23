@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.pubsub.table.source;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -38,27 +38,27 @@ class StartPositionMapperTest {
     private static final String MODE = "scan.startup.mode";
     private static final String TIMESTAMP = "scan.startup.timestamp-millis";
 
-    private static StartPosition map(Map<String, String> options) {
+    private static PubSubStartPosition map(Map<String, String> options) {
         return StartPositionMapper.map(Configuration.fromMap(options));
     }
 
-    private static StartPosition mapMode(String mode) {
+    private static PubSubStartPosition mapMode(String mode) {
         return map(Collections.singletonMap(MODE, mode));
     }
 
     @Test
     void anEmptyConfigLeavesTheBuildersOwnDefault() {
-        // Not StartPosition.continueFromSubscription(): "absent" and "explicitly the default" have
-        // to stay the same state, which they only do if the setter is never called.
+        // Absence must leave the builder untouched; an explicit default returns a value to apply.
+        // Both routes then produce the builder's default start position.
         assertThat(StartPositionMapper.map(new Configuration())).isNull();
     }
 
     @Test
     void mapsEveryModeThatNeedsNoTimestamp() {
         assertThat(mapMode("continue-from-subscription"))
-                .isEqualTo(StartPosition.continueFromSubscription());
-        assertThat(mapMode("earliest-retained")).isEqualTo(StartPosition.earliestRetained());
-        assertThat(mapMode("latest")).isEqualTo(StartPosition.latest());
+                .isEqualTo(PubSubStartPosition.continueFromSubscription());
+        assertThat(mapMode("earliest-retained")).isEqualTo(PubSubStartPosition.earliestRetained());
+        assertThat(mapMode("latest")).isEqualTo(PubSubStartPosition.latest());
     }
 
     @Test
@@ -68,7 +68,9 @@ class StartPositionMapperTest {
         options.put(TIMESTAMP, "1735689600000");
 
         assertThat(map(options))
-                .isEqualTo(StartPosition.fromTimestamp(Instant.ofEpochMilli(1_735_689_600_000L)));
+                .isEqualTo(
+                        PubSubStartPosition.fromTimestamp(
+                                Instant.ofEpochMilli(1_735_689_600_000L)));
     }
 
     @Test
@@ -76,7 +78,7 @@ class StartPositionMapperTest {
         // Flink matches an enum option against toString() case-insensitively, so a DDL may spell it
         // either way; the hyphens are not optional though, which ConnectorEnumOptionSpellingTest
         // covers for every constant.
-        assertThat(mapMode("EARLIEST-RETAINED")).isEqualTo(StartPosition.earliestRetained());
+        assertThat(mapMode("EARLIEST-RETAINED")).isEqualTo(PubSubStartPosition.earliestRetained());
     }
 
     @Test
@@ -100,9 +102,9 @@ class StartPositionMapperTest {
 
     @Test
     void rejectsATimestampGivenWithNoModeAtAll() {
-        // The one rule this mapper owns: StartPosition.of is never reached here, so without this
-        // the option would be read by nothing and the job would quietly start from wherever the
-        // subscription happened to be.
+        // The one rule this mapper owns: PubSubStartPosition.of is never reached here, so without
+        // this the option would be read by nothing and the job would quietly start from wherever
+        // the subscription happened to be.
         assertThatThrownBy(() -> map(Collections.singletonMap(TIMESTAMP, "1735689600000")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining(TIMESTAMP)

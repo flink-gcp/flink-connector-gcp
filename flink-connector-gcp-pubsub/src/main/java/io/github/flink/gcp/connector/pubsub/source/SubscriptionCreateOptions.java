@@ -282,7 +282,7 @@ public final class SubscriptionCreateOptions implements Serializable {
         /**
          * Sets how long unacknowledged messages are retained. Defaults to the Pub/Sub default (7
          * days). Together with {@link #retainAckedMessages(boolean)} this bounds how far back a
-         * backwards {@link StartPosition} can reach.
+         * backwards {@link PubSubStartPosition} can reach.
          *
          * @param messageRetention the retention duration
          * @return this builder

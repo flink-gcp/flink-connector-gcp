@@ -23,7 +23,7 @@ import org.apache.flink.configuration.Configuration;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -54,11 +54,11 @@ class ConnectorEnumOptionSpellingTest {
         assertThat(DeserializationFailurePolicy.DROP).hasToString("drop");
         assertThat(DeserializationFailurePolicy.NACK).hasToString("nack");
 
-        assertThat(StartPosition.Mode.CONTINUE_FROM_SUBSCRIPTION)
+        assertThat(PubSubStartPosition.Mode.CONTINUE_FROM_SUBSCRIPTION)
                 .hasToString("continue-from-subscription");
-        assertThat(StartPosition.Mode.EARLIEST_RETAINED).hasToString("earliest-retained");
-        assertThat(StartPosition.Mode.LATEST).hasToString("latest");
-        assertThat(StartPosition.Mode.TIMESTAMP).hasToString("timestamp");
+        assertThat(PubSubStartPosition.Mode.EARLIEST_RETAINED).hasToString("earliest-retained");
+        assertThat(PubSubStartPosition.Mode.LATEST).hasToString("latest");
+        assertThat(PubSubStartPosition.Mode.TIMESTAMP).hasToString("timestamp");
     }
 
     @Test
@@ -69,7 +69,7 @@ class ConnectorEnumOptionSpellingTest {
         assertHyphenated(CreateDisposition.class);
         assertHyphenated(OrderingMode.class);
         assertHyphenated(DeserializationFailurePolicy.class);
-        assertHyphenated(StartPosition.Mode.class);
+        assertHyphenated(PubSubStartPosition.Mode.class);
     }
 
     private static <E extends Enum<E>> void assertHyphenated(Class<E> enumClass) {
@@ -85,7 +85,7 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(CreateDisposition.class);
         assertRoundTrips(OrderingMode.class);
         assertRoundTrips(DeserializationFailurePolicy.class);
-        assertRoundTrips(StartPosition.Mode.class);
+        assertRoundTrips(PubSubStartPosition.Mode.class);
     }
 
     /**

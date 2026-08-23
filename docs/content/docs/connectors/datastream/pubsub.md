@@ -275,7 +275,7 @@ bounds the sink's publishers and that one bounds the queue's; keep the **sum** u
 `task.cancellation.timeout`.
 
 Both of those budgets are spent at *close*. The waits a running job makes for the same queue — at
-each checkpoint barrier, and whenever the queue's outstanding bound fills — have a budget of their
+each checkpoint barrier, and whenever the queue's in-flight bound fills — have a budget of their
 own, `flushTimeout`, described under
 [Dead-lettering to a Pub/Sub topic](#dead-lettering-to-a-pubsub-topic).
 
@@ -662,7 +662,7 @@ The failure's cause chain is not in the envelope (it has no bounded string form)
 logging on `PubSubDeadLetterQueue` to see untruncated errors in the job logs.
 
 Publishes are batched and awaited in `flush()`, so a rare failure costs no round trip of its own.
-`maxOutstandingMessages` bounds what one checkpoint interval can accumulate when *every* record
+`maxInFlightMessages` bounds what one checkpoint interval can accumulate when *every* record
 fails — the default is 1000, `0` publishes each element synchronously (the narrowest loss window,
 one round trip per element) and `-1` buffers until the flush. The topic must already exist: this
 queue never creates one, because a dead-letter destination created on the fly is one nothing is
@@ -670,14 +670,14 @@ consuming.
 
 `flushTimeout` (60 s by default) bounds each wait a running job makes for those publishes — the one
 in `flush()`, which runs at each checkpoint barrier and at any sink-triggered flush such as a
-periodic one, and the one `maxOutstandingMessages` triggers inside an offer. It is **one deadline per
+periodic one, and the one `maxInFlightMessages` triggers inside an offer. It is **one deadline per
 wait, covering all of that wait's publishes** rather than each of them. Without it a wait lasts as
 long as the SDK keeps retrying, 600 s by default — which is also Flink's default
 `execution.checkpointing.timeout`, so a dead-letter outage could spend a checkpoint's whole budget on
 its own. (The queue's *close* waits for the same publishes under `shutdownTimeout` instead, below.)
 
 **It bounds one wait, not what a checkpoint interval spends.** How many waits an interval makes is
-`maxOutstandingMessages`: one at `-1`, one per 1000 dead letters at the default, and one per dead
+`maxInFlightMessages`: one at `-1`, one per 1000 dead letters at the default, and one per dead
 letter at `0`. A topic that is slow but working therefore spends several budgets in an interval
 without any of them expiring — 100 dead letters at `0`, each taking 25 s, is 2500 s of task-thread
 time and no timeout. Size the budget against the interval, not against one wait, when the queue is
@@ -716,7 +716,7 @@ that sink's own names, one set per subtask.
 | Metric | Type | Meaning |
 |---|---|---|
 | `deadLettersPublished` | counter | dead letters the service **confirmed**, counted as each publish resolves rather than when it was handed over |
-| `outstandingDeadLetters` | gauge | dead letters handed to the client library and not yet confirmed, which `maxOutstandingMessages` bounds |
+| `inFlightDeadLetters` | gauge | dead letters handed to the client library and not yet confirmed, which `maxInFlightMessages` bounds |
 | `deadLetterFlushMillis` | gauge | how long the most recent wait for those publishes took — the number to read against `flushTimeout`. A flush with nothing buffered is not a wait and leaves it alone |
 | `longestDeadLetterFlushMillis` | gauge | the longest such wait **this task attempt** has seen. It never falls, and a restart starts it over |
 | `deadLetterPublisherShutdownsAbandoned` | counter | the queue's publisher closes that overran `shutdownTimeout`, process-wide in the sense [Publisher lifecycle](#publisher-lifecycle) describes |
@@ -724,7 +724,7 @@ that sink's own names, one set per subtask.
 **How many were dead-lettered is already `numRecordsSendErrors`**, which every sink in this
 repository increments immediately before calling its failure handler — so under
 `sendToDeadLetterQueue(...)` that standard counter reports exactly what this queue was offered, on
-this same group. Read the three as a chain: `numRecordsSendErrors` offered, `outstandingDeadLetters`
+this same group. Read the three as a chain: `numRecordsSendErrors` offered, `inFlightDeadLetters`
 in flight, `deadLettersPublished` confirmed. A gap between the first and the last that the next
 checkpoint does not close is a queue falling behind; it cannot persist quietly, because the flush
 that fails to close it throws.
@@ -732,14 +732,14 @@ that fails to close it throws.
 **`deadLetterFlushMillis` is what a `flushTimeout` expiry has no time to tell you.** The expiry
 fails the job, and a metric group is torn down with its task, so the value to act on is the series
 *before* the failure: waits climbing towards the budget over several checkpoints are the warning
-that raising `flushTimeout` — or lowering `maxOutstandingMessages` so each wait carries less — is
+that raising `flushTimeout` — or lowering `maxInFlightMessages` so each wait carries less — is
 due. The wait it reports is whichever ran last, the one in `flush()` or the one an offer triggered
-at the outstanding bound; both spend the same budget. A `flush()` that finds nothing buffered — on
+at the in-flight bound; both spend the same budget. A `flush()` that finds nothing buffered — on
 a job that dead-letters occasionally, that is almost every checkpoint — does not touch it, so the
 value stays that of the last wait there actually was rather than being zeroed a barrier later.
 
 **Read `longestDeadLetterFlushMillis` for the spike the other one cannot keep.** Waits happen as
-often as the queue drains, which under `maxOutstandingMessages(0)` is once per *element* — so a
+often as the queue drains, which under `maxInFlightMessages(0)` is once per *element* — so a
 publish that nearly spent the budget is overwritten thousands of times before a reporter runs, and
 alerting on the last-wait gauge alone would miss exactly the warning it exists to give. The maximum
 is the one to alert on (`longestDeadLetterFlushMillis` approaching `flushTimeout` means the next

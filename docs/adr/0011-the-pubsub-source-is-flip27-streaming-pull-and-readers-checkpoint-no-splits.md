@@ -77,7 +77,7 @@ ordering), with the costs stated both ways.
   `SubscriptionCreateOptions` — no disposition enum, because a subscription without a topic
   binding is not a subscription (ADR-0014 records how the two directions spell creation
   differently; the source never creates a topic).
-- `StartPosition` seeks **once, at the first start of a job, never on a restore**: the guard is
+- `PubSubStartPosition` seeks **once, at the first start of a job, never on a restore**: the guard is
   `PubSubEnumeratorState.startPositionApplied`, and a checkpoint with the flag still false
   contains no reader holding a split, so re-applying after such a restore is safe; a redeploy
   without state seeks again.

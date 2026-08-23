@@ -25,7 +25,7 @@ import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceBuilder;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
@@ -380,7 +380,7 @@ class PubSubSplitEnumeratorTest {
                         sourceBuilder()
                                 .subscriptions(SUB_A, SUB_B)
                                 .orderingMode(OrderingMode.PER_KEY)
-                                .startPosition(StartPosition.earliestRetained()));
+                                .startPosition(PubSubStartPosition.earliestRetained()));
         PubSubSplitEnumerator enumerator = new PubSubSplitEnumerator(context, config, admin, null);
         enumerator.start();
 
@@ -576,15 +576,18 @@ class PubSubSplitEnumeratorTest {
 
         // Pub/Sub treats a target older than the retention window as "everything still retained",
         // so the epoch reaches as far back as the subscription goes.
-        assertThat(PubSubSplitEnumerator.seekTimeFor(StartPosition.earliestRetained(), now))
+        assertThat(PubSubSplitEnumerator.seekTimeFor(PubSubStartPosition.earliestRetained(), now))
                 .isEqualTo(Instant.EPOCH);
-        assertThat(PubSubSplitEnumerator.seekTimeFor(StartPosition.latest(), now)).isEqualTo(now);
-        assertThat(PubSubSplitEnumerator.seekTimeFor(StartPosition.fromTimestamp(earlier), now))
+        assertThat(PubSubSplitEnumerator.seekTimeFor(PubSubStartPosition.latest(), now))
+                .isEqualTo(now);
+        assertThat(
+                        PubSubSplitEnumerator.seekTimeFor(
+                                PubSubStartPosition.fromTimestamp(earlier), now))
                 .isEqualTo(earlier);
         assertThatThrownBy(
                         () ->
                                 PubSubSplitEnumerator.seekTimeFor(
-                                        StartPosition.continueFromSubscription(), now))
+                                        PubSubStartPosition.continueFromSubscription(), now))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("requires no seek");
     }
@@ -594,7 +597,10 @@ class PubSubSplitEnumeratorTest {
         FakeSubscriptionAdmin admin = admin(SUB_A);
         FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
         PubSubSourceConfig<?> config =
-                config(sourceBuilder().subscription(SUB_A).startPosition(StartPosition.latest()));
+                config(
+                        sourceBuilder()
+                                .subscription(SUB_A)
+                                .startPosition(PubSubStartPosition.latest()));
 
         Instant before = Instant.now();
         start(context, config, admin, null);
@@ -782,13 +788,12 @@ class PubSubSplitEnumeratorTest {
         return config(
                 sourceBuilder()
                         .subscriptions(subscriptions)
-                        .startPosition(StartPosition.earliestRetained()));
+                        .startPosition(PubSubStartPosition.earliestRetained()));
     }
 
     private static PubSubSourceBuilder<String> sourceBuilder() {
         return PubSubSource.<String>builder()
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()));
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()));
     }
 
     private static PubSubSourceConfig<?> config(PubSubSourceBuilder<String> builder) {

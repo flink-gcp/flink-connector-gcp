@@ -117,22 +117,22 @@ import java.util.concurrent.TimeoutException;
  * <p>Publishes are batched by the SDK and awaited in {@link #flush()}, so the usual case — a rare
  * failure among healthy records — costs no round trip per element. Because a systematic failure (a
  * serializer bug rejecting every record) would otherwise let one whole checkpoint interval's
- * publishes accumulate unawaited, the outstanding count is bounded: at {@link
- * Builder#maxOutstandingMessages(int)} the queue awaits what it holds before accepting more.
+ * publishes accumulate unawaited, the in-flight count is bounded: at {@link
+ * Builder#maxInFlightMessages(int)} the queue awaits what it holds before accepting more.
  *
  * <p>Both of those waits — the one in {@link #flush()}, which runs at every checkpoint barrier, and
- * the one the outstanding bound triggers inside {@link #offer(FailedElement)} — are bounded by
- * {@link Builder#flushTimeout(Duration)}: one deadline covering all of that wait's publishes, not
- * one per publish, and not what a whole checkpoint interval spends. Expiry fails the job and drops
- * nothing. The queue's <em>close</em> waits for the same publishes under a budget of its own,
- * {@link Builder#shutdownTimeout(Duration)}.
+ * the one the in-flight bound triggers inside {@link #offer(FailedElement)} — are bounded by {@link
+ * Builder#flushTimeout(Duration)}: one deadline covering all of that wait's publishes, not one per
+ * publish, and not what a whole checkpoint interval spends. Expiry fails the job and drops nothing.
+ * The queue's <em>close</em> waits for the same publishes under a budget of its own, {@link
+ * Builder#shutdownTimeout(Duration)}.
  *
  * <h2>Metrics</h2>
  *
  * <p>{@link #open(FailureHandlerContext)} registers five names on the metric group the context
  * carries — <b>the host sink writer's</b>, so a BigQuery job dead-lettering to a topic reports them
- * beside BigQuery's own. They are {@code deadLettersPublished}, {@code outstandingDeadLetters},
- * {@code deadLetterFlushMillis}, {@code longestDeadLetterFlushMillis} and {@code
+ * beside BigQuery's own. They are {@code deadLettersPublished}, {@code inFlightDeadLetters}, {@code
+ * deadLetterFlushMillis}, {@code longestDeadLetterFlushMillis} and {@code
  * deadLetterPublisherShutdownsAbandoned}; what each means is on this connector's documentation
  * page, under "Dead-letter metrics". The count of elements <em>offered</em> is not among them
  * because every sink here already reports it as {@code numRecordsSendErrors} on that same group.
@@ -162,13 +162,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     /** Marks an error truncated to fit {@code MAX_ATTRIBUTE_VALUE_BYTES}; ASCII, so 3 bytes. */
     @VisibleForTesting static final String TRUNCATION_MARKER = "...";
 
-    /** The default outstanding bound: high enough that a rare failure never waits. */
-    public static final int DEFAULT_MAX_OUTSTANDING_MESSAGES = 1000;
+    /** The default in-flight bound: high enough that a rare failure never waits. */
+    public static final int DEFAULT_MAX_IN_FLIGHT_MESSAGES = 1000;
 
-    /** {@link Builder#maxOutstandingMessages(int)} value publishing each element synchronously. */
+    /** {@link Builder#maxInFlightMessages(int)} value publishing each element synchronously. */
     public static final int WRITE_THROUGH = 0;
 
-    /** {@link Builder#maxOutstandingMessages(int)} value buffering until {@link #flush()}. */
+    /** {@link Builder#maxInFlightMessages(int)} value buffering until {@link #flush()}. */
     public static final int UNBOUNDED = -1;
 
     /** The default {@link Builder#shutdownTimeout(Duration)}, matching the sink's own. */
@@ -187,7 +187,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     private final TopicDestination topic;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
-    private final int maxOutstandingMessages;
+    private final int maxInFlightMessages;
     private final Duration shutdownTimeout;
     private final Duration flushTimeout;
 
@@ -212,7 +212,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     @Nullable @VisibleForTesting transient AutoCloseable channelShutdown;
 
     /** Publishes not yet awaited; task-thread only, like every other field here. */
-    private transient List<ApiFuture<String>> outstanding;
+    private transient List<ApiFuture<String>> inFlightPublishes;
 
     /**
      * Registered on the host sink writer's metric group by {@link #open(FailureHandlerContext)}.
@@ -225,13 +225,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             TopicDestination topic,
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
-            int maxOutstandingMessages,
+            int maxInFlightMessages,
             Duration shutdownTimeout,
             Duration flushTimeout) {
         this.topic = Preconditions.checkNotNull(topic, "topic must not be null");
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
-        this.maxOutstandingMessages = maxOutstandingMessages;
+        this.maxInFlightMessages = maxInFlightMessages;
         this.shutdownTimeout = shutdownTimeout;
         this.flushTimeout = flushTimeout;
     }
@@ -248,7 +248,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     @Override
     public void open(FailureHandlerContext context) throws IOException {
         subtaskIndex = context.getSubtaskIndex();
-        outstanding = new ArrayList<>();
+        inFlightPublishes = new ArrayList<>();
         CredentialsProvider credentials = PubSubCredentials.load(serviceAccountKeyFile);
         Publisher.Builder builder = Publisher.newBuilder(topic.toTopicPath());
         try {
@@ -291,7 +291,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         // above fails the writer's creation, and the metric group goes with the task.
         metrics =
                 new PubSubDeadLetterQueueMetrics(
-                        context.getMetricGroup(), this::getOutstandingMessages);
+                        context.getMetricGroup(), this::getInFlightMessages);
     }
 
     /** Applies an explicit provider without replacing the SDK's ADC provider when it is absent. */
@@ -314,24 +314,29 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                 element.getErrorMessage(),
                 element.getCause());
         try {
-            outstanding.add(publisher.publish(envelope(element, subtaskIndex, Instant.now())));
+            inFlightPublishes.add(
+                    publisher.publish(envelope(element, subtaskIndex, Instant.now())));
         } catch (RuntimeException e) {
             throw new IOException(
                     "Failed to publish a dead letter to Pub/Sub topic " + topic + ".", e);
         }
-        if (maxOutstandingMessages >= 0 && outstanding.size() >= maxOutstandingMessages) {
+        if (maxInFlightMessages >= 0 && inFlightPublishes.size() >= maxInFlightMessages) {
             // Bounds what one checkpoint interval can accumulate when *every* record fails. At
             // zero this is a synchronous publish per element, which is the write-through mode.
-            flushOutstanding(
-                    publisher::publishAllOutstanding, outstanding, topic, flushTimeout, metrics);
+            flushInFlight(
+                    publisher::publishAllOutstanding,
+                    inFlightPublishes,
+                    topic,
+                    flushTimeout,
+                    metrics);
         }
     }
 
     @Override
     public void flush() throws IOException {
         Preconditions.checkState(publisher != null, "The dead-letter queue is not open.");
-        flushOutstanding(
-                publisher::publishAllOutstanding, outstanding, topic, flushTimeout, metrics);
+        flushInFlight(
+                publisher::publishAllOutstanding, inFlightPublishes, topic, flushTimeout, metrics);
     }
 
     @Override
@@ -346,7 +351,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         } finally {
             publisher = null;
             ownedChannel = null;
-            outstanding = null;
+            inFlightPublishes = null;
             // The registered gauges outlive this field — they read through method references —
             // so clearing it releases nothing and only keeps this block's meaning uniform: after
             // close, every field open() set is gone.
@@ -381,7 +386,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * did not succeed and on the budget running out.
      *
      * <p><b>One deadline covers the whole call, never one per future.</b> {@link
-     * Builder#maxOutstandingMessages(int)} defaults to 1000, so a per-future budget would be a
+     * Builder#maxInFlightMessages(int)} defaults to 1000, so a per-future budget would be a
      * thousandfold multiple of the number it claims to be — the shape of the mistake #265's first
      * teardown fix made, where gax hands its full timeout to each background resource in turn. The
      * deadline is taken before {@code publishAll}, so that call's time is charged against the
@@ -402,9 +407,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      * the publishes it never got to.
      */
     @VisibleForTesting
-    static void flushOutstanding(
+    static void flushInFlight(
             Runnable publishAll,
-            List<ApiFuture<String>> outstanding,
+            List<ApiFuture<String>> inFlightPublishes,
             TopicDestination topic,
             Duration budget,
             PubSubDeadLetterQueueMetrics metrics)
@@ -413,7 +418,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         // Read before the finally clears the list: a flush with nothing buffered is not a wait,
         // and recording it would erase the slow wait an operator is meant to see. `flush()` runs
         // at every barrier, so on a job that dead-letters occasionally almost every call is empty.
-        boolean hadPublishesToAwait = !outstanding.isEmpty();
+        boolean hadPublishesToAwait = !inFlightPublishes.isEmpty();
         // Overflows at the ceiling the setter accepts, and is correct anyway: the
         // subtraction below wraps a second time and the two cancel, leaving the true remainder
         // (measured — theLargestExpressibleBudgetIsNotSpentTheInstantTheFlushStarts pins it).
@@ -430,7 +435,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                                 + " to the publisher.",
                         e);
             }
-            for (ApiFuture<String> future : outstanding) {
+            for (ApiFuture<String> future : inFlightPublishes) {
                 try {
                     // Zero when the budget is already spent, which still returns the value of a
                     // future that is done: the point is bounding the wait, not failing on the
@@ -458,9 +463,9 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                                     + " ran out of its flushTimeout budget of "
                                     + budget
                                     + " with "
-                                    + (outstanding.size() - resolved)
+                                    + (inFlightPublishes.size() - resolved)
                                     + " of "
-                                    + outstanding.size()
+                                    + inFlightPublishes.size()
                                     + " publishes unresolved. Nothing is dropped: the job fails and"
                                     + " the records behind these dead letters are replayed from the"
                                     + " last completed checkpoint. None resolved usually means the"
@@ -484,14 +489,14 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             // already failed — or that outlived one budget — would only report the same thing
             // again. The unresolved ones are deliberately not cancelled, so a message the SDK still
             // delivers is a duplicate the DeadLetterQueue contract already covers, not a loss.
-            outstanding.clear();
+            inFlightPublishes.clear();
         }
     }
 
-    /** The publishes not yet awaited, so a test can observe the outstanding bound taking effect. */
+    /** The publishes not yet awaited, so a test can observe the in-flight bound taking effect. */
     @VisibleForTesting
-    int getOutstandingMessages() {
-        return outstanding == null ? 0 : outstanding.size();
+    int getInFlightMessages() {
+        return inFlightPublishes == null ? 0 : inFlightPublishes.size();
     }
 
     /**
@@ -548,7 +553,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         private TopicDestination topic;
         @Nullable private String serviceAccountKeyFile;
         @Nullable private EmulatorEndpoint emulatorEndpoint;
-        private int maxOutstandingMessages = DEFAULT_MAX_OUTSTANDING_MESSAGES;
+        private int maxInFlightMessages = DEFAULT_MAX_IN_FLIGHT_MESSAGES;
         private Duration shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
         private Duration flushTimeout = DEFAULT_FLUSH_TIMEOUT;
 
@@ -615,23 +620,23 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         }
 
         /**
-         * Sets how many publishes may be outstanding before {@link #offer} awaits them, bounding
-         * what one checkpoint interval accumulates when every record fails. Defaults to {@value
-         * #DEFAULT_MAX_OUTSTANDING_MESSAGES}.
+         * Sets how many publishes may be in flight before {@link #offer} awaits them, bounding what
+         * one checkpoint interval accumulates when every record fails. Defaults to {@value
+         * #DEFAULT_MAX_IN_FLIGHT_MESSAGES}.
          *
          * <p>{@link #WRITE_THROUGH} (0) publishes each element synchronously — the narrowest loss
          * window the {@link DeadLetterQueue} contract describes, at one round trip per element.
          * {@link #UNBOUNDED} (-1) buffers everything until {@link #flush()}, which is the fastest
          * and the only setting whose memory is not bounded by this queue.
          *
-         * @param maxOutstandingMessages the bound, {@link #WRITE_THROUGH} or {@link #UNBOUNDED}
+         * @param maxInFlightMessages the bound, {@link #WRITE_THROUGH} or {@link #UNBOUNDED}
          * @return this builder
          */
-        public Builder maxOutstandingMessages(int maxOutstandingMessages) {
+        public Builder maxInFlightMessages(int maxInFlightMessages) {
             Preconditions.checkArgument(
-                    maxOutstandingMessages >= UNBOUNDED,
-                    "maxOutstandingMessages must be -1 (unbounded), 0 (write through) or positive");
-            this.maxOutstandingMessages = maxOutstandingMessages;
+                    maxInFlightMessages >= UNBOUNDED,
+                    "maxInFlightMessages must be -1 (unbounded), 0 (write through) or positive");
+            this.maxInFlightMessages = maxInFlightMessages;
             return this;
         }
 
@@ -659,7 +664,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
         /**
          * Sets how long the queue waits for its buffered publishes, in {@link #flush()} and in the
-         * {@link #maxOutstandingMessages(int)} drain alike. Defaults to 60 seconds.
+         * {@link #maxInFlightMessages(int)} drain alike. Defaults to 60 seconds.
          *
          * <p>{@code flush()} runs at every checkpoint barrier, so without a budget a wait lasts as
          * long as the SDK keeps retrying — 600 seconds by default, which is also Flink's default
@@ -667,7 +672,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
          * that wait's publishes rather than each of them.
          *
          * <p><b>It bounds one wait, not what a checkpoint interval spends.</b> How many waits an
-         * interval makes is {@link #maxOutstandingMessages(int)}: one under {@link #UNBOUNDED}, one
+         * interval makes is {@link #maxInFlightMessages(int)}: one under {@link #UNBOUNDED}, one
          * per bound-full at a positive value, and one per element under {@link #WRITE_THROUGH}. A
          * slow-but-working topic can therefore spend several budgets in an interval without any of
          * them expiring.
@@ -709,7 +714,7 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                     topic,
                     serviceAccountKeyFile,
                     emulatorEndpoint,
-                    maxOutstandingMessages,
+                    maxInFlightMessages,
                     shutdownTimeout,
                     flushTimeout);
         }
