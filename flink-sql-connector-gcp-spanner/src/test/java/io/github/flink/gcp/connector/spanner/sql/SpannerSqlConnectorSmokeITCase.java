@@ -26,9 +26,9 @@ import com.google.cloud.spanner.InstanceId;
 import com.google.cloud.spanner.InstanceInfo;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
-import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.testutils.spanner.SpannerEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.spanner.SpannerTestClients;
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorSmokeITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
 import org.junit.jupiter.api.AfterAll;
@@ -64,12 +64,7 @@ class SpannerSqlConnectorSmokeITCase extends AbstractSqlConnectorSmokeITCase {
 
     @BeforeAll
     static void createDatabase() throws Exception {
-        spanner =
-                SpannerOptions.newBuilder()
-                        .setProjectId(PROJECT)
-                        .setEmulatorHost(EMULATOR.getEmulatorGrpcEndpoint())
-                        .build()
-                        .getService();
+        spanner = SpannerTestClients.forEmulator(EMULATOR.getEmulatorGrpcEndpoint(), PROJECT);
         spanner.getInstanceAdminClient()
                 .createInstance(
                         InstanceInfo.newBuilder(InstanceId.of(PROJECT, INSTANCE))

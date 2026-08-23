@@ -90,8 +90,8 @@
              needed here is a Flink able to plan and run a SQL job, plus the emulator. -->
         <dependency>
             <!-- Shared test utilities (#27): the SQL packaging, NOTICE and shaded-class
-                 provenance harnesses, plus the emulator container image the smoke test
-                 starts; the stock clients it drives the emulator with arrive transitively
+                 provenance harnesses, plus the emulator container image and stock-client
+                 factory the smoke test uses; the client library itself arrives transitively
                  from the connector. -->
             <groupId>io.github.flink-gcp</groupId>
             <artifactId>flink-connector-gcp-test-utils</artifactId>
