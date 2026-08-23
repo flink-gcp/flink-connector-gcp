@@ -32,7 +32,7 @@ section; the three forms of the Default column are explained
 | Option | Default | What it does |
 |---|---|---|
 | `writeMethod` | `STORAGE_API_AT_LEAST_ONCE` | Which write path the sink dispatches to at graph construction |
-| `destination` | **required**, unless `destinationResolver` is set | Writes every record to one fixed table |
+| `table` | **required**, unless `destinationResolver` is set | Writes every record to one fixed table |
 | `destinationResolver` | — | Resolves the table per record for every write method |
 | `serializer` | **required** | Converts each record into the protobuf row the Storage Write API accepts, or into `null` to skip it |
 | `createDisposition` | `CREATE_IF_NEEDED` | Whether a missing destination table is created or fails the job. It does not authorize or deny reconciliation of an existing CDC table. `CREATE_IF_NEEDED` also lets `STORAGE_API_EXACTLY_ONCE` wait out the post-creation propagation window at commit time, so `CREATE_NEVER` opts out of both on that write path |

@@ -230,7 +230,7 @@ class BigQueryBufferedStreamExactlyOnceITCase {
     private static org.apache.flink.api.connector.sink2.Sink<String> sink(String table) {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                .destination(RealBigQuery.destination(table))
+                .table(RealBigQuery.destination(table))
                 .serializer(new NameValueRowSerializer())
                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                 .build();

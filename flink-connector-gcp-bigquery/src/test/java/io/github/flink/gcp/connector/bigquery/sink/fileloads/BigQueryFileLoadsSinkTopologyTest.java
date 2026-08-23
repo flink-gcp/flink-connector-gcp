@@ -58,7 +58,7 @@ class BigQueryFileLoadsSinkTopologyTest {
                 (BigQueryFileLoadsSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(TableDestination.of("p", "d", "t"))
+                                .table(TableDestination.of("p", "d", "t"))
                                 .serializer(new TestSerializer())
                                 .serviceAccountKeyFile(keyFile)
                                 .fileLoadsOptions(
@@ -109,7 +109,7 @@ class BigQueryFileLoadsSinkTopologyTest {
     private static Sink<String> sink(FileLoadsOptions options) {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.FILE_LOADS)
-                .destination(TableDestination.of("p", "d", "t"))
+                .table(TableDestination.of("p", "d", "t"))
                 .serializer(new TestSerializer())
                 .fileLoadsOptions(options)
                 .build();

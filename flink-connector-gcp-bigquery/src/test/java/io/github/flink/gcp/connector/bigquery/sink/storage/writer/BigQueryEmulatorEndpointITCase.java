@@ -44,7 +44,7 @@ class BigQueryEmulatorEndpointITCase extends AbstractBigQueryEmulatorITCase {
                 TableDestination.of(PROJECT, DATASET, "emulator_endpoint_wiring");
         Sink<String> sink =
                 BigQuerySink.<String>builder()
-                        .destination(destination)
+                        .table(destination)
                         .serializer(new NameColumnSerializer())
                         .emulatorEndpoint(grpcEndpoint())
                         .emulatorRestEndpoint(restEndpoint())

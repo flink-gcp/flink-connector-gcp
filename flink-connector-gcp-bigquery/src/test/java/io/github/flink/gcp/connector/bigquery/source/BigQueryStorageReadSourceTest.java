@@ -23,7 +23,7 @@ import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
@@ -47,7 +47,7 @@ class BigQueryStorageReadSourceTest {
                 InternalSourceReaderMetricGroup.mock(listener.getMetricGroup());
         RecordingOpener opener = new RecordingOpener();
 
-        try (SourceReader<GenericRecord, BigQueryReadStreamSplit> reader =
+        try (SourceReader<GenericRecord, ReadStreamSplit> reader =
                 new BigQueryStorageReadSource<>(
                                 TestSources.config(builder -> builder.rowStreamOpener(opener)))
                         .createReader(new FakeSourceReaderContext(metricGroup))) {

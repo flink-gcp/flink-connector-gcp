@@ -433,7 +433,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(destination)
+                                .table(destination)
                                 .serializer(new CdcStringSerializer())
                                 .additionalFields(
                                         AdditionalFields.<String>builder()
@@ -477,7 +477,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of("p", "d", "t"))
+                                .table(TableDestination.of("p", "d", "t"))
                                 .serializer(new CdcStringSerializer())
                                 .additionalFields(
                                         AdditionalFields.<String>builder()
@@ -523,7 +523,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of("p", "d", "t"))
+                                .table(TableDestination.of("p", "d", "t"))
                                 .serializer(new CdcStringSerializer())
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
@@ -557,7 +557,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(destination)
+                                .table(destination)
                                 .serializer(new CdcStringSerializer())
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
@@ -584,7 +584,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of("p", "d", "t"))
+                                .table(TableDestination.of("p", "d", "t"))
                                 .serializer(new CdcStringSerializer())
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
@@ -625,7 +625,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of("p", "d", "t"))
+                                .table(TableDestination.of("p", "d", "t"))
                                 .serializer(serializer)
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .cdcOptions(
@@ -875,7 +875,7 @@ class BigQueryDefaultStreamWriterTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of("p", "d", "t"))
+                                .table(TableDestination.of("p", "d", "t"))
                                 .serializer(new StringSerializer())
                                 .build();
 

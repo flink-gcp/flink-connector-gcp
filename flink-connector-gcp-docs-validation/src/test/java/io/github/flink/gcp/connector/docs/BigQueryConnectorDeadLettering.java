@@ -31,7 +31,7 @@ final class BigQueryConnectorDeadLettering {
     static void build() {
         // tag::bigquery-connector-dead-lettering[]
         BigQuerySink.<Order>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "orders"))
+                .table(TableDestination.of("my-project", "my_dataset", "orders"))
                 .serializer(new MyOrderProtoSerializer())
                 .failureHandler(
                         FailureHandler.sendToDeadLetterQueue(

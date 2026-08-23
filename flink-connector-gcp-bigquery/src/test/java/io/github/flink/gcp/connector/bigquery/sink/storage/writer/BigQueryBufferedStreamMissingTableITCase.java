@@ -433,7 +433,7 @@ class BigQueryBufferedStreamMissingTableITCase {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(RealBigQuery.destination(AUTO_CREATED_TABLE))
+                                .table(RealBigQuery.destination(AUTO_CREATED_TABLE))
                                 .serializer(new NameColumnSerializer())
                                 // No createDisposition(...) call: CREATE_IF_NEEDED is the default,
                                 // and this is the path a user takes without knowing the knob.

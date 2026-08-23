@@ -57,7 +57,7 @@ class BigQueryDefaultStreamWriterITCase extends AbstractBigQueryEmulatorITCase {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of(PROJECT, DATASET, "plain_writes"))
+                                .table(TableDestination.of(PROJECT, DATASET, "plain_writes"))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<String> writer =

@@ -44,7 +44,7 @@ class BigQueryTableAutoCreationITCase extends AbstractBigQueryEmulatorITCase {
         BigQuerySinkConfig<String> config =
                 ((BigQueryDefaultStreamSink<String>)
                                 BigQuerySink.<String>builder()
-                                        .destination(destination)
+                                        .table(destination)
                                         .serializer(new NameColumnSerializer())
                                         .createDisposition(disposition)
                                         .build())

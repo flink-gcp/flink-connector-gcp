@@ -31,7 +31,7 @@ final class BigQueryConnectorCredentials {
     static void buildSink() {
         // tag::bigquery-connector-credentials-sink[]
         BigQuerySink.<MyEvent>builder()
-                .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                .table(TableDestination.of("my-project", "my_dataset", "events"))
                 .serializer(new MyEventProtoSerializer())
                 .serviceAccountKeyFile("/var/run/secrets/bigquery/key.json")
                 .build();

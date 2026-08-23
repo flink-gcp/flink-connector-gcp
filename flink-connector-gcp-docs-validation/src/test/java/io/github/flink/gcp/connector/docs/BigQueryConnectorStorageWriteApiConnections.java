@@ -32,7 +32,7 @@ final class BigQueryConnectorStorageWriteApiConnections {
         // tag::bigquery-connector-storage-write-api-connections[]
         Sink<MyEvent> sink =
                 BigQuerySink.<MyEvent>builder()
-                        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                        .table(TableDestination.of("my-project", "my_dataset", "events"))
                         .serializer(new MyEventProtoSerializer())
                         .schemaUpdateOptions(
                                 SchemaUpdateOptions.builder()

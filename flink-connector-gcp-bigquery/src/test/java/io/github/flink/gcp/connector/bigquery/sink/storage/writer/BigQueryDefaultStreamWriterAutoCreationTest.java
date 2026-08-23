@@ -195,7 +195,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
             CreateDisposition disposition, TableCreateOptionsProvider optionsProvider) {
         BigQuerySinkBuilder<String> builder =
                 BigQuerySink.<String>builder()
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new StringSerializer())
                         .createDisposition(disposition);
         if (optionsProvider != null) {
@@ -216,7 +216,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
                 };
         return ((BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(serializer)
                                 .additionalFields(
                                         AdditionalFields.<String>builder()

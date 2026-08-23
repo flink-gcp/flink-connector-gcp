@@ -82,13 +82,13 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> defaults =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
         BigQueryDefaultStreamSink<String> configured =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 // Named providers, so anything the assertion finds was minted here
                                 // rather than handed in: a user's own lambda is their business.
@@ -224,7 +224,7 @@ class BigQuerySinkBuilderTest {
     void defaultWriteMethodIsStorageApiAtLeastOnce() {
         Sink<String> sink =
                 BigQuerySink.<String>builder()
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new TestSerializer())
                         .build();
 
@@ -236,7 +236,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
 
@@ -263,7 +263,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> defaultStream =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .additionalFields(options)
                                 .build();
@@ -271,7 +271,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                                 .additionalFields(options)
@@ -280,7 +280,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryFileLoadsSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
@@ -299,7 +299,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .additionalFields(
                                         AdditionalFields.<String>builder()
@@ -365,7 +365,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .cdcOptions(options)
@@ -389,7 +389,7 @@ class BigQuerySinkBuilderTest {
                         () ->
                                 BigQuerySink.<String>builder()
                                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .bufferedStreamOptions(
                                                 BufferedStreamOptions.builder().build())
@@ -403,7 +403,7 @@ class BigQuerySinkBuilderTest {
                         () ->
                                 BigQuerySink.<String>builder()
                                         .writeMethod(WriteMethod.FILE_LOADS)
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .fileLoadsOptions(
                                                 FileLoadsOptions.builder()
@@ -425,7 +425,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .cdcOptions(options)
                                 .cdcTableOptions(
@@ -453,7 +453,7 @@ class BigQuerySinkBuilderTest {
 
         assertThat(
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .cdcOptions(cdc)
                                 .build())
@@ -461,7 +461,7 @@ class BigQuerySinkBuilderTest {
 
         assertThat(
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .cdcOptions(cdc)
                                 .cdcTableOptionsProvider(
@@ -480,7 +480,7 @@ class BigQuerySinkBuilderTest {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .cdcTableOptions(
                                                 CdcTableOptions.builder()
@@ -499,7 +499,7 @@ class BigQuerySinkBuilderTest {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .cdcOptions(cdc)
                                         .cdcTableReconciliationPolicy(
@@ -514,7 +514,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
 
@@ -526,7 +526,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> defaultStream =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
                                 .build();
@@ -534,7 +534,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                                 .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
@@ -543,7 +543,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryFileLoadsSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
@@ -575,7 +575,7 @@ class BigQuerySinkBuilderTest {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
                                         .emulatorEndpoint("localhost:9060")
@@ -585,7 +585,7 @@ class BigQuerySinkBuilderTest {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .serviceAccountKeyFile(SERVICE_ACCOUNT_KEY_FILE)
                                         .emulatorRestEndpoint("localhost:9050")
@@ -600,7 +600,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
 
@@ -615,7 +615,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .defaultStreamOptions(options)
                                 .build();
@@ -629,7 +629,7 @@ class BigQuerySinkBuilderTest {
                         () ->
                                 BigQuerySink.<String>builder()
                                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .bufferedStreamOptions(
                                                 BufferedStreamOptions.builder().build())
@@ -645,7 +645,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .defaultStreamOptions(
                                         DefaultStreamOptions.builder()
@@ -666,7 +666,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                                 .build();
@@ -682,7 +682,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                                 .build();
@@ -700,7 +700,7 @@ class BigQuerySinkBuilderTest {
                         () ->
                                 BigQuerySink.<String>builder()
                                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
@@ -712,7 +712,7 @@ class BigQuerySinkBuilderTest {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .bufferedStreamOptions(
                                                 BufferedStreamOptions.builder().build())
@@ -726,7 +726,7 @@ class BigQuerySinkBuilderTest {
         Sink<String> sink =
                 BigQuerySink.<String>builder()
                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new TestSerializer())
                         .schemaUpdateOptions(SchemaUpdateOptions.builder().allowNewFields().build())
                         .bufferedStreamOptions(BufferedStreamOptions.builder().build())
@@ -741,7 +741,7 @@ class BigQuerySinkBuilderTest {
         Sink<String> sink =
                 BigQuerySink.<String>builder()
                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new TestSerializer())
                         .schemaUpdateOptions(SchemaUpdateOptions.defaults())
                         .bufferedStreamOptions(BufferedStreamOptions.builder().build())
@@ -769,7 +769,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                                 .build();
@@ -793,7 +793,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryFileLoadsSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
@@ -812,7 +812,7 @@ class BigQuerySinkBuilderTest {
                         () ->
                                 BigQuerySink.<String>builder()
                                         .writeMethod(WriteMethod.FILE_LOADS)
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
@@ -824,7 +824,7 @@ class BigQuerySinkBuilderTest {
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new TestSerializer())
                                         .fileLoadsOptions(
                                                 FileLoadsOptions.builder()
@@ -841,7 +841,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryFileLoadsSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()
@@ -857,11 +857,11 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void fixedDestinationUsesNamedResolver() {
+    void fixedTableUsesNamedResolver() {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
 
@@ -890,11 +890,11 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
-    void lastDestinationCallWins() {
+    void lastTableOrDestinationResolverCallWins() {
         BigQueryDefaultStreamSink<String> resolverWins =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .destinationResolver(
                                         (element, context) ->
                                                 TableDestination.of("p", "d", "dynamic"))
@@ -903,17 +903,24 @@ class BigQuerySinkBuilderTest {
         assertThat(resolverWins.getConfig().getDestinationResolver().resolve("x", CONTEXT))
                 .isEqualTo(TableDestination.of("p", "d", "dynamic"));
 
-        BigQueryDefaultStreamSink<String> destinationWins =
+        BigQueryDefaultStreamSink<String> tableWins =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .destinationResolver(
                                         (element, context) ->
                                                 TableDestination.of("p", "d", "dynamic"))
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
-        assertThat(destinationWins.getConfig().getDestinationResolver())
+        assertThat(tableWins.getConfig().getDestinationResolver())
                 .isInstanceOf(FixedDestinationResolver.class);
+    }
+
+    @Test
+    void rejectsNullTable() {
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().table(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("table must not be null");
     }
 
     @Test
@@ -934,7 +941,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> defaults =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
         assertThat(defaults.getConfig().getCreateDisposition())
@@ -947,7 +954,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> overridden =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .failureHandler(FailureHandler.logAndDrop())
@@ -965,7 +972,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .emulatorEndpoint("localhost:9060")
                                 .emulatorRestEndpoint("localhost:9050")
@@ -986,7 +993,7 @@ class BigQuerySinkBuilderTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                                 .emulatorEndpoint("localhost:9060")
@@ -1030,7 +1037,7 @@ class BigQuerySinkBuilderTest {
     private static BigQuerySinkBuilder<String> fileLoadsBuilder() {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.FILE_LOADS)
-                .destination(DESTINATION)
+                .table(DESTINATION)
                 .serializer(new TestSerializer())
                 .fileLoadsOptions(
                         FileLoadsOptions.builder().stagingPath("gs://bucket/tmp").build());
@@ -1045,7 +1052,7 @@ class BigQuerySinkBuilderTest {
 
     @Test
     void failsWithoutSerializer() {
-        assertThatThrownBy(() -> BigQuerySink.<String>builder().destination(DESTINATION).build())
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().table(DESTINATION).build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("serializer");
     }
@@ -1058,7 +1065,8 @@ class BigQuerySinkBuilderTest {
                                         .serializer(new TestSerializer())
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("destination");
+                .hasMessageContaining("table(...)")
+                .hasMessageContaining("destinationResolver(...)");
     }
 
     @Test
@@ -1066,7 +1074,7 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new TestSerializer())
                                 .build();
 

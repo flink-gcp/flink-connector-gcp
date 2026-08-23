@@ -109,7 +109,7 @@ class BigQueryStorageSinkTableAdminWiringTest {
         io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder<String> builder =
                 BigQuerySink.<String>builder()
                         .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new NameValueRowSerializer())
                         .defaultStreamOptions(
                                 DefaultStreamOptions.builder()
@@ -126,7 +126,7 @@ class BigQueryStorageSinkTableAdminWiringTest {
         io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder<String> builder =
                 BigQuerySink.<String>builder()
                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new NameValueRowSerializer())
                         .bufferedStreamOptions(
                                 BufferedStreamOptions.builder()

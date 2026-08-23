@@ -82,7 +82,7 @@ final class BigQueryExamplesDebeziumPostgreSqlCdc {
                 .sinkTo(
                         BigQuerySink.<GenericRecord>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
-                                .destination(
+                                .table(
                                         TableDestination.of(
                                                 "my-project", "analytics", "current_orders"))
                                 .serializer(

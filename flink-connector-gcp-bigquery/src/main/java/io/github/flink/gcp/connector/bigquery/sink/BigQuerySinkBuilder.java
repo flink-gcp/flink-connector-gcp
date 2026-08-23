@@ -40,7 +40,7 @@ import javax.annotation.Nullable;
  * Builder for BigQuery sinks, obtained from {@link BigQuerySink#builder()}.
  *
  * <p>Required settings: a serializer and a destination. The destination is set through either
- * {@link #destination(TableDestination)} (fixed table) or {@link
+ * {@link #table(TableDestination)} (fixed table) or {@link
  * #destinationResolver(DestinationResolver)} (per-record dynamic destinations); the two override
  * each other and the last call wins.
  *
@@ -88,22 +88,22 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
-     * Writes every record to the given fixed table. Overrides any previously set destination or
-     * resolver.
+     * Writes every record to the given fixed table. Overrides any previously set table or
+     * destination resolver.
      *
-     * @param destination the destination table
+     * @param table the destination table
      * @return this builder
      */
-    public BigQuerySinkBuilder<T> destination(TableDestination destination) {
+    public BigQuerySinkBuilder<T> table(TableDestination table) {
         this.destinationResolver =
                 new FixedDestinationResolver(
-                        Preconditions.checkNotNull(destination, "destination must not be null"));
+                        Preconditions.checkNotNull(table, "table must not be null"));
         return this;
     }
 
     /**
      * Resolves the destination table per record (dynamic destinations). Overrides any previously
-     * set destination or resolver.
+     * set table or destination resolver.
      *
      * @param destinationResolver the resolver
      * @return this builder
@@ -448,7 +448,7 @@ public class BigQuerySinkBuilder<T> {
         Preconditions.checkState(serializer != null, "A serializer is required.");
         Preconditions.checkState(
                 destinationResolver != null,
-                "A destination is required: set destination(...) or destinationResolver(...).");
+                "A destination is required: set table(...) or destinationResolver(...).");
 
         BigQuerySinkConfig<T> config =
                 new BigQuerySinkConfig<>(

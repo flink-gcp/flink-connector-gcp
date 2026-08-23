@@ -1339,7 +1339,7 @@ returning means the rows are visible.
 There is no checkpoint-cadence quota guard: each changed destination contributes one `FlushRows`
 call per checkpoint, unlike FILE_LOADS' per-table daily load-job limit.
 
-**Scope.** Fixed `destination(...)` and per-record `destinationResolver(...)` are both supported.
+**Scope.** Fixed `table(...)` and per-record `destinationResolver(...)` are both supported.
 Each destination has independent batching, offsets, recovery, checkpoint state and committables.
 Mid-stream schema evolution drains rows encoded under the old descriptor before reconnecting that
 destination's local appender with the current descriptor.

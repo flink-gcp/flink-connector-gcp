@@ -38,19 +38,17 @@ class BigQueryReadStreamSplitStateTest {
         // would quietly stop explaining an expired-session failure.
         BigQueryReadStreamSplitState state =
                 new BigQueryReadStreamSplitState(
-                        new BigQueryReadStreamSplit(STREAM, 7, SCHEMA, EXPIRE_TIME));
+                        new ReadStreamSplit(STREAM, 7, SCHEMA, EXPIRE_TIME));
 
         state.recordConsumed();
 
-        assertThat(state.toSplit())
-                .isEqualTo(new BigQueryReadStreamSplit(STREAM, 8, SCHEMA, EXPIRE_TIME));
+        assertThat(state.toSplit()).isEqualTo(new ReadStreamSplit(STREAM, 8, SCHEMA, EXPIRE_TIME));
     }
 
     @Test
     void keepsAMissingExpiryMissing() {
         BigQueryReadStreamSplitState state =
-                new BigQueryReadStreamSplitState(
-                        new BigQueryReadStreamSplit(STREAM, 0, SCHEMA, null));
+                new BigQueryReadStreamSplitState(new ReadStreamSplit(STREAM, 0, SCHEMA, null));
 
         assertThat(state.toSplit().getSessionExpireTime()).isNull();
     }

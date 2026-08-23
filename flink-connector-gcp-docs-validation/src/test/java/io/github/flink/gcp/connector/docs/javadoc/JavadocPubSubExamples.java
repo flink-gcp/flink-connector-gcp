@@ -68,7 +68,7 @@ final class JavadocPubSubExamples {
         Sink<Order> sink =
                 // tag::dead-letter-queue[]
                 BigQuerySink.<Order>builder()
-                        .destination(TableDestination.of("my-project", "my_dataset", "orders"))
+                        .table(TableDestination.of("my-project", "my_dataset", "orders"))
                         .serializer(serializer)
                         .failureHandler(
                                 FailureHandler.sendToDeadLetterQueue(

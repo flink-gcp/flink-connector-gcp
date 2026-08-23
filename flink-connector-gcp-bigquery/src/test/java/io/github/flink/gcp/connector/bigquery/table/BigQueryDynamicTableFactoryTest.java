@@ -536,6 +536,22 @@ class BigQueryDynamicTableFactoryTest {
     }
 
     @Test
+    void rejectsTheFormerPerDestinationMetricsKeys() {
+        for (String key :
+                new String[] {
+                    "sink.default-stream.per-destination-metrics",
+                    "sink.file-loads.per-destination-metrics"
+                }) {
+            Map<String, String> options = minimalOptions();
+            options.put(key, "true");
+            assertThatThrownBy(() -> sink(options))
+                    .as("former key '%s'", key)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(key);
+        }
+    }
+
+    @Test
     void everyWriteMethodBuildsItsOwnSink() {
         // Also pins the DDL spelling against the sink it selects: a WriteMethod whose toString()
         // drifted would build the wrong one of these rather than fail.
@@ -571,6 +587,25 @@ class BigQueryDynamicTableFactoryTest {
         BufferedStreamOptions built = ((BigQueryBufferedStreamSink<?>) built(options)).getOptions();
         assertThat(built.getRetryMaxAttempts()).isEqualTo(7);
         assertThat(built.getMaxAppendRequestBytes()).isEqualTo(1024L * 1024L);
+    }
+
+    @Test
+    void renamedPerDestinationMetricsKeysReachTheirBuiltSinks() {
+        Map<String, String> defaultStream = optionsFor(WriteMethod.STORAGE_API_AT_LEAST_ONCE);
+        defaultStream.put("sink.default-stream.metrics.per-destination", "true");
+        assertThat(
+                        ((BigQueryDefaultStreamSink<?>) built(defaultStream))
+                                .getOptions()
+                                .isPerDestinationMetrics())
+                .isTrue();
+
+        Map<String, String> fileLoads = optionsFor(WriteMethod.FILE_LOADS);
+        fileLoads.put("sink.file-loads.metrics.per-destination", "true");
+        assertThat(
+                        ((BigQueryFileLoadsSink<?>) built(fileLoads))
+                                .getOptions()
+                                .isPerDestinationMetrics())
+                .isTrue();
     }
 
     @Test

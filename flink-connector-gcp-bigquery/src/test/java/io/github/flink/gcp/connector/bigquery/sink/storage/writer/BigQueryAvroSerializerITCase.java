@@ -167,7 +167,7 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         BigQueryDefaultStreamSink<GenericRecord> sink =
                 (BigQueryDefaultStreamSink<GenericRecord>)
                         BigQuerySink.<GenericRecord>builder()
-                                .destination(TableDestination.of(PROJECT, DATASET, "avro_writes"))
+                                .table(TableDestination.of(PROJECT, DATASET, "avro_writes"))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<GenericRecord> writer =
@@ -240,7 +240,7 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
         BigQueryDefaultStreamSink<GenericRecord> sink =
                 (BigQueryDefaultStreamSink<GenericRecord>)
                         BigQuerySink.<GenericRecord>builder()
-                                .destination(TableDestination.of(PROJECT, DATASET, "avro_default"))
+                                .table(TableDestination.of(PROJECT, DATASET, "avro_default"))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<GenericRecord> writer =

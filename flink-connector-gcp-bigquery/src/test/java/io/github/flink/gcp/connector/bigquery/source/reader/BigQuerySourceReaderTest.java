@@ -24,7 +24,7 @@ import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.Awaits;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
@@ -113,7 +113,7 @@ class BigQuerySourceReaderTest {
         // behind this test.
         TestReaderMetrics metrics = new TestReaderMetrics();
         CollectingReaderOutput<String> first = new CollectingReaderOutput<>();
-        List<BigQueryReadStreamSplit> checkpoint;
+        List<ReadStreamSplit> checkpoint;
 
         try (BigQuerySourceReader<String> reader =
                 reader(new FakeSourceReaderContext(metrics.metricGroup()), metrics)) {
@@ -160,15 +160,15 @@ class BigQuerySourceReaderTest {
         assertThat(ScriptedRowStreamOpener.closeCount(openerId)).isEqualTo(1);
     }
 
-    private BigQueryReadStreamSplit split(long offset) {
-        return new BigQueryReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON, null);
+    private ReadStreamSplit split(long offset) {
+        return new ReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON, null);
     }
 
     private BigQuerySourceReader<String> reader(
             FakeSourceReaderContext context, TestReaderMetrics metrics) {
         ScriptedRowStreamOpener opener =
                 ScriptedRowStreamOpener.singleStream(openerId, STREAM, ROW_COUNT, 3);
-        Supplier<SplitReader<GenericRecord, BigQueryReadStreamSplit>> splitReaderSupplier =
+        Supplier<SplitReader<GenericRecord, ReadStreamSplit>> splitReaderSupplier =
                 () -> new BigQuerySplitReader(opener, 2, null, metrics.metrics());
         return new BigQuerySourceReader<>(
                 splitReaderSupplier,

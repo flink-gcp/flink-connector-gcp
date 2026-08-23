@@ -382,7 +382,7 @@ class BigQueryFileLoadsITCase {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(RealBigQuery.destination(TABLE_TYPES))
+                                .table(RealBigQuery.destination(TABLE_TYPES))
                                 .serializer(new TypesSerializer())
                                 .fileLoadsOptions(
                                         FileLoadsOptions.builder()

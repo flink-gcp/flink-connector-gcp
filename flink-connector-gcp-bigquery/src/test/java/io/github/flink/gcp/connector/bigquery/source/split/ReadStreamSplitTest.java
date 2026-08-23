@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * inequality arms, one field at a time, because a term {@code equals} misses is a term a restored
  * split can silently differ in while comparing equal.
  */
-class BigQueryReadStreamSplitTest {
+class ReadStreamSplitTest {
 
     private static final String STREAM = "projects/p/locations/l/sessions/s/streams/one";
     private static final Instant EXPIRES = Instant.parse("2026-08-12T18:00:00Z");
@@ -43,18 +43,16 @@ class BigQueryReadStreamSplitTest {
 
     @Test
     void comparesEveryField() {
-        BigQueryReadStreamSplit base = split();
+        ReadStreamSplit base = split();
 
-        assertThat(new BigQueryReadStreamSplit(STREAM + "2", 4L, "{}", EXPIRES))
+        assertThat(new ReadStreamSplit(STREAM + "2", 4L, "{}", EXPIRES))
                 .as("streamName")
                 .isNotEqualTo(base);
-        assertThat(new BigQueryReadStreamSplit(STREAM, 5L, "{}", EXPIRES))
-                .as("offset")
-                .isNotEqualTo(base);
-        assertThat(new BigQueryReadStreamSplit(STREAM, 4L, "{\"a\":1}", EXPIRES))
+        assertThat(new ReadStreamSplit(STREAM, 5L, "{}", EXPIRES)).as("offset").isNotEqualTo(base);
+        assertThat(new ReadStreamSplit(STREAM, 4L, "{\"a\":1}", EXPIRES))
                 .as("avroSchemaJson")
                 .isNotEqualTo(base);
-        assertThat(new BigQueryReadStreamSplit(STREAM, 4L, "{}", null))
+        assertThat(new ReadStreamSplit(STREAM, 4L, "{}", null))
                 .as("sessionExpireTime")
                 .isNotEqualTo(base);
     }
@@ -68,12 +66,12 @@ class BigQueryReadStreamSplitTest {
     void rejectsANegativeOffset() {
         // The offset counts rows already consumed, so a negative one can only be a bookkeeping
         // bug; failing at construction names where it happened rather than where it was read.
-        assertThatThrownBy(() -> new BigQueryReadStreamSplit(STREAM, -1L, "{}", null))
+        assertThatThrownBy(() -> new ReadStreamSplit(STREAM, -1L, "{}", null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("offset must not be negative");
     }
 
-    private static BigQueryReadStreamSplit split() {
-        return new BigQueryReadStreamSplit(STREAM, 4L, "{}", EXPIRES);
+    private static ReadStreamSplit split() {
+        return new ReadStreamSplit(STREAM, 4L, "{}", EXPIRES);
     }
 }

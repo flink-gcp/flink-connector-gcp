@@ -34,7 +34,7 @@ import io.github.flink.gcp.connector.bigquery.source.query.QueryJobIdentity;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryResult;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,7 +69,7 @@ import java.util.List;
 @Internal
 public class BigQueryReadSplitEnumerator
         extends PullAssignmentSplitEnumerator<
-                BigQueryReadStreamSplit, BigQueryReadEnumeratorState, ReadSession> {
+                ReadStreamSplit, BigQueryReadEnumeratorState, ReadSession> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigQueryReadSplitEnumerator.class);
 
@@ -119,7 +119,7 @@ public class BigQueryReadSplitEnumerator
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      */
     public BigQueryReadSplitEnumerator(
-            SplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            SplitEnumeratorContext<ReadStreamSplit> context,
             BigQuerySourceConfig<?> config,
             ReadSessionCreator sessionCreator,
             @Nullable QueryRunner queryRunner,
@@ -267,11 +267,9 @@ public class BigQueryReadSplitEnumerator
         String schemaJson = session.getAvroSchema().getSchema();
         sessionName = session.getName();
         sessionExpireTime = Instant.ofEpochSecond(session.getExpireTime().getSeconds());
-        List<BigQueryReadStreamSplit> splits = new ArrayList<>();
+        List<ReadStreamSplit> splits = new ArrayList<>();
         for (ReadStream stream : session.getStreamsList()) {
-            splits.add(
-                    new BigQueryReadStreamSplit(
-                            stream.getName(), 0L, schemaJson, sessionExpireTime));
+            splits.add(new ReadStreamSplit(stream.getName(), 0L, schemaJson, sessionExpireTime));
         }
         addPlannedSplits(splits);
         if (splits.size() < context.currentParallelism()) {

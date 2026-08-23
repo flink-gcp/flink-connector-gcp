@@ -33,7 +33,7 @@ import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 
 import javax.annotation.Nullable;
 
@@ -554,7 +554,7 @@ public class BigQuerySourceBuilder<T> {
      *
      * @return the source
      */
-    public Source<T, BigQueryReadStreamSplit, BigQueryReadEnumeratorState> build() {
+    public Source<T, ReadStreamSplit, BigQueryReadEnumeratorState> build() {
         Preconditions.checkState(
                 table != null || query != null,
                 "A table or a query is required: set table(...) or query(...).");

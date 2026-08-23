@@ -64,7 +64,7 @@ public final class DefaultStreamOptionsMapper {
                     BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_CONNECTIONS_PER_REGION,
                     BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT,
                     BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL,
-                    BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS);
+                    BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION);
 
     private DefaultStreamOptionsMapper() {}
 
@@ -158,7 +158,7 @@ public final class DefaultStreamOptionsMapper {
                 builder::flushInterval);
         OptionSetters.apply(
                 config,
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS,
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
 
         return builder.build();

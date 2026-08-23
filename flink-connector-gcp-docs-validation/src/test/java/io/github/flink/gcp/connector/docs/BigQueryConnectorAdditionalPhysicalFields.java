@@ -35,7 +35,7 @@ final class BigQueryConnectorAdditionalPhysicalFields {
         // tag::bigquery-connector-additional-physical-fields[]
         Sink<MyEvent> sink =
                 BigQuerySink.<MyEvent>builder()
-                        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                        .table(TableDestination.of("my-project", "my_dataset", "events"))
                         .serializer(new MyEventProtoSerializer())
                         .additionalFields(
                                 AdditionalFields.<MyEvent>builder()

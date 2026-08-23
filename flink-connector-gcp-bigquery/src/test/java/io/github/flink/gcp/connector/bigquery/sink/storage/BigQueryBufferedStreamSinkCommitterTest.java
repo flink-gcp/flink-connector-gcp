@@ -50,7 +50,7 @@ class BigQueryBufferedStreamSinkCommitterTest {
         return (BigQueryBufferedStreamSink<String>)
                 BigQuerySink.<String>builder()
                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(DESTINATION)
+                        .table(DESTINATION)
                         .serializer(new NameValueRowSerializer())
                         .createDisposition(disposition)
                         .bufferedStreamOptions(BufferedStreamOptions.builder().build())

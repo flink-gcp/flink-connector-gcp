@@ -505,8 +505,8 @@ public final class BigQueryConnectorOptions {
                                     + " absent. A mitigation only: the delivery guarantee still"
                                     + " rests on checkpointing.");
 
-    public static final ConfigOption<Boolean> SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS =
-            ConfigOptions.key("sink.default-stream.per-destination-metrics")
+    public static final ConfigOption<Boolean> SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION =
+            ConfigOptions.key("sink.default-stream.metrics.per-destination")
                     .booleanType()
                     .noDefaultValue()
                     .withDescription(
@@ -710,8 +710,8 @@ public final class BigQueryConnectorOptions {
                                     + " consumes one, so raise it when something outside this job"
                                     + " updates the same table concurrently.");
 
-    public static final ConfigOption<Boolean> SINK_FILE_LOADS_PER_DESTINATION_METRICS =
-            ConfigOptions.key("sink.file-loads.per-destination-metrics")
+    public static final ConfigOption<Boolean> SINK_FILE_LOADS_METRICS_PER_DESTINATION =
+            ConfigOptions.key("sink.file-loads.metrics.per-destination")
                     .booleanType()
                     .noDefaultValue()
                     .withDescription(

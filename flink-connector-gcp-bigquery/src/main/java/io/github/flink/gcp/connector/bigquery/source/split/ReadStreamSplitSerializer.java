@@ -26,7 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 
 /**
- * Serializer for {@link BigQueryReadStreamSplit}.
+ * Serializer for {@link ReadStreamSplit}.
  *
  * <p>Hand-written rather than generated, as the Pub/Sub source's split serializer is: two strings,
  * a long and a flag do not repay a protobuf schema and its code-generation plugin.
@@ -40,8 +40,7 @@ import java.time.Instant;
  * loses nothing but the annotation on a failure it may never meet.
  */
 @Internal
-public final class BigQueryReadStreamSplitSerializer
-        implements SimpleVersionedSerializer<BigQueryReadStreamSplit> {
+public final class ReadStreamSplitSerializer implements SimpleVersionedSerializer<ReadStreamSplit> {
 
     /** The split layout that carried no session expiry. */
     public static final int VERSION_WITHOUT_EXPIRY = 1;
@@ -58,14 +57,14 @@ public final class BigQueryReadStreamSplitSerializer
     }
 
     @Override
-    public byte[] serialize(BigQueryReadStreamSplit split) throws IOException {
+    public byte[] serialize(ReadStreamSplit split) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         writeSplit(out, split);
         return out.getCopyOfBuffer();
     }
 
     @Override
-    public BigQueryReadStreamSplit deserialize(int version, byte[] serialized) throws IOException {
+    public ReadStreamSplit deserialize(int version, byte[] serialized) throws IOException {
         if (version != VERSION_WITH_EXPIRY && version != VERSION_WITHOUT_EXPIRY) {
             throw new IOException(
                     "Unsupported BigQuery read stream split serialization version "
@@ -87,7 +86,7 @@ public final class BigQueryReadStreamSplitSerializer
      * @param split the split to write
      * @throws IOException if writing fails
      */
-    public static void writeSplit(DataOutputSerializer out, BigQueryReadStreamSplit split)
+    public static void writeSplit(DataOutputSerializer out, ReadStreamSplit split)
             throws IOException {
         out.writeUTF(split.getStreamName());
         out.writeLong(split.getOffset());
@@ -111,7 +110,7 @@ public final class BigQueryReadStreamSplitSerializer
      * @return the split
      * @throws IOException if reading fails
      */
-    public static BigQueryReadStreamSplit readSplit(DataInputDeserializer in, int version)
+    public static ReadStreamSplit readSplit(DataInputDeserializer in, int version)
             throws IOException {
         String streamName = in.readUTF();
         long offset = in.readLong();
@@ -126,7 +125,7 @@ public final class BigQueryReadStreamSplitSerializer
         if (version >= VERSION_WITH_EXPIRY && in.readBoolean()) {
             expireTime = Instant.ofEpochSecond(in.readLong(), in.readInt());
         }
-        return new BigQueryReadStreamSplit(
+        return new ReadStreamSplit(
                 streamName, offset, new String(schema, StandardCharsets.UTF_8), expireTime);
     }
 }

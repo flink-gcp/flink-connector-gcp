@@ -80,7 +80,7 @@ class BigQuerySchemaEvolutionITCase extends AbstractBigQueryEmulatorITCase {
         BigQuerySinkConfig<String> config =
                 ((BigQueryDefaultStreamSink<String>)
                                 BigQuerySink.<String>builder()
-                                        .destination(destination)
+                                        .table(destination)
                                         .serializer(serializer)
                                         .createDisposition(CreateDisposition.CREATE_NEVER)
                                         .schemaUpdateOptions(schemaUpdateOptions)

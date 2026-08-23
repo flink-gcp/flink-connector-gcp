@@ -226,7 +226,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
             FailureHandler<BigQueryFailure> failureHandler) {
         return ((BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(serializer)
                                 .failureHandler(failureHandler)
                                 .build())

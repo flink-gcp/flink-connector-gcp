@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.bigquery.source.enumerator;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 
 import javax.annotation.Nullable;
 
@@ -49,7 +49,7 @@ public final class BigQueryReadEnumeratorState {
     private final boolean initialized;
     @Nullable private final String sessionName;
     @Nullable private final Instant sessionExpireTime;
-    private final List<BigQueryReadStreamSplit> pendingSplits;
+    private final List<ReadStreamSplit> pendingSplits;
 
     /**
      * Creates the state.
@@ -63,7 +63,7 @@ public final class BigQueryReadEnumeratorState {
             boolean initialized,
             @Nullable String sessionName,
             @Nullable Instant sessionExpireTime,
-            List<BigQueryReadStreamSplit> pendingSplits) {
+            List<ReadStreamSplit> pendingSplits) {
         Preconditions.checkNotNull(pendingSplits, "pendingSplits must not be null");
         this.initialized = initialized;
         this.sessionName = sessionName;
@@ -89,7 +89,7 @@ public final class BigQueryReadEnumeratorState {
     }
 
     /** Returns the splits not currently assigned to a reader. */
-    public List<BigQueryReadStreamSplit> getPendingSplits() {
+    public List<ReadStreamSplit> getPendingSplits() {
         return pendingSplits;
     }
 

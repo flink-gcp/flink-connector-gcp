@@ -146,7 +146,7 @@ class BigQueryJsonDocumentSerializerITCase extends AbstractBigQueryEmulatorITCas
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(TableDestination.of(PROJECT, DATASET, "json_writes"))
+                                .table(TableDestination.of(PROJECT, DATASET, "json_writes"))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<String> writer =

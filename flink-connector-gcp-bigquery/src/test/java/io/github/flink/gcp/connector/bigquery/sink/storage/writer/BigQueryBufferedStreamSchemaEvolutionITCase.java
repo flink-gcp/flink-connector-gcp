@@ -127,7 +127,7 @@ class BigQueryBufferedStreamSchemaEvolutionITCase {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(destination)
+                                .table(destination)
                                 .serializer(serializer)
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .schemaUpdateOptions(schemaUpdateOptions)

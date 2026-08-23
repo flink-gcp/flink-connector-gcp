@@ -21,7 +21,7 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ScriptedReadSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
@@ -64,17 +64,16 @@ class BigQueryStorageReadSourceSessionCreatorLifecycleTest {
                 ScriptedReadSessionCreator.Factory.withStreams(2);
         BigQueryStorageReadSource<GenericRecord> source = source(creators);
 
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> firstContext =
+        FakeSplitEnumeratorContext<ReadStreamSplit> firstContext =
                 new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> first =
+        try (SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> first =
                 source.createEnumerator(firstContext)) {
             first.start();
             firstContext.runAsyncCalls();
         }
 
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> second =
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
+        try (SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> second =
                 source.createEnumerator(context)) {
             second.start();
             context.runAsyncCalls();
@@ -101,7 +100,7 @@ class BigQueryStorageReadSourceSessionCreatorLifecycleTest {
         BigQueryStorageReadSource<GenericRecord> source = source(creators);
 
         source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
-        SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> second =
+        SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> second =
                 source.createEnumerator(new FakeSplitEnumeratorContext<>(1));
 
         assertThat(creators.minted()).hasSize(2);
@@ -128,9 +127,9 @@ class BigQueryStorageReadSourceSessionCreatorLifecycleTest {
                 ScriptedReadSessionCreator.Factory.withStreams(1);
         BigQueryStorageReadSource<GenericRecord> source = source(creators);
 
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> firstContext =
+        FakeSplitEnumeratorContext<ReadStreamSplit> firstContext =
                 new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> first =
+        try (SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> first =
                 source.createEnumerator(firstContext)) {
             first.start();
             firstContext.runAsyncCalls();
@@ -142,9 +141,8 @@ class BigQueryStorageReadSourceSessionCreatorLifecycleTest {
                         ScriptedReadSessionCreator.SESSION,
                         Instant.parse("2099-01-01T00:00:00Z"),
                         Collections.emptyList());
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> restored =
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
+        try (SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> restored =
                 source.restoreEnumerator(context, initialized)) {
             restored.start();
             context.runAsyncCalls();

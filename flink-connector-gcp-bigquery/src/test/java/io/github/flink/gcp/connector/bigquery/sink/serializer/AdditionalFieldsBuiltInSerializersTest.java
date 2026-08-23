@@ -91,7 +91,7 @@ class AdditionalFieldsBuiltInSerializersTest {
         BigQueryDefaultStreamSink<T> sink =
                 (BigQueryDefaultStreamSink<T>)
                         BigQuerySink.<T>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(serializer)
                                 .additionalFields(
                                         AdditionalFields.<T>builder()

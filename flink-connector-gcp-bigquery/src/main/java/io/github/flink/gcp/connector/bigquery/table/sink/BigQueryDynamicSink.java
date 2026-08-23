@@ -199,7 +199,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 new RowDataSerializer(
                         rowType, schemaOptions, cdcEnabled ? primaryKeyIndexes : new int[0]);
         BigQuerySinkBuilder<RowData> builder =
-                BigQuerySink.<RowData>builder().destination(destination).serializer(serializer);
+                BigQuerySink.<RowData>builder().table(destination).serializer(serializer);
         if (cdcEnabled) {
             CdcOptions.Builder<RowData> cdc =
                     CdcOptions.builder(RowDataCdcChangeTypeProvider.INSTANCE);

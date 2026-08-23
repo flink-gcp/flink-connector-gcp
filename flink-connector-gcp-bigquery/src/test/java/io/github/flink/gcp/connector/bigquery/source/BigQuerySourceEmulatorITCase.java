@@ -23,7 +23,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -79,7 +79,7 @@ class BigQuerySourceEmulatorITCase extends AbstractBigQuerySourceEmulatorITCase 
 
     @Test
     void appliesProjectionAndRestriction() throws Exception {
-        Source<GenericRecord, BigQueryReadStreamSplit, ?> source =
+        Source<GenericRecord, ReadStreamSplit, ?> source =
                 sourceBuilder()
                         .selectedFields("name")
                         .rowRestriction("id >= 4")

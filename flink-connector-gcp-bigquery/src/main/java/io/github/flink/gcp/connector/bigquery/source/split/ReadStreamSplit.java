@@ -54,7 +54,7 @@ import java.util.Objects;
  * SourceReaderBase} removes a split's state before telling the reader the split finished.
  */
 @Internal
-public final class BigQueryReadStreamSplit implements SourceSplit {
+public final class ReadStreamSplit implements SourceSplit {
 
     private final String streamName;
     private final long offset;
@@ -69,7 +69,7 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
      * @param avroSchemaJson the read session's Avro schema, in its JSON form
      * @param sessionExpireTime when the read session expires, or {@code null} when it is not known
      */
-    public BigQueryReadStreamSplit(
+    public ReadStreamSplit(
             String streamName,
             long offset,
             String avroSchemaJson,
@@ -113,10 +113,10 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof BigQueryReadStreamSplit)) {
+        if (!(o instanceof ReadStreamSplit)) {
             return false;
         }
-        BigQueryReadStreamSplit other = (BigQueryReadStreamSplit) o;
+        ReadStreamSplit other = (ReadStreamSplit) o;
         return offset == other.offset
                 && streamName.equals(other.streamName)
                 && avroSchemaJson.equals(other.avroSchemaJson)
@@ -133,7 +133,7 @@ public final class BigQueryReadStreamSplit implements SourceSplit {
         // The schema is deliberately left out: it is kilobytes of JSON and every log line carrying
         // a split would otherwise carry the whole table's shape. The expiry is a single instant and
         // is the thing an assignment log line is read for when a long read starts failing.
-        return "BigQueryReadStreamSplit{streamName='"
+        return "ReadStreamSplit{streamName='"
                 + streamName
                 + "', offset="
                 + offset
