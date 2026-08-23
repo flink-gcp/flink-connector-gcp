@@ -71,6 +71,10 @@ public final class PubSubConnectorOptions {
     //  Shared
     // ------------------------------------------------------------------------
 
+    /**
+     * The Google Cloud project owning the topic or subscription. Topic and subscription names are
+     * resolved against it, so both are given as bare names rather than full resource paths.
+     */
     public static final ConfigOption<String> PROJECT =
             ConfigOptions.key("project")
                     .stringType()
@@ -80,6 +84,10 @@ public final class PubSubConnectorOptions {
                                     + " subscription names are resolved against it, so both are"
                                     + " given as bare names rather than full resource paths.");
 
+    /**
+     * Host and port of a Pub/Sub emulator to use instead of the service. Setting it switches the
+     * connector to a plaintext channel with no credentials. For tests only.
+     */
     public static final ConfigOption<String> EMULATOR_ENDPOINT =
             ConfigOptions.key("emulator-endpoint")
                     .stringType()
@@ -89,6 +97,11 @@ public final class PubSubConnectorOptions {
                                     + " Setting it switches the connector to a plaintext channel"
                                     + " with no credentials. For tests only.");
 
+    /**
+     * Path to a service-account JSON key file readable from every eligible runtime process: sink
+     * writers on task managers, or a source enumerator on the job manager and readers on task
+     * managers. Cannot be combined with emulator-endpoint.
+     */
     public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
             ConfigOptions.key("service-account-key-file")
                     .stringType()
@@ -103,6 +116,10 @@ public final class PubSubConnectorOptions {
     //  Source — subscriptions
     // ------------------------------------------------------------------------
 
+    /**
+     * The subscriptions to consume, resolved against 'project' and separated by ';'. Required when
+     * the table is read from. A subscription in another project cannot be named here.
+     */
     public static final ConfigOption<List<String>> SUBSCRIPTION =
             ConfigOptions.key("subscription")
                     .stringType()
@@ -113,6 +130,11 @@ public final class PubSubConnectorOptions {
                                     + " by ';'. Required when the table is read from. A subscription"
                                     + " in another project cannot be named here.");
 
+    /**
+     * Whether the source preserves per-ordering-key delivery order. 'per-key' pins each
+     * subscription to one subtask, so it caps the effective source parallelism at the subscription
+     * count.
+     */
     public static final ConfigOption<OrderingMode> SCAN_ORDERING_MODE =
             ConfigOptions.key("scan.ordering-mode")
                     .enumType(OrderingMode.class)
@@ -122,6 +144,10 @@ public final class PubSubConnectorOptions {
                                     + " pins each subscription to one subtask, so it caps the"
                                     + " effective source parallelism at the subscription count.");
 
+    /**
+     * What to do with a message the format cannot decode: 'fail' the job, 'drop' the message, or
+     * 'nack' it for the subscription's dead-letter policy to deal with.
+     */
     public static final ConfigOption<DeserializationFailurePolicy>
             SCAN_DESERIALIZATION_FAILURE_POLICY =
                     ConfigOptions.key("scan.deserialization-failure-policy")
@@ -136,6 +162,7 @@ public final class PubSubConnectorOptions {
     //  Source — subscriber tuning
     // ------------------------------------------------------------------------
 
+    /** How many messages the subscriber keeps outstanding before pausing the stream. */
     public static final ConfigOption<Long> SCAN_FLOW_CONTROL_MAX_OUTSTANDING_ELEMENT_COUNT =
             ConfigOptions.key("scan.flow-control.max-outstanding-element-count")
                     .longType()
@@ -144,6 +171,7 @@ public final class PubSubConnectorOptions {
                             "How many messages the subscriber keeps outstanding before pausing the"
                                     + " stream.");
 
+    /** How many bytes of messages the subscriber keeps outstanding before pausing the stream. */
     public static final ConfigOption<MemorySize> SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES =
             ConfigOptions.key("scan.flow-control.max-outstanding-request-bytes")
                     .memoryType()
@@ -152,6 +180,11 @@ public final class PubSubConnectorOptions {
                             "How many bytes of messages the subscriber keeps outstanding before"
                                     + " pausing the stream.");
 
+    /**
+     * How many messages a split paused by watermark alignment may buffer before its subscriber is
+     * stopped, to be reopened when the split resumes. Lowering it can park a split while a
+     * checkpoint covering its output is still in flight, which re-emits those records on resume.
+     */
     public static final ConfigOption<Long> SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES =
             ConfigOptions.key("scan.paused-split-buffer.max-messages")
                     .longType()
@@ -163,6 +196,10 @@ public final class PubSubConnectorOptions {
                                     + " checkpoint covering its output is still in flight, which"
                                     + " re-emits those records on resume.");
 
+    /**
+     * The same in bytes, applied together with the message cap: whichever is exceeded first stops
+     * the subscriber.
+     */
     public static final ConfigOption<MemorySize> SCAN_PAUSED_SPLIT_BUFFER_MAX_BYTES =
             ConfigOptions.key("scan.paused-split-buffer.max-bytes")
                     .memoryType()
@@ -171,6 +208,10 @@ public final class PubSubConnectorOptions {
                             "The same in bytes, applied together with the message cap: whichever is"
                                     + " exceeded first stops the subscriber.");
 
+    /**
+     * How many streaming-pull connections each subscriber opens. Rejected above 1 with
+     * 'scan.ordering-mode' = 'per-key', which needs a single connection to preserve order.
+     */
     public static final ConfigOption<Integer> SCAN_PARALLEL_PULL_COUNT =
             ConfigOptions.key("scan.parallel-pull-count")
                     .intType()
@@ -180,6 +221,10 @@ public final class PubSubConnectorOptions {
                                     + " above 1 with 'scan.ordering-mode' = 'per-key', which needs"
                                     + " a single connection to preserve order.");
 
+    /**
+     * How long the subscriber keeps extending a message's acknowledgement deadline. It has to
+     * outlast the checkpoint interval, since a completing checkpoint is what acknowledges.
+     */
     public static final ConfigOption<Duration> SCAN_ACK_MAX_EXTENSION_PERIOD =
             ConfigOptions.key("scan.ack.max-extension-period")
                     .durationType()
@@ -189,18 +234,21 @@ public final class PubSubConnectorOptions {
                                     + " deadline. It has to outlast the checkpoint interval, since"
                                     + " a completing checkpoint is what acknowledges.");
 
+    /** The shortest acknowledgement deadline extension to request. */
     public static final ConfigOption<Duration> SCAN_ACK_MIN_DURATION_PER_EXTENSION =
             ConfigOptions.key("scan.ack.min-duration-per-extension")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The shortest acknowledgement deadline extension to request.");
 
+    /** The longest acknowledgement deadline extension to request. */
     public static final ConfigOption<Duration> SCAN_ACK_MAX_DURATION_PER_EXTENSION =
             ConfigOptions.key("scan.ack.max-duration-per-extension")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The longest acknowledgement deadline extension to request.");
 
+    /** How long a completing checkpoint waits for the service to confirm its acknowledgements. */
     public static final ConfigOption<Duration> SCAN_ACK_AWAIT_CONFIRMATION =
             ConfigOptions.key("scan.ack.await-confirmation")
                     .durationType()
@@ -209,18 +257,24 @@ public final class PubSubConnectorOptions {
                             "How long a completing checkpoint waits for the service to confirm its"
                                     + " acknowledgements.");
 
+    /** How long closing a reader waits for its subscriber to stop. */
     public static final ConfigOption<Duration> SCAN_SHUTDOWN_TIMEOUT =
             ConfigOptions.key("scan.shutdown-timeout")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("How long closing a reader waits for its subscriber to stop.");
 
+    /** How many messages one fetch drains from a split's buffer. */
     public static final ConfigOption<Integer> SCAN_MAX_RECORDS_PER_FETCH =
             ConfigOptions.key("scan.max-records-per-fetch")
                     .intType()
                     .noDefaultValue()
                     .withDescription("How many messages one fetch drains from a split's buffer.");
 
+    /**
+     * How long a reader holding unacknowledged messages waits for its first checkpoint before
+     * failing, which is how a job running without checkpointing is caught. Zero disables the check.
+     */
     public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
             ConfigOptions.key("scan.first-checkpoint-timeout")
                     .durationType()
@@ -234,6 +288,12 @@ public final class PubSubConnectorOptions {
     //  Source — start position
     // ------------------------------------------------------------------------
 
+    /**
+     * Where the source starts consuming. Everything but 'continue-from-subscription' seeks, which
+     * rewrites subscription state shared by every consumer including other jobs, and which runs
+     * once at a job's first start and never on a restore. Use it only on a subscription the job
+     * owns.
+     */
     public static final ConfigOption<PubSubStartPosition.Mode> SCAN_STARTUP_MODE =
             ConfigOptions.key("scan.startup.mode")
                     .enumType(PubSubStartPosition.Mode.class)
@@ -245,6 +305,10 @@ public final class PubSubConnectorOptions {
                                     + " jobs, and which runs once at a job's first start and never"
                                     + " on a restore. Use it only on a subscription the job owns.");
 
+    /**
+     * The publish time to start from, in milliseconds since the epoch. Required by
+     * 'scan.startup.mode' = 'timestamp' and rejected with every other mode.
+     */
     public static final ConfigOption<Long> SCAN_STARTUP_TIMESTAMP_MILLIS =
             ConfigOptions.key("scan.startup.timestamp-millis")
                     .longType()
@@ -258,6 +322,16 @@ public final class PubSubConnectorOptions {
     //  Source — subscription auto-creation
     // ------------------------------------------------------------------------
 
+    /**
+     * The existing topic to bind each missing subscription to, as a map from bare subscription name
+     * to bare topic name, both resolved against 'project'. The map keys must exactly match
+     * 'subscription'. Setting it authorizes creating missing subscriptions; without it every
+     * subscription must already exist. Only subscriptions are created — a source never creates a
+     * topic, unlike 'sink.create-disposition'. Other 'scan.auto-create.*' settings apply when each
+     * mapped subscription is missing and must be created. Prefer one prefixed option per binding,
+     * for example 'scan.auto-create.topics.orders-sub' = 'orders'. The packed form separates
+     * entries with ',' and each key from its value with ':'.
+     */
     public static final ConfigOption<Map<String, String>> SCAN_AUTO_CREATE_TOPICS =
             ConfigOptions.key("scan.auto-create.topics")
                     .mapType()
@@ -277,6 +351,10 @@ public final class PubSubConnectorOptions {
                                     + " form separates entries with ',' and each key from its value"
                                     + " with ':'.");
 
+    /**
+     * How long a created subscription waits for a message to be acknowledged before redelivering
+     * it. A whole number of seconds.
+     */
     public static final ConfigOption<Duration> SCAN_AUTO_CREATE_ACK_DEADLINE =
             ConfigOptions.key("scan.auto-create.ack-deadline")
                     .durationType()
@@ -286,6 +364,10 @@ public final class PubSubConnectorOptions {
                                     + " acknowledged before redelivering it. A whole number of"
                                     + " seconds.");
 
+    /**
+     * Whether a created subscription delivers messages of one ordering key in order. Required by
+     * 'scan.ordering-mode' = 'per-key', and fixed at creation.
+     */
     public static final ConfigOption<Boolean> SCAN_AUTO_CREATE_MESSAGE_ORDERING_ENABLED =
             ConfigOptions.key("scan.auto-create.message-ordering.enabled")
                     .booleanType()
@@ -295,6 +377,7 @@ public final class PubSubConnectorOptions {
                                     + " in order. Required by 'scan.ordering-mode' = 'per-key', and"
                                     + " fixed at creation.");
 
+    /** How long a created subscription retains an unacknowledged message. */
     public static final ConfigOption<Duration> SCAN_AUTO_CREATE_MESSAGE_RETENTION =
             ConfigOptions.key("scan.auto-create.message-retention")
                     .durationType()
@@ -302,6 +385,10 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "How long a created subscription retains an unacknowledged message.");
 
+    /**
+     * Whether a created subscription keeps acknowledged messages within its retention window, which
+     * is what makes a backwards seek replay them.
+     */
     public static final ConfigOption<Boolean> SCAN_AUTO_CREATE_RETAIN_ACKED_MESSAGES =
             ConfigOptions.key("scan.auto-create.retain-acked-messages")
                     .booleanType()
@@ -311,6 +398,10 @@ public final class PubSubConnectorOptions {
                                     + " retention window, which is what makes a backwards seek"
                                     + " replay them.");
 
+    /**
+     * How long a created subscription may sit inactive before Pub/Sub deletes it. Cannot be
+     * combined with 'scan.auto-create.never-expire'.
+     */
     public static final ConfigOption<Duration> SCAN_AUTO_CREATE_EXPIRATION_TTL =
             ConfigOptions.key("scan.auto-create.expiration-ttl")
                     .durationType()
@@ -320,6 +411,10 @@ public final class PubSubConnectorOptions {
                                     + " deletes it. Cannot be combined with"
                                     + " 'scan.auto-create.never-expire'.");
 
+    /**
+     * Whether a created subscription never expires, however long it sits inactive. Cannot be
+     * combined with 'scan.auto-create.expiration-ttl'.
+     */
     public static final ConfigOption<Boolean> SCAN_AUTO_CREATE_NEVER_EXPIRE =
             ConfigOptions.key("scan.auto-create.never-expire")
                     .booleanType()
@@ -329,6 +424,12 @@ public final class PubSubConnectorOptions {
                                     + " inactive. Cannot be combined with"
                                     + " 'scan.auto-create.expiration-ttl'.");
 
+    /**
+     * The existing topic a created subscription forwards undeliverable messages to, resolved
+     * against 'project'. Required with 'scan.auto-create.dead-letter.max-delivery-attempts'.
+     * Pub/Sub also needs its own service account granted publish on that topic and subscribe on
+     * this subscription, or it silently keeps redelivering.
+     */
     public static final ConfigOption<String> SCAN_AUTO_CREATE_DEAD_LETTER_TOPIC =
             ConfigOptions.key("scan.auto-create.dead-letter.topic")
                     .stringType()
@@ -341,6 +442,12 @@ public final class PubSubConnectorOptions {
                                     + " on that topic and subscribe on this subscription, or it"
                                     + " silently keeps redelivering.");
 
+    /**
+     * How many times a created subscription delivers a message before forwarding it to the
+     * dead-letter topic. Required together with 'scan.auto-create.dead-letter.topic'. Deliveries
+     * are counted, not causes, so a redelivery after a job restart raises the same counter a nack
+     * does.
+     */
     public static final ConfigOption<Integer> SCAN_AUTO_CREATE_DEAD_LETTER_MAX_DELIVERY_ATTEMPTS =
             ConfigOptions.key("scan.auto-create.dead-letter.max-delivery-attempts")
                     .intType()
@@ -352,6 +459,9 @@ public final class PubSubConnectorOptions {
                                     + " counted, not causes, so a redelivery after a job restart"
                                     + " raises the same counter a nack does.");
 
+    /**
+     * The expression a created subscription filters its topic's messages with. Fixed at creation.
+     */
     public static final ConfigOption<String> SCAN_AUTO_CREATE_FILTER =
             ConfigOptions.key("scan.auto-create.filter")
                     .stringType()
@@ -364,6 +474,9 @@ public final class PubSubConnectorOptions {
     //  Sink — destination
     // ------------------------------------------------------------------------
 
+    /**
+     * The topic to publish to, resolved against 'project'. Required when the table is written to.
+     */
     public static final ConfigOption<String> TOPIC =
             ConfigOptions.key("topic")
                     .stringType()
@@ -372,6 +485,7 @@ public final class PubSubConnectorOptions {
                             "The topic to publish to, resolved against 'project'. Required when the"
                                     + " table is written to.");
 
+    /** Whether the sink may create the topic when it does not exist. */
     public static final ConfigOption<CreateDisposition> SINK_CREATE_DISPOSITION =
             ConfigOptions.key("sink.create-disposition")
                     .enumType(CreateDisposition.class)
@@ -383,6 +497,11 @@ public final class PubSubConnectorOptions {
     //  Sink — topic auto-creation settings
     // ------------------------------------------------------------------------
 
+    /**
+     * How long a created topic retains published messages, acknowledged or not. Without it a
+     * message survives only as long as some subscription's own retention covers it, so a
+     * subscription created later — or a backwards seek — cannot reach it.
+     */
     public static final ConfigOption<Duration> SINK_AUTO_CREATE_MESSAGE_RETENTION =
             ConfigOptions.key("sink.auto-create.message-retention")
                     .durationType()
@@ -393,6 +512,11 @@ public final class PubSubConnectorOptions {
                                     + " subscription's own retention covers it, so a subscription"
                                     + " created later — or a backwards seek — cannot reach it.");
 
+    /**
+     * The Cloud KMS key a created topic encrypts messages with (customer-managed encryption), as a
+     * full key resource name. The key must exist and the Pub/Sub service account needs
+     * encrypt/decrypt on it, or publishes to the created topic fail.
+     */
     public static final ConfigOption<String> SINK_AUTO_CREATE_KMS_KEY_NAME =
             ConfigOptions.key("sink.auto-create.kms-key-name")
                     .stringType()
@@ -404,6 +528,10 @@ public final class PubSubConnectorOptions {
                                     + " encrypt/decrypt on it, or publishes to the created topic"
                                     + " fail.");
 
+    /**
+     * The Cloud regions a created topic may persist messages in (its message storage policy).
+     * Without it the project's organization policy decides.
+     */
     public static final ConfigOption<List<String>> SINK_AUTO_CREATE_STORAGE_POLICY_ALLOWED_REGIONS =
             ConfigOptions.key("sink.auto-create.storage-policy.allowed-regions")
                     .stringType()
@@ -414,6 +542,11 @@ public final class PubSubConnectorOptions {
                                     + " storage policy). Without it the project's organization"
                                     + " policy decides.");
 
+    /**
+     * Whether a created topic also rejects publishes travelling through regions outside the allowed
+     * ones, instead of only restricting where messages are stored. Requires
+     * 'sink.auto-create.storage-policy.allowed-regions'.
+     */
     public static final ConfigOption<Boolean> SINK_AUTO_CREATE_STORAGE_POLICY_ENFORCE_IN_TRANSIT =
             ConfigOptions.key("sink.auto-create.storage-policy.enforce-in-transit")
                     .booleanType()
@@ -428,6 +561,7 @@ public final class PubSubConnectorOptions {
     //  Sink — publisher batching
     // ------------------------------------------------------------------------
 
+    /** How many messages a publisher batches into one publish request. */
     public static final ConfigOption<Long> SINK_BATCHING_ELEMENT_COUNT_THRESHOLD =
             ConfigOptions.key("sink.batching.element-count-threshold")
                     .longType()
@@ -435,6 +569,7 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "How many messages a publisher batches into one publish request.");
 
+    /** How many bytes a publisher batches into one publish request. */
     public static final ConfigOption<MemorySize> SINK_BATCHING_REQUEST_BYTE_THRESHOLD =
             ConfigOptions.key("sink.batching.request-byte-threshold")
                     .memoryType()
@@ -442,6 +577,7 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "How many bytes a publisher batches into one publish request.");
 
+    /** How long a publisher waits for a batch to fill before sending it. */
     public static final ConfigOption<Duration> SINK_BATCHING_DELAY_THRESHOLD =
             ConfigOptions.key("sink.batching.delay-threshold")
                     .durationType()
@@ -453,6 +589,10 @@ public final class PubSubConnectorOptions {
     //  Sink — publish retries
     // ------------------------------------------------------------------------
 
+    /**
+     * The total time budget of a publish including its retries. Cannot be combined with
+     * 'sink.message-ordering.enabled' = 'true'.
+     */
     public static final ConfigOption<Duration> SINK_RETRY_TOTAL_TIMEOUT =
             ConfigOptions.key("sink.retry.total-timeout")
                     .durationType()
@@ -462,12 +602,14 @@ public final class PubSubConnectorOptions {
                                     + " retries. Cannot be combined with"
                                     + " 'sink.message-ordering.enabled' = 'true'.");
 
+    /** The delay before the first publish retry. */
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_DELAY =
             ConfigOptions.key("sink.retry.initial-delay")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The delay before the first publish retry.");
 
+    /** The factor the retry delay grows by per attempt, at least 1.0. */
     public static final ConfigOption<Double> SINK_RETRY_DELAY_MULTIPLIER =
             ConfigOptions.key("sink.retry.delay-multiplier")
                     .doubleType()
@@ -475,18 +617,21 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The factor the retry delay grows by per attempt, at least 1.0.");
 
+    /** The cap on the delay between publish retries. */
     public static final ConfigOption<Duration> SINK_RETRY_MAX_DELAY =
             ConfigOptions.key("sink.retry.max-delay")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The cap on the delay between publish retries.");
 
+    /** The timeout of the first publish RPC attempt. */
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_RPC_TIMEOUT =
             ConfigOptions.key("sink.retry.initial-rpc-timeout")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The timeout of the first publish RPC attempt.");
 
+    /** The factor the per-RPC timeout grows by per attempt, at least 1.0. */
     public static final ConfigOption<Double> SINK_RETRY_RPC_TIMEOUT_MULTIPLIER =
             ConfigOptions.key("sink.retry.rpc-timeout-multiplier")
                     .doubleType()
@@ -494,12 +639,17 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The factor the per-RPC timeout grows by per attempt, at least 1.0.");
 
+    /** The cap on the timeout of a publish RPC attempt. */
     public static final ConfigOption<Duration> SINK_RETRY_MAX_RPC_TIMEOUT =
             ConfigOptions.key("sink.retry.max-rpc-timeout")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The cap on the timeout of a publish RPC attempt.");
 
+    /**
+     * The cap on publish attempts. 0 means the retries are bounded by the total timeout alone.
+     * Cannot be combined with 'sink.message-ordering.enabled' = 'true'.
+     */
     public static final ConfigOption<Integer> SINK_RETRY_MAX_ATTEMPTS =
             ConfigOptions.key("sink.retry.max-attempts")
                     .intType()
@@ -513,6 +663,11 @@ public final class PubSubConnectorOptions {
     //  Sink — ordering, in-flight caps and auto-creation recovery
     // ------------------------------------------------------------------------
 
+    /**
+     * Whether publishers honor message ordering keys. Must be true for a table that writes the
+     * 'ordering-key' metadata column. An ordering-enabled publisher retries without limit, so
+     * 'sink.retry.total-timeout' and 'sink.retry.max-attempts' cannot be set alongside it.
+     */
     public static final ConfigOption<Boolean> SINK_MESSAGE_ORDERING_ENABLED =
             ConfigOptions.key("sink.message-ordering.enabled")
                     .booleanType()
@@ -524,12 +679,14 @@ public final class PubSubConnectorOptions {
                                     + " 'sink.retry.total-timeout' and 'sink.retry.max-attempts'"
                                     + " cannot be set alongside it.");
 
+    /** The cap on unacknowledged publishes per sink subtask. */
     public static final ConfigOption<Integer> SINK_IN_FLIGHT_MAX_MESSAGES =
             ConfigOptions.key("sink.in-flight.max-messages")
                     .intType()
                     .noDefaultValue()
                     .withDescription("The cap on unacknowledged publishes per sink subtask.");
 
+    /** The cap on the serialized bytes of unacknowledged publishes per sink subtask. */
     public static final ConfigOption<MemorySize> SINK_IN_FLIGHT_MAX_BYTES =
             ConfigOptions.key("sink.in-flight.max-bytes")
                     .memoryType()
@@ -538,6 +695,10 @@ public final class PubSubConnectorOptions {
                             "The cap on the serialized bytes of unacknowledged publishes per sink"
                                     + " subtask.");
 
+    /**
+     * How many consecutive confirmed rejections fail the job under a dropping failure handler; any
+     * successful publish resets the count, and -1 removes the bound.
+     */
     public static final ConfigOption<Integer> SINK_MAX_CONSECUTIVE_REJECTIONS =
             ConfigOptions.key("sink.max-consecutive-rejections")
                     .intType()
@@ -547,6 +708,13 @@ public final class PubSubConnectorOptions {
                                     + " dropping failure handler; any successful publish resets the"
                                     + " count, and -1 removes the bound.");
 
+    /**
+     * How long the sink may wait with no publish completing before it fails. The budget restarts at
+     * every completion, so it bounds a publisher that has stopped answering rather than a slow
+     * topic. It covers both waits the sink makes on the task thread, the in-flight admission gate
+     * and the checkpoint drain. With 'sink.message-ordering.enabled' the SDK retries a publish
+     * without limit, so nothing inside the sink ends such an outage but this.
+     */
     public static final ConfigOption<Duration> SINK_PUBLISH_PROGRESS_TIMEOUT =
             ConfigOptions.key("sink.publish-progress-timeout")
                     .durationType()
@@ -561,18 +729,21 @@ public final class PubSubConnectorOptions {
                                     + " without limit, so nothing inside the sink ends such an"
                                     + " outage but this.");
 
+    /** The first backoff of the topic auto-creation recovery. */
     public static final ConfigOption<Duration> SINK_RECOVERY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.recovery.initial-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The first backoff of the topic auto-creation recovery.");
 
+    /** The cap on the backoff of the topic auto-creation recovery. */
     public static final ConfigOption<Duration> SINK_RECOVERY_MAX_BACKOFF =
             ConfigOptions.key("sink.recovery.max-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The cap on the backoff of the topic auto-creation recovery.");
 
+    /** The cap on republish attempts of the topic auto-creation recovery. */
     public static final ConfigOption<Integer> SINK_RECOVERY_MAX_ATTEMPTS =
             ConfigOptions.key("sink.recovery.max-attempts")
                     .intType()
@@ -580,6 +751,11 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The cap on republish attempts of the topic auto-creation recovery.");
 
+    /**
+     * How long the sink's close waits for one publisher to shut down. The budget is measured from
+     * the moment the publisher is asked to stop, and every publisher is asked before any is waited
+     * on, so a close costs one such timeout however many topics were written to.
+     */
     public static final ConfigOption<Duration> SINK_SHUTDOWN_TIMEOUT =
             ConfigOptions.key("sink.shutdown-timeout")
                     .durationType()
@@ -591,6 +767,11 @@ public final class PubSubConnectorOptions {
                                     + " on, so a close costs one such timeout however many topics"
                                     + " were written to.");
 
+    /**
+     * Whether the sink registers per-topic send counters beside its totals. Flink cannot unregister
+     * a metric, so with dynamic destinations every topic the job writes to keeps a row in the
+     * metric registry for the lifetime of the task.
+     */
     public static final ConfigOption<Boolean> SINK_METRICS_PER_DESTINATION =
             ConfigOptions.key("sink.metrics.per-destination")
                     .booleanType()
