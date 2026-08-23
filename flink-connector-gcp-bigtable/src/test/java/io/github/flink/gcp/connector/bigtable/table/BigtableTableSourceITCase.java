@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table;
 
+import org.apache.flink.runtime.taskmanager.Task;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
@@ -26,6 +27,7 @@ import org.apache.flink.util.CloseableIterator;
 
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -593,15 +595,25 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                                 tableId, append(lookupOptions, "decode.trailing-bytes", "reject")));
 
         // The nine-byte string cell on a BIGINT qualifier is exactly the overlong shape.
-        assertThatThrownBy(
-                        () ->
-                                collect(
-                                        tEnv,
-                                        "SELECT f.f0, b.cf1.score FROM facts AS f "
-                                                + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time"
-                                                + " AS b ON f.f0 = b.rowkey"))
-                .hasStackTraceContaining("holds 9 byte(s)")
-                .hasStackTraceContaining("declared column type cannot decode");
+        // Flink 1.20.4 can replace this cause with a TaskExecutor-shutdown failure on collect,
+        // while Task logs the original failure before notifying the scheduler on both tested
+        // lines (#1066).
+        try (LogCapture capture = LogCapture.of(Task.class)) {
+            assertThatThrownBy(
+                    () ->
+                            collect(
+                                    tEnv,
+                                    "SELECT f.f0, b.cf1.score FROM facts AS f "
+                                            + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time"
+                                            + " AS b ON f.f0 = b.rowkey"));
+            assertThat(capture.getEvents())
+                    .anySatisfy(
+                            event ->
+                                    assertThat(event.getThrowable())
+                                            .hasStackTraceContaining("holds 9 byte(s)")
+                                            .hasStackTraceContaining(
+                                                    "declared column type cannot decode"));
+        }
     }
 
     @Test
