@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0138: A one-connector class exists only where a structural difference demands it
 
 - Status: Accepted
-- Date: 2026-08-23; revised by [#1056] and [#1057] (2026-08-23)
-- Issues: [#1044], [#782], [#1056], [#1057]
+- Date: 2026-08-23; revised by [#1056], [#1057], and [#1059] (2026-08-23)
+- Issues: [#1044], [#782], [#1056], [#1057], [#1059]
 - Modules: base, all connectors, test-utils
 - Current behavior: the decisions below are the durable record of the gaps judged deliberate;
   the review-thread copy of the full matrix, including the routed half, is the [#1044] comment
@@ -26,8 +26,8 @@ limitations under the License.
   `elapsedMillis` alignment from [#775] is implemented by [#1056], the `resolveRestored` rename
   was completed through [#1052], and the Cloud Tasks classifier extraction was completed through
   [#779].
-  The shared Spanner emulator test client from [#776] is implemented by [#1057]; the remaining
-  alignment finding is routed to the Spanner module audit [#781].
+  The shared Spanner emulator test client from [#776] is implemented by [#1057], and the Spanner
+  change-stream reader decomposition from [#781] is implemented by [#1059].
 
 ## Context
 
@@ -99,9 +99,10 @@ mode — that per-module enums exist to allow. The name is shared because the co
 an impl — there is one impl, so there is nothing for a facade to hide. Both readers implement
 `SourceReader` directly with no `*SplitReader` — a continuous partition-lifecycle reader does
 not fit the fetcher framework's split-fetch loop, which [ADR-0101]/[ADR-0103] bound differently.
-Inside that shared shape, Bigtable's emitter + split-state decomposition is the reference;
-Spanner's inline equivalent is routed to [#781] as an `@Internal` alignment. Any reshaping of
-the `@Public` source classes themselves is decided together with [#783].
+Inside that shared shape, both readers route record-specific emission, split-state advance, and
+coordinator events through an emitter plus mutable split state; [#1059] aligned Spanner with the
+Bigtable reference. The `@PublicEvolving` tier of the source classes was decided by [#783] and is
+unchanged by this internal alignment.
 
 **A client holder exists where a shared construction branch does.** `BigQueryReadClients`,
 `BigQueryWriteClients`, `BigtableDataClients` and `SpannerClients` centralize an
@@ -133,7 +134,8 @@ modules, and it is not decided here.
   [#779].
   `SpannerTestClients` ([#1057] implements [#776]) replaces all three inline emulator-client
   constructions found in the current test trees.
-  The remaining alignment finding is the Spanner change-stream reader decomposition ([#781]).
+  `SpannerChangeStreamRecordEmitter` and `ChangeStreamPartitionSplitState` implement the reader
+  decomposition routed through [#781] and completed by [#1059].
 - The module references for Spanner and Bigtable carry pointers to the records above beside the
   designs they qualify.
 - Both [#782] artifacts are posted, and every finding of the cross-module review is routed or
@@ -153,6 +155,7 @@ modules, and it is not decided here.
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
 [#1056]: https://github.com/flink-gcp/flink-connector-gcp/issues/1056
 [#1057]: https://github.com/flink-gcp/flink-connector-gcp/issues/1057
+[#1059]: https://github.com/flink-gcp/flink-connector-gcp/issues/1059
 [ADR-0048]: 0048-the-cloud-tasks-sink-owns-its-retry-loop-and-never-creates-queues.md
 [ADR-0050]: 0050-test-utils-holds-test-support-only-with-all-provided-dependencies.md
 [ADR-0071]: 0071-a-lost-table-creation-race-is-retried-by-a-wrapped-table-admin.md

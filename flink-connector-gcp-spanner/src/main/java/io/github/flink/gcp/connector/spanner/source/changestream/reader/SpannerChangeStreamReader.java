@@ -29,21 +29,17 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
-import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
-import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 
 import java.io.IOException;
-import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -111,12 +107,10 @@ public final class SpannerChangeStreamReader<T>
 
     private final SourceReaderContext context;
     private final DatabaseDestination database;
-    private final SpannerChangeStreamDeserializationSchema<T> deserializer;
-    private final SpannerChangeStreamRecordFilter recordFilter;
-    private final boolean filtersActive;
     private final int maximumQueries;
     private final SpannerChangeStreamQueryClient client;
     private final SpannerChangeStreamReaderMetrics metrics;
+    private final SpannerChangeStreamRecordEmitter<T> emitter;
     private final Deque<ChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveQuery> active = new LinkedHashMap<>();
     private final Object availabilityLock = new Object();
@@ -189,15 +183,13 @@ public final class SpannerChangeStreamReader<T>
             SpannerChangeStreamQueryClient client) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.database = Preconditions.checkNotNull(database, "database must not be null");
-        this.deserializer =
-                Preconditions.checkNotNull(deserializer, "deserializer must not be null");
-        this.recordFilter =
-                Preconditions.checkNotNull(recordFilter, "recordFilter must not be null");
-        this.filtersActive = filtersActive;
         Preconditions.checkArgument(maximumQueries > 0, "maximumQueries must be positive");
         this.maximumQueries = maximumQueries;
         this.client = Preconditions.checkNotNull(client, "client must not be null");
         this.metrics = new SpannerChangeStreamReaderMetrics(context.metricGroup());
+        this.emitter =
+                new SpannerChangeStreamRecordEmitter<>(
+                        deserializer, recordFilter, filtersActive, context, metrics);
     }
 
     @Override
@@ -265,7 +257,7 @@ public final class SpannerChangeStreamReader<T>
         Preconditions.checkNotNull(result, "available query must have a result");
         if (result.error != null) {
             resetAvailability();
-            throw new IOException(queryFailureMessage("read", query.split), result.error);
+            throw new IOException(queryFailureMessage("read", query.state.toSplit()), result.error);
         }
         if (result.finished) {
             finishQuery(query, output);
@@ -283,85 +275,18 @@ public final class SpannerChangeStreamReader<T>
 
     private void emit(SpannerChangeStreamRecord record, ActiveQuery query, ReaderOutput<T> output)
             throws Exception {
-        Instant position = later(query.split.getCurrentPosition(), record.position());
-        Instant watermark = query.split.getWatermark();
-        if (record instanceof SpannerChangeStreamRecord.Data) {
-            SpannerChangeStreamRecord.Data data = (SpannerChangeStreamRecord.Data) record;
-            if (!filtersActive) {
-                deserializeDataChangeRecord(data.record, query, output);
-            } else {
-                SpannerChangeStreamRecordFilter.Result filtered = recordFilter.filter(data.record);
-                switch (filtered.getDisposition()) {
-                    case TABLE_FILTERED:
-                        metrics.filteredByTable();
-                        break;
-                    case SKIPPED_WITHOUT_CHANGE:
-                        metrics.skippedWithoutChange();
-                        break;
-                    case DELIVER:
-                        metrics.columnOccurrencesFiltered(filtered.getRemovedColumnOccurrences());
-                        deserializeDataChangeRecord(filtered.getRecord(), query, output);
-                        break;
-                    default:
-                        throw new IllegalArgumentException(
-                                "Unsupported Spanner Change Streams filter disposition.");
-                }
-            }
-        } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
-            watermark = later(watermark, record.position());
-        } else if (record instanceof SpannerChangeStreamRecord.Children) {
-            SpannerChangeStreamRecord.Children children =
-                    (SpannerChangeStreamRecord.Children) record;
-            context.sendSourceEventToCoordinator(childrenEvent(query.split, children));
-        } else {
-            throw new IllegalArgumentException("Unsupported Spanner Change Streams record.");
-        }
-        query.split = query.split.withProgress(position, watermark);
-        context.sendSourceEventToCoordinator(
-                new PartitionProgressEvent(query.split.splitId(), position, watermark));
-    }
-
-    private void deserializeDataChangeRecord(
-            DataChangeRecord record, ActiveQuery query, ReaderOutput<T> output) throws Exception {
-        SourceOutput<T> splitOutput = output.createOutputForSplit(query.split.splitId());
-        long timestamp = record.getCommitTimestamp().toEpochMilli();
-        long emittedCount =
-                SynchronousDeserializationCollector.<T, Exception>deserialize(
-                        emitted -> splitOutput.collect(emitted, timestamp),
-                        out -> deserializer.deserialize(record, out));
-        if (emittedCount == 0) {
-            metrics.skipped();
-        }
-    }
-
-    private static ChildPartitionsEvent childrenEvent(
-            ChangeStreamPartitionSplit parent, SpannerChangeStreamRecord.Children record) {
-        List<ChildPartitionsEvent.ChildPartition> children = new ArrayList<>();
-        for (SpannerChangeStreamRecord.Child child : record.children) {
-            List<String> parentIds = new ArrayList<>();
-            if (child.initialParent) {
-                parentIds.add(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
-            }
-            for (String token : child.parentTokens) {
-                parentIds.add(ChangeStreamPartitionSplit.idForToken(token));
-            }
-            if (parentIds.isEmpty() && parent.getPartitionToken() == null) {
-                parentIds.add(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
-            }
-            children.add(new ChildPartitionsEvent.ChildPartition(child.token, parentIds));
-        }
-        return new ChildPartitionsEvent(parent.splitId(), record.startTimestamp, children);
+        SourceOutput<T> splitOutput = output.createOutputForSplit(query.splitId);
+        emitter.emitRecord(record, splitOutput, query.state);
     }
 
     private void finishQuery(ActiveQuery query, ReaderOutput<T> output) {
+        ChangeStreamPartitionSplit split = query.state.toSplit();
         context.sendSourceEventToCoordinator(
                 new PartitionFinishedEvent(
-                        query.split.splitId(),
-                        query.split.getCurrentPosition(),
-                        query.split.getWatermark()));
+                        split.splitId(), split.getCurrentPosition(), split.getWatermark()));
         query.handle.close();
-        active.remove(query.split.splitId());
-        output.releaseOutputForSplit(query.split.splitId());
+        active.remove(split.splitId());
+        output.releaseOutputForSplit(split.splitId());
         startQueuedQueries();
         requestIfCapacity();
     }
@@ -370,7 +295,7 @@ public final class SpannerChangeStreamReader<T>
     public List<ChangeStreamPartitionSplit> snapshotState(long checkpointId) {
         List<ChangeStreamPartitionSplit> state = new ArrayList<>();
         for (ActiveQuery query : active.values()) {
-            state.add(query.split);
+            state.add(query.state.toSplit());
         }
         state.addAll(queued);
         return state;
@@ -480,10 +405,6 @@ public final class SpannerChangeStreamReader<T>
         signalAvailable();
     }
 
-    private static Instant later(Instant left, Instant right) {
-        return right.isAfter(left) ? right : left;
-    }
-
     private String queryFailureMessage(String operation, ChangeStreamPartitionSplit split) {
         String message =
                 "Failed to "
@@ -525,13 +446,15 @@ public final class SpannerChangeStreamReader<T>
     private final class ActiveQuery
             implements SpannerChangeStreamQueryClient.SpannerChangeStreamQueryListener {
 
-        private ChangeStreamPartitionSplit split;
+        private final ChangeStreamPartitionSplitState state;
+        private final String splitId;
         private final AtomicReference<QueryResult> handover = new AtomicReference<>();
         private final SpannerChangeStreamReaderMetrics.QueryTiming timing;
         private SpannerChangeStreamQueryClient.QueryHandle handle;
 
         private ActiveQuery(ChangeStreamPartitionSplit split) {
-            this.split = split;
+            this.state = new ChangeStreamPartitionSplitState(split);
+            this.splitId = split.splitId();
             this.timing = metrics.opening(split);
         }
 
@@ -562,7 +485,7 @@ public final class SpannerChangeStreamReader<T>
             if (!handover.compareAndSet(null, result)) {
                 throw new IllegalStateException(
                         "Spanner Change Streams query produced more than one undrained result for "
-                                + split.splitId()
+                                + splitId
                                 + ".");
             }
             signalAvailable();

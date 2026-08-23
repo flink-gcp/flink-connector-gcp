@@ -236,6 +236,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Change Streams reader (`docs/adr/0101`, `docs/adr/0099`)
 
+- `SpannerChangeStreamRecordEmitter` owns record filtering, deserialization, split progress and
+  coordinator events, while `SpannerChangeStreamReader` owns asynchronous query capacity, the
+  one-slot handover and query completion (`docs/adr/0138`). Keep record-specific work behind the
+  emitter seam so it remains directly testable without opening a query.
 - Each reader subtask opens at most `maxConcurrentQueriesPerSubtask` asynchronous TVF queries,
   default eight. Excess restored splits stay in a FIFO owned by the reader and remain in its
   checkpoint until capacity returns.
@@ -257,7 +261,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Table and column filters run after dialect-specific decoding and before the user deserializer.
   Patterns fully match the Spanner-reported table name or `table.column`; do not case-fold,
   substring-match, or look up a historical schema. Primary-key metadata and keys always survive.
-- Determine filter activation once when constructing the reader. When all table and column lists
+- Determine filter activation once when constructing the emitter. When all table and column lists
   are empty, pass the original record directly to the deserializer without calling the filter or
   allocating its result. `skipMessagesWithoutChange` alone does not activate filtering.
 - When an active column filter retains every column in the record's metadata, return the original
