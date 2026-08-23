@@ -45,7 +45,7 @@ limitations under the License.
   an `INVALID_ARGUMENT` buried under an `INTERNAL` describes the inner call and does not discard
   a record over a server-side failure). The two mistakes are mirror images; both are pinned by
   test. `BigtableErrorClassifier.firstMatching(throwable, codes)` is the shared primitive, the
-  same shape `CloudTasksWriter` uses.
+  same shape `CloudTasksErrorClassifier` uses.
 
 [#33]: https://github.com/laughingman7743/flink-connector-gcp/issues/33
 [#207]: https://github.com/laughingman7743/flink-connector-gcp/issues/207
