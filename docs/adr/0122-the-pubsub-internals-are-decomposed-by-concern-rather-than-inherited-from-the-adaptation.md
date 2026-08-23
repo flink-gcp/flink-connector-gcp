@@ -36,6 +36,24 @@ control, acknowledgement extension, park and unpark, metrics, repair and failure
 [#755] asked whether that structure costs anything today, and pre-registered that "if nobody can
 name one, that is an answer". Nobody could — see Evidence.
 
+What the rewrites changed relative to the adaptation is recorded here from the module README's
+provenance section ([#1096]), in both directions. The adaptation's starting point: upstream's
+sink held a single fixed topic behind a JVM-wide static publisher cache with an unbounded
+future list and AutoValue builders; its source hard-coded one subscription with one split per
+registered subtask, kept a reader-wide acknowledgement tracker (closing one subscriber nacked
+every split's messages), returned one nullable record per deserialization and collected it
+without a null check, generated its serializers from protobuf, and sniffed
+`PUBSUB_EMULATOR_HOST` with an `emulator:///` URI prefix that silently overrode an explicitly
+configured endpoint. The rewrites replaced each of those (dynamic destinations, mailbox-based
+backpressure with in-flight caps, multi-subscription splits with an ordering mode, per-split
+acknowledgement scoping, a `Collector`-based contract, hand-written serializers and builders,
+an explicit emulator endpoint) and also fixed seven defects present in the adapted code: a
+`null` user-code class loader passed to the deserialization schema; a fresh `Configuration` in
+place of the job's, which made the source-reader options unreachable; draining at most one
+message per split per fetch; rejecting split removal; not overriding `pauseOrResumeSplits`,
+which broke watermark alignment; a missing `return` in the wake-up branch; and `shutdown()`
+mutating lock-guarded state without holding the lock.
+
 The redesign proceeds anyway, and this record says on what basis: **house-style parity**. Every
 other connector in this repository was designed from scratch against the same seam conventions —
 a noun interface for the client, a `Default*` implementation, single-concern collaborators, one
@@ -258,4 +276,5 @@ adaptation keeps and the test that pins it:
 [#766]: https://github.com/flink-gcp/flink-connector-gcp/pull/766
 [#767]: https://github.com/flink-gcp/flink-connector-gcp/pull/767
 [#768]: https://github.com/flink-gcp/flink-connector-gcp/pull/768
+[#1096]: https://github.com/flink-gcp/flink-connector-gcp/issues/1096
 [upstream]: https://github.com/GoogleCloudPlatform/pubsub

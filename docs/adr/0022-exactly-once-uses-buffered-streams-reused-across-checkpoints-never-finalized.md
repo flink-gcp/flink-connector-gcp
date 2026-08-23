@@ -36,7 +36,9 @@ limitations under the License.
   Committables need no destination because `FlushRows` addresses the full stream resource name,
   so their version-1 format remains unchanged.
 - Committable = (streamName, inclusive flushOffset, subtaskId); the committer calls `FlushRows`
-  synchronously, `ALREADY_EXISTS` = already flushed = success, everything else throws (restart +
+  synchronously, `ALREADY_EXISTS` = already flushed = success — the idempotent-re-commit
+  foundation, whose semantics Apache Beam's `StorageApiFlushAndFinalizeDoFn` established —
+  everything else throws (restart +
   idempotent re-commit; no deterministic-id machinery, no checkpoint stamper, no `.global()` —
   the committer runs at sink parallelism, the pre-commit topology is identity and exists only as
   the validation hook).

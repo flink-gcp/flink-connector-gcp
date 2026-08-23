@@ -49,8 +49,8 @@ import java.util.Objects;
  * <p>Exactly one column is not a {@code ROW} and that column is the row key; every {@code ROW}
  * column is a column family whose nested field names are the qualifiers. Upstream
  * google/flink-connector-gcp's alternative — a {@code value.format} per family — was weighed and
- * declined on <a href="https://github.com/laughingman7743/flink-connector-gcp/issues/34">#34</a>:
- * it cannot give a single qualifier its own type, and it ties a family to a format.
+ * declined on <a href="https://github.com/flink-gcp/flink-connector-gcp/issues/34">#34</a>: it
+ * cannot give a single qualifier its own type, and it ties a family to a format.
  *
  * <p>Column order is preserved, because it is what a projection's indexes refer to.
  */

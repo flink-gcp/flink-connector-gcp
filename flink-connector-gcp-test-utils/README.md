@@ -1,10 +1,10 @@
 # Flink Connectors GCP : Test Utils
 
-Shared test-support code for the connector modules' test suites ([#27](https://github.com/laughingman7743/flink-connector-gcp/issues/27)):
+Shared test-support code for the connector modules' test suites ([#27](https://github.com/flink-gcp/flink-connector-gcp/issues/27)):
 no-op sink-writer contexts, a queue-backed mailbox executor, random resource-name helpers for the
 real-GCP gated tests, deadline-bounded polling/draining helpers, synthetic service-account key
 files for credential wiring tests, collecting source and reader
-outputs for driving a source reader ([#437](https://github.com/laughingman7743/flink-connector-gcp/issues/437)),
+outputs for driving a source reader ([#437](https://github.com/flink-gcp/flink-connector-gcp/issues/437)),
 and per-service emulator fixtures that keep shared image pins in one place and, where multiple
 harnesses need them, own stock clients.
 

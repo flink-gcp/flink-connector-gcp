@@ -56,7 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * totalExpiration} at <em>receipt</em>, and once it is reached {@code AckHandler.forget()} calls
  * {@code flowController.release(...)} while this connector is still holding the message. Permits
  * therefore free up, pulling resumes, and nothing caps the buffer after that (<a
- * href="https://github.com/laughingman7743/flink-connector-gcp/issues/357">#357</a>).
+ * href="https://github.com/flink-gcp/flink-connector-gcp/issues/357">#357</a>).
  *
  * <p>The two methods are each other's control: the first holds the reader's own bound out of the
  * way and measures the growth, so it goes on measuring the SDK premise this design rests on — the

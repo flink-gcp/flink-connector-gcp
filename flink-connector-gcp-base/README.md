@@ -1,10 +1,10 @@
 # Flink Connectors GCP : Base
 
 Shared main-code infrastructure for the connector modules
-([#61](https://github.com/laughingman7743/flink-connector-gcp/issues/61)): the retry schedule and
+([#61](https://github.com/flink-gcp/flink-connector-gcp/issues/61)): the retry schedule and
 backoff-sleep helper behind the connectors' recovery loops, gRPC status-code extraction from the
 exceptions the Google Cloud clients surface, and — from the DLQ and metrics standardization
-([#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37)) — the cross-connector
+([#37](https://github.com/flink-gcp/flink-connector-gcp/issues/37)) — the cross-connector
 failure-handling SPI (`FailureHandler`, `DeadLetterQueue`) plus the sink metric helpers the
 connectors register their error-class and per-destination counters through. `base.lifecycle` holds
 the close-time helpers: releasing several resources so that one refusing to close never strands the

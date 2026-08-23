@@ -1,7 +1,7 @@
 # OpenTofu persistent layer
 
 The GCP resources behind the real-GCP integration tests
-([#5](https://github.com/laughingman7743/flink-connector-gcp/issues/5)): the
+([#5](https://github.com/flink-gcp/flink-connector-gcp/issues/5)): the
 `flink-gcp` project's service accounts, Workload Identity Federation, buckets
 and the BigQuery dataset. *Persistent* means idle-cost-free resources applied
 once and kept; the fine-grained resources (tables, topics, subscriptions,
@@ -45,7 +45,7 @@ why:
 | `terraform_command: tofu` | on | This is an OpenTofu repository |
 | Plan/apply as separate WIF service accounts | on | A pull request's plan job never holds write credentials |
 | Plan file via GitHub Artifacts | on (built in) | The apply runs exactly the plan the PR reviewed; no extra storage |
-| `plan_workflow_name` | `ci.yaml` | It names the workflow whose *run* owns the plan artifact, not the file the plan steps live in: the plan runs as a `workflow_call` child, whose artifacts belong to the caller's run. `ci.yaml` must therefore stay `pull_request`-only — the lookup takes the newest run on the head branch with no event filter ([#444](https://github.com/laughingman7743/flink-connector-gcp/issues/444)) |
+| `plan_workflow_name` | `ci.yaml` | It names the workflow whose *run* owns the plan artifact, not the file the plan steps live in: the plan runs as a `workflow_call` child, whose artifacts belong to the caller's run. `ci.yaml` must therefore stay `pull_request`-only — the lookup takes the newest run on the head branch with no event filter ([#444](https://github.com/flink-gcp/flink-connector-gcp/issues/444)) |
 | `dismiss_approval_before_plan` | on (default) | A re-plan dismisses stale approvals, so an approval always refers to the plan that will apply |
 | `hide-comment` job in the plan workflow | on | Outdated plan comments are hidden; the visible comment is the one that would apply |
 | GitHub App | on | The org-owned `flink-gcp-bot` ([#177](https://github.com/flink-gcp/flink-connector-gcp/issues/177); ADR-0121). Each step that pushes mints its own token from `BOT_APP_ID` / `BOT_APP_PRIVATE_KEY`, downscoped below the App's contents/pull-requests/workflows ceiling. Plan, apply, comments and labels stay on plain `GITHUB_TOKEN`, which suffices for them |
@@ -148,7 +148,7 @@ gcloud beta services identity create --service=<service>.googleapis.com --projec
 
 Done for `pubsub.googleapis.com` on 2026-08-01 (the Pub/Sub agent performs
 dead-letter forwarding,
-[PR #170](https://github.com/laughingman7743/flink-connector-gcp/pull/170)).
+[PR #170](https://github.com/flink-gcp/flink-connector-gcp/pull/170)).
 The agent is permanent once created. For the record: the 403s that same PR's
 applies actually hit were the apply workflow
 authenticating as the read-only plan account (`TFACTION_IS_APPLY` was unset —
@@ -178,7 +178,7 @@ granted `contents: write` could create the branch and the pull request, but a
 push authenticated with it starts no workflow run, so the follow-up would arrive
 with no plan on it — which is the whole point of opening one. A dispatch-triggered fresh-apply workflow was
 built as an alternative on
-[PR #176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)
+[PR #176](https://github.com/flink-gcp/flink-connector-gcp/pull/176)
 and withdrawn in the App's favour. If the credentials are ever absent the step
 skips, and the hand-written recovery above is the fallback. The step is keyed on
 the apply step itself failing rather than on the job failing, so a WIF or
