@@ -54,9 +54,11 @@ Each changed file is classified by the first matching rule:
    only Maven-relevant consumer is the root module's apache-rat execution,
    which scans the whole working tree (`inherited=false`,
    `excludeSubProjects=false`) and is their only pre-merge licence check:
-   `docs/**`, `scripts/**` and the uv project behind `just test-scripts`
+   `docs/**`, `scripts/**`, the uv project behind `just test-scripts`
    (`pyproject.toml`, `uv.lock` — the lockfile is rat-excluded and rides along
-   with its pyproject rather than earning a rule of its own). No pom wires
+   with its pyproject rather than earning a rule of its own), and
+   `CONTRIBUTING.md` (rat scans it: the pom excludes `**/README.md` but not
+   the contributor guide). No pom wires
    anything under `scripts/` into the build and no source reads a file from
    it, so such a change pays ~a minute for rat instead of the full reactor
    (issue #253; measured at 7m41s on PR #252, which changed `scripts/tests/`
@@ -186,7 +188,7 @@ GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
 SPINE_SUFFIXES = frozenset({"base", "test-utils"})
 
 ROOT_ONLY_PREFIXES = ("docs/", "scripts/")
-ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock"}
+ROOT_ONLY_FILES = {"pyproject.toml", "uv.lock", "CONTRIBUTING.md"}
 
 # ...except the inputs of the one checker whose CI step the deriver can switch
 # off. `just check-notice` runs inside the build job behind check_notice, so a

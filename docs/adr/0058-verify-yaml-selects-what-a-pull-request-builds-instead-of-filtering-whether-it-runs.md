@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0058: `verify.yaml` selects what a pull request builds instead of filtering whether it runs
 
 - Status: Accepted
-- Date: 2026-08-02 ([#243]; the root-only class added the same day, [#253])
-- Issues: [#243], [#253]
+- Date: 2026-08-02 ([#243]; the root-only class added the same day, [#253]); revised by
+  [#1095] (2026-08-23)
+- Issues: [#243], [#253], [#1095]
 - Modules: all (CI)
 - Current behavior: `scripts/ci-maven-args.py` (its docstring is the specification)
 
@@ -103,8 +104,10 @@ workflow-level filter. The pieces:
 
   The balance is not pinned by any test and is not meant to be: it is re-measured on [#453]
   when a module's cost moves enough to matter.
-- **A root-only change builds `-pl .` alone** ([#253]): `docs/**`, `scripts/**` and the root
-  uv project (`pyproject.toml`, `uv.lock`) are the paths whose only Maven-relevant consumer
+- **A root-only change builds `-pl .` alone** ([#253]): `docs/**`, `scripts/**`, the root
+  uv project (`pyproject.toml`, `uv.lock`) and `CONTRIBUTING.md` ([#1095] — rat scans it,
+  the pom's excludes cover `**/README.md` but not the contributor guide) are the paths
+  whose only Maven-relevant consumer
   is the root module's rat run, which scans the whole working tree and is their only
   pre-merge licence check — a `scripts/tests/`-only pull request had been paying 7m41s of
   full reactor for it. **Two files are deliberately outside that class**,
@@ -154,6 +157,7 @@ workflow-level filter. The pieces:
 [#111]: https://github.com/flink-gcp/flink-connector-gcp/issues/111
 [#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
 [#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249
+[#1095]: https://github.com/flink-gcp/flink-connector-gcp/issues/1095
 [#253]: https://github.com/flink-gcp/flink-connector-gcp/issues/253
 
 [#453]: https://github.com/flink-gcp/flink-connector-gcp/issues/453

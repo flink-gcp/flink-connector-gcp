@@ -200,7 +200,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   judgment. It runs at the start of `just verify`, and its parser tests use synthetic trees
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
   over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
-  the **rendered** markdown — `docs/content/`, `docs/adr/` and the READMEs, never agent
+  the **rendered** markdown — `docs/content/`, `docs/adr/`, the READMEs and CONTRIBUTING.md,
+  never agent
   guidance or its detailed references — at strict defaults except MD013 and MD060 (declined) and MD052's
   `shortcut_syntax` (enabled for the ADRs' `[#N]` idiom, opted back out for `docs/content/`
   through the same file's `overrides` entry, micromark being unable to parse a Hugo shortcode
@@ -624,7 +625,8 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
 - **`verify.yaml` selects what a pull request builds instead of filtering whether it runs**
   (#243; ADR-0058 carries the whole design): a required check that never reports blocks a pull
   request forever, so a `changes` job derives the Maven `-pl` subset via
-  `scripts/ci-maven-args.py` instead, a root-only change (`docs/**`, `scripts/**`, the root uv
+  `scripts/ci-maven-args.py` instead, a root-only change (`docs/**`, `scripts/**`,
+  CONTRIBUTING.md, the root uv
   project — minus the two licence-pin files ADR-0058 deliberately keeps out of the class)
   builds `-pl .` alone, and a real `paths-ignore` survives on the **push** trigger only. `lint.yaml` is where linters Maven does not run live, a workflow of its own purely for
   latency; a push-side paths filter must list **every input to a lint, not just the linted

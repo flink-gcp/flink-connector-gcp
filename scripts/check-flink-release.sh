@@ -75,7 +75,7 @@ Moving the range means editing, in this order:
                                      FLINK_NEXT_SNAPSHOT -> the next unreleased
                                      minor
   3. docs/content/_index.md          the Supported versions table
-  4. README.md                       the supported-range sentence under Build
+  4. README.md                       the supported-range claim under Supported versions
   5. AGENTS.md                       the Version policy section
 
 Then re-run the binary-compatibility measurement against the new ceiling before

@@ -45,13 +45,14 @@ on:
       # input).
       - 'opentofu/**'
       # markdownlint reads its config and the rendered markdown — the docs
-      # sources, the ADRs and the READMEs. CLAUDE.md files are deliberately
+      # sources, the ADRs, the READMEs and CONTRIBUTING.md. CLAUDE.md files are deliberately
       # outside its globs (see .markdownlint-cli2.jsonc), so they are not
       # inputs here.
       - '.markdownlint-cli2.jsonc'
       - 'docs/content/**'
       - 'docs/adr/**'
       - 'README.md'
+      - 'CONTRIBUTING.md'
       - 'flink-*/README.md'
   workflow_dispatch:
 

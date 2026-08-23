@@ -21,7 +21,8 @@ limitations under the License.
   [#108](https://github.com/flink-gcp/flink-connector-gcp/pull/108))
 - Issues: [#102], [#29], [#39] (publishing deferred there)
 - Modules: all (build/CI)
-- Current behavior: `docs/content/_index.md` supported-versions table, `README.md` § Build
+- Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
+  § Supported versions
 
 ## Context
 
