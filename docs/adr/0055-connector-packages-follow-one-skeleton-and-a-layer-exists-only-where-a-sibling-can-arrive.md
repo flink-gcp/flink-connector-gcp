@@ -68,8 +68,8 @@ packages — which is also what lets package-private coupling stay package-priva
   direction: the `@Internal` `<Product>MetricNames` inventory every connector carries
   ([#280], ADR-0038); Pub/Sub's `@Internal` `PubSubShutdownResidue` (ADR-0007's
   classloader-scoped residue holder, shared by the sink writer and the dead-letter queue); and,
-  in Bigtable, the `@PublicEvolving` `TableDestination`. `PubSubMetricNames` is why the
-  placement is a rule rather than a preference: its names span `sink.writer`,
+  in Bigtable, the `@Public` (since [ADR-0124]) `TableDestination`. `PubSubMetricNames` is why
+  the placement is a rule rather than a preference: its names span `sink.writer`,
   `source.streamingpull.reader` and `.enumerator`, so the module root is the only package that
   can hold one inventory. What the residents share is the *scope*, not the visibility — a
   names class is `public` because Java has no module-internal access and its sub-packages must
@@ -86,7 +86,7 @@ stands; adopting one would be exactly the second-family event that costs the lay
 Adding the layer back is what a second family costs, and it
 is a mechanical move — the two layers [#119] removed held nothing public, though a family
 layer generally may (BigQuery's `BufferedStreamOptions` and `FileLoadsOptions` are
-`@PublicEvolving` in theirs). The rule is a **test, not a count**. This ADR is the canonical
+`@Public` in theirs since [ADR-0124]). The rule is a **test, not a count**. This ADR is the canonical
 record behind the "[#119] layer test" that ADR-0005, ADR-0009, ADR-0039, ADR-0041 and
 ADR-0049 cite in passing.
 
@@ -104,7 +104,7 @@ implicit always-on stream, named throughout that package and the opposite of a b
 
 **Serializer input formats are subpackages of the SPI, and they never import each other**
 ([#125]): `sink.serializer.<format>` per input format (`.proto`, `.avro`, `.json`), each
-holding its facade, its `@PublicEvolving` options object and the `@Internal` types behind
+holding its facade, its `@Public` (since [ADR-0124]) options object and the `@Internal` types behind
 them — a public-API layer, not merely an internals split, mirroring how the family packages
 keep their options objects. The trigger was PR
 [#123](https://github.com/laughingman7743/flink-connector-gcp/pull/123) taking the flat
@@ -147,3 +147,4 @@ share one FQCN on purpose.
 [#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
+[ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md

@@ -135,7 +135,10 @@ Leaving them would have put the connector's option vocabulary and its metric voc
 disagreement on the very point this ADR exists to settle — and `inFlightEntries` is also what the
 sibling connectors' convention asks for, each of whose gauges names the unit *it* counts
 (`inFlightTasks`, `inFlightBatches`, `inFlightAppends`, `inFlightMessages`). Bigtable's was the one
-naming a unit its connector does not count.
+naming a unit its connector does not count. (The
+[#1043](https://github.com/flink-gcp/flink-connector-gcp/issues/1043) review later recorded this
+unit-naming reading as the fleet-wide rule —
+[ADR-0137](0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md).)
 
 **4. The in-flight bounds are warned about, not capped** — `build()` says so when
 `maxInFlightEntries` or `maxInFlightBytes` is above the client's matching budget. This is the

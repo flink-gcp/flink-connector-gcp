@@ -18,11 +18,19 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-28 ([#54], with the naming revised on user feedback 2026-07-29); buffered-path
-  knobs 2026-08-01 ([#198]); buffered-path eviction 2026-08-13 ([#76])
-- Issues: [#54], [#76], [#198]
-- Modules: bigquery (`sink.storage`)
+  knobs 2026-08-01 ([#198]); buffered-path eviction 2026-08-13 ([#76]); revised by [#1043]
+  (2026-08-23)
+- Issues: [#54], [#76], [#198], [#1043]
+- Modules: bigquery (`sink.storage`); the `recovery*` naming rule also governs cloudtasks and
+  spanner since the [#1043] revision
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Tuning;
   `docs/content/docs/reference/bigquery.md` for the values
+
+[ADR-0137](0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md) supersedes
+the Cloud Tasks `retry*` exception recorded below: the [#1043] review retired the asymmetry by
+rename ([#1051] and [#1053] move the Cloud Tasks and Spanner connector-owned budgets to
+`recovery*`). The rule itself — `recovery*` for a connector-owned budget, bare `retry*` for SDK
+knobs — remains in force and now binds every connector.
 
 ## Decision
 
@@ -40,9 +48,10 @@ not choosing, so only the "rejected for other methods" half carries safety and o
   classes agree) and the **SDK knobs are bare `retry*`/`maxRetryDuration`** — the `sdk` prefix
   became redundant once "retry" uniquely meant the SDK layer, the bare names are the vendor's
   own words per the [#121]/[#147] rule, and the Pub/Sub builder already exposes SDK
-  `RetrySettings` bare. The standing cross-module asymmetry: Cloud Tasks' `retry*` names a
-  *connector-driven* schedule — its module has no second retry layer, so bare `retry*` is
-  unambiguous there and renaming would churn a published-in-docs surface for no local gain.
+  `RetrySettings` bare. **Superseded ([ADR-0137], historical):** the standing
+  cross-module asymmetry: Cloud Tasks' `retry*` names a *connector-driven* schedule — its
+  module has no second retry layer, so bare `retry*` is unambiguous there and renaming would
+  churn a published-in-docs surface for no local gain.
 - **[#198] gave the buffered path the same five SDK knobs**, deleting
   `StreamWriterRowAppenderFactory.RETRY_SETTINGS`; the SDK mapping stays in that factory as an
   overloaded `toRetrySettings`, **not** on the options class — the mapping-on-the-options rule
@@ -115,3 +124,7 @@ not choosing, so only the "rejected for other methods" half carries safety and o
 [#197]: https://github.com/laughingman7743/flink-connector-gcp/issues/197
 [#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
 [#827]: https://github.com/flink-gcp/flink-connector-gcp/issues/827
+[#1043]: https://github.com/flink-gcp/flink-connector-gcp/issues/1043
+[#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
+[#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
+[ADR-0137]: 0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md
