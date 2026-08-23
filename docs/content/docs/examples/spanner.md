@@ -27,6 +27,111 @@ means is on the [Spanner options]({{< relref "docs/reference/spanner" >}}) page;
 behaves as it does is on the
 [Spanner connector]({{< relref "docs/connectors/datastream/spanner" >}}) page.
 
+## Joining a composite-key lookup table
+
+A processing-time temporal join turns each facts row into a Spanner point read.
+Create and seed the physical table in the quickstart's `orders-db` database first:
+
+```sql
+CREATE TABLE accounts (
+  region STRING(16) NOT NULL,
+  account INT64 NOT NULL,
+  name STRING(128)
+) PRIMARY KEY (region, account);
+
+INSERT INTO accounts (region, account, name)
+VALUES ('us', 1, 'Ada');
+```
+
+The Flink facts table below deterministically produces that key:
+
+```sql
+CREATE TABLE account_events (
+  account BIGINT,
+  region AS 'us',
+  proc_time AS PROCTIME()
+) WITH (
+  'connector' = 'datagen',
+  'number-of-rows' = '1',
+  'fields.account.kind' = 'sequence',
+  'fields.account.start' = '1',
+  'fields.account.end' = '1'
+);
+
+CREATE TABLE accounts (
+  region STRING,
+  account BIGINT,
+  name STRING,
+  PRIMARY KEY (region, account) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'accounts'
+);
+
+SELECT e.region, e.account, a.name
+FROM account_events AS e
+LEFT JOIN accounts FOR SYSTEM_TIME AS OF e.proc_time AS a
+  ON e.account = a.account AND e.region = a.region;
+```
+
+The equality condition must cover every declared primary-key column.
+The join predicates may appear in either order, but the connector encodes the lookup key in the `PRIMARY KEY (region, account)` declaration order.
+That declaration order must match the physical Spanner table's primary-key order, or the point read addresses a different key.
+
+## Writing upserts with SQL
+
+A declared primary key makes the Spanner sink use `insertOrUpdate` for inserts and updates.
+This bounded aggregation emits one final row for each composite key:
+
+Create its physical destination in `orders-db` first:
+
+```sql
+CREATE TABLE account_status (
+  region STRING(16) NOT NULL,
+  account INT64 NOT NULL,
+  status STRING(64)
+) PRIMARY KEY (region, account);
+```
+
+```sql
+SET 'execution.runtime-mode' = 'batch';
+
+CREATE TABLE status_events (
+  region STRING,
+  account BIGINT,
+  status STRING
+) WITH (
+  'connector' = 'datagen',
+  'number-of-rows' = '1000',
+  'fields.region.length' = '16',
+  'fields.status.length' = '64'
+);
+
+CREATE TABLE account_status (
+  region STRING,
+  account BIGINT,
+  status STRING,
+  PRIMARY KEY (region, account) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'account_status'
+);
+
+INSERT INTO account_status
+SELECT region, account, MAX(status)
+FROM status_events
+GROUP BY region, account;
+```
+
+Without the Flink `PRIMARY KEY` declaration, the connector accepts only insert-only input and uses Spanner `insert` instead.
+The declaration is a planner contract; it does not create or verify the physical key.
+
 ## Writing to several tables from one sink
 
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#spanner-tables) explains why Spanner takes its table from each mutation instead of using the resolver-based pattern.
@@ -59,25 +164,13 @@ Returning `null` skips the record: it is written nowhere, is not a failure, and 
 
 By default the first refused mutation fails the job. `failedMutationHandler` changes that.
 
-The following builder fragment omits the application serializer supplied to `serializer(...)`.
-
-```java
-SpannerSink.<Event>builder()
-        .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
-        .serializer(...)
-        .failedMutationHandler(FailureHandler.logAndDrop())
-        .build();
-```
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-dropping-refused-mutations" >}}
 
 **Read what actually reaches this handler before relying on it.** By default only `ALREADY_EXISTS`
 and `INVALID_ARGUMENT` do — a `NOT NULL` violation, an over-long value, a foreign key or a `CHECK`
 constraint all fail the job instead. That default is deliberate, and it is also an option:
 
-The following setter fragment omits the enclosing sink builder.
-
-```java
-.constraintViolationPolicy(ConstraintViolationPolicy.ROUTE_TO_FAILURE_HANDLER)
-```
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-constraint-violation-policy" >}}
 
 which sends constraint violations to the same handler, so the handler above then decides. Choose it
 when your stream genuinely carries occasional records the schema will not accept; leave it alone
@@ -85,19 +178,12 @@ when a refusal would mean your column mapping is wrong. The
 [table on the connector page]({{< relref "docs/connectors/datastream/spanner" >}}#what-does-not-reach-the-failure-handler-and-why)
 lists every case, and says why the default is what it is.
 
-A handler taking the connector's own type sees the mutation itself:
+A handler taking the connector's own type can inspect the mutation itself as well as its table and error message.
+This example logs the table and service-provided error text without capturing a non-serializable logger in the handler:
 
-The following handler fragment omits the enclosing sink builder and logger declaration.
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-custom-failure-handler" >}}
 
-```java
-.failedMutationHandler(
-        (FailureHandler<FailedMutation>)
-                failure -> {
-                    Mutation refused = failure.getMutation();
-                    LOG.warn("Dropping a mutation on {}: {}",
-                            failure.getTable(), failure.getErrorMessage());
-                })
-```
+Treat that error text as potentially sensitive because the service may include rejected identifiers or values in it; omit or sanitize it when the log is not an approved destination for record data.
 
 ## Tuning the batch
 
@@ -111,23 +197,7 @@ for. Setting `maxBatchMutations` above `maxBatchCells` writes a warning to the l
 job's `main` runs, because the cell cap is then reached first and the mutation cap can never take
 effect.
 
-The following builder fragment omits the application serializer supplied to `serializer(...)`.
-
-```java
-SpannerSink.<Event>builder()
-        .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
-        .serializer(...)
-        .writerOptions(
-                SpannerWriterOptions.builder()
-                        .maxBatchMutations(100)
-                        // A commit delay trades latency for throughput by letting Spanner group
-                        // this commit with others. Zero to 500 ms.
-                        .maxCommitDelay(Duration.ofMillis(50))
-                        // A backfill that must not disturb serving traffic on the same instance.
-                        .rpcPriority(SpannerRpcPriority.LOW)
-                        .build())
-        .build();
-```
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-batch-options" >}}
 
 `maxBatchCells` counts index entries, not columns: a row of five columns in a table with three
 indexes covering them costs far more than five. Watch `bufferedCells` beside `bufferedBytes` to see
@@ -231,15 +301,23 @@ Restrict the Change Stream's DDL watch definition when exclusion must happen ins
 docker run -p 9010:9010 -p 9020:9020 gcr.io/cloud-spanner-emulator/emulator:1.5.56
 ```
 
-The following builder fragment omits the application serializer supplied to `serializer(...)`.
+The emulator has separate resources from the real service.
+Point a dedicated `gcloud` configuration at its REST endpoint, then recreate the quickstart resources there:
 
-```java
-SpannerSink.<Event>builder()
-        .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
-        .serializer(...)
-        .emulatorEndpoint("localhost:9010")
-        .build();
+```sh
+gcloud config configurations create spanner-emulator --no-activate
+gcloud config set auth/disable_credentials true --configuration=spanner-emulator
+gcloud config set project my-project --configuration=spanner-emulator
+gcloud config set api_endpoint_overrides/spanner http://localhost:9020/ \
+    --configuration=spanner-emulator
+gcloud spanner instances create my-instance --config=emulator-config \
+    --description="my-instance" --nodes=1 --configuration=spanner-emulator
+gcloud spanner databases create orders-db --instance=my-instance \
+    --ddl='CREATE TABLE Orders (OrderId STRING(64) NOT NULL, Total INT64) PRIMARY KEY (OrderId)' \
+    --configuration=spanner-emulator
 ```
+
+{{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-emulator-sink" >}}
 
 The source takes the same option:
 

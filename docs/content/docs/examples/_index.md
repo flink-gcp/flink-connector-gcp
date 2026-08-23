@@ -34,7 +34,7 @@ page, linked from each section.
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | A topic per record, topic and subscription auto-creation, the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
 | [Bigtable]({{< relref "docs/examples/bigtable" >}}) | SQL scans, lookup joins, Change Streams and upsert pipelines; several mutations per record, dynamic tables, skipping and dropping records, bounded and filtered reads, application profiles and the emulator |
-| [Spanner]({{< relref "docs/examples/spanner" >}}) | Several tables from one stream, deletes, skipping records, dropping refused mutations, tuning the batch, the emulator |
+| [Spanner]({{< relref "docs/examples/spanner" >}}) | SQL lookup joins and upsert writes; several tables, deletes, skipping and dropping records, batch tuning, key-range and fixed-timestamp reads, Data Boost, Change Streams metadata and filtering, and the emulator |
 
 Two things cut across most of them, and are stated once here rather than five times.
 
