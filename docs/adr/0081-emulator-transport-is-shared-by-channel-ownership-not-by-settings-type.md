@@ -29,7 +29,11 @@ is split **by who owns the channel** rather than by which settings type a caller
 
 - `plaintextProvider(InstantiatingGrpcChannelProvider.Builder, EmulatorEndpoint)` — for the five
   sites whose client creates and closes its own channel. **The builder is a parameter**, not
-  something the helper creates, so the API's own transport defaults survive (see Evidence).
+  something the helper creates, so the API's own transport defaults survive (see Evidence). It
+  applies the plaintext hook through the `@BetaApi` `setChannelConfigurator` — an internal call,
+  tier-irrelevant under
+  [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md),
+  whose inventory records it.
 - `openPlaintextChannel(EmulatorEndpoint)` + `fixedProvider(ManagedChannel)` — for the three sites
   that own the channel themselves and shut it down deliberately, one of them gracefully.
 

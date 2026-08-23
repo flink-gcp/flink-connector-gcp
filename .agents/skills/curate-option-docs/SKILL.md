@@ -130,10 +130,11 @@ answers, and only the third is an allowlist entry:
   `@Internal` will not do it.
 - **It is public, and it builds a *value* rather than a configuration** → a `[value_builders]`
   entry, keyed by repo-relative path. `DataChangeRecord` is the case that forced this one: a
-  `@Public` Spanner change record whose builder sets the thirteen fields Spanner reports, none of
-  them a job option. Both other answers are false for it — a reference row would document a data
-  model in a page about configuration, and `@Internal` would demote a type users receive to satisfy
-  a check, which is a stability decision wearing a documentation costume.
+  `@PublicEvolving` Spanner change record whose builder sets the thirteen fields Spanner
+  reports, none of them a job option. Both other answers are false for it — a reference row
+  would document a data model in a page about configuration, and `@Internal` would demote a
+  type users receive to satisfy a check, which is a stability decision wearing a documentation
+  costume.
 
 **Reach for the third only when the first two are false, not when they are inconvenient.** The test
 is whether a *reader looking up a job option* could ever arrive at this class. A builder assembled

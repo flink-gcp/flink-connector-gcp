@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.Experimental;
 
 /** Policy for a BigQuery CDC destination table that already exists. */
-@Public
+@Experimental
 public enum CdcTableReconciliationPolicy {
     /**
      * Verify the CDC table contract without starting adoption or drift repair.

@@ -113,6 +113,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   running-without-checkpointing guard is `MissingCheckpointDetector`, evaluated from
   `PubSubSplitReader.fetch()`, never the record path; its budget starts at first split
   assignment and retires at the first barrier (`docs/adr/0011`).
+- Two subscriber surfaces the reader rides are `@BetaApi` in the pinned client:
+  `AckReplyConsumerWithResponse` (the exactly-once-delivery preview the ack path is built on)
+  and `Subscriber.Builder.setSubscriberShutdownSettings` (the settings type itself is
+  unannotated). Both are internal calls, tier-irrelevant under `docs/adr/0141`; reread them on a
+  BOM bump.
 - Teardown rules (`docs/adr/0012`): shutdowns and closes go in **one `Closers.closeAll` list**
   (#297/#350 — never a loop then a call, at every level); `awaitTerminated()` absorbs the
   client's re-report and discriminates by `permanentErrorReported`, a flag set where the failure

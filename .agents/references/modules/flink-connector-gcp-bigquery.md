@@ -40,6 +40,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   columns of one row may share a commit timestamp and encode to one sequence; that residual tie is
   documented, and `server_transaction_id` cannot break it because it is a distinguisher, not an
   order.
+- **The whole CDC public surface is `@Experimental` while #706 stays open** (`docs/adr/0141`):
+  the upstream resolution shapes what the sequence-number providers receive, so the 12 CDC types
+  sit below the `1.0.0` freeze. The four `BigQuerySinkBuilder` CDC setters are recorded closure
+  stops (`docs/adr/0124`).
+  The CDC table-provisioning calls `TableInfo.getLabels`/`setLabels` and
+  `TimePartitioning.Builder.setField` are method-level `@BetaApi` — internal calls,
+  tier-irrelevant; reread them on a BOM bump.
 
 ## Facade and serializers (`docs/adr/0016`, `0023`–`0027`, `0140`)
 
@@ -322,6 +329,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Every source mode receives that path; the deployment must mount the same key at it on both
   process types.
   Absent uses ADC, and either emulator endpoint is mutually exclusive with it (#542).
+
+- The whole Storage Read path runs through `BigQueryReadClient`/`BigQueryReadSettings`, both
+  class-level `@BetaApi` in the pinned client while the service itself is GA — an internal call
+  that does not touch the source's `@Public` tier (`docs/adr/0141`); reread the annotations on a
+  BOM bump.
 
 - **One read session creator belongs to one enumerator** (`docs/adr/0128`).
   `BigQuerySourceConfig` carries a `ReadSessionCreatorFactory`, not a creator, and

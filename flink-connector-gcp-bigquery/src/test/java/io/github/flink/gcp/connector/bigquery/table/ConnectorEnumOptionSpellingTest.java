@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 
 import com.google.cloud.bigquery.TimePartitioning;
+import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -62,6 +63,10 @@ class ConnectorEnumOptionSpellingTest {
                 TableCreateOptions.TimePartitioningType.class, "hour", "day", "month", "year");
         assertSpellings(StagingFormat.class, "avro", "parquet");
         assertSpellings(ParquetCompression.class, "zstd", "none");
+        // Pinned here because nothing else holds this vocabulary: the enum is @Experimental
+        // since ADR-0141, so neither japicmp profile compares its constants, while the
+        // sink.cdc.table-reconciliation option that resolves them stays @PublicEvolving.
+        assertSpellings(CdcTableReconciliationPolicy.class, "verify-only", "reconcile");
     }
 
     @Test
@@ -72,6 +77,7 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(TableCreateOptions.TimePartitioningType.class);
         assertRoundTrips(StagingFormat.class);
         assertRoundTrips(ParquetCompression.class);
+        assertRoundTrips(CdcTableReconciliationPolicy.class);
     }
 
     @Test

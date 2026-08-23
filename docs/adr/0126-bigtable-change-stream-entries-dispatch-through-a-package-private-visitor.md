@@ -64,13 +64,23 @@ are package-private, and callers outside the connector branch on a discriminator
   the combination this decision wanted. And a public abstract method added to a `@Public` type is a
   break japicmp stops, which is what makes the *concrete*-`accept` alternative below not a
   substitute, and why `getKind()` is worth the same run's cost only while 1.0.0 is unpublished.
+  The [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) re-tier
+  ([ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md))
+  later moved `BigtableChangeStreamMutation` to `@PublicEvolving`, so the default gate no longer
+  compares it and a public abstract addition is stopped only by `-Pjapicmp-patch`, costing a
+  minor-release note rather than a major-release exclusion; the measurement above was taken while
+  the type was `@Public` and stands as recorded, and the visitor's compile-time break at every
+  implementor is tier-independent.
 - **`Entry` gains `getKind()` and an `EntryKind` enum**, pairing with the `getType()`/`ValueType`
   that `Value` already had. The visitor is not reachable from outside the connector, and users
   receive entries rather than construct them, so without a discriminator their only branch would be
   `instanceof`. A test pairs each enum constant with exactly one subtype in both directions, since
-  the compiler holds the visitor but not the enum. **This half does have a 1.0.0 deadline**, which
+  the compiler holds the visitor but not the enum. **This half had a 1.0.0 deadline**, which
   the visitor half does not: it is the abstract public method the japicmp run above stopped, so
-  after 1.0.0 it would cost an exclusion and a release-notes entry rather than nothing. Adding a
+  adding it after 1.0.0 would have cost more than nothing — since the
+  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) re-tier, a
+  minor-release-notes entry under `-Pjapicmp-patch` rather than the major-release exclusion the
+  `@Public` tier would have demanded. Adding a
   constant later stays clean — the run reported the `EntryKind` enum itself, and each of its
   constants, as compatible additions.
 - **Two things stay as they were.** The serializer's `readEntry`, `readValue`, `copyEntry` and
@@ -102,7 +112,10 @@ exhaustiveness alone.
   of a *concrete* `accept`, and a concrete one does not fail the build when a subtype forgets to
   override it — which is the entire benefit. An abstract public one would be a break japicmp stops:
   the run above did stop `getKind()`, an abstract public method on the same class, so this is
-  measured rather than predicted. It would need an exclusion and a release note after 1.0.0. The
+  measured rather than predicted. Since the
+  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) re-tier it would need a
+  minor-release-notes entry (the class is `@PublicEvolving`; only `-Pjapicmp-patch` compares it)
+  rather than a major-release exclusion. The
   package-private form avoids the trade rather than resolving it.
 - **Bind the envelope's `kind` strings to `EntryKind`.** Those strings are the SQL-visible output of
   the change-stream envelope; deriving them from the enum would let renaming a constant change what

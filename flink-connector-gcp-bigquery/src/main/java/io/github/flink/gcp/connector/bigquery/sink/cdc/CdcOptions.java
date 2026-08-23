@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.cdc;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.Experimental;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
@@ -30,7 +30,7 @@ import java.io.Serializable;
  * must return a valid non-null sequence for every record the configured serializer does not skip.
  * Instances are immutable and serializable.
  */
-@Public
+@Experimental
 public final class CdcOptions<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
@@ -65,7 +65,7 @@ public final class CdcOptions<T> implements Serializable {
     }
 
     /** Builder for {@link CdcOptions}. */
-    @Public
+    @Experimental
     public static final class Builder<T> {
 
         private final CdcChangeTypeProvider<? super T> changeTypeProvider;

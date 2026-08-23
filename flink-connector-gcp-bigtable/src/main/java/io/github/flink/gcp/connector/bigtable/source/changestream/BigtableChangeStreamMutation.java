@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.typeinfo.TypeInfo;
 import org.apache.flink.util.Preconditions;
 
@@ -47,7 +47,7 @@ import java.util.OptionalLong;
  * print, through the accessors. Spanner's {@code DataChangeRecord} is governed by the same
  * reasoning.
  */
-@Public
+@PublicEvolving
 @TypeInfo(BigtableChangeStreamMutationTypeInfoFactory.class)
 public final class BigtableChangeStreamMutation implements Serializable {
 
@@ -150,7 +150,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
                 entries);
     }
 
-    @Public
+    @PublicEvolving
     public enum MutationType {
         USER,
         GARBAGE_COLLECTION
@@ -164,7 +164,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
      * a package-private visitor instead, so that a subtype added here cannot compile until every
      * handler states what it does with it.
      */
-    @Public
+    @PublicEvolving
     public abstract static class Entry implements Serializable {
         private static final long serialVersionUID = 1L;
 
@@ -181,7 +181,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Which subtype an {@link Entry} is. */
-    @Public
+    @PublicEvolving
     public enum EntryKind {
         SET_CELL,
         DELETE_CELLS,
@@ -191,7 +191,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Writes one cell version. */
-    @Public
+    @PublicEvolving
     public static final class SetCellEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -258,7 +258,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Deletes cell versions in one timestamp range. */
-    @Public
+    @PublicEvolving
     public static final class DeleteCellsEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -319,7 +319,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Deletes every cell in one family. */
-    @Public
+    @PublicEvolving
     public static final class DeleteFamilyEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -358,7 +358,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Adds an aggregate input to one cell. */
-    @Public
+    @PublicEvolving
     public static final class AddToCellEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -424,7 +424,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Merges an aggregate input into one cell. */
-    @Public
+    @PublicEvolving
     public static final class MergeToCellEntry extends Entry {
         private static final long serialVersionUID = 1L;
 
@@ -495,7 +495,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
      * <p>The constructor is private, so the subtypes below are the complete set. Branch on {@link
      * Value#getType()} rather than on the concrete type, for the reason {@link Entry} gives.
      */
-    @Public
+    @PublicEvolving
     public abstract static class Value implements Serializable {
         private static final long serialVersionUID = 1L;
 
@@ -508,7 +508,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
                 throws IOException;
     }
 
-    @Public
+    @PublicEvolving
     public enum ValueType {
         RAW_VALUE,
         RAW_TIMESTAMP,
@@ -516,7 +516,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Arbitrary bytes in an aggregate entry. */
-    @Public
+    @PublicEvolving
     public static final class RawValue extends Value {
         private static final long serialVersionUID = 1L;
 
@@ -553,7 +553,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** A raw microsecond timestamp in an aggregate entry. */
-    @Public
+    @PublicEvolving
     public static final class RawTimestamp extends Value {
         private static final long serialVersionUID = 1L;
 
@@ -590,7 +590,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** A signed 64-bit integer in an aggregate entry. */
-    @Public
+    @PublicEvolving
     public static final class Int64Value extends Value {
         private static final long serialVersionUID = 1L;
 
@@ -627,7 +627,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** One timestamp-range boundary. */
-    @Public
+    @PublicEvolving
     public static final class TimestampBound implements Serializable {
         private static final long serialVersionUID = 1L;
 
@@ -674,7 +674,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
         }
     }
 
-    @Public
+    @PublicEvolving
     public enum BoundType {
         OPEN,
         CLOSED,
@@ -682,7 +682,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
     }
 
     /** Timestamp range affected by a cell deletion. */
-    @Public
+    @PublicEvolving
     public static final class TimestampRange implements Serializable {
         private static final long serialVersionUID = 1L;
 

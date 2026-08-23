@@ -169,6 +169,9 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 
 ## `BigtableChangeStreamSource.builder()`
 
+`@PublicEvolving`: the change-stream API may change at a minor release, announced in the release
+notes.
+
 | Option | Default | What it does |
 |---|---|---|
 | `table` | **required** | The change-stream-enabled table to read |

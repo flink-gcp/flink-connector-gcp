@@ -103,7 +103,10 @@ Two standing rules are refined, not broken, by this knob:
   behavior that can move independently. Neither invalidates the design — the knob's default
   deliberately does not encode either number.
 - This is the repository's first configured `ChannelPoolSettings`; a connector wanting the same
-  lever starts from this record and ADR-0081's ownership constraint.
+  lever starts from this record and ADR-0081's ownership constraint. The type is class-level
+  `@BetaApi` in the pinned gax — an internal call, tier-irrelevant under
+  [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md),
+  whose inventory records it.
 
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#1015]: https://github.com/flink-gcp/flink-connector-gcp/issues/1015

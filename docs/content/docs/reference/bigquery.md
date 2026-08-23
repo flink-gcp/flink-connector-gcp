@@ -81,6 +81,8 @@ Supported types, Java values and row-failure behavior are under
 
 ## `CdcOptions`
 
+Experimental ([#706]({{< param BookRepo >}}/issues/706)); the whole CDC surface may change in any
+release until the upstream question settles.
 CDC metadata for `STORAGE_API_AT_LEAST_ONCE`, set through `cdcOptions(...)`.
 The destination table prerequisites, pseudocolumn behavior and configuration example are under
 [Change data capture]({{< relref "docs/connectors/datastream/bigquery" >}}#change-data-capture).
@@ -197,6 +199,7 @@ See
 
 ## `CdcTableOptions`
 
+Experimental ([#706]({{< param BookRepo >}}/issues/706)), with the rest of the CDC surface.
 Applied by `cdcTableOptions(...)` or `cdcTableOptionsProvider(...)` to each CDC destination.
 The selected reconciliation policy decides whether an existing table is only verified or has its
 managed mutable properties converged.

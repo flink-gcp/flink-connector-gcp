@@ -31,7 +31,10 @@ retry loop does the connector still owe? Read out of `google-cloud-bigquerystora
 version `libraries-bom` 26.85.1 resolves) and its gax 2.82.0:
 
 - `BigQueryReadClient.readRowsCallable()` is built by `EnhancedBigQueryReadStub`, which installs
-  `ReadRowsResumptionStrategy`. Its resume request is `originalRequest.getOffset() + rowsProcessed`,
+  `ReadRowsResumptionStrategy`. (`BigQueryReadClient` and `BigQueryReadSettings` are themselves
+  class-level `@BetaApi` while the Storage Read service is GA — an internal call, tier-irrelevant
+  under [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md),
+  whose inventory records it.) Its resume request is `originalRequest.getOffset() + rowsProcessed`,
   where `rowsProcessed` counts the rows of every response handed to the caller. **A broken
   `ReadRows` is therefore resumed at exactly the right row, transparently — no duplicate, no gap.**
 - What earns a resume is `ApiResultRetryAlgorithm` over `Errors.isRetryableStatus`, plus the

@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
@@ -43,7 +43,7 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.reader.Bigtabl
 import javax.annotation.Nullable;
 
 /** FLIP-27 source for Bigtable Change Streams. */
-@Public
+@PublicEvolving
 public final class BigtableChangeStreamSource<T>
         implements Source<T, ChangeStreamPartitionSplit, BigtableChangeStreamEnumeratorState>,
                 ResultTypeQueryable<T> {

@@ -77,6 +77,12 @@ rather than assumed:
   the Evidence section carries the numbers and their limits. There is no local fix to weigh
   against them, which is why the knob to reach for is upstream, not here.
 
+The admin path the auto-creation feature later added has vendor tiers of its own — the
+client's `GCRules` is class-level `@BetaApi`, and the admin methods the ensure calls are
+`@ObsoleteApi` —
+recorded in [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)'s
+inventory under the same accepted-internal-call reading as the batcher facts above.
+
 Further design decisions of the same cluster:
 
 - **Retries stay in the client, so this module has no `RetrySchedule` and no retry knobs.**

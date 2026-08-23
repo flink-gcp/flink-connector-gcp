@@ -80,7 +80,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   family, and the reverse combination is rejected too — a disposition without a schema is the
   feature #233 argued against. GC rules travel in the sink's own `Serializable` `GcRule` model
   (the client's `GCRules` does not serialize); its `maxAge` converts seconds-and-nanos, never
-  `toNanos()`, so ADR-0068's ceiling deliberately does not apply.
+  `toNanos()`, so ADR-0068's ceiling deliberately does not apply. Two admin-path tiers to reread
+  on a BOM bump, both internal calls, tier-irrelevant under `docs/adr/0141`: the client's
+  `GCRules` is class-level `@BetaApi`, and the admin methods the module calls —
+  `createTable`, `getTable`, `modifyFamilies` on this ensure; `getTable` and `getAppProfile` on
+  the change-stream coordinator's preflight — are `@ObsoleteApi`, pointed at the proto-based
+  `getBaseClient()` route.
 - **`NOT_FOUND` outranks everything in the classifier** — ahead of the transient-anywhere check,
   `PubSubErrorClassifier`'s precedence — and, unlike Pub/Sub's ADR-0006, **the disposition gates
   the parking itself** (no cascades, no ordering keys). `tableMissing` is the only thing that
@@ -251,7 +256,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The native SDK surface stops at the reader boundary.** `GenerateInitialChangeStreamPartitions`,
   `ReadChangeStream`, `ReadChangeStreamQuery`, `ChangeStreamMutation`, and its entry types carry an
   Apache-Beam-only `@InternalApi` annotation in the pinned client; its aggregate `Value` model is
-  `@BetaApi`. The reader inspects complete SDK mutations, converts only retained entries to the
+  `@BetaApi`. Because the connector-owned public model mirrors that unstable surface, the whole
+  change-stream public surface — `BigtableChangeStreamSource(+Builder)`, the deserialization
+  schemas, `BigtableChangeStreamMutation` and its nested types — is `@PublicEvolving`, not
+  `@Public` (`docs/adr/0141`, `docs/adr/0124`'s revision). The reader inspects complete SDK
+  mutations, converts only retained entries to the
   connector-owned public model, and exposes no public raw-SDK escape. With no entry filters it
   bypasses filter evaluation but still performs the public-model conversion. Reread the input
   surface on every client upgrade and extend `BigtableChangeStreamMutationConverter` — the one

@@ -16,13 +16,13 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.cdc;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.Experimental;
 
 import java.io.Serializable;
 
 /** Extracts the BigQuery change sequence number for one record. */
 @FunctionalInterface
-@Public
+@Experimental
 public interface CdcSequenceNumberProvider<T> extends Serializable {
 
     /**
