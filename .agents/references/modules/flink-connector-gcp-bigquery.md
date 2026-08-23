@@ -422,6 +422,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   it is a `ThreadSafeSimpleCounter` because the client's retry scheduler increments it. The listener
   is registered through `RowStreamOpener.setRetryListener`, once per subtask **before any fetcher
   starts** — the client captures it when it is built, so a later registration reports nothing.
+- **`ReadClientRowStreamOpener`'s client lifecycle is monitor-only, deliberately**
+  (`docs/adr/0131`, refined by #1046). Every read and write of its `client` and `closed` fields
+  happens inside `synchronized (this)`, so unlike the Bigtable and Spanner seams there is no
+  `volatile` and no double-checked fast path — they would guard reads that do not exist, and
+  opening a stream is a per-split rarity for which taking the monitor costs nothing. Only
+  `onRetry` is volatile, because its write does not take the monitor. Credentials arrive by pull —
+  the key file remains a path in the job graph and each component loads its own — not through a
+  push seam, and a `LazyBigtableDataClient`-style holder stays declined: a holder with one user is
+  a rename.
 - **Session expiry is explained, never pre-empted** (`docs/adr/0084`): the split carries the
   session's expiry so a failure past it says a restart cannot help, and **nothing refuses to read
   on a local clock** — not the reader, not the enumerator's restore check, which stays a warning.

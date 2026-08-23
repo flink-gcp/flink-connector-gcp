@@ -183,9 +183,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   guards more than client construction: the re-check `open()` makes after opening the transaction
   outside the monitor reads that flag and writes `transaction` under the same monitor `close()`
   takes to set the flag and read the field, and that interlock is what keeps a transaction the
-  teardown could not see from leaking its session. Bigtable's holder pays because neither seam it
-  serves owns a second lifecycle, both closes being one delegating line — it is not a precedent
-  here.
+  teardown could not see from leaking its session. Bigtable's holder pays because none of the
+  seams it serves owns a second lifecycle, each close being one delegating line — it is not a
+  precedent here.
 - `SpannerCredentials` loads only service-account JSON and returns `null` when no credential
   override is configured. Serialize only `serviceAccountKeyFile` paths: bounded and Change Streams
   coordinators load on the JobManager, bounded and Change Streams readers and sink writers load on

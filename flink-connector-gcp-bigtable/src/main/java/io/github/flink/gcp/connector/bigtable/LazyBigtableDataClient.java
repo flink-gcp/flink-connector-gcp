@@ -33,24 +33,27 @@ import java.io.Serializable;
  * A {@link BigtableDataClient} built on first use and closed once, held by a seam implementation
  * that travels in the job graph.
  *
- * <p>The seams that read through the data client — the scan source's row-stream opener and its
- * row-key sampler — differ in the one call they make and share everything around it: the settings
- * they build, the provider their owner hands them, the lazy construction and the close. That shared
- * half lives here so that neither seam owns a private copy of client lifecycle code.
+ * <p>The seams that read through the data client — the scan source's row-stream opener and row-key
+ * sampler, and the change-stream source's opener — differ in the one call they make and share
+ * everything around it: the settings they build, the provider their owner hands them, the lazy
+ * construction and the close. That shared half lives here so that no seam owns a private copy of
+ * client lifecycle code.
  *
  * <p>No key-file path travels here. The runtime component that owns the seam loads one provider for
  * every client family it owns and pushes it in, so this holder never loads a second one.
  *
- * <p>The client is {@code transient} because the reader-side holder, {@code
- * DataClientRowStreamOpener}, is serialized into the job graph — the enumerator-side holder is not
- * any more, since {@code docs/adr/0128} mints one sampler per enumerator, so for that owner the
- * marker is inert rather than load-bearing. It is {@code volatile} because the thread that builds
- * it is not the thread that closes it, and built under this object's monitor rather than a lock
- * field, because a lock field would have to travel in the job graph too. Which threads those are
- * depends on the seam: a reader's split fetchers open streams from their own threads while {@code
- * close()} runs on the task thread once the fetchers are down, and an enumerator samples from the
- * executor {@code SplitEnumeratorContext#callAsync} hands the work to while {@code close()} runs on
- * the coordinator thread.
+ * <p>The client is {@code transient} because the reader-side holders, {@code
+ * DataClientRowStreamOpener} and {@code DataClientChangeStreamOpener}, are serialized into the job
+ * graph — the enumerator-side holder is not any more, since {@code docs/adr/0128} mints one sampler
+ * per enumerator, so for that owner the marker is inert rather than load-bearing. It is {@code
+ * volatile} because the thread that builds it may not be the thread that closes it, and built under
+ * this object's monitor rather than a lock field, because a lock field would have to travel in the
+ * job graph too. Which threads those are depends on the seam: a scan reader's split fetchers open
+ * streams from their own threads while {@code close()} runs on the task thread once the fetchers
+ * are down; an enumerator samples from the executor {@code SplitEnumeratorContext#callAsync} hands
+ * the work to while {@code close()} runs on the coordinator thread; the change-stream reader has no
+ * fetcher pool and opens and closes on its one task thread, inheriting the guarding rather than
+ * needing it.
  */
 @Internal
 public final class LazyBigtableDataClient implements Serializable {

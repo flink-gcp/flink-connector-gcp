@@ -21,11 +21,10 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ResponseObserver;
-import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ReadChangeStreamQuery;
-import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitions;
@@ -52,13 +51,22 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
      */
     static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(5);
 
-    private final String appProfileId;
-    @Nullable private transient volatile BigtableDataClient client;
-    @Nullable private transient CredentialsProvider credentials;
-    private transient volatile boolean closed;
+    /**
+     * The client this opener streams through, and everything around building it. Unlike the scan
+     * source's two seams, every call here runs on the reader's task thread — the change-stream
+     * reader has no split-fetcher pool — so the holder's thread guarding is inherited rather than
+     * demanded by this seam.
+     */
+    private final LazyBigtableDataClient client;
 
+    /**
+     * Creates the opener.
+     *
+     * @param appProfileId the single-cluster application profile the change stream is read through
+     */
     public DataClientChangeStreamOpener(String appProfileId) {
-        this.appProfileId = appProfileId;
+        // The change-stream source has no emulator option, so no endpoint ever reaches this seam.
+        this.client = new LazyBigtableDataClient("change-stream opener", appProfileId, null);
     }
 
     @Override
@@ -68,7 +76,7 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
             @Nullable Instant endTime,
             ResponseObserver<ChangeStreamRecord> observer)
             throws IOException {
-        client(table).readChangeStreamAsync(query(table, split, endTime), observer);
+        client.get(table).readChangeStreamAsync(query(table, split, endTime), observer);
     }
 
     static ReadChangeStreamQuery query(
@@ -88,43 +96,23 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
         return query;
     }
 
-    private BigtableDataClient client(TableDestination table) throws IOException {
-        BigtableDataClient existing = client;
-        if (existing != null) {
-            return existing;
-        }
-        synchronized (this) {
-            if (closed) {
-                throw new IOException("The Bigtable change-stream opener was already closed.");
-            }
-            if (client == null) {
-                client = BigtableDataClient.create(settings(table));
-            }
-            return client;
-        }
-    }
-
-    /** Builds the stream settings, exposed so tests can verify runtime credentials. */
+    /**
+     * Builds the client settings. Visible to the module's tests because the mapping is otherwise
+     * observable only through the client's behaviour: an application profile that never reaches the
+     * client looks exactly like one that does.
+     */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination table) throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, null, credentials).build();
+        return client.settings(table);
     }
 
     @Override
-    public void close() {
-        BigtableDataClient toClose;
-        synchronized (this) {
-            closed = true;
-            toClose = client;
-            client = null;
-        }
-        if (toClose != null) {
-            toClose.close();
-        }
+    public void close() throws IOException {
+        client.close();
     }
 
     @Override
     public void useCredentials(@Nullable CredentialsProvider credentials) {
-        this.credentials = credentials;
+        client.useCredentials(credentials);
     }
 }

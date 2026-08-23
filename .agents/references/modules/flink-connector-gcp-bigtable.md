@@ -184,9 +184,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `RowKeySamplerFactory`, not a sampler, and `BigtableReadRowsSource` mints one in both
   `createEnumerator` and `restoreEnumerator`, closing it itself if the enumerator's constructor
   throws before taking it. `RowKeySampler` is deliberately not `Serializable`. The sticky flag is a
-  level down, in `LazyBigtableDataClient`, whose other holder — the reader-side
-  `DataClientRowStreamOpener` — is unaffected, because a reader's copy is deserialized per task
-  attempt.
+  level down, in `LazyBigtableDataClient`, whose reader-side holders —
+  `DataClientRowStreamOpener` and the change-stream `DataClientChangeStreamOpener` — are
+  unaffected, because a reader's copy is deserialized per task attempt.
 
 - **The assignment protocol is the base module's** (`docs/adr/0083`): `BigtableScanSplitEnumerator`
   extends `PullAssignmentSplitEnumerator` and supplies the sampling — `restore`, the sampling call,
@@ -285,6 +285,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   credentials load, a split-shaped signature; the policy stays the base
   `StartPositionResolver`'s. Spanner resolves at the enumerator alone and uses the base API
   bare; do not read the wrapper as a second restore policy or port it there.
+- **The change-stream opener holds the shared client holder rather than its own lifecycle**
+  (`docs/adr/0131`, refined by #1046). `DataClientChangeStreamOpener` carried the module's third
+  copy of the lazy client lifecycle — left out of the #956 fold because its credentials arrived by
+  push while the scan seams still pulled, an asymmetry #974 removed. It measures clean against
+  ADR-0131's question: `open(...)` retains nothing, every stream's lifecycle lives in the reader's
+  `ActiveRead`, and nothing re-checks after an unguarded call. So it delegates to
+  `LazyBigtableDataClient` like the scan source's two seams, and the closed-before-use failure is
+  the holder's, naming the seam and the table. The seam has no emulator-endpoint source, so the
+  holder is constructed with none.
 - **The service partition always goes onto the wire as `[closed start, open end)`, even when an
   endpoint is empty.** The SDK uses an empty key for an infinite endpoint but the service still
   requires the protobuf boundary oneof to be set. `RowRanges.copyOf` intentionally normalizes the
