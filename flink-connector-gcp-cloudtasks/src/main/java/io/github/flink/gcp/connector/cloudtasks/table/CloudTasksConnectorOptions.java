@@ -25,7 +25,17 @@ import com.google.cloud.tasks.v2.HttpMethod;
 import java.time.Duration;
 import java.util.Map;
 
-/** The {@code WITH} options of the {@code cloud-tasks} table connector. */
+/**
+ * The {@code WITH} options of the {@code cloud-tasks} table connector.
+ *
+ * <p>A mapped option is declared without a default — its default lives on the writer options object
+ * it feeds and is applied by not calling the setter. The table-owned target selection and method
+ * options carry their own {@code defaultValue()}. No description restates a default — a builder's,
+ * an option's own {@code defaultValue()}, or the value absence selects: the reference and table
+ * docs pages carry a default with its derivation, and a test rejects the restatement phrases. "The
+ * default HTTP method" naming a per-row-overridable option's role, and a constraint absence imposes
+ * ("the table must declare ..."), are deliberately outside that rule: neither states a value.
+ */
 @PublicEvolving
 public final class CloudTasksConnectorOptions {
 
@@ -95,9 +105,7 @@ public final class CloudTasksConnectorOptions {
             ConfigOptions.key("http.oidc.audience")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription(
-                            "OIDC audience. Requires http.oidc.service-account-email; when absent"
-                                    + " Cloud Tasks uses the target URL.");
+                    .withDescription("OIDC audience. Requires http.oidc.service-account-email.");
 
     public static final ConfigOption<String> HTTP_OAUTH_SERVICE_ACCOUNT_EMAIL =
             ConfigOptions.key("http.oauth.service-account-email")
@@ -111,9 +119,7 @@ public final class CloudTasksConnectorOptions {
             ConfigOptions.key("http.oauth.scope")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription(
-                            "OAuth scope. Requires http.oauth.service-account-email; when absent"
-                                    + " Cloud Tasks uses its default scope.");
+                    .withDescription("OAuth scope. Requires http.oauth.service-account-email.");
 
     public static final ConfigOption<String> APP_ENGINE_RELATIVE_URI =
             ConfigOptions.key("app-engine.relative-uri")
@@ -173,8 +179,7 @@ public final class CloudTasksConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Path to a service-account JSON key file readable from every eligible"
-                                    + " TaskManager. Uses application-default credentials when"
-                                    + " unset and cannot be combined with emulator-endpoint.");
+                                    + " TaskManager. Cannot be combined with emulator-endpoint.");
 
     public static final ConfigOption<String> EMULATOR_ENDPOINT =
             ConfigOptions.key("emulator-endpoint")
@@ -194,9 +199,7 @@ public final class CloudTasksConnectorOptions {
             ConfigOptions.key("sink.channel-pool-size")
                     .intType()
                     .noDefaultValue()
-                    .withDescription(
-                            "The number of gRPC channels the client opens; unset leaves the"
-                                    + " client's default single channel.");
+                    .withDescription("The number of gRPC channels the client opens.");
 
     public static final ConfigOption<Duration> SINK_RETRY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.retry.initial-backoff")

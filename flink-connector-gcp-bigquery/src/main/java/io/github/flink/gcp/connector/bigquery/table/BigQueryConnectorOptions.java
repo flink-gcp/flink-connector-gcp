@@ -44,7 +44,9 @@ import java.util.List;
  *       BigQuerySourceBuilder.parentProject(...)}.
  *   <li><b>Every option is declared without a Flink default.</b> Direction-specific requirements
  *       and the parent-project fallback remain explicit in the factory rather than being hidden in
- *       the configuration object.
+ *       the configuration object. No default is restated in a description either — a declared one,
+ *       a derived one, or the value absence selects: {@code reference/bigquery.md} carries a
+ *       default with its derivation, and a test rejects the restatement phrases.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>There is no {@code format} option.</b> A Pub/Sub message has an opaque payload, so a
@@ -69,9 +71,7 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The Google Cloud project owning the destination table. Given as a"
-                                    + " bare project id, not a resource path. For a source query,"
-                                    + " this is the project that runs and pays for the query job"
-                                    + " unless source.parent-project is set instead.");
+                                    + " bare project id, not a resource path.");
 
     public static final ConfigOption<String> DATASET =
             ConfigOptions.key("dataset")
@@ -117,8 +117,7 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "A path at which the same service-account JSON key is available to"
                                     + " every Job Manager and Task Manager that opens a BigQuery"
-                                    + " or Cloud Storage client. When absent, clients use"
-                                    + " application-default credentials.");
+                                    + " or Cloud Storage client.");
 
     // ------------------------------------------------------------------------
     //  Source
@@ -129,9 +128,8 @@ public final class BigQueryConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The project that owns and is billed for the Storage Read session."
-                                    + " Defaults to project; set it independently when reading a"
-                                    + " table owned by another project.");
+                            "The project that owns and is billed for the Storage Read session;"
+                                    + " set it when reading a table owned by another project.");
 
     public static final ConfigOption<String> SOURCE_QUERY =
             ConfigOptions.key("source.query")
@@ -139,9 +137,7 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "A GoogleSQL query whose result is read instead of the configured"
-                                    + " table. Dataset and table are not required; project is the"
-                                    + " billing project unless source.parent-project overrides"
-                                    + " it.");
+                                    + " table. Dataset and table are not required.");
 
     public static final ConfigOption<Boolean> SOURCE_MATERIALIZE_VIEWS =
             ConfigOptions.key("source.materialize-views")
@@ -162,8 +158,7 @@ public final class BigQueryConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The dataset receiving a source query's temporary result table."
-                                    + " Absent uses BigQuery's anonymous dataset.");
+                            "The dataset receiving a source query's temporary result table.");
 
     public static final ConfigOption<Duration> SOURCE_REUSE_QUERY_RESULT_WITHIN =
             ConfigOptions.key("source.reuse-query-result-within")
@@ -246,8 +241,7 @@ public final class BigQueryConnectorOptions {
                                     + " 'asia-northeast1'. Setting it avoids a metadata lookup"
                                     + " when a write connection is opened and locates CDC"
                                     + " maximum-staleness jobs; under FILE_LOADS it is the"
-                                    + " location load jobs run in, derived from the"
-                                    + " destination dataset when unset.");
+                                    + " location load jobs run in.");
 
     public static final ConfigOption<Boolean> SINK_CDC_ENABLED =
             ConfigOptions.key("sink.cdc.enabled")
@@ -289,7 +283,7 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The maximum staleness the sink manages for a CDC table through"
-                                    + " verified DDL. Absent, the property is unmanaged.");
+                                    + " verified DDL.");
 
     public static final ConfigOption<Boolean> SINK_CDC_CLEAR_MAX_STALENESS =
             ConfigOptions.key("sink.cdc.clear-max-staleness")
@@ -305,8 +299,7 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Whether an existing CDC table is only verified or has mutable"
-                                    + " CDC properties reconciled. Defaults to"
-                                    + " verify-only.");
+                                    + " CDC properties reconciled.");
 
     public static final ConfigOption<Boolean> SINK_SCHEMA_UPDATE_ALLOW_NEW_FIELDS =
             ConfigOptions.key("sink.schema-update.allow-new-fields")
@@ -334,8 +327,7 @@ public final class BigQueryConnectorOptions {
                             .enumType(TableCreateOptions.TimePartitioningType.class)
                             .noDefaultValue()
                             .withDescription(
-                                    "The granularity a created table is time-partitioned at. Absent,"
-                                            + " the table is not partitioned.");
+                                    "The granularity a created table is time-partitioned at.");
 
     public static final ConfigOption<String> SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD =
             ConfigOptions.key("sink.table-create.time-partitioning.field")
@@ -343,8 +335,7 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The TIMESTAMP, DATE or DATETIME column a created table is partitioned"
-                                    + " on. Absent, the table is partitioned on ingestion time,"
-                                    + " which no column can name. Requires"
+                                    + " on. Requires"
                                     + " 'sink.table-create.time-partitioning.type'.");
 
     public static final ConfigOption<Duration> SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION =
@@ -352,8 +343,7 @@ public final class BigQueryConnectorOptions {
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
-                            "How long BigQuery keeps a partition of a created table. Absent,"
-                                    + " partitions never expire. Requires"
+                            "How long BigQuery keeps a partition of a created table. Requires"
                                     + " 'sink.table-create.time-partitioning.type'.");
 
     public static final ConfigOption<List<String>> SINK_TABLE_CREATE_CLUSTERED_FIELDS =
@@ -620,10 +610,9 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The dataset holding temporary tables when a load is too large for one"
-                                    + " job or replacement rows span staging formats. Absent, each"
-                                    + " destination table's own dataset is used; a dedicated"
-                                    + " dataset with a default table expiration collects the ones"
-                                    + " a hard failure orphans.");
+                                    + " job or replacement rows span staging formats. Point it at"
+                                    + " a dedicated dataset with a default table expiration to"
+                                    + " collect the temporary tables a hard failure orphans.");
 
     public static final ConfigOption<WriteDisposition> SINK_FILE_LOADS_WRITE_DISPOSITION =
             ConfigOptions.key("sink.file-loads.write-disposition")
@@ -665,8 +654,8 @@ public final class BigQueryConnectorOptions {
                     .enumType(StagingFormat.class)
                     .noDefaultValue()
                     .withDescription(
-                            "The file format rows are staged in before loading. Avro is the default"
-                                    + " and the recommended value; Parquet is opt-in, needs"
+                            "The file format rows are staged in before loading. Avro is the"
+                                    + " recommended value; Parquet is opt-in, needs"
                                     + " dependencies this connector does not ship, cannot carry a"
                                     + " JSON column (such a destination falls back to Avro), and"
                                     + " loads several times more slowly below 256 MiB of input per"

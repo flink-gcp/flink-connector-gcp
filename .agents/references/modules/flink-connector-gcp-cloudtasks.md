@@ -51,11 +51,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   counter); `ALREADY_EXISTS` is `tasksDeduplicated`, never an error; per-queue counters are
   looked up per record (no per-destination state exists to cache a handle on).
 
-## Table sink (`docs/adr/0107`)
+## Table sink (`docs/adr/0107`; shared rules `docs/adr/0139`)
 
 - A single option value a DataStream builder rejects is renamed to its option key through the
   module's `table.OptionSetters` (`docs/adr/0133`); a new mapper line goes through it, and
   cross-field checks keep the restate-in-DDL-keys judgment (`docs/adr/0007`).
+- A mapped option carries no default and no description restates one (`docs/adr/0139`); the
+  table-owned target selection and method options carry theirs, recorded in
+  `CloudTasksConnectorOptionsTest`, whose `noDescriptionRestatesADefault` guards the
+  descriptions — the reference page or the table page's row is where a default is written. "The
+  default HTTP method" naming a per-row-overridable option's role, and the constraint absence
+  imposes on `url`/`relative-uri` metadata, are deliberately outside the rule.
 - `cloud-tasks` is insert-only and maps one table to one fixed queue. `target.type` defaults to
   external HTTP and can select App Engine without translating between their protobuf request arms.
   A generic Flink format sees physical columns only; writable target metadata configures the task

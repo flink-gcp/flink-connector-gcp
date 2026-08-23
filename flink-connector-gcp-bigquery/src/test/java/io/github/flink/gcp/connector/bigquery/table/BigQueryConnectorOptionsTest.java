@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.description.HtmlFormatter;
 
 import org.junit.jupiter.api.Test;
 
@@ -101,8 +102,45 @@ class BigQueryConnectorOptionsTest {
     void noOptionCarriesADefault() {
         // The connector's defaults live in its own options objects and are applied by not calling a
         // setter. A default here would be a second copy that nothing keeps in step.
+        assertThat(declaredOptions()).isNotEmpty();
         assertThat(declaredOptions())
                 .allSatisfy(option -> assertThat(option.hasDefaultValue()).isFalse());
+    }
+
+    @Test
+    void noDescriptionRestatesADefault() {
+        // The other half of the rule above, and the half a ConfigOption cannot express: a default
+        // written into prose — a declared one, a derived one, or the value absence selects — is
+        // the same second copy, just out of reach of hasDefaultValue(). The phrases are the
+        // restatement forms the #1045 cross-module sweep found, shared by every connector's guard;
+        // a regression guard over those forms, not a semantic parser for arbitrary prose.
+        //
+        // When this fires, the description is what changes. reference/bigquery.md is where a
+        // default is written — a derived one included, carrying both its derivation and its
+        // resolved value.
+        HtmlFormatter formatter = new HtmlFormatter();
+        assertThat(declaredOptions()).isNotEmpty();
+        assertThat(declaredOptions())
+                .allSatisfy(
+                        option ->
+                                assertThat(formatter.format(option.description()))
+                                        .as(
+                                                "option '%s' restates a default;"
+                                                        + " reference/bigquery.md is where a"
+                                                        + " default is written",
+                                                option.key())
+                                        .doesNotContainIgnoringCase("by default")
+                                        .doesNotContainIgnoringCase("defaults to")
+                                        .doesNotContainIgnoringCase("when unset")
+                                        .doesNotContainIgnoringCase("unset means")
+                                        .doesNotContainIgnoringCase("when absent")
+                                        .doesNotContainIgnoringCase("absent uses")
+                                        .doesNotContainIgnoringCase("absent,")
+                                        .doesNotContainIgnoringCase("unset uses")
+                                        .doesNotContainIgnoringCase("unset keeps")
+                                        .doesNotContainIgnoringCase("unset leaves")
+                                        .doesNotContainIgnoringCase("is the default")
+                                        .doesNotContainIgnoringCase("and the default"));
     }
 
     @Test

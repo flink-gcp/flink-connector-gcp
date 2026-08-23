@@ -385,7 +385,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `SupportsSourceWatermark`, and applications own any ordinary watermark strategy and late-data
   policy they choose.
 
-## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`, Change Streams `docs/adr/0106`; shared rules `docs/adr/0014`)
+## Table API / SQL (`docs/adr/0086`, scan `docs/adr/0092`, Change Streams `docs/adr/0106`; shared rules `docs/adr/0014`, `docs/adr/0139`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption` per
   setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated. Table-owned options have no
@@ -394,7 +394,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `scan.row-key-encoding`, `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and
   `sink.insert-only-input-mode`; `scan.change-stream.changelog-mode` is deliberately required so
   selecting either Change Streams interpretation remains explicit. A mapped option gaining a
-  default and a defaulted table-owned option losing its own both fail.
+  default and a defaulted table-owned option losing its own both fail. "No default restated"
+  covers the *description* as well (#1045, `docs/adr/0139`):
+  `BigtableConnectorOptionsTest.noDescriptionRestatesADefault` rejects the shared restatement
+  phrases, and a failure edits the description — the reference page (mapped options) or the table
+  page's row (table-owned options) is where a default is written. The HBase-provenance sentence
+  on `null-string-literal` is deliberately outside the rule: it says whose the default is, not
+  what it is.
 - **Change Streams defaults to neither interpretation: its DDL explicitly selects the exact
   insert-only mutation envelope or the constrained selected-cell upsert contract** (#600, #603,
   ADR-0106).
