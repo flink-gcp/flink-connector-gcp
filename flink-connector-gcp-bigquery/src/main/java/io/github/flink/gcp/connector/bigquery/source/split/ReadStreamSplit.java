@@ -32,7 +32,7 @@ import java.util.Objects;
  * ReadRowsRequest.offset} takes, so a restored split resumes exactly where the last checkpoint left
  * off. It is advanced by the record emitter once after each successful deserializer call and its
  * synchronous downstream emissions. This class is the immutable form that is checkpointed and
- * assigned, while {@link BigQueryReadStreamSplitState} is the mutable form a reader works with.
+ * assigned, while {@link ReadStreamSplitState} is the mutable form a reader works with.
  *
  * <p>The split carries the session's Avro schema because a reader is handed splits and nothing
  * else: both {@code ReadSession} and the responses of a {@code ReadRows} call do report the schema,
