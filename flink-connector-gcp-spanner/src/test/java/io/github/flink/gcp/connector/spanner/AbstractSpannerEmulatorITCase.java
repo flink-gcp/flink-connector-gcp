@@ -25,11 +25,11 @@ import com.google.cloud.spanner.InstanceId;
 import com.google.cloud.spanner.InstanceInfo;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
-import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.spanner.SpannerEmulatorContainers;
+import io.github.flink.gcp.connector.testutils.spanner.SpannerTestClients;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Timeout;
@@ -67,12 +67,7 @@ public abstract class AbstractSpannerEmulatorITCase {
 
     @BeforeAll
     static void startHarness() throws Exception {
-        spanner =
-                SpannerOptions.newBuilder()
-                        .setProjectId(PROJECT)
-                        .setEmulatorHost(emulatorEndpoint())
-                        .build()
-                        .getService();
+        spanner = SpannerTestClients.forEmulator(emulatorEndpoint(), PROJECT);
         spanner.getInstanceAdminClient()
                 .createInstance(
                         InstanceInfo.newBuilder(InstanceId.of(PROJECT, INSTANCE))

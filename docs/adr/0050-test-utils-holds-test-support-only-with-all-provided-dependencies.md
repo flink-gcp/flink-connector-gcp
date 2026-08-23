@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290]); the source-reader outputs
   2026-08-09 and the pull-assignment context fakes 2026-08-10 ([#437]); the Cloud Tasks
-  emulator fixture 2026-08-17 ([#776])
-- Issues: [#27], [#290], [#26], [#181], [#437], [#776]
+  emulator fixture 2026-08-17 ([#776]); revised by [#1057] (2026-08-23)
+- Issues: [#27], [#290], [#26], [#181], [#437], [#776], [#1057]
 - Modules: test-utils
 - Current behavior: (Claude-facing module; nothing user-rendered)
 
@@ -48,7 +48,15 @@ limitations under the License.
   identical code, the connector copy alone carrying the explanatory comment), so both halves moved — `testutils.cloudtasks.CloudTasksEmulatorContainers` and
   `CloudTasksTestClients`, neither naming a connector type. A refinement, not a reversal: the
   rule is unchanged, its "single-consumer" premise for that fixture had simply been overtaken.
-- **The second firing of that rule is the source-reader outputs** ([#437]): the BigQuery source
+- **Spanner shares its stock emulator client without sharing its connector fixture.**
+  `SpannerTestClients` takes only an endpoint and project, which both connector and SQL-module
+  harnesses can supply without naming a connector type.
+  The move replaced three inline construction sites: the two module-level harnesses measured by
+  [#1044], plus the connector's nested emulator-deviation test found when [#1057] re-counted the
+  current tree.
+  The callers keep their instance, database and client lifecycles; the shared factory returns one
+  caller-owned, unshaded `Spanner` service handle.
+- **Another firing of that rule is the source-reader outputs** ([#437]): the BigQuery source
   ([#390]) wrote its own `CollectingSourceOutput` and `CollectingReaderOutput` because
   `flink-connector-base`'s test jar is a dependency of no module here, which made the Pub/Sub
   source's the first copy and BigQuery's the second, so both moved to `testutils`. The Bigtable
@@ -127,3 +135,5 @@ limitations under the License.
 [#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
 [#437]: https://github.com/laughingman7743/flink-connector-gcp/issues/437
 [#776]: https://github.com/flink-gcp/flink-connector-gcp/issues/776
+[#1044]: https://github.com/flink-gcp/flink-connector-gcp/issues/1044
+[#1057]: https://github.com/flink-gcp/flink-connector-gcp/issues/1057

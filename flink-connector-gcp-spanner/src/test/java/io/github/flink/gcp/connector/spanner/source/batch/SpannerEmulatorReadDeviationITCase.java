@@ -27,11 +27,11 @@ import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerException;
-import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.testutils.spanner.SpannerTestClients;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -220,11 +220,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private static Spanner client() {
-        return SpannerOptions.newBuilder()
-                .setProjectId(PROJECT)
-                .setEmulatorHost(emulatorEndpoint())
-                .build()
-                .getService();
+        return SpannerTestClients.forEmulator(emulatorEndpoint(), PROJECT);
     }
 
     private static BatchClient batchClient(Spanner spanner, DatabaseDestination database) {

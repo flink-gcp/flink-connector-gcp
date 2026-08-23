@@ -130,6 +130,14 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
 
+        <!-- The Spanner half (testutils.spanner): the stock client the emulator harnesses use
+             beside the SQL uber-jar's relocated copy. Version managed by the libraries BOM. -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-spanner</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- The BigQuery half (testutils.bigquery). -->
         <dependency>
             <!-- GenericContainer for the goccy and aertje emulators, which testcontainers
