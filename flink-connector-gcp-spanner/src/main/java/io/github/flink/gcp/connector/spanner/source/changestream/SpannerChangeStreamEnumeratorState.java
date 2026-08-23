@@ -54,26 +54,26 @@ import java.util.OptionalLong;
 @Internal
 public final class SpannerChangeStreamEnumeratorState {
 
-    private final List<SpannerChangeStreamPartitionSplit> partitions;
+    private final List<ChangeStreamPartitionSplit> partitions;
     private final long sourceWatermark;
 
-    public SpannerChangeStreamEnumeratorState(List<SpannerChangeStreamPartitionSplit> partitions) {
+    public SpannerChangeStreamEnumeratorState(List<ChangeStreamPartitionSplit> partitions) {
         this(partitions, inferredSourceWatermark(partitions), true);
     }
 
     SpannerChangeStreamEnumeratorState(
-            List<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+            List<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
         this(partitions, sourceWatermark, true);
     }
 
     /** Copies a ledger whose invariants were already enforced by the coordinator mutation paths. */
     public static SpannerChangeStreamEnumeratorState snapshotOfCoordinatorLedger(
-            Collection<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+            Collection<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
         return new SpannerChangeStreamEnumeratorState(partitions, sourceWatermark, false);
     }
 
     private SpannerChangeStreamEnumeratorState(
-            Collection<SpannerChangeStreamPartitionSplit> partitions,
+            Collection<ChangeStreamPartitionSplit> partitions,
             long sourceWatermark,
             boolean validate) {
         Preconditions.checkNotNull(partitions, "partitions must not be null");
@@ -85,14 +85,13 @@ public final class SpannerChangeStreamEnumeratorState {
         this.sourceWatermark = sourceWatermark;
     }
 
-    private static long inferredSourceWatermark(
-            Collection<SpannerChangeStreamPartitionSplit> partitions) {
+    private static long inferredSourceWatermark(Collection<ChangeStreamPartitionSplit> partitions) {
         OptionalLong inferred = SpannerChangeStreamWatermarks.sourceWatermark(partitions);
         return inferred.isPresent() ? inferred.getAsLong() : Long.MIN_VALUE;
     }
 
     private static void validateSourceWatermark(
-            Collection<SpannerChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+            Collection<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
         OptionalLong current = SpannerChangeStreamWatermarks.sourceWatermark(partitions);
         Preconditions.checkArgument(
                 !current.isPresent() || sourceWatermark <= current.getAsLong(),
@@ -101,11 +100,11 @@ public final class SpannerChangeStreamEnumeratorState {
                 current.isPresent() ? current.getAsLong() : "<finished>");
     }
 
-    private static void validate(Collection<SpannerChangeStreamPartitionSplit> partitions) {
+    private static void validate(Collection<ChangeStreamPartitionSplit> partitions) {
         Preconditions.checkArgument(
                 !partitions.isEmpty(), "partitions must contain the initial partition ledger");
-        Map<String, SpannerChangeStreamPartitionSplit> partitionsById = new HashMap<>();
-        for (SpannerChangeStreamPartitionSplit partition : partitions) {
+        Map<String, ChangeStreamPartitionSplit> partitionsById = new HashMap<>();
+        for (ChangeStreamPartitionSplit partition : partitions) {
             Preconditions.checkNotNull(partition, "partitions must not contain null");
             Preconditions.checkArgument(
                     partitionsById.put(partition.splitId(), partition) == null,
@@ -113,22 +112,22 @@ public final class SpannerChangeStreamEnumeratorState {
                     partition.splitId());
         }
         Preconditions.checkArgument(
-                partitionsById.containsKey(SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
+                partitionsById.containsKey(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
                 "partition ledger must contain initial partition %s",
-                SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
-        for (SpannerChangeStreamPartitionSplit partition : partitions) {
+                ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
+        for (ChangeStreamPartitionSplit partition : partitions) {
             validateParents(partition, partitionsById);
         }
         validateAcyclic(partitions, partitionsById);
     }
 
     private static void validateAcyclic(
-            Collection<SpannerChangeStreamPartitionSplit> partitions,
-            Map<String, SpannerChangeStreamPartitionSplit> partitionsById) {
+            Collection<ChangeStreamPartitionSplit> partitions,
+            Map<String, ChangeStreamPartitionSplit> partitionsById) {
         Map<String, Integer> remainingParents = new HashMap<>();
         Map<String, List<String>> childrenByParent = new HashMap<>();
         Deque<String> ready = new ArrayDeque<>();
-        for (SpannerChangeStreamPartitionSplit partition : partitions) {
+        for (ChangeStreamPartitionSplit partition : partitions) {
             int parentCount = partition.getParentPartitionIds().size();
             remainingParents.put(partition.splitId(), parentCount);
             if (parentCount == 0) {
@@ -159,10 +158,10 @@ public final class SpannerChangeStreamEnumeratorState {
     }
 
     private static void validateParents(
-            SpannerChangeStreamPartitionSplit partition,
-            Map<String, SpannerChangeStreamPartitionSplit> partitionsById) {
+            ChangeStreamPartitionSplit partition,
+            Map<String, ChangeStreamPartitionSplit> partitionsById) {
         for (String parentId : partition.getParentPartitionIds()) {
-            SpannerChangeStreamPartitionSplit parent = partitionsById.get(parentId);
+            ChangeStreamPartitionSplit parent = partitionsById.get(parentId);
             Preconditions.checkArgument(
                     parent != null,
                     "partition %s names missing parent %s",
@@ -179,7 +178,7 @@ public final class SpannerChangeStreamEnumeratorState {
         }
     }
 
-    public List<SpannerChangeStreamPartitionSplit> getPartitions() {
+    public List<ChangeStreamPartitionSplit> getPartitions() {
         return partitions;
     }
 

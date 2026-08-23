@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0101: The Spanner Change Streams reader bounds asynchronous partition queries
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-14
+- Date: 2026-08-12; revised 2026-08-14 and by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23
 - Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
   [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
   [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
@@ -25,7 +25,8 @@ limitations under the License.
   [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554),
   [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581),
   [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635),
-  [#647](https://github.com/laughingman7743/flink-connector-gcp/issues/647)
+  [#647](https://github.com/laughingman7743/flink-connector-gcp/issues/647),
+  [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -94,7 +95,8 @@ On restore, the reader queues but does not open those splits until the coordinat
 An explicit whole-ledger fallback tells the reader to discard that queue and request the replacement null-token split.
 
 The enumerator counts child partitions when it first accepts them and reports both scheduled-partition count and oldest scheduled-position lag.
-Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and the wait for the latest non-heartbeat result.
+Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and both the latest and longest waits for a non-heartbeat result.
+The longest-wait gauge starts at zero for each reader task attempt, changes only when a non-heartbeat result returns, and never decreases within that attempt.
 It also counts table-filtered records, records skipped without a projected change, and column metadata or value occurrences removed from records passed to the deserializer.
 The gauges aggregate partition state within their coordinator or reader-subtask scope and never use partition tokens as labels.
 The source emits commit timestamps and the coordinator frontier through Flink's source output so the runtime supplies `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, and `sourceIdleTime`; the connector does not duplicate those names.
@@ -106,7 +108,7 @@ Reader and coordinator tests drive the concurrency bound, excess restored splits
 Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
 They also cover disabled and skip-only activation, job-graph serialization, direct delivery of the original record instance, and unchanged progress and counters on the direct path.
 Serializer tests obtain the type through `TypeInformation.of`, round-trip every record field and projected collections, and reject an unknown serializer snapshot version without opening JDK modules.
-Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, future timestamps, and overflow without waiting on wall-clock time.
+Metric tests use a deterministic clock to cover query lifecycle, queue and heartbeat transitions, latest-wait decreases, longest-wait monotonicity, future timestamps, and overflow without waiting on wall-clock time.
 The source rescaling test restores six partition queries through parallelism one, three, and one, proves an even scale-out at two slots per reader, proves a later scale-in preserves the positions of four queued splits, and observes a non-regressing source watermark after each restore.
 Emulator MiniCluster tests run the production source for both dialects across a schema and value-capture change.
 They also project a non-key column before deserialization in both dialects.

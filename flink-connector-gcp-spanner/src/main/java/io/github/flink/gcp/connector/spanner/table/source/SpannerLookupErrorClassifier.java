@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.ExceptionUtils;
 
 import com.google.cloud.spanner.ErrorCode;
@@ -25,6 +26,7 @@ import java.util.EnumSet;
 import java.util.Set;
 
 /** Classifies point-read failures eligible for another client call. */
+@Internal
 final class SpannerLookupErrorClassifier {
 
     /**

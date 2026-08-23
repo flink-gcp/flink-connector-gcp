@@ -27,8 +27,8 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -64,7 +64,7 @@ import java.util.Deque;
  * until the client's own read deadline, and a job being cancelled would wait for it.
  */
 @Internal
-public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
+public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerSplitReader.class);
 
@@ -79,12 +79,12 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
      */
     public static final int DEFAULT_MAX_ROWS_PER_FETCH = 1000;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final StructStreamOpener opener;
     private final int maxRowsPerFetch;
     private final SpannerSourceReaderMetrics metrics;
 
-    private final Deque<PartitionSplit> queued = new ArrayDeque<>();
+    private final Deque<BatchReadSplit> queued = new ArrayDeque<>();
 
     /**
      * Volatile because {@link #wakeUp()} runs on the task thread while {@code fetch()} is in flight
@@ -116,7 +116,7 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
      * @param metrics the reader's metrics
      */
     public SpannerSplitReader(
-            SpannerDatabase database,
+            DatabaseDestination database,
             StructStreamOpener opener,
             int maxRowsPerFetch,
             SpannerSourceReaderMetrics metrics) {
@@ -132,7 +132,7 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
     public RecordsWithSplitIds<Struct> fetch() throws IOException {
         RecordsBySplits.Builder<Struct> batch = new RecordsBySplits.Builder<>();
         if (active == null) {
-            PartitionSplit split = queued.poll();
+            BatchReadSplit split = queued.poll();
             if (split == null) {
                 return batch.build();
             }
@@ -208,11 +208,11 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
     }
 
     @Override
-    public void handleSplitsChanges(SplitsChange<PartitionSplit> splitsChanges) {
+    public void handleSplitsChanges(SplitsChange<BatchReadSplit> splitsChanges) {
         if (splitsChanges instanceof SplitsAddition) {
             queued.addAll(splitsChanges.splits());
         } else if (splitsChanges instanceof SplitsRemoval) {
-            for (PartitionSplit split : splitsChanges.splits()) {
+            for (BatchReadSplit split : splitsChanges.splits()) {
                 removeSplit(split);
             }
         } else {
@@ -220,7 +220,7 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
         }
     }
 
-    private void removeSplit(PartitionSplit split) {
+    private void removeSplit(BatchReadSplit split) {
         queued.removeIf(queuedSplit -> queuedSplit.splitId().equals(split.splitId()));
         ActivePartition partition = active;
         if (partition != null && partition.split.splitId().equals(split.splitId())) {
@@ -253,7 +253,7 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
     /** One assigned partition, and the read open over it. */
     private final class ActivePartition implements AutoCloseable {
 
-        private final PartitionSplit split;
+        private final BatchReadSplit split;
 
         /**
          * How many rows this reader has handed to the task thread from this partition.
@@ -269,7 +269,7 @@ public class SpannerSplitReader implements SplitReader<Struct, PartitionSplit> {
         /** Set by {@link #wakeUp()} on the task thread, read by the fetcher thread. */
         private volatile boolean cancelled;
 
-        private ActivePartition(PartitionSplit split) {
+        private ActivePartition(BatchReadSplit split) {
             this.split = split;
         }
 

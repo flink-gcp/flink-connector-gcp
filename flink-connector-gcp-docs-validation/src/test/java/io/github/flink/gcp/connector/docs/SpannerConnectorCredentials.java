@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.docs;
 
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderEvent;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderEventSerializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 
@@ -31,7 +31,7 @@ final class SpannerConnectorCredentials {
 
         // tag::spanner-connector-credentials[]
         SpannerSink.<OrderEvent>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                 .serializer(orderSerializer)
                 .serviceAccountKeyFile("/var/run/secrets/spanner/key.json")
                 .build();

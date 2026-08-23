@@ -32,7 +32,7 @@ import java.io.IOException;
  *
  * <p>The byte format is this connector's own, which is this repository's rule for a checkpointed
  * split: it has to be a format this connector controls rather than one a client-library upgrade can
- * move. (The Spanner batch source's {@code PartitionSplitSerializer} is the one recorded exception,
+ * move. (The Spanner batch source's {@code BatchReadSplitSerializer} is the one recorded exception,
  * and states its reason there.) The vendor's {@code ByteStringRange} is {@code Serializable} and
  * its {@code Query} carries a {@code ReadRowsRequest} wire form, but delegating to either would pin
  * their formats into every checkpoint.

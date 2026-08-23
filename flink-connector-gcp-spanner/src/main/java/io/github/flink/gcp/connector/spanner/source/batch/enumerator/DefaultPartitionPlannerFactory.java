@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 
 import javax.annotation.Nullable;
 
@@ -37,7 +37,7 @@ public final class DefaultPartitionPlannerFactory implements PartitionPlannerFac
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
@@ -48,7 +48,7 @@ public final class DefaultPartitionPlannerFactory implements PartitionPlannerFac
      *     for the real service
      */
     public DefaultPartitionPlannerFactory(
-            SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+            DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
     }

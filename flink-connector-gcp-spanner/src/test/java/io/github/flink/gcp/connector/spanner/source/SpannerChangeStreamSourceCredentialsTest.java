@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.spanner.source;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 import org.junit.jupiter.api.Test;
@@ -44,7 +44,7 @@ class SpannerChangeStreamSourceCredentialsTest {
 
     private static SpannerChangeStreamSource<Long> source() {
         return SpannerChangeStreamSource.<Long>builder()
-                .database(SpannerDatabase.of("p", "i", "d"))
+                .database(DatabaseDestination.of("p", "i", "d"))
                 .changeStreamName("changes")
                 .deserializer(new NoOpDeserializer())
                 .serviceAccountKeyFile(MISSING_KEY)

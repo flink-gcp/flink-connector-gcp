@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.119.0; emulator behaviour
-  measured 2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`)
-- Issues: [#220], [#36]
+  measured 2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`); naming revised by
+  [#1053] (2026-08-23)
+- Issues: [#220], [#36], [#1053]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § How the sink writes
 
@@ -69,8 +70,8 @@ serializer's to supply.
 - **A retry re-sends exactly what is still undecided**: the groups that came back with a transient
   status, plus the groups the service never reported on, which is what a server stream that fails
   part-way through leaves behind. Mutations already applied are never re-sent, so a retry does not
-  multiply the duplicates an at-least-once sink can produce. The budget is the `retry*` knobs on
-  `SpannerWriterOptions`, mapped through `toRetrySchedule()` and jittered at
+  multiply the duplicates an at-least-once sink can produce. The budget is the `recovery*` knobs on
+  `SpannerWriterOptions`, mapped through `toRecoverySchedule()` and jittered at
   `RetrySchedule.DEFAULT_JITTER_RATIO` like every other schedule here.
 - **The guarantee is at-least-once, and effectively-once when the serializer emits an idempotent
   operation** — `insertOrUpdate`, `replace`, `delete`. A replayed `insert` answers `ALREADY_EXISTS`
@@ -84,14 +85,14 @@ serializer's to supply.
 ## Consequences
 
 - The sink's destination is a **database**, not a table: the mutation names its own table, so one
-  sink writes to as many tables as the serializer produces. That is why `SpannerDatabase` sits at
+  sink writes to as many tables as the serializer produces. That is why `DatabaseDestination` sits at
   the module root, why the cell weights are read for the whole database, and why there are no
   per-destination metrics (their cardinality would be the serializer's to decide).
 - A transient outage longer than the retry budget fails the job rather than dropping anything.
   That is the intended direction: a sink cannot drop what the service never refused.
 - **The budget bounds attempts, not wall clock.** `no_retry_0_params` gives batch write a one-hour
   total timeout (read in 6.119.0) and this sink sets no deadline of its own, so the worst case is
-  `retryMaxAttempts` hours of a blocked task thread and no completing checkpoint. Documented on the
+  `recoveryMaxAttempts` hours of a blocked task thread and no completing checkpoint. Documented on the
   knob rather than capped here: a shorter deadline is a real option, but picking one for every
   workload is not something this connector can do from a default, and no measurement yet says what
   it should be.
@@ -116,3 +117,4 @@ serializer's to supply.
 
 [#36]: https://github.com/laughingman7743/flink-connector-gcp/issues/36
 [#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
+[#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053

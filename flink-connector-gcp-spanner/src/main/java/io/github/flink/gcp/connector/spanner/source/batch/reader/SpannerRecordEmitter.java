@@ -23,7 +23,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplitState;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplitState;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 
 /**
@@ -43,7 +43,7 @@ import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDese
  * @param <T> the record type produced
  */
 @Internal
-public class SpannerRecordEmitter<T> implements RecordEmitter<Struct, T, PartitionSplitState> {
+public class SpannerRecordEmitter<T> implements RecordEmitter<Struct, T, BatchReadSplitState> {
 
     private final SpannerStructDeserializationSchema<T> deserializer;
     private final SpannerSourceReaderMetrics metrics;
@@ -63,7 +63,7 @@ public class SpannerRecordEmitter<T> implements RecordEmitter<Struct, T, Partiti
     }
 
     @Override
-    public void emitRecord(Struct row, SourceOutput<T> output, PartitionSplitState splitState)
+    public void emitRecord(Struct row, SourceOutput<T> output, BatchReadSplitState splitState)
             throws Exception {
         long emittedCount =
                 SynchronousDeserializationCollector.<T, Exception>deserialize(

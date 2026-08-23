@@ -26,9 +26,12 @@ Every option the Spanner sink and source take. What each one is *for* is on the
 [Spanner connector]({{< relref "docs/connectors/datastream/spanner" >}}) page; the three forms of
 the Default column are explained [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
-Unlike the [Bigtable]({{< relref "docs/reference/bigtable" >}}) sink, this one **does** take retry
-knobs, and they are not decoration: the Spanner client library does not retry the batch write RPC
-at all, so the sink owns the whole retry loop. See
+This sink's recovery knobs budget the write retry loop itself, unlike the
+[Bigtable]({{< relref "docs/reference/bigtable" >}}) recovery knobs, which budget only table
+auto-creation repair.
+They are not decoration: the Spanner client library does not retry the batch write RPC at all, so
+the sink owns the whole retry loop.
+See
 [Retries]({{< relref "docs/connectors/datastream/spanner" >}}#retries-belong-to-the-sink).
 
 ## Spanner Table API / SQL
@@ -66,7 +69,7 @@ Use the native `TIMESTAMP_LTZ(9)` declaration without a watermark when nanosecon
 |---|---|---|
 | `database` | **required** | The database every mutation is written to. Which *table* is not configured here — the mutation the serializer returns names its own |
 | `serializer` | **required** | Turns a record into a `Mutation`, or into `null` to skip it |
-| `writerOptions` | [defaults](#spannerwriteroptions) | The batch limits, the request scheduling and the retry budget |
+| `writerOptions` | [defaults](#spannerwriteroptions) | The batch limits, the request scheduling and the recovery budget |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation the service terminally refused. See [Error handling]({{< relref "docs/connectors/datastream/spanner" >}}#error-handling) for the two statuses that reach it |
 | `constraintViolationPolicy` | `FAIL_JOB` | What happens to a mutation refused for violating a constraint. `ROUTE_TO_FAILURE_HANDLER` hands it to `failedMutationHandler` instead, so that handler then decides between failing, dropping and dead-lettering. See [Error handling]({{< relref "docs/connectors/datastream/spanner" >}}#error-handling) |
 | `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by each TaskManager writer at runtime. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) |
@@ -107,9 +110,9 @@ whole batch.
 
 | Option | Default | What it does |
 |---|---|---|
-| `retryInitialBackoff` | `500ms` | The first backoff, at least 1 ms |
-| `retryMaxBackoff` | `10s` | The backoff cap, at least `retryInitialBackoff` |
-| `retryMaxAttempts` | `10` | Attempts before the job fails. Exhausting the budget fails the job — a sink cannot drop what the service never refused. Note the wall-clock worst case: the client library gives a batch write a one-hour total timeout and this sink sets no deadline of its own, so a wedged request blocks the task thread — and therefore checkpointing — for up to an hour per attempt |
+| `recoveryInitialBackoff` | `500ms` | The first backoff, at least 1 ms |
+| `recoveryMaxBackoff` | `10s` | The backoff cap, at least `recoveryInitialBackoff` |
+| `recoveryMaxAttempts` | `10` | Attempts before the job fails. Exhausting the budget fails the job — a sink cannot drop what the service never refused. Note the wall-clock worst case: the client library gives a batch write a one-hour total timeout and this sink sets no deadline of its own, so a wedged request blocks the task thread — and therefore checkpointing — for up to an hour per attempt |
 
 ## `SpannerSource.builder()`
 

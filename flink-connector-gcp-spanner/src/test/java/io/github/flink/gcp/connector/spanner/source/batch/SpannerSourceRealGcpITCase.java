@@ -46,7 +46,7 @@ import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerRealGcpITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamTestSourceFactory;
@@ -132,9 +132,9 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     /** Spanner's commit limits are per transaction, so the seed goes in several. */
     private static final int SEED_BATCH = 500;
 
-    private static SpannerDatabase database;
-    private static Map<Dialect, SpannerDatabase> namedSchemaDatabases;
-    private static Map<Dialect, SpannerDatabase> changeStreamDatabases;
+    private static DatabaseDestination database;
+    private static Map<Dialect, DatabaseDestination> namedSchemaDatabases;
+    private static Map<Dialect, DatabaseDestination> changeStreamDatabases;
     private static Map<Dialect, Instant> beforeChangeStreamCreation;
 
     @TempDir private static Path savepointDirectory;
@@ -322,7 +322,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     @MethodSource("namedSchemaCases")
     void tableApiUsesANamedSchemaForWritesScansAndLookups(Dialect dialect, boolean quoted)
             throws Exception {
-        SpannerDatabase namedSchemaDatabase = namedSchemaDatabases.get(dialect);
+        DatabaseDestination namedSchemaDatabase = namedSchemaDatabases.get(dialect);
         TableEnvironment sink =
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
@@ -355,7 +355,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     @EnumSource(Dialect.class)
     void changeStreamMetadataMatchesTheServiceAndReportsExplicitColumns(Dialect dialect)
             throws Exception {
-        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        DatabaseDestination changeStreamDatabase = changeStreamDatabases.get(dialect);
         try (LogCapture capture =
                         LogCapture.of(
                                 DefaultSpannerChangeStreamCoordinatorClientFactory.class,
@@ -389,7 +389,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     @MethodSource("tableMetadataCases")
     void tableChangeStreamExposesServiceMetadataAndSourceWatermarks(
             Dialect dialect, String changelogMode) throws Exception {
-        SpannerDatabase target = changeStreamDatabases.get(dialect);
+        DatabaseDestination target = changeStreamDatabases.get(dialect);
         long firstId =
                 30_000L + dialect.ordinal() * 100L + ("upsert".equals(changelogMode) ? 10L : 0L);
         long startupTimestampMillis = Instant.now().minusSeconds(5).toEpochMilli();
@@ -455,7 +455,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void changeStreamRecoversFromCheckpointAndSavepoint(Dialect dialect) throws Exception {
-        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        DatabaseDestination changeStreamDatabase = changeStreamDatabases.get(dialect);
         String runId = "recovery-" + dialect + "-" + UUID.randomUUID();
         SpannerChangeStreamRealGcpObservers.reset(runId);
         JobClient first =
@@ -574,7 +574,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void startBeforeChangeStreamCreationGetsConnectorGuidance(Dialect dialect) throws Exception {
-        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        DatabaseDestination changeStreamDatabase = changeStreamDatabases.get(dialect);
         String runId = "precreation-" + dialect + "-" + UUID.randomUUID();
         SpannerChangeStreamRealGcpObservers.reset(runId);
         JobClient job =
@@ -598,7 +598,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void expiredRestoreFailsByDefaultAndCanUseAnExplicitFallback(Dialect dialect) throws Exception {
-        SpannerDatabase changeStreamDatabase = changeStreamDatabases.get(dialect);
+        DatabaseDestination changeStreamDatabase = changeStreamDatabases.get(dialect);
         Instant stale = Instant.now().minus(Duration.ofDays(2));
         String staleRun = "stale-savepoint-" + dialect + "-" + UUID.randomUUID();
         SpannerChangeStreamRealGcpObservers.reset(staleRun);
@@ -771,7 +771,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         return ids;
     }
 
-    private static SpannerDatabase createNamedSchemaDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination createNamedSchemaDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -798,7 +798,8 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                         + " `QuotedAnalytics`.`QuotedRecords` (name)");
     }
 
-    private static SpannerDatabase createChangeStreamDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination createChangeStreamDatabase(Dialect dialect)
+            throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -828,7 +829,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     }
 
     private static SpannerChangeStreamSource<String> changeStreamSource(
-            SpannerDatabase changeStreamDatabase,
+            DatabaseDestination changeStreamDatabase,
             StartPosition start,
             @Nullable StartPosition resumeFallback) {
         SpannerChangeStreamSourceBuilder<String> builder =
@@ -846,7 +847,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     }
 
     private static void writeChangeRows(
-            SpannerDatabase target, long fromInclusive, long toExclusive) {
+            DatabaseDestination target, long fromInclusive, long toExclusive) {
         List<Mutation> mutations = new ArrayList<>(SEED_BATCH);
         for (long id = fromInclusive; id < toExclusive; id++) {
             mutations.add(
@@ -979,7 +980,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
 
     private static String namedSchemaTableDdl(
             String tableName,
-            SpannerDatabase namedSchemaDatabase,
+            DatabaseDestination namedSchemaDatabase,
             Dialect dialect,
             boolean async,
             boolean quoted) {
@@ -1042,7 +1043,7 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
     }
 
     private static String changeStreamMetadataTableDdl(
-            SpannerDatabase target,
+            DatabaseDestination target,
             Dialect dialect,
             String changelogMode,
             long startupTimestampMillis) {

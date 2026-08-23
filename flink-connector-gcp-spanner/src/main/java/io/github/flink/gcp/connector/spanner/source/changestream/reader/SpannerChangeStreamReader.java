@@ -30,14 +30,14 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
@@ -107,17 +107,17 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 @Internal
 public final class SpannerChangeStreamReader<T>
-        implements SourceReader<T, SpannerChangeStreamPartitionSplit> {
+        implements SourceReader<T, ChangeStreamPartitionSplit> {
 
     private final SourceReaderContext context;
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerChangeStreamDeserializationSchema<T> deserializer;
     private final SpannerChangeStreamRecordFilter recordFilter;
     private final boolean filtersActive;
     private final int maximumQueries;
     private final SpannerChangeStreamQueryClient client;
     private final SpannerChangeStreamReaderMetrics metrics;
-    private final Deque<SpannerChangeStreamPartitionSplit> queued = new ArrayDeque<>();
+    private final Deque<ChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveQuery> active = new LinkedHashMap<>();
     private final Object availabilityLock = new Object();
     private CompletableFuture<Void> availability = new CompletableFuture<>();
@@ -146,7 +146,7 @@ public final class SpannerChangeStreamReader<T>
     @VisibleForTesting
     SpannerChangeStreamReader(
             SourceReaderContext context,
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerChangeStreamDeserializationSchema<T> deserializer,
             int maximumQueries,
             SpannerChangeStreamQueryClient client) {
@@ -162,7 +162,7 @@ public final class SpannerChangeStreamReader<T>
     @VisibleForTesting
     SpannerChangeStreamReader(
             SourceReaderContext context,
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerChangeStreamDeserializationSchema<T> deserializer,
             SpannerChangeStreamRecordFilter recordFilter,
             int maximumQueries,
@@ -181,7 +181,7 @@ public final class SpannerChangeStreamReader<T>
     @VisibleForTesting
     SpannerChangeStreamReader(
             SourceReaderContext context,
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerChangeStreamDeserializationSchema<T> deserializer,
             SpannerChangeStreamRecordFilter recordFilter,
             boolean filtersActive,
@@ -335,18 +335,18 @@ public final class SpannerChangeStreamReader<T>
     }
 
     private static ChildPartitionsEvent childrenEvent(
-            SpannerChangeStreamPartitionSplit parent, SpannerChangeStreamRecord.Children record) {
+            ChangeStreamPartitionSplit parent, SpannerChangeStreamRecord.Children record) {
         List<ChildPartitionsEvent.ChildPartition> children = new ArrayList<>();
         for (SpannerChangeStreamRecord.Child child : record.children) {
             List<String> parentIds = new ArrayList<>();
             if (child.initialParent) {
-                parentIds.add(SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
+                parentIds.add(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
             }
             for (String token : child.parentTokens) {
-                parentIds.add(SpannerChangeStreamPartitionSplit.idForToken(token));
+                parentIds.add(ChangeStreamPartitionSplit.idForToken(token));
             }
             if (parentIds.isEmpty() && parent.getPartitionToken() == null) {
-                parentIds.add(SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
+                parentIds.add(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
             }
             children.add(new ChildPartitionsEvent.ChildPartition(child.token, parentIds));
         }
@@ -367,8 +367,8 @@ public final class SpannerChangeStreamReader<T>
     }
 
     @Override
-    public List<SpannerChangeStreamPartitionSplit> snapshotState(long checkpointId) {
-        List<SpannerChangeStreamPartitionSplit> state = new ArrayList<>();
+    public List<ChangeStreamPartitionSplit> snapshotState(long checkpointId) {
+        List<ChangeStreamPartitionSplit> state = new ArrayList<>();
         for (ActiveQuery query : active.values()) {
             state.add(query.split);
         }
@@ -387,7 +387,7 @@ public final class SpannerChangeStreamReader<T>
     }
 
     @Override
-    public void addSplits(List<SpannerChangeStreamPartitionSplit> splits) {
+    public void addSplits(List<ChangeStreamPartitionSplit> splits) {
         requestOutstanding = false;
         queued.addAll(splits);
         metrics.queued(queued);
@@ -406,7 +406,7 @@ public final class SpannerChangeStreamReader<T>
 
     private void startQueuedQueries() {
         while (!closed && active.size() < maximumQueries && !queued.isEmpty()) {
-            SpannerChangeStreamPartitionSplit split = queued.removeFirst();
+            ChangeStreamPartitionSplit split = queued.removeFirst();
             ActiveQuery query = new ActiveQuery(split);
             active.put(split.splitId(), query);
             try {
@@ -484,7 +484,7 @@ public final class SpannerChangeStreamReader<T>
         return right.isAfter(left) ? right : left;
     }
 
-    private String queryFailureMessage(String operation, SpannerChangeStreamPartitionSplit split) {
+    private String queryFailureMessage(String operation, ChangeStreamPartitionSplit split) {
         String message =
                 "Failed to "
                         + operation
@@ -525,12 +525,12 @@ public final class SpannerChangeStreamReader<T>
     private final class ActiveQuery
             implements SpannerChangeStreamQueryClient.SpannerChangeStreamQueryListener {
 
-        private SpannerChangeStreamPartitionSplit split;
+        private ChangeStreamPartitionSplit split;
         private final AtomicReference<QueryResult> handover = new AtomicReference<>();
         private final SpannerChangeStreamReaderMetrics.QueryTiming timing;
         private SpannerChangeStreamQueryClient.QueryHandle handle;
 
-        private ActiveQuery(SpannerChangeStreamPartitionSplit split) {
+        private ActiveQuery(ChangeStreamPartitionSplit split) {
             this.split = split;
             this.timing = metrics.opening(split);
         }

@@ -24,7 +24,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccess;
@@ -52,7 +52,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class SpannerMutationsSinkTest {
 
-    private static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "d");
+    private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "d");
 
     @Test
     void opensTheSerializerAndTheFailureHandlerBeforeTheWriterExists() throws Exception {

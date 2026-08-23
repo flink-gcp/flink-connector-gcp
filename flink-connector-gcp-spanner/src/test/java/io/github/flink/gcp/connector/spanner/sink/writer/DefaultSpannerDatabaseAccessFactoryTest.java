@@ -20,7 +20,7 @@ import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Options;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import org.junit.jupiter.api.Test;
@@ -36,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link DefaultSpannerDatabaseAccessFactory}. */
 class DefaultSpannerDatabaseAccessFactoryTest {
 
-    private static final SpannerDatabase DATABASE =
-            SpannerDatabase.of("my-project", "my-instance", "my-db");
+    private static final DatabaseDestination DATABASE =
+            DatabaseDestination.of("my-project", "my-instance", "my-db");
 
     @Test
     void unsetKnobsAddNoTransactionOptionAtAll() {

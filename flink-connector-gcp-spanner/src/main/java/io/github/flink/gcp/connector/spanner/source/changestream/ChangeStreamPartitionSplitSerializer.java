@@ -28,8 +28,8 @@ import java.util.List;
 
 /** Connector-owned checkpoint format for a Spanner Change Streams partition split. */
 @Internal
-public final class SpannerChangeStreamPartitionSplitSerializer
-        implements SimpleVersionedSerializer<SpannerChangeStreamPartitionSplit> {
+public final class ChangeStreamPartitionSplitSerializer
+        implements SimpleVersionedSerializer<ChangeStreamPartitionSplit> {
 
     private static final int VERSION = 1;
     private static final int INITIAL_BUFFER_SIZE = 512;
@@ -40,14 +40,14 @@ public final class SpannerChangeStreamPartitionSplitSerializer
     }
 
     @Override
-    public byte[] serialize(SpannerChangeStreamPartitionSplit split) throws IOException {
+    public byte[] serialize(ChangeStreamPartitionSplit split) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         writeSplit(out, split);
         return out.getCopyOfBuffer();
     }
 
     @Override
-    public SpannerChangeStreamPartitionSplit deserialize(int version, byte[] serialized)
+    public ChangeStreamPartitionSplit deserialize(int version, byte[] serialized)
             throws IOException {
         if (version != VERSION) {
             throw new IOException(
@@ -60,7 +60,7 @@ public final class SpannerChangeStreamPartitionSplitSerializer
         return readSplit(new DataInputDeserializer(serialized));
     }
 
-    static void writeSplit(DataOutputSerializer out, SpannerChangeStreamPartitionSplit split)
+    static void writeSplit(DataOutputSerializer out, ChangeStreamPartitionSplit split)
             throws IOException {
         writeNullableString(out, split.getPartitionToken());
         out.writeInt(split.getParentPartitionIds().size());
@@ -75,8 +75,7 @@ public final class SpannerChangeStreamPartitionSplitSerializer
         writeInstant(out, split.getWatermark());
     }
 
-    static SpannerChangeStreamPartitionSplit readSplit(DataInputDeserializer in)
-            throws IOException {
+    static ChangeStreamPartitionSplit readSplit(DataInputDeserializer in) throws IOException {
         String token = readNullableString(in);
         int parentCount = readCount(in, "parent partition");
         List<String> parents = new ArrayList<>(Math.min(parentCount, 1024));
@@ -90,7 +89,7 @@ public final class SpannerChangeStreamPartitionSplitSerializer
         PartitionLifecycleState state = readState(in.readByte());
         Instant watermark = readInstant(in);
         try {
-            return new SpannerChangeStreamPartitionSplit(
+            return new ChangeStreamPartitionSplit(
                     token,
                     parents,
                     startTimestamp,

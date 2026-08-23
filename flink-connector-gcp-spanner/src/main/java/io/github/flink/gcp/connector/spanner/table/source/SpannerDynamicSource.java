@@ -42,7 +42,7 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.TimestampBound;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
@@ -71,7 +71,7 @@ public final class SpannerDynamicSource
                 SupportsProjectionPushDown,
                 SupportsFilterPushDown {
     private final SpannerTableSchemaConverter schema;
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerTableName table;
     private final Dialect dialect;
     @Nullable private final SpannerTableName.AccessPathName scanIndex;
@@ -90,7 +90,7 @@ public final class SpannerDynamicSource
 
     public SpannerDynamicSource(
             SpannerTableSchemaConverter schema,
-            SpannerDatabase database,
+            DatabaseDestination database,
             String table,
             DataType producedDataType,
             ReadableConfig config) {
@@ -103,7 +103,7 @@ public final class SpannerDynamicSource
                 scanIndex(table, config),
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS)
                         .orElse(null),
-                config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_SIZE)
+                config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES)
                         .map(size -> size.getBytes())
                         .orElse(null),
                 config.getOptional(SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED).orElse(null),
@@ -130,7 +130,7 @@ public final class SpannerDynamicSource
 
     private SpannerDynamicSource(
             SpannerTableSchemaConverter schema,
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerTableName table,
             DataType producedDataType,
             Dialect dialect,
@@ -231,7 +231,7 @@ public final class SpannerDynamicSource
                 maxPartitions,
                 builder::maxPartitions);
         OptionSetters.accept(
-                SpannerConnectorOptions.SCAN_PARTITION_SIZE.key(),
+                SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES.key(),
                 partitionSizeBytes,
                 builder::partitionSizeBytes);
         if (rpcPriority != null) {

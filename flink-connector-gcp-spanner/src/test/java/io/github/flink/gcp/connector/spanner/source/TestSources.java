@@ -22,7 +22,7 @@ import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
@@ -37,7 +37,7 @@ import java.util.function.UnaryOperator;
 public final class TestSources {
 
     /** The database every fixture reads. */
-    public static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "db");
+    public static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "db");
 
     /** The read every fixture asks for. */
     public static final SpannerReadOperation OPERATION =

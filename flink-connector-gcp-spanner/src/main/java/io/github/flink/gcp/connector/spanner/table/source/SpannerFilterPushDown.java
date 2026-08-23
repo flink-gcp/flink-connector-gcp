@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
@@ -89,6 +90,7 @@ import java.util.UUID;
  * <em>primary</em> key, and an index has a key of its own; the state carries them all the same, so
  * that {@code RuntimeState.keySet} can recompile against whichever key the read actually uses.
  */
+@Internal
 final class SpannerFilterPushDown {
 
     private SpannerFilterPushDown() {}

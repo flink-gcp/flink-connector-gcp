@@ -26,8 +26,9 @@ import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 import org.apache.flink.util.Collector;
 
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
@@ -36,7 +37,6 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
@@ -61,7 +61,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SpannerChangeStreamReaderTest {
 
-    private static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "d");
+    private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "d");
     private static final Instant START = Instant.parse("2026-01-01T00:00:00Z");
 
     private final MetricListener metrics = new MetricListener();
@@ -111,7 +111,7 @@ class SpannerChangeStreamReaderTest {
         assertThat(client.openIds())
                 .containsExactly("change-stream-token:a", "change-stream-token:b");
         assertThat(reader.snapshotState(1))
-                .extracting(SpannerChangeStreamPartitionSplit::splitId)
+                .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly(
                         "change-stream-token:a", "change-stream-token:b", "change-stream-token:c");
         assertThat(context.splitRequests()).isZero();
@@ -139,7 +139,7 @@ class SpannerChangeStreamReaderTest {
         assertThat(client.openIds()).isEmpty();
         assertThat(context.splitRequests()).isZero();
         assertThat(reader.snapshotState(1))
-                .extracting(SpannerChangeStreamPartitionSplit::splitId)
+                .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-token:a", "change-stream-token:b");
 
         reader.handleSourceEvents(
@@ -261,8 +261,8 @@ class SpannerChangeStreamReaderTest {
     @Test
     void heartbeatReportsProgressBeforeTheCoordinatorAdvancesTheSourceWatermark() throws Exception {
         reader = reader(1, new SequenceDeserializer());
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(START, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(START, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.RUNNING);
         reader.addSplits(Collections.singletonList(initial));
         reader.start();
@@ -303,15 +303,15 @@ class SpannerChangeStreamReaderTest {
         ChildPartitionsEvent childEvent = (ChildPartitionsEvent) context.sourceEvents().get(1);
         assertThat(childEvent.getChildren().get(0).getParentPartitionIds())
                 .containsExactly(
-                        SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID,
-                        SpannerChangeStreamPartitionSplit.idForToken("parent"));
+                        ChangeStreamPartitionSplit.INITIAL_PARTITION_ID,
+                        ChangeStreamPartitionSplit.idForToken("parent"));
     }
 
     @Test
     void emptyParentTokensOnInitialSplitNormalizeToInitialParent() throws Exception {
         reader = reader(1, new SequenceDeserializer());
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(START, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(START, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.RUNNING);
         reader.addSplits(Collections.singletonList(initial));
         reader.start();
@@ -327,13 +327,13 @@ class SpannerChangeStreamReaderTest {
 
         ChildPartitionsEvent childEvent = (ChildPartitionsEvent) context.sourceEvents().get(0);
         assertThat(childEvent.getChildren().get(0).getParentPartitionIds())
-                .containsExactly(SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
+                .containsExactly(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
     }
 
     @Test
     void emptyParentTokensOnTokenSplitRemainInvalid() throws Exception {
         reader = reader(1, new SequenceDeserializer());
-        SpannerChangeStreamPartitionSplit parent = split("a");
+        ChangeStreamPartitionSplit parent = split("a");
         reader.addSplits(Collections.singletonList(parent));
         reader.start();
 
@@ -604,7 +604,7 @@ class SpannerChangeStreamReaderTest {
                 "change-stream-token:a",
                 new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(4))));
         firstReader.pollNext(new TrackingOutput<>());
-        List<SpannerChangeStreamPartitionSplit> restored = firstReader.snapshotState(1);
+        List<ChangeStreamPartitionSplit> restored = firstReader.snapshotState(1);
         firstReader.close();
 
         assertThat(restored)
@@ -645,7 +645,7 @@ class SpannerChangeStreamReaderTest {
                 .hasMessageNotContaining("change stream was created")
                 .hasRootCauseMessage("broken stream");
         assertThat(reader.snapshotState(1))
-                .extracting(SpannerChangeStreamPartitionSplit::splitId)
+                .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-token:a");
         assertThat(context.sourceEvents())
                 .noneMatch(event -> event instanceof PartitionFinishedEvent);
@@ -655,8 +655,8 @@ class SpannerChangeStreamReaderTest {
     @Test
     void initialQueryFailureAddsStartPositionGuidanceWithoutClassifyingTheCause() throws Exception {
         reader = reader(1, new SequenceDeserializer());
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(START, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(START, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.RUNNING);
         reader.addSplits(Collections.singletonList(initial));
         reader.start();
@@ -737,10 +737,10 @@ class SpannerChangeStreamReaderTest {
         return metrics.getGauge(name).orElseThrow(AssertionError::new).getValue();
     }
 
-    private static SpannerChangeStreamPartitionSplit split(String token) {
-        return new SpannerChangeStreamPartitionSplit(
+    private static ChangeStreamPartitionSplit split(String token) {
+        return new ChangeStreamPartitionSplit(
                 token,
-                Collections.singletonList(SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
+                Collections.singletonList(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
                 START,
                 null,
                 2_000,
@@ -913,8 +913,7 @@ class SpannerChangeStreamReaderTest {
 
         @Override
         public QueryHandle open(
-                SpannerChangeStreamPartitionSplit split,
-                SpannerChangeStreamQueryListener listener) {
+                ChangeStreamPartitionSplit split, SpannerChangeStreamQueryListener listener) {
             Query query = new Query(listener);
             queries.put(split.splitId(), query);
             openIds.add(split.splitId());

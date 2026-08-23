@@ -25,7 +25,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
@@ -40,7 +40,7 @@ import java.util.Objects;
 public final class SpannerDynamicSink implements DynamicTableSink {
 
     private final SpannerTableSchemaConverter schema;
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final String table;
     private final SpannerWriterOptions writerOptions;
     @Nullable private final String emulatorEndpoint;
@@ -138,7 +138,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
     /** Collects values for the immutable sink. */
     public static final class Builder {
         private SpannerTableSchemaConverter schema;
-        private SpannerDatabase database;
+        private DatabaseDestination database;
         private String table;
         private SpannerWriterOptions writerOptions;
         @Nullable private String emulatorEndpoint;
@@ -152,7 +152,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
             return this;
         }
 
-        public Builder database(SpannerDatabase database) {
+        public Builder database(DatabaseDestination database) {
             this.database = database;
             return this;
         }

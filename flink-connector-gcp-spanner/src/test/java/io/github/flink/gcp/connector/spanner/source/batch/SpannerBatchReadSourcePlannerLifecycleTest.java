@@ -56,16 +56,16 @@ class SpannerBatchReadSourcePlannerLifecycleTest {
         SpannerBatchReadSource<Long> source =
                 TestSources.source(builder -> TestSources.withPlannerFactory(builder, planner));
 
-        FakeSplitEnumeratorContext<PartitionSplit> firstContext =
+        FakeSplitEnumeratorContext<BatchReadSplit> firstContext =
                 new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> first =
+        try (SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> first =
                 source.createEnumerator(firstContext)) {
             first.start();
             firstContext.runAsyncCalls();
         }
 
-        FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> second =
+        FakeSplitEnumeratorContext<BatchReadSplit> context = new FakeSplitEnumeratorContext<>(1);
+        try (SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> second =
                 source.createEnumerator(context)) {
             second.start();
             context.runAsyncCalls();
@@ -87,7 +87,7 @@ class SpannerBatchReadSourcePlannerLifecycleTest {
                 TestSources.source(builder -> TestSources.withPlannerFactory(builder, planner));
 
         source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
-        SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> second =
+        SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> second =
                 source.createEnumerator(new FakeSplitEnumeratorContext<>(1));
 
         assertThat(planner.minted()).hasSize(2);
@@ -116,24 +116,24 @@ class SpannerBatchReadSourcePlannerLifecycleTest {
         SpannerBatchReadSource<Long> source =
                 TestSources.source(builder -> TestSources.withPlannerFactory(builder, planner));
 
-        FakeSplitEnumeratorContext<PartitionSplit> firstContext =
+        FakeSplitEnumeratorContext<BatchReadSplit> firstContext =
                 new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> first =
+        try (SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> first =
                 source.createEnumerator(firstContext)) {
             first.start();
             firstContext.runAsyncCalls();
         }
 
-        SpannerBatchEnumeratorState planned =
-                new SpannerBatchEnumeratorState(
+        SpannerBatchReadEnumeratorState planned =
+                new SpannerBatchReadEnumeratorState(
                         true,
                         Collections.singletonList(
-                                new PartitionSplit(
+                                new BatchReadSplit(
                                         "0",
                                         TestPartitions.batchTransactionId(),
                                         TestPartitions.queryPartition("a", "SELECT 1"))));
-        FakeSplitEnumeratorContext<PartitionSplit> context = new FakeSplitEnumeratorContext<>(1);
-        try (SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> restored =
+        FakeSplitEnumeratorContext<BatchReadSplit> context = new FakeSplitEnumeratorContext<>(1);
+        try (SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> restored =
                 source.restoreEnumerator(context, planned)) {
             restored.start();
             context.runAsyncCalls();

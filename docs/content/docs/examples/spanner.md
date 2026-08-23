@@ -63,7 +63,7 @@ The following builder fragment omits the application serializer supplied to `ser
 
 ```java
 SpannerSink.<Event>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
+        .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
         .serializer(...)
         .failedMutationHandler(FailureHandler.logAndDrop())
         .build();
@@ -115,7 +115,7 @@ The following builder fragment omits the application serializer supplied to `ser
 
 ```java
 SpannerSink.<Event>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
+        .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
         .serializer(...)
         .writerOptions(
                 SpannerWriterOptions.builder()
@@ -235,7 +235,7 @@ The following builder fragment omits the application serializer supplied to `ser
 
 ```java
 SpannerSink.<Event>builder()
-        .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
+        .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
         .serializer(...)
         .emulatorEndpoint("localhost:9010")
         .build();

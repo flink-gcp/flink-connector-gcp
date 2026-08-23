@@ -37,7 +37,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
@@ -105,7 +105,7 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
     @Test
     void aGlobalFailoverBeforeAnyCheckpointPlansAgainAndDelivers() throws Exception {
         String runId = "global-" + System.nanoTime();
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
 
         Configuration configuration = new Configuration();
         // One restart: the injected global failure recovers, anything further fails the test.
@@ -147,8 +147,8 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
                 .containsExactlyInAnyOrderElementsOf(expectedIds());
     }
 
-    private static Source<Long, PartitionSplit, SpannerBatchEnumeratorState> source(
-            SpannerDatabase database) {
+    private static Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source(
+            DatabaseDestination database) {
         return SpannerSource.<Long>builder()
                 .database(database)
                 .readOperation(SpannerReadOperation.query(Statement.of("SELECT id FROM singers")))
@@ -161,8 +161,8 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
         return LongStream.range(0, ROWS).boxed().collect(Collectors.toList());
     }
 
-    private static SpannerDatabase seededDatabase() throws Exception {
-        SpannerDatabase database =
+    private static DatabaseDestination seededDatabase() throws Exception {
+        DatabaseDestination database =
                 createDatabase(
                         Dialect.GOOGLE_STANDARD_SQL,
                         "CREATE TABLE singers (id INT64 NOT NULL, name STRING(64))"
@@ -206,16 +206,17 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
      * the one throw are the only things this adds.
      */
     private static final class FailOnceCoordinatorSource
-            implements Source<Long, PartitionSplit, SpannerBatchEnumeratorState>,
+            implements Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState>,
                     ResultTypeQueryable<Long> {
 
         private static final long serialVersionUID = 1L;
 
         private final String runId;
-        private final Source<Long, PartitionSplit, SpannerBatchEnumeratorState> delegate;
+        private final Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> delegate;
 
         FailOnceCoordinatorSource(
-                String runId, Source<Long, PartitionSplit, SpannerBatchEnumeratorState> delegate) {
+                String runId,
+                Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> delegate) {
             this.runId = runId;
             this.delegate = delegate;
         }
@@ -226,34 +227,34 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
         }
 
         @Override
-        public SourceReader<Long, PartitionSplit> createReader(SourceReaderContext context)
+        public SourceReader<Long, BatchReadSplit> createReader(SourceReaderContext context)
                 throws Exception {
             return delegate.createReader(context);
         }
 
         @Override
-        public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> createEnumerator(
-                SplitEnumeratorContext<PartitionSplit> context) throws Exception {
+        public SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> createEnumerator(
+                SplitEnumeratorContext<BatchReadSplit> context) throws Exception {
             ENUMERATORS.computeIfAbsent(runId, unused -> new AtomicInteger()).incrementAndGet();
             return new FailOnceEnumerator(runId, delegate.createEnumerator(context));
         }
 
         @Override
-        public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> restoreEnumerator(
-                SplitEnumeratorContext<PartitionSplit> context,
-                SpannerBatchEnumeratorState checkpoint)
+        public SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> restoreEnumerator(
+                SplitEnumeratorContext<BatchReadSplit> context,
+                SpannerBatchReadEnumeratorState checkpoint)
                 throws Exception {
             ENUMERATORS.computeIfAbsent(runId, unused -> new AtomicInteger()).incrementAndGet();
             return new FailOnceEnumerator(runId, delegate.restoreEnumerator(context, checkpoint));
         }
 
         @Override
-        public SimpleVersionedSerializer<PartitionSplit> getSplitSerializer() {
+        public SimpleVersionedSerializer<BatchReadSplit> getSplitSerializer() {
             return delegate.getSplitSerializer();
         }
 
         @Override
-        public SimpleVersionedSerializer<SpannerBatchEnumeratorState>
+        public SimpleVersionedSerializer<SpannerBatchReadEnumeratorState>
                 getEnumeratorCheckpointSerializer() {
             return delegate.getEnumeratorCheckpointSerializer();
         }
@@ -266,14 +267,14 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
 
     /** Delegates to the real enumerator, throwing once per run from a coordinator action. */
     private static final class FailOnceEnumerator
-            implements SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> {
+            implements SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> {
 
         private final String runId;
-        private final SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> delegate;
+        private final SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> delegate;
 
         FailOnceEnumerator(
                 String runId,
-                SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> delegate) {
+                SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> delegate) {
             this.runId = runId;
             this.delegate = delegate;
         }
@@ -294,7 +295,7 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
         }
 
         @Override
-        public void addSplitsBack(List<PartitionSplit> splits, int subtaskId) {
+        public void addSplitsBack(List<BatchReadSplit> splits, int subtaskId) {
             delegate.addSplitsBack(splits, subtaskId);
         }
 
@@ -309,7 +310,7 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
         }
 
         @Override
-        public SpannerBatchEnumeratorState snapshotState(long checkpointId) throws Exception {
+        public SpannerBatchReadEnumeratorState snapshotState(long checkpointId) throws Exception {
             return delegate.snapshotState(checkpointId);
         }
 

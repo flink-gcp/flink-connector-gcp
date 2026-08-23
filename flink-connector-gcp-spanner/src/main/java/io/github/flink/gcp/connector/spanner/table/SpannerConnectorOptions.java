@@ -171,8 +171,8 @@ public final class SpannerConnectorOptions {
                     .longType()
                     .noDefaultValue()
                     .withDescription("The desired maximum number of read partitions.");
-    public static final ConfigOption<MemorySize> SCAN_PARTITION_SIZE =
-            ConfigOptions.key("scan.partition.size")
+    public static final ConfigOption<MemorySize> SCAN_PARTITION_SIZE_BYTES =
+            ConfigOptions.key("scan.partition.size-bytes")
                     .memoryType()
                     .noDefaultValue()
                     .withDescription("The desired size of one read partition.");
@@ -228,18 +228,18 @@ public final class SpannerConnectorOptions {
                     .enumType(SpannerRpcPriority.class)
                     .noDefaultValue()
                     .withDescription("The LOW, MEDIUM, or HIGH priority of sink RPCs.");
-    public static final ConfigOption<Duration> SINK_RETRY_INITIAL_BACKOFF =
-            ConfigOptions.key("sink.retry.initial-backoff")
+    public static final ConfigOption<Duration> SINK_RECOVERY_INITIAL_BACKOFF =
+            ConfigOptions.key("sink.recovery.initial-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The first delay in the sink's transient-failure retry loop.");
-    public static final ConfigOption<Duration> SINK_RETRY_MAX_BACKOFF =
-            ConfigOptions.key("sink.retry.max-backoff")
+    public static final ConfigOption<Duration> SINK_RECOVERY_MAX_BACKOFF =
+            ConfigOptions.key("sink.recovery.max-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The maximum delay in the sink's retry loop.");
-    public static final ConfigOption<Integer> SINK_RETRY_MAX_ATTEMPTS =
-            ConfigOptions.key("sink.retry.max-attempts")
+    public static final ConfigOption<Integer> SINK_RECOVERY_MAX_ATTEMPTS =
+            ConfigOptions.key("sink.recovery.max-attempts")
                     .intType()
                     .noDefaultValue()
                     .withDescription("The maximum BatchWrite attempts before the job fails.");

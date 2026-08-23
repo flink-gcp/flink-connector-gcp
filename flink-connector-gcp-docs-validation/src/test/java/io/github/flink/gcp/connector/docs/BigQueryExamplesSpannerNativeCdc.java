@@ -34,7 +34,7 @@ import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.SpannerCdcSequenceNumber;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
@@ -57,7 +57,7 @@ final class BigQueryExamplesSpannerNativeCdc {
         env.enableCheckpointing(60_000);
         SpannerChangeStreamSource<OrderMod> source =
                 SpannerChangeStreamSource.<OrderMod>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                         .changeStreamName("order_changes")
                         .deserializer(new OrderModDeserializer())
                         .startPosition(StartPosition.latest())

@@ -21,7 +21,7 @@ import com.google.cloud.spanner.KeyRange;
 import com.google.cloud.spanner.KeySet;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.Order;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderDeserializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 
@@ -34,7 +34,7 @@ final class SpannerExamplesKeyRange {
     static void build() {
         // tag::spanner-examples-key-range[]
         SpannerSource.<Order>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                 .readOperation(
                         SpannerReadOperation.read(
                                 "Orders",

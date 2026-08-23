@@ -27,17 +27,17 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link SpannerBatchEnumeratorState} and its serializer. */
-class SpannerBatchEnumeratorStateSerializerTest {
+/** Tests for {@link SpannerBatchReadEnumeratorState} and its serializer. */
+class SpannerBatchReadEnumeratorStateSerializerTest {
 
-    private final SpannerBatchEnumeratorStateSerializer serializer =
-            new SpannerBatchEnumeratorStateSerializer();
+    private final SpannerBatchReadEnumeratorStateSerializer serializer =
+            new SpannerBatchReadEnumeratorStateSerializer();
 
     @Test
     void aPlanSurvivesTheRoundTrip() throws Exception {
-        SpannerBatchEnumeratorState state = new SpannerBatchEnumeratorState(true, splits());
+        SpannerBatchReadEnumeratorState state = new SpannerBatchReadEnumeratorState(true, splits());
 
-        SpannerBatchEnumeratorState restored = roundTrip(state);
+        SpannerBatchReadEnumeratorState restored = roundTrip(state);
 
         assertThat(restored).isEqualTo(state);
         assertThat(restored.isPlanned()).isTrue();
@@ -49,8 +49,8 @@ class SpannerBatchEnumeratorStateSerializerTest {
     void aPlanFullyHandedOutIsStillPlanned() throws Exception {
         // The state that would be indistinguishable from an unplanned one if `planned` were read
         // as "the queue is non-empty" — and the one whose restore must not plan again.
-        SpannerBatchEnumeratorState restored =
-                roundTrip(new SpannerBatchEnumeratorState(true, Collections.emptyList()));
+        SpannerBatchReadEnumeratorState restored =
+                roundTrip(new SpannerBatchReadEnumeratorState(true, Collections.emptyList()));
 
         assertThat(restored.isPlanned()).isTrue();
         assertThat(restored.getPendingSplits()).isEmpty();
@@ -58,23 +58,23 @@ class SpannerBatchEnumeratorStateSerializerTest {
 
     @Test
     void anUnplannedStateSurvivesTheRoundTrip() throws Exception {
-        SpannerBatchEnumeratorState restored =
-                roundTrip(new SpannerBatchEnumeratorState(false, Collections.emptyList()));
+        SpannerBatchReadEnumeratorState restored =
+                roundTrip(new SpannerBatchReadEnumeratorState(false, Collections.emptyList()));
 
         assertThat(restored.isPlanned()).isFalse();
     }
 
     @Test
     void anUnplannedStateCannotHoldSplits() {
-        assertThatThrownBy(() -> new SpannerBatchEnumeratorState(false, splits()))
+        assertThatThrownBy(() -> new SpannerBatchReadEnumeratorState(false, splits()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("an unplanned enumerator cannot hold pending splits");
     }
 
     @Test
     void thePendingSplitsAreCopiedAndUnmodifiable() {
-        List<PartitionSplit> splits = new java.util.ArrayList<>(splits());
-        SpannerBatchEnumeratorState state = new SpannerBatchEnumeratorState(true, splits);
+        List<BatchReadSplit> splits = new java.util.ArrayList<>(splits());
+        SpannerBatchReadEnumeratorState state = new SpannerBatchReadEnumeratorState(true, splits);
 
         splits.clear();
 
@@ -85,7 +85,7 @@ class SpannerBatchEnumeratorStateSerializerTest {
 
     @Test
     void anUnknownVersionIsRefusedByName() throws Exception {
-        byte[] bytes = serializer.serialize(new SpannerBatchEnumeratorState(true, splits()));
+        byte[] bytes = serializer.serialize(new SpannerBatchReadEnumeratorState(true, splits()));
 
         assertThatThrownBy(() -> serializer.deserialize(serializer.getVersion() + 1, bytes))
                 .isInstanceOf(IOException.class)
@@ -107,21 +107,21 @@ class SpannerBatchEnumeratorStateSerializerTest {
         // The split serializer embeds through version-free helpers, so the two numbers move
         // independently; asserting they are both 1 today is what makes a bump deliberate.
         assertThat(serializer.getVersion()).isEqualTo(1);
-        assertThat(new PartitionSplitSerializer().getVersion()).isEqualTo(1);
+        assertThat(new BatchReadSplitSerializer().getVersion()).isEqualTo(1);
     }
 
-    private SpannerBatchEnumeratorState roundTrip(SpannerBatchEnumeratorState state)
+    private SpannerBatchReadEnumeratorState roundTrip(SpannerBatchReadEnumeratorState state)
             throws IOException {
         return serializer.deserialize(serializer.getVersion(), serializer.serialize(state));
     }
 
-    private static List<PartitionSplit> splits() {
+    private static List<BatchReadSplit> splits() {
         return Arrays.asList(
-                new PartitionSplit(
+                new BatchReadSplit(
                         "0",
                         TestPartitions.batchTransactionId(),
                         TestPartitions.queryPartition("token-0", "SELECT 1")),
-                new PartitionSplit(
+                new BatchReadSplit(
                         "1",
                         TestPartitions.batchTransactionId(),
                         TestPartitions.readPartition("token-1", "singers", "id")));

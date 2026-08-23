@@ -61,7 +61,7 @@ public final class SpannerMetricNames {
     /** Batch write requests the writer sent, first attempts and re-sends alike. */
     public static final String BATCHES_SENT = "batchesSent";
 
-    // Registered by both split enumerators (SpannerPartitionSplitEnumerator and
+    // Registered by both split enumerators (SpannerBatchReadSplitEnumerator and
     // SpannerChangeStreamSplitEnumerator).
 
     /** Partition splits handed to a reader. */
@@ -80,7 +80,7 @@ public final class SpannerMetricNames {
     public static final String UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
             "unassignedChangeStreamPartitionLagMillis";
 
-    // Registered by the batch source's enumerator (SpannerPartitionSplitEnumerator).
+    // Registered by the batch source's enumerator (SpannerBatchReadSplitEnumerator).
 
     /**
      * Reads planned into partitions. One per job at most: a restored enumerator plans nothing, so
@@ -120,6 +120,10 @@ public final class SpannerMetricNames {
     /** Wait for the most recently returned non-heartbeat Change Streams result. */
     public static final String LAST_CHANGE_STREAM_RECORD_WAIT_MILLIS =
             "lastChangeStreamRecordWaitMillis";
+
+    /** Longest wait for a returned non-heartbeat Change Streams result in this task attempt. */
+    public static final String LONGEST_CHANGE_STREAM_RECORD_WAIT_MILLIS =
+            "longestChangeStreamRecordWaitMillis";
 
     /** Data-change records removed by a Change Streams table filter. */
     public static final String CHANGE_STREAM_RECORDS_FILTERED_BY_TABLE =

@@ -33,7 +33,7 @@ import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
@@ -74,7 +74,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void readsEveryRowOfAQuery(Dialect dialect) throws Exception {
-        SpannerDatabase database = seededDatabase(dialect);
+        DatabaseDestination database = seededDatabase(dialect);
 
         List<Long> ids =
                 run(database, SpannerReadOperation.query(Statement.of("SELECT id FROM singers")));
@@ -85,7 +85,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void readsEveryRowOfATableRead(Dialect dialect) throws Exception {
-        SpannerDatabase database = seededDatabase(dialect);
+        DatabaseDestination database = seededDatabase(dialect);
 
         List<Long> ids =
                 run(
@@ -98,7 +98,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void readsOnlyTheKeysAKeySetNames() throws Exception {
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         List<Long> ids =
                 run(
@@ -113,7 +113,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void readsThroughAnIndex() throws Exception {
-        SpannerDatabase database =
+        DatabaseDestination database =
                 createDatabase(
                         Dialect.GOOGLE_STANDARD_SQL,
                         singersDdl(Dialect.GOOGLE_STANDARD_SQL),
@@ -134,7 +134,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void readsAProjectionOfSeveralColumns() throws Exception {
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         List<Long> ids =
                 run(
@@ -152,7 +152,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
     void anEmptyResultIsAJobThatFinishes() throws Exception {
         // The emulator plans an empty partition on every run, so an empty table exercises the same
         // path a normal one does — and a source that treated "no rows" as an error would hang here.
-        SpannerDatabase database =
+        DatabaseDestination database =
                 createDatabase(
                         Dialect.GOOGLE_STANDARD_SQL, singersDdl(Dialect.GOOGLE_STANDARD_SQL));
 
@@ -164,7 +164,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void aStaleReadSeesTheDataThatWasCommittedBeforeIt() throws Exception {
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         // Exact staleness is one of the three bounds a batch read may take; the assertion is that
         // it reaches the service and the read succeeds, not that the emulator honours the delay.
@@ -185,7 +185,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
         // Measured 2026-08-10: the emulator plans two partitions whatever the hints say. What this
         // asserts is that asking for them changes nothing about the rows, which is the only claim
         // the emulator can support.
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         List<Long> ids =
                 run(
@@ -204,7 +204,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
         // the wire — the emulator ignores it — so which option object the connector assembles is
         // pinned in BatchClientPartitionPlannerTest, and whether Spanner sheds a LOW read under
         // load is the service's to demonstrate rather than this suite's.
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         List<Long> ids =
                 run(
@@ -221,7 +221,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
         // The read family assembles its options separately from the query family, because the
         // client library gives the two option values no common supertype — so the two paths are
         // covered separately rather than assumed to share one.
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         List<Long> ids =
                 run(
@@ -241,7 +241,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
         // The emulator's check is stricter than the service's, so what this pins is the
         // connector's half: the service's INVALID_ARGUMENT reaches the user unwrapped, naming the
         // read that could not be planned.
-        SpannerDatabase database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
+        DatabaseDestination database = seededDatabase(Dialect.GOOGLE_STANDARD_SQL);
 
         assertThatThrownBy(
                         () ->
@@ -255,8 +255,8 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
                 .hasMessageContaining("partitionable");
     }
 
-    private static SpannerDatabase seededDatabase(Dialect dialect) throws Exception {
-        SpannerDatabase database = createDatabase(dialect, singersDdl(dialect));
+    private static DatabaseDestination seededDatabase(Dialect dialect) throws Exception {
+        DatabaseDestination database = createDatabase(dialect, singersDdl(dialect));
         seed(database);
         return database;
     }
@@ -268,7 +268,7 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
                 : "CREATE TABLE singers (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)";
     }
 
-    private static void seed(SpannerDatabase database) {
+    private static void seed(DatabaseDestination database) {
         List<Mutation> rows = new ArrayList<>(ROWS);
         for (long id = 0; id < ROWS; id++) {
             rows.add(
@@ -290,19 +290,19 @@ class SpannerSourceEmulatorITCase extends AbstractSpannerEmulatorITCase {
         return row.getLong("id");
     }
 
-    private static List<Long> run(SpannerDatabase database, SpannerReadOperation operation)
+    private static List<Long> run(DatabaseDestination database, SpannerReadOperation operation)
             throws Exception {
         return run(database, operation, SpannerSourceEmulatorITCase::id);
     }
 
     private static List<Long> run(
-            SpannerDatabase database, SpannerReadOperation operation, ReadId readId)
+            DatabaseDestination database, SpannerReadOperation operation, ReadId readId)
             throws Exception {
         return run(database, operation, readId, builder -> builder);
     }
 
     private static List<Long> run(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerReadOperation operation,
             ReadId readId,
             UnaryOperator<SpannerSourceBuilder<Long>> configure)

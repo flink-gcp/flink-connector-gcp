@@ -221,10 +221,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Tuning (`docs/adr/0028`, `0029`)
 
 - Connector budgets are `recovery*`, SDK knobs bare `retry*`/`maxRetryDuration` — revised on
-  user feedback. The Cloud Tasks/Spanner `retry*` asymmetry is being retired by rename
-  ([#1051](https://github.com/flink-gcp/flink-connector-gcp/issues/1051),
-  [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053); the ADR-0028 exception
-  is superseded by `docs/adr/0137`) — until those land, both modules still spell `retry*`.
+  user feedback. Spanner adopted that vocabulary in
+  [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053); the remaining Cloud Tasks
+  `retry*` exception is being retired by
+  [#1051](https://github.com/flink-gcp/flink-connector-gcp/issues/1051), and ADR-0028's original
+  exception is superseded by `docs/adr/0137`.
   `maxInflightRequests` defaults to 100 (multiplexing guidance); the pool guard warns, never
   throws. The schema-wait schedule is deliberately not exposed.
 - Eviction sweeps at the end of a successful `flush(boolean)`, skipped on `endOfInput` —

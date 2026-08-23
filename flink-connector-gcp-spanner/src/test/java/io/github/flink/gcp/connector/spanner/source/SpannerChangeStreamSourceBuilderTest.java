@@ -22,7 +22,7 @@ import org.apache.flink.util.Collector;
 import org.apache.flink.util.InstantiationUtil;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
@@ -45,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SpannerChangeStreamSourceBuilderTest {
 
-    private static final SpannerDatabase DATABASE =
-            SpannerDatabase.of("project", "instance", "database");
+    private static final DatabaseDestination DATABASE =
+            DatabaseDestination.of("project", "instance", "database");
 
     @Test
     void defaultsAndEveryOptionReachTheConfiguration() {

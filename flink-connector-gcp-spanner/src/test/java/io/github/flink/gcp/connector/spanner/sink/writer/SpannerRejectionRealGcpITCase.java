@@ -23,7 +23,7 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerRealGcpITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import io.github.flink.gcp.connector.testutils.TestNames;
@@ -75,10 +75,10 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
     /** One megabyte a row, comfortably under Spanner's 2,621,440-character {@code STRING(MAX)}. */
     private static final int PAYLOAD_CHARS = MIB;
 
-    private static SpannerDatabase rejectionDatabase;
-    private static SpannerDatabase blobsDatabase;
+    private static DatabaseDestination rejectionDatabase;
+    private static DatabaseDestination blobsDatabase;
 
-    private static final Map<Dialect, SpannerDatabase> ordersDatabases =
+    private static final Map<Dialect, DatabaseDestination> ordersDatabases =
             new EnumMap<>(Dialect.class);
 
     @BeforeAll
@@ -387,7 +387,7 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
 
     // ---------------------------------------------------------------- helpers
 
-    private static SpannerDatabase ordersDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination ordersDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -401,7 +401,7 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
     }
 
     /** Opens the production database access over application-default credentials. */
-    private static SpannerDatabaseAccess access(SpannerDatabase database) throws IOException {
+    private static SpannerDatabaseAccess access(DatabaseDestination database) throws IOException {
         // null rather than an EmulatorEndpoint: that argument is the whole difference between the
         // emulator path and the one a deployed job takes.
         return new DefaultSpannerDatabaseAccessFactory(

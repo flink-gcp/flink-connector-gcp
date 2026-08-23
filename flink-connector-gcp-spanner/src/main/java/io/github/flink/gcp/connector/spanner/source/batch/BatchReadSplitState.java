@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 /**
- * The mutable reader-side state of a {@link PartitionSplit}.
+ * The mutable reader-side state of a {@link BatchReadSplit}.
  *
  * <p>It holds no progress, and that is the design rather than an omission. Spanner offers no way to
  * resume a partition part-way: {@code execute(partition)} replays the whole partition, and the row
@@ -34,16 +34,16 @@ import org.apache.flink.util.Preconditions;
  * javadoc first.
  */
 @Internal
-public final class PartitionSplitState {
+public final class BatchReadSplitState {
 
-    private final PartitionSplit split;
+    private final BatchReadSplit split;
 
     /**
      * Creates the state of a split a reader has just been assigned.
      *
      * @param split the split
      */
-    public PartitionSplitState(PartitionSplit split) {
+    public BatchReadSplitState(BatchReadSplit split) {
         this.split = Preconditions.checkNotNull(split, "split must not be null");
     }
 
@@ -52,7 +52,7 @@ public final class PartitionSplitState {
      *
      * @return the split
      */
-    public PartitionSplit toSplit() {
+    public BatchReadSplit toSplit() {
         return split;
     }
 }

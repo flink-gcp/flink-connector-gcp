@@ -27,7 +27,7 @@ import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Struct;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
@@ -51,7 +51,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
     private final SpannerFilterPushDown.RuntimeState filters;
 
     SpannerRowDataAsyncLookupFunction(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String table,
             List<String> columns,
             SpannerTableSchemaConverter schema,
@@ -73,7 +73,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
     }
 
     SpannerRowDataAsyncLookupFunction(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String table,
             List<String> columns,
             SpannerTableSchemaConverter schema,

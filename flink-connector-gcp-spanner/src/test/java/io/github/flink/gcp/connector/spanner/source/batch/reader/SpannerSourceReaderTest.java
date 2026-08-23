@@ -21,7 +21,7 @@ import org.apache.flink.core.io.InputStatus;
 
 import com.google.cloud.spanner.TestPartitions;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.AfterEach;
@@ -48,7 +48,7 @@ class SpannerSourceReaderTest {
     @Test
     void aReaderWithNoSplitsAsksForOneWhenItStarts() throws Exception {
         FakeSourceReaderContext context = context();
-        try (SourceReader<Long, PartitionSplit> reader = reader(context, "r1")) {
+        try (SourceReader<Long, BatchReadSplit> reader = reader(context, "r1")) {
             reader.start();
 
             assertThat(context.splitRequests()).isEqualTo(1);
@@ -58,7 +58,7 @@ class SpannerSourceReaderTest {
     @Test
     void aRestoredReaderWithSplitsDoesNotAskForAnother() throws Exception {
         FakeSourceReaderContext context = context();
-        try (SourceReader<Long, PartitionSplit> reader = reader(context, "r2")) {
+        try (SourceReader<Long, BatchReadSplit> reader = reader(context, "r2")) {
             reader.addSplits(Collections.singletonList(split("p0")));
             reader.start();
 
@@ -73,7 +73,7 @@ class SpannerSourceReaderTest {
     void aFinishedSplitIsFollowedByARequestForTheNextOne() throws Exception {
         FakeSourceReaderContext context = context();
         CollectingReaderOutput<Long> output = new CollectingReaderOutput<>();
-        try (SourceReader<Long, PartitionSplit> reader = reader(context, "r3")) {
+        try (SourceReader<Long, BatchReadSplit> reader = reader(context, "r3")) {
             reader.start();
             reader.addSplits(Collections.singletonList(split("p0")));
             reader.notifyNoMoreSplits();
@@ -95,7 +95,7 @@ class SpannerSourceReaderTest {
         FakeSourceReaderContext context = context();
         ScriptedStructStreamOpener opener = ScriptedStructStreamOpener.single("r4", 1, 2);
 
-        SourceReader<Long, PartitionSplit> reader =
+        SourceReader<Long, BatchReadSplit> reader =
                 TestSources.source(builder -> TestSources.withOpener(builder, opener))
                         .createReader(context);
         reader.close();
@@ -109,15 +109,15 @@ class SpannerSourceReaderTest {
         return new FakeSourceReaderContext(metrics.metricGroup());
     }
 
-    private SourceReader<Long, PartitionSplit> reader(FakeSourceReaderContext context, String id)
+    private SourceReader<Long, BatchReadSplit> reader(FakeSourceReaderContext context, String id)
             throws Exception {
         ScriptedStructStreamOpener opener = ScriptedStructStreamOpener.single(id, 1, 2);
         return TestSources.source(builder -> TestSources.withOpener(builder, opener))
                 .createReader(context);
     }
 
-    private static PartitionSplit split(String token) {
-        return new PartitionSplit(
+    private static BatchReadSplit split(String token) {
+        return new BatchReadSplit(
                 token,
                 TestPartitions.batchTransactionId(),
                 TestPartitions.queryPartition(token, "SELECT id FROM singers"));

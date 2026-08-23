@@ -34,7 +34,7 @@ import java.util.Objects;
 
 /**
  * Tuning options for the sink's writer: how large a batch write request grows, how Spanner should
- * schedule it, and the retry budget the writer spends on transient failures.
+ * schedule it, and the recovery budget the writer spends on transient failures.
  *
  * <p>Set via {@link SpannerSinkBuilder#writerOptions(SpannerWriterOptions)}; optional — every knob
  * is defaulted, so {@link #defaults()} is equivalent to not setting options at all.
@@ -59,7 +59,7 @@ import java.util.Objects;
  * write — which is where the commit-shaped figures entered this connector. They sit far under every
  * reading of every limit all the same.
  *
- * <h2>Why there are retry knobs at all</h2>
+ * <h2>Why there are recovery knobs at all</h2>
  *
  * <p>Unlike every other Google client this project builds on, the Spanner client does <em>not</em>
  * retry the RPC this sink writes with: {@code SpannerStubSettings} configures {@code batchWrite}
@@ -148,9 +148,9 @@ public final class SpannerWriterOptions implements Serializable {
     private final long maxBatchBytes;
     @Nullable private final Duration maxCommitDelay;
     @Nullable private final SpannerRpcPriority rpcPriority;
-    private final Duration retryInitialBackoff;
-    private final Duration retryMaxBackoff;
-    private final int retryMaxAttempts;
+    private final Duration recoveryInitialBackoff;
+    private final Duration recoveryMaxBackoff;
+    private final int recoveryMaxAttempts;
 
     private SpannerWriterOptions(Builder builder) {
         this.maxBatchCells = builder.maxBatchCells;
@@ -158,9 +158,9 @@ public final class SpannerWriterOptions implements Serializable {
         this.maxBatchBytes = builder.maxBatchBytes;
         this.maxCommitDelay = builder.maxCommitDelay;
         this.rpcPriority = builder.rpcPriority;
-        this.retryInitialBackoff = builder.retryInitialBackoff;
-        this.retryMaxBackoff = builder.retryMaxBackoff;
-        this.retryMaxAttempts = builder.retryMaxAttempts;
+        this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
+        this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
+        this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
     }
 
     /**
@@ -175,8 +175,8 @@ public final class SpannerWriterOptions implements Serializable {
     /**
      * Returns the default options: at most {@value #DEFAULT_MAX_BATCH_CELLS} mutation cells,
      * {@value #DEFAULT_MAX_BATCH_MUTATIONS} mutations and 1 MiB per batch write request, the
-     * service's own commit delay and priority, and a retry budget of 500 ms doubling to 10 s over
-     * at most 10 attempts.
+     * service's own commit delay and priority, and a recovery budget of 500 ms doubling to 10 s
+     * over at most 10 attempts.
      *
      * @return the default options
      */
@@ -212,31 +212,31 @@ public final class SpannerWriterOptions implements Serializable {
     }
 
     /** Returns the first backoff of the writer's retry loop. */
-    public Duration getRetryInitialBackoff() {
-        return retryInitialBackoff;
+    public Duration getRecoveryInitialBackoff() {
+        return recoveryInitialBackoff;
     }
 
     /** Returns the backoff cap of the writer's retry loop. */
-    public Duration getRetryMaxBackoff() {
-        return retryMaxBackoff;
+    public Duration getRecoveryMaxBackoff() {
+        return recoveryMaxBackoff;
     }
 
     /** Returns the maximum attempts of the writer's retry loop. */
-    public int getRetryMaxAttempts() {
-        return retryMaxAttempts;
+    public int getRecoveryMaxAttempts() {
+        return recoveryMaxAttempts;
     }
 
     /**
-     * Returns the retry schedule the {@code retry*} knobs describe. Jittered: every subtask writing
-     * to a database that has just become unavailable retries on the same schedule, so unjittered
-     * they would all come back at the same instant.
+     * Returns the retry schedule the {@code recovery*} knobs describe. Jittered: every subtask
+     * writing to a database that has just become unavailable retries on the same schedule, so
+     * unjittered they would all come back at the same instant.
      */
     @Internal
-    public RetrySchedule toRetrySchedule() {
+    public RetrySchedule toRecoverySchedule() {
         return new RetrySchedule(
-                retryInitialBackoff.toMillis(),
-                retryMaxBackoff.toMillis(),
-                retryMaxAttempts,
+                recoveryInitialBackoff.toMillis(),
+                recoveryMaxBackoff.toMillis(),
+                recoveryMaxAttempts,
                 RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
@@ -252,11 +252,11 @@ public final class SpannerWriterOptions implements Serializable {
         return maxBatchCells == that.maxBatchCells
                 && maxBatchMutations == that.maxBatchMutations
                 && maxBatchBytes == that.maxBatchBytes
-                && retryMaxAttempts == that.retryMaxAttempts
+                && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(maxCommitDelay, that.maxCommitDelay)
                 && rpcPriority == that.rpcPriority
-                && retryInitialBackoff.equals(that.retryInitialBackoff)
-                && retryMaxBackoff.equals(that.retryMaxBackoff);
+                && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
     }
 
     @Override
@@ -267,9 +267,9 @@ public final class SpannerWriterOptions implements Serializable {
                 maxBatchBytes,
                 maxCommitDelay,
                 rpcPriority,
-                retryInitialBackoff,
-                retryMaxBackoff,
-                retryMaxAttempts);
+                recoveryInitialBackoff,
+                recoveryMaxBackoff,
+                recoveryMaxAttempts);
     }
 
     @Override
@@ -284,12 +284,12 @@ public final class SpannerWriterOptions implements Serializable {
                 + maxCommitDelay
                 + ", rpcPriority="
                 + rpcPriority
-                + ", retryInitialBackoff="
-                + retryInitialBackoff
-                + ", retryMaxBackoff="
-                + retryMaxBackoff
-                + ", retryMaxAttempts="
-                + retryMaxAttempts
+                + ", recoveryInitialBackoff="
+                + recoveryInitialBackoff
+                + ", recoveryMaxBackoff="
+                + recoveryMaxBackoff
+                + ", recoveryMaxAttempts="
+                + recoveryMaxAttempts
                 + "}";
     }
 
@@ -302,9 +302,9 @@ public final class SpannerWriterOptions implements Serializable {
         private long maxBatchBytes = DEFAULT_MAX_BATCH_BYTES;
         @Nullable private Duration maxCommitDelay;
         @Nullable private SpannerRpcPriority rpcPriority;
-        private Duration retryInitialBackoff = Duration.ofMillis(500);
-        private Duration retryMaxBackoff = Duration.ofSeconds(10);
-        private int retryMaxAttempts = 10;
+        private Duration recoveryInitialBackoff = Duration.ofMillis(500);
+        private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
+        private int recoveryMaxAttempts = 10;
 
         private Builder() {}
 
@@ -423,24 +423,25 @@ public final class SpannerWriterOptions implements Serializable {
         /**
          * Sets the first backoff of the writer's retry loop. Defaults to 500 ms.
          *
-         * @param retryInitialBackoff the first backoff, at least 1 ms
+         * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
-        public Builder retryInitialBackoff(Duration retryInitialBackoff) {
-            this.retryInitialBackoff =
-                    OptionChecks.checkAtLeastOneMilli(retryInitialBackoff, "retryInitialBackoff");
+        public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
+            this.recoveryInitialBackoff =
+                    OptionChecks.checkAtLeastOneMilli(
+                            recoveryInitialBackoff, "recoveryInitialBackoff");
             return this;
         }
 
         /**
          * Caps the backoff of the writer's retry loop. Defaults to 10 s.
          *
-         * @param retryMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
+         * @param recoveryMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
          * @return this builder
          */
-        public Builder retryMaxBackoff(Duration retryMaxBackoff) {
-            this.retryMaxBackoff =
-                    OptionChecks.checkAtLeastOneMilli(retryMaxBackoff, "retryMaxBackoff");
+        public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
+            this.recoveryMaxBackoff =
+                    OptionChecks.checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             return this;
         }
 
@@ -449,12 +450,13 @@ public final class SpannerWriterOptions implements Serializable {
          * — a transient failure the service never recovers from within the budget is not something
          * a sink can drop.
          *
-         * @param retryMaxAttempts the maximum attempts, positive
+         * @param recoveryMaxAttempts the maximum attempts, positive
          * @return this builder
          */
-        public Builder retryMaxAttempts(int retryMaxAttempts) {
-            Preconditions.checkArgument(retryMaxAttempts > 0, "retryMaxAttempts must be positive");
-            this.retryMaxAttempts = retryMaxAttempts;
+        public Builder recoveryMaxAttempts(int recoveryMaxAttempts) {
+            Preconditions.checkArgument(
+                    recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
+            this.recoveryMaxAttempts = recoveryMaxAttempts;
             return this;
         }
 
@@ -471,8 +473,8 @@ public final class SpannerWriterOptions implements Serializable {
          */
         public SpannerWriterOptions build() {
             Preconditions.checkState(
-                    retryMaxBackoff.compareTo(retryInitialBackoff) >= 0,
-                    "retryMaxBackoff must be at least retryInitialBackoff.");
+                    recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
+                    "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
             if (maxBatchMutations > maxBatchCells) {
                 // Logged where the options are built rather than in the writer, which would repeat
                 // it once per subtask. That is normally the job's main method — but not only:

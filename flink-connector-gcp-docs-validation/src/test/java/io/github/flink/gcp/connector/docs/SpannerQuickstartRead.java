@@ -24,7 +24,7 @@ import org.apache.flink.util.Collector;
 
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
@@ -39,7 +39,7 @@ final class SpannerQuickstartRead {
 
         Source<String, ?, ?> source =
                 SpannerSource.<String>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                         .readOperation(
                                 SpannerReadOperation.query(
                                         Statement.of("SELECT OrderId FROM Orders")))

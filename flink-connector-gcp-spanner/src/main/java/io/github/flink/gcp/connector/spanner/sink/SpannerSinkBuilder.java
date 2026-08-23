@@ -22,7 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -30,15 +30,15 @@ import javax.annotation.Nullable;
 /**
  * Builder for the Spanner sink; created through {@link SpannerSink#builder()}.
  *
- * <p>{@link #database(SpannerDatabase)} and {@link #serializer(SpannerMutationSerializationSchema)}
- * are required; everything else is defaulted.
+ * <p>{@link #database(DatabaseDestination)} and {@link
+ * #serializer(SpannerMutationSerializationSchema)} are required; everything else is defaulted.
  *
  * @param <T> type of the records written by the sink
  */
 @Public
 public class SpannerSinkBuilder<T> {
 
-    @Nullable private SpannerDatabase database;
+    @Nullable private DatabaseDestination database;
     @Nullable private SpannerMutationSerializationSchema<? super T> serializer;
     private SpannerWriterOptions writerOptions = SpannerWriterOptions.defaults();
     private FailureHandler<? super FailedMutation> failedMutationHandler = FailureHandler.failJob();
@@ -55,7 +55,7 @@ public class SpannerSinkBuilder<T> {
      * @param database the database
      * @return this builder
      */
-    public SpannerSinkBuilder<T> database(SpannerDatabase database) {
+    public SpannerSinkBuilder<T> database(DatabaseDestination database) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         return this;
     }

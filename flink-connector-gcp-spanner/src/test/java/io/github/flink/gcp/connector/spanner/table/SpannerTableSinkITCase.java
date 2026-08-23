@@ -24,7 +24,7 @@ import org.apache.flink.util.CloseableIterator;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -38,7 +38,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void insertsAndUpsertsThroughTheProductionFactory(Dialect dialect) throws Exception {
-        SpannerDatabase database = database(dialect);
+        DatabaseDestination database = database(dialect);
         TableEnvironment table =
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
@@ -61,7 +61,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
     @EnumSource(Dialect.class)
     void roundTripsNumericThroughTheProductionSinkAndBoundedSource(Dialect dialect)
             throws Exception {
-        SpannerDatabase database = numericDatabase(dialect);
+        DatabaseDestination database = numericDatabase(dialect);
         TableEnvironment sink =
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
@@ -114,7 +114,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void roundTripsUuidScalarsArraysAndNulls(Dialect dialect) throws Exception {
-        SpannerDatabase database = uuidDatabase(dialect);
+        DatabaseDestination database = uuidDatabase(dialect);
         TableEnvironment sink =
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
@@ -148,7 +148,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
         }
     }
 
-    private static SpannerDatabase database(Dialect dialect) throws Exception {
+    private static DatabaseDestination database(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -159,7 +159,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE records (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)");
     }
 
-    private static SpannerDatabase numericDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination numericDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -171,7 +171,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE numeric_records (id INT64 NOT NULL, amount NUMERIC) PRIMARY KEY (id)");
     }
 
-    private static SpannerDatabase uuidDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination uuidDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -182,7 +182,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE uuid_records (id UUID NOT NULL, related ARRAY<UUID>) PRIMARY KEY (id)");
     }
 
-    private static String tableDdl(SpannerDatabase database, Dialect dialect) {
+    private static String tableDdl(DatabaseDestination database, Dialect dialect) {
         return "CREATE TABLE target (\n"
                 + "  id BIGINT,\n"
                 + "  name STRING,\n"
@@ -209,7 +209,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private static String numericTableDdl(
-            String tableName, SpannerDatabase database, Dialect dialect) {
+            String tableName, DatabaseDestination database, Dialect dialect) {
         return "CREATE TABLE "
                 + tableName
                 + " (\n"
@@ -240,7 +240,7 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private static String uuidTableDdl(
-            String tableName, SpannerDatabase database, Dialect dialect) {
+            String tableName, DatabaseDestination database, Dialect dialect) {
         return "CREATE TABLE "
                 + tableName
                 + " (\n"

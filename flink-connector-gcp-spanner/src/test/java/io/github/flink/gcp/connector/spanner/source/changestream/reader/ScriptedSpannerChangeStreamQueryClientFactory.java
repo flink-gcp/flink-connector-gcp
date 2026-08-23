@@ -16,9 +16,9 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream.reader;
 
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
 
 import java.time.Instant;
@@ -70,8 +70,7 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
 
         @Override
         public QueryHandle open(
-                SpannerChangeStreamPartitionSplit split,
-                SpannerChangeStreamQueryListener listener) {
+                ChangeStreamPartitionSplit split, SpannerChangeStreamQueryListener listener) {
             ScriptedQuery query = new ScriptedQuery(split, listener, partitionCount, callbacks);
             // The production client invokes listeners asynchronously. Delay this callback until
             // after open() has returned so the reader has installed the query handle as well.
@@ -87,7 +86,7 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
 
     private static final class ScriptedQuery implements SpannerChangeStreamQueryClient.QueryHandle {
 
-        private final SpannerChangeStreamPartitionSplit split;
+        private final ChangeStreamPartitionSplit split;
         private final SpannerChangeStreamQueryClient.SpannerChangeStreamQueryListener listener;
         private final int partitionCount;
         private final ScheduledExecutorService callbacks;
@@ -97,7 +96,7 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
         private boolean closed;
 
         private ScriptedQuery(
-                SpannerChangeStreamPartitionSplit split,
+                ChangeStreamPartitionSplit split,
                 SpannerChangeStreamQueryClient.SpannerChangeStreamQueryListener listener,
                 int partitionCount,
                 ScheduledExecutorService callbacks) {

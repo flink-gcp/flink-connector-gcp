@@ -26,15 +26,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Serializer for {@link SpannerBatchEnumeratorState}.
+ * Serializer for {@link SpannerBatchReadEnumeratorState}.
  *
- * <p>Splits are embedded through {@link PartitionSplitSerializer}'s version-free helpers rather
+ * <p>Splits are embedded through {@link BatchReadSplitSerializer}'s version-free helpers rather
  * than through the serializer itself, so that the split format and this one carry separate version
  * numbers and can move independently.
  */
 @Internal
-public final class SpannerBatchEnumeratorStateSerializer
-        implements SimpleVersionedSerializer<SpannerBatchEnumeratorState> {
+public final class SpannerBatchReadEnumeratorStateSerializer
+        implements SimpleVersionedSerializer<SpannerBatchReadEnumeratorState> {
 
     private static final int VERSION = 1;
 
@@ -47,19 +47,19 @@ public final class SpannerBatchEnumeratorStateSerializer
     }
 
     @Override
-    public byte[] serialize(SpannerBatchEnumeratorState state) throws IOException {
+    public byte[] serialize(SpannerBatchReadEnumeratorState state) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         out.writeBoolean(state.isPlanned());
-        List<PartitionSplit> splits = state.getPendingSplits();
+        List<BatchReadSplit> splits = state.getPendingSplits();
         out.writeInt(splits.size());
-        for (PartitionSplit split : splits) {
-            PartitionSplitSerializer.writeSplit(out, split);
+        for (BatchReadSplit split : splits) {
+            BatchReadSplitSerializer.writeSplit(out, split);
         }
         return out.getCopyOfBuffer();
     }
 
     @Override
-    public SpannerBatchEnumeratorState deserialize(int version, byte[] serialized)
+    public SpannerBatchReadEnumeratorState deserialize(int version, byte[] serialized)
             throws IOException {
         if (version != VERSION) {
             throw new IOException(
@@ -76,10 +76,10 @@ public final class SpannerBatchEnumeratorStateSerializer
             throw new IOException(
                     "Corrupt Spanner batch enumerator state: negative split count " + count);
         }
-        List<PartitionSplit> splits = new ArrayList<>(Math.min(count, 1024));
+        List<BatchReadSplit> splits = new ArrayList<>(Math.min(count, 1024));
         for (int i = 0; i < count; i++) {
-            splits.add(PartitionSplitSerializer.readSplit(in));
+            splits.add(BatchReadSplitSerializer.readSplit(in));
         }
-        return new SpannerBatchEnumeratorState(planned, splits);
+        return new SpannerBatchReadEnumeratorState(planned, splits);
     }
 }

@@ -25,7 +25,7 @@ import org.apache.flink.annotation.Public;
  * <pre>{@code
  * Source<Singer, ?, ?> source =
  *         SpannerSource.<Singer>builder()
- *                 .database(SpannerDatabase.of("my-project", "my-instance", "my-db"))
+ *                 .database(DatabaseDestination.of("my-project", "my-instance", "my-db"))
  *                 .readOperation(
  *                         SpannerReadOperation.query(
  *                                 Statement.of("SELECT id, name FROM singers")))

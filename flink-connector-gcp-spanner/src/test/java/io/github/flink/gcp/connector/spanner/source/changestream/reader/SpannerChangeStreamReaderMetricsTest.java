@@ -22,8 +22,8 @@ import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 
 import io.github.flink.gcp.connector.spanner.SpannerMetricValues;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -57,12 +57,28 @@ class SpannerChangeStreamReaderMetricsTest {
         metrics.recordReturned(timing, true);
         assertThat(gauge("missedHeartbeatIntervals")).isEqualTo(0L);
         assertThat(gauge("lastChangeStreamRecordWaitMillis")).isEqualTo(0L);
+        assertThat(gauge("longestChangeStreamRecordWaitMillis")).isEqualTo(0L);
 
         now.set(1_400);
         metrics.resumed(timing);
         now.set(1_575);
         metrics.recordReturned(timing, false);
         assertThat(gauge("lastChangeStreamRecordWaitMillis")).isEqualTo(175L);
+        assertThat(gauge("longestChangeStreamRecordWaitMillis")).isEqualTo(175L);
+
+        now.set(1_600);
+        metrics.resumed(timing);
+        now.set(1_625);
+        metrics.recordReturned(timing, false);
+        assertThat(gauge("lastChangeStreamRecordWaitMillis")).isEqualTo(25L);
+        assertThat(gauge("longestChangeStreamRecordWaitMillis")).isEqualTo(175L);
+
+        now.set(1_700);
+        metrics.resumed(timing);
+        now.set(2_000);
+        metrics.recordReturned(timing, false);
+        assertThat(gauge("lastChangeStreamRecordWaitMillis")).isEqualTo(300L);
+        assertThat(gauge("longestChangeStreamRecordWaitMillis")).isEqualTo(300L);
 
         metrics.terminated(timing);
         metrics.terminated(timing);
@@ -73,8 +89,7 @@ class SpannerChangeStreamReaderMetricsTest {
     @Test
     void initialQueryDoesNotContributeToMissedHeartbeatIntervals() {
         SpannerChangeStreamReaderMetrics.QueryTiming timing =
-                metrics.opening(
-                        SpannerChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 100));
+                metrics.opening(ChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 100));
         metrics.opened(timing);
         now.set(10_000);
 
@@ -134,12 +149,12 @@ class SpannerChangeStreamReaderMetricsTest {
         return listener.<Gauge<?>>getGauge(name).orElseThrow(AssertionError::new).getValue();
     }
 
-    private static SpannerChangeStreamPartitionSplit split(
+    private static ChangeStreamPartitionSplit split(
             String token, long positionMillis, long heartbeatMillis) {
         Instant position = Instant.ofEpochMilli(positionMillis);
-        return new SpannerChangeStreamPartitionSplit(
+        return new ChangeStreamPartitionSplit(
                 token,
-                Collections.singletonList(SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
+                Collections.singletonList(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
                 position,
                 null,
                 heartbeatMillis,

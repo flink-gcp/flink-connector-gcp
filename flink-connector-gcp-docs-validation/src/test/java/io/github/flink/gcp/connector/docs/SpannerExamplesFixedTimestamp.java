@@ -21,7 +21,7 @@ import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.Order;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderDeserializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 
@@ -34,7 +34,7 @@ final class SpannerExamplesFixedTimestamp {
         Timestamp readAt = Timestamp.now();
 
         SpannerSource.<Order>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                 .readOperation(
                         SpannerReadOperation.query(Statement.of("SELECT OrderId FROM Orders")))
                 .deserializer(new OrderDeserializer())

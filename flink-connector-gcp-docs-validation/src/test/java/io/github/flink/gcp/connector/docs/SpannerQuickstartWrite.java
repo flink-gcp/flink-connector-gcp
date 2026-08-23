@@ -20,7 +20,7 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import com.google.cloud.spanner.Mutation;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 
 final class SpannerQuickstartWrite {
@@ -39,7 +39,7 @@ final class SpannerQuickstartWrite {
                 .sinkTo(
                         SpannerSink.<String>builder()
                                 .database(
-                                        SpannerDatabase.of(
+                                        DatabaseDestination.of(
                                                 "my-project", "my-instance", "orders-db"))
                                 .serializer(
                                         (element, context) ->

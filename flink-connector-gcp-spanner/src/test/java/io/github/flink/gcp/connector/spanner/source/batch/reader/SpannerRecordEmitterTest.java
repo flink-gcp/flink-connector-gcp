@@ -23,8 +23,8 @@ import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TestPartitions;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.TestStructs;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplitState;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplitState;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
 import org.junit.jupiter.api.Test;
@@ -149,9 +149,9 @@ class SpannerRecordEmitterTest {
         return new SpannerRecordEmitter<>(new TestDeserializer(deserialize), metrics.metrics());
     }
 
-    private static PartitionSplitState state() {
-        return new PartitionSplitState(
-                new PartitionSplit(
+    private static BatchReadSplitState state() {
+        return new BatchReadSplitState(
+                new BatchReadSplit(
                         "0",
                         TestPartitions.batchTransactionId(),
                         TestPartitions.queryPartition("p0", "SELECT 1")));

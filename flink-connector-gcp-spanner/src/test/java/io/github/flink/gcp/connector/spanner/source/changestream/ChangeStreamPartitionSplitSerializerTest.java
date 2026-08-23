@@ -27,18 +27,18 @@ import java.util.Arrays;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class SpannerChangeStreamPartitionSplitSerializerTest {
+class ChangeStreamPartitionSplitSerializerTest {
 
     private static final Instant START = Instant.parse("2026-08-12T00:00:00.123456789Z");
 
     @Test
     void roundTripsEveryLifecycleStateAndOptionalField() throws Exception {
-        SpannerChangeStreamPartitionSplitSerializer serializer =
-                new SpannerChangeStreamPartitionSplitSerializer();
+        ChangeStreamPartitionSplitSerializer serializer =
+                new ChangeStreamPartitionSplitSerializer();
 
         for (PartitionLifecycleState state : PartitionLifecycleState.values()) {
-            SpannerChangeStreamPartitionSplit split =
-                    new SpannerChangeStreamPartitionSplit(
+            ChangeStreamPartitionSplit split =
+                    new ChangeStreamPartitionSplit(
                             "token",
                             Arrays.asList("parent-a", "parent-b"),
                             START,
@@ -52,20 +52,18 @@ class SpannerChangeStreamPartitionSplitSerializerTest {
                     .isEqualTo(split);
         }
 
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(START, null, 2_000);
+        ChangeStreamPartitionSplit initial = ChangeStreamPartitionSplit.initial(START, null, 2_000);
         assertThat(serializer.deserialize(serializer.getVersion(), serializer.serialize(initial)))
                 .isEqualTo(initial)
-                .extracting(SpannerChangeStreamPartitionSplit::getPartitionToken)
+                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
                 .isNull();
     }
 
     @Test
     void rejectsUnknownVersionsAndCorruptLifecycleTags() throws Exception {
-        SpannerChangeStreamPartitionSplitSerializer serializer =
-                new SpannerChangeStreamPartitionSplitSerializer();
-        byte[] bytes =
-                serializer.serialize(SpannerChangeStreamPartitionSplit.initial(START, null, 2_000));
+        ChangeStreamPartitionSplitSerializer serializer =
+                new ChangeStreamPartitionSplitSerializer();
+        byte[] bytes = serializer.serialize(ChangeStreamPartitionSplit.initial(START, null, 2_000));
 
         assertThatThrownBy(() -> serializer.deserialize(99, bytes))
                 .isInstanceOf(java.io.IOException.class)
@@ -86,7 +84,7 @@ class SpannerChangeStreamPartitionSplitSerializerTest {
 
         assertThatThrownBy(
                         () ->
-                                SpannerChangeStreamPartitionSplitSerializer.readInstant(
+                                ChangeStreamPartitionSplitSerializer.readInstant(
                                         new DataInputDeserializer(corrupt.getCopyOfBuffer())))
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessageContaining("invalid instant 0:1000000000");
@@ -100,7 +98,7 @@ class SpannerChangeStreamPartitionSplitSerializerTest {
 
         assertThatThrownBy(
                         () ->
-                                SpannerChangeStreamPartitionSplitSerializer.readSplit(
+                                ChangeStreamPartitionSplitSerializer.readSplit(
                                         new DataInputDeserializer(corrupt.getCopyOfBuffer())))
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessageContaining("negative parent partition count -1");

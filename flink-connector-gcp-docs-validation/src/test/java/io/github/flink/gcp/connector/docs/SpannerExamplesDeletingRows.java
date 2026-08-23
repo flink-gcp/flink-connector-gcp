@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.docs;
 
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 
 final class SpannerExamplesDeletingRows {
@@ -28,7 +28,7 @@ final class SpannerExamplesDeletingRows {
     static void build() {
         // tag::spanner-examples-deleting-rows[]
         SpannerSink.<String>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                 .serializer((orderId, context) -> Mutation.delete("Orders", Key.of(orderId)))
                 .build();
         // end::spanner-examples-deleting-rows[]

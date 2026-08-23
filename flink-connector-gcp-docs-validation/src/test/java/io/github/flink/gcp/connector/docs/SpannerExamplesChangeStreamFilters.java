@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.docs;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderChange;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderChangeDeserializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 
 import java.util.List;
@@ -32,7 +32,7 @@ final class SpannerExamplesChangeStreamFilters {
         // tag::spanner-examples-change-stream-filters[]
         SpannerChangeStreamSource<OrderChange> source =
                 SpannerChangeStreamSource.<OrderChange>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                         .changeStreamName("all_changes")
                         .deserializer(new OrderChangeDeserializer())
                         .startPosition(StartPosition.latest())

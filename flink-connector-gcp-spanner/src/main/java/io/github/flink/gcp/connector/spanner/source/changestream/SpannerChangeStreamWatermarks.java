@@ -30,12 +30,11 @@ public final class SpannerChangeStreamWatermarks {
     private SpannerChangeStreamWatermarks() {}
 
     /** Returns the minimum unfinished-partition frontier, if the ledger is still active. */
-    public static OptionalLong sourceWatermark(
-            Collection<SpannerChangeStreamPartitionSplit> partitions) {
+    public static OptionalLong sourceWatermark(Collection<ChangeStreamPartitionSplit> partitions) {
         Preconditions.checkNotNull(partitions, "partitions must not be null");
         long minimum = Long.MAX_VALUE;
         boolean unfinished = false;
-        for (SpannerChangeStreamPartitionSplit partition : partitions) {
+        for (ChangeStreamPartitionSplit partition : partitions) {
             Preconditions.checkNotNull(partition, "partitions must not contain null");
             if (partition.getLifecycleState() == PartitionLifecycleState.FINISHED) {
                 continue;

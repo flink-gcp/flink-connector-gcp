@@ -25,7 +25,7 @@ import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
@@ -159,7 +159,7 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
             CapturingOpener opener, CapturingPlannerFactory planners) throws Exception {
         SpannerSourceBuilder<Long> builder =
                 SpannerSource.<Long>builder()
-                        .database(SpannerDatabase.of("p", "i", "d"))
+                        .database(DatabaseDestination.of("p", "i", "d"))
                         .readOperation(TestSources.OPERATION)
                         .deserializer(new TestSources.IdDeserializer())
                         .serviceAccountKeyFile(ServiceAccountKeyFiles.create(tempDir).toString());

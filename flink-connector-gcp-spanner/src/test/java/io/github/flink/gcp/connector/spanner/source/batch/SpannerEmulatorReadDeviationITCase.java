@@ -31,7 +31,7 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -54,7 +54,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void theEmulatorPlansTwoPartitionsAndIgnoresBothHints() throws Exception {
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
         Statement query = Statement.of("SELECT id FROM singers");
 
         try (Spanner spanner = client()) {
@@ -82,7 +82,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
     void oneOfTheEmulatorsPartitionsIsEmpty() throws Exception {
         // Which is why an empty partition is a normal thing for the split reader to finish, and why
         // the emulator gives that path real coverage even though it gives split planning none.
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
 
         try (Spanner spanner = client()) {
             BatchReadOnlyTransaction txn = transaction(spanner, database);
@@ -103,7 +103,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void theEmulatorAcceptsTheDataBoostFlagAndDoesNothingWithIt() throws Exception {
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
 
         try (Spanner spanner = client()) {
             BatchReadOnlyTransaction txn = transaction(spanner, database);
@@ -130,7 +130,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
         // The deviation that matters most, and it runs the *opposite* way from the usual one: the
         // emulator's check is its own, and its message says so — "not able to determine whether
         // this query is partitionable". So a query rejected here may be one Spanner would plan.
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
 
         try (Spanner spanner = client()) {
             BatchReadOnlyTransaction txn = transaction(spanner, database);
@@ -165,7 +165,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
     void theEmulatorsBypassHintOnlyWorksBeforeTheSelect() throws Exception {
         // Recorded because it is what an integration test has to write to cover a query shape the
         // emulator's check refuses — and because the obvious placement is rejected outright.
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
         String hint = "@{spanner_emulator.disable_query_partitionability_check=true}";
 
         try (Spanner spanner = client()) {
@@ -194,7 +194,7 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
     void theClientRefusesTheTwoSingleUseOnlyBoundsBeforeTheEmulatorSeesThem() throws Exception {
         // Not an emulator deviation but a client one, pinned here for the same reason: the source's
         // builder refuses these too, and this is what says the second guard is not the only guard.
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
 
         try (Spanner spanner = client()) {
             BatchClient batch = batchClient(spanner, database);
@@ -227,18 +227,19 @@ class SpannerEmulatorReadDeviationITCase extends AbstractSpannerEmulatorITCase {
                 .getService();
     }
 
-    private static BatchClient batchClient(Spanner spanner, SpannerDatabase database) {
+    private static BatchClient batchClient(Spanner spanner, DatabaseDestination database) {
         return spanner.getBatchClient(
                 DatabaseId.of(
                         database.getProject(), database.getInstance(), database.getDatabase()));
     }
 
-    private static BatchReadOnlyTransaction transaction(Spanner spanner, SpannerDatabase database) {
+    private static BatchReadOnlyTransaction transaction(
+            Spanner spanner, DatabaseDestination database) {
         return batchClient(spanner, database).batchReadOnlyTransaction(TimestampBound.strong());
     }
 
-    private static SpannerDatabase seededDatabase() throws Exception {
-        SpannerDatabase database =
+    private static DatabaseDestination seededDatabase() throws Exception {
+        DatabaseDestination database =
                 createDatabase(
                         Dialect.GOOGLE_STANDARD_SQL,
                         "CREATE TABLE singers (id INT64 NOT NULL, name STRING(64))"

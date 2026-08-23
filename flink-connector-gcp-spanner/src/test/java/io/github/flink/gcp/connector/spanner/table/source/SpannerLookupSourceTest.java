@@ -52,7 +52,7 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Value;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
@@ -212,7 +212,7 @@ class SpannerLookupSourceTest {
         String path = "/missing/spanner-service-account.json";
         SpannerDatabaseRowLookup lookup =
                 new SpannerDatabaseRowLookup(
-                        SpannerDatabase.of("p", "i", "d"),
+                        DatabaseDestination.of("p", "i", "d"),
                         "people",
                         Collections.singletonList("id"),
                         null,
@@ -232,7 +232,7 @@ class SpannerLookupSourceTest {
         // check behind the @Internal constructor, which is reached by constructing it directly.
         SpannerDatabaseRowLookup lookup =
                 new SpannerDatabaseRowLookup(
-                        SpannerDatabase.of("p", "i", "d"),
+                        DatabaseDestination.of("p", "i", "d"),
                         "people",
                         Collections.singletonList("id"),
                         "localhost",
@@ -249,7 +249,7 @@ class SpannerLookupSourceTest {
     void lookupInjectsRuntimeCredentialsIntoClientSettings() throws Exception {
         SpannerDatabaseRowLookup lookup =
                 new SpannerDatabaseRowLookup(
-                        SpannerDatabase.of("p", "i", "d"),
+                        DatabaseDestination.of("p", "i", "d"),
                         "people",
                         Collections.singletonList("id"),
                         null,
@@ -619,7 +619,7 @@ class SpannerLookupSourceTest {
     private static LookupRuntimeProvider provider(Configuration config, int[][] keys) {
         SpannerDynamicSource source =
                 new SpannerDynamicSource(
-                        SCHEMA, SpannerDatabase.of("p", "i", "d"), "people", PHYSICAL, config);
+                        SCHEMA, DatabaseDestination.of("p", "i", "d"), "people", PHYSICAL, config);
         return source.getLookupRuntimeProvider(context(keys));
     }
 

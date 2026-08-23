@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.api.core.ApiFuture;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Struct;
@@ -23,6 +25,7 @@ import com.google.cloud.spanner.Struct;
 import java.io.Serializable;
 
 /** Point-read seam shared by synchronous and asynchronous lookup functions. */
+@Internal
 interface SpannerRowLookup extends Serializable, AutoCloseable {
     void open() throws Exception;
 

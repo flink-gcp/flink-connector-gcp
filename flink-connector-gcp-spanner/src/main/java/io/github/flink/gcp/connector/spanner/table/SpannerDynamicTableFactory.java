@@ -30,7 +30,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.sink.WriterOptionsMapper;
@@ -97,7 +97,7 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK,
                         SpannerConnectorOptions.SCAN_INDEX,
                         SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
-                        SpannerConnectorOptions.SCAN_PARTITION_SIZE,
+                        SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES,
                         SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED,
                         SpannerConnectorOptions.SCAN_RPC_PRIORITY,
                         SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP,
@@ -114,9 +114,9 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY,
                         SpannerConnectorOptions.SINK_RPC_PRIORITY,
-                        SpannerConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
-                        SpannerConnectorOptions.SINK_RETRY_MAX_BACKOFF,
-                        SpannerConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
+                        SpannerConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                        SpannerConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                        SpannerConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
                         FactoryUtil.SINK_PARALLELISM,
                         FactoryUtil.SOURCE_PARALLELISM));
     }
@@ -140,7 +140,7 @@ public final class SpannerDynamicTableFactory
         return SpannerDynamicSink.builder()
                 .schema(schema)
                 .database(
-                        SpannerDatabase.of(
+                        DatabaseDestination.of(
                                 config.get(SpannerConnectorOptions.PROJECT),
                                 config.get(SpannerConnectorOptions.INSTANCE),
                                 config.get(SpannerConnectorOptions.DATABASE)))
@@ -172,7 +172,7 @@ public final class SpannerDynamicTableFactory
         }
         return new SpannerDynamicSource(
                 schema,
-                SpannerDatabase.of(
+                DatabaseDestination.of(
                         config.get(SpannerConnectorOptions.PROJECT),
                         config.get(SpannerConnectorOptions.INSTANCE),
                         config.get(SpannerConnectorOptions.DATABASE)),
@@ -195,7 +195,7 @@ public final class SpannerDynamicTableFactory
                 "scan.mode=change-stream",
                 SpannerConnectorOptions.SCAN_INDEX,
                 SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
-                SpannerConnectorOptions.SCAN_PARTITION_SIZE,
+                SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES,
                 SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED,
                 SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP,
                 SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_EXACT_STALENESS,

@@ -24,10 +24,10 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.DefaultPartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
@@ -49,7 +49,7 @@ import javax.annotation.Nullable;
 @Public
 public class SpannerSourceBuilder<T> {
 
-    private @Nullable SpannerDatabase database;
+    private @Nullable DatabaseDestination database;
     private @Nullable SpannerReadOperation readOperation;
     private @Nullable SpannerStructDeserializationSchema<T> deserializer;
     private TimestampBound timestampBound = TimestampBound.strong();
@@ -71,7 +71,7 @@ public class SpannerSourceBuilder<T> {
      * @param database the database
      * @return this builder
      */
-    public SpannerSourceBuilder<T> database(SpannerDatabase database) {
+    public SpannerSourceBuilder<T> database(DatabaseDestination database) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         return this;
     }
@@ -285,7 +285,7 @@ public class SpannerSourceBuilder<T> {
      * @return the source
      * @throws IllegalStateException if a required option was not set
      */
-    public Source<T, PartitionSplit, SpannerBatchEnumeratorState> build() {
+    public Source<T, BatchReadSplit, SpannerBatchReadEnumeratorState> build() {
         Preconditions.checkState(database != null, "A database is required: set database(...).");
         Preconditions.checkState(
                 readOperation != null, "A read operation is required: set readOperation(...).");

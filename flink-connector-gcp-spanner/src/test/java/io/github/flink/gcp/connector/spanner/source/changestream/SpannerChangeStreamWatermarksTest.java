@@ -30,16 +30,16 @@ class SpannerChangeStreamWatermarksTest {
 
     @Test
     void minimumIncludesCreatedScheduledAndRunningButNotFinishedPartitions() {
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(START, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(START, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.FINISHED);
-        SpannerChangeStreamPartitionSplit created =
+        ChangeStreamPartitionSplit created =
                 child("created", initial, START.plusMillis(2), PartitionLifecycleState.CREATED);
-        SpannerChangeStreamPartitionSplit scheduled =
+        ChangeStreamPartitionSplit scheduled =
                 child("scheduled", initial, START.plusMillis(1), PartitionLifecycleState.SCHEDULED);
-        SpannerChangeStreamPartitionSplit running =
+        ChangeStreamPartitionSplit running =
                 child("running", initial, START.plusMillis(3), PartitionLifecycleState.RUNNING);
-        SpannerChangeStreamPartitionSplit finished =
+        ChangeStreamPartitionSplit finished =
                 child("finished", initial, START, PartitionLifecycleState.FINISHED);
 
         assertThat(
@@ -72,8 +72,8 @@ class SpannerChangeStreamWatermarksTest {
 
     @Test
     void finishedLedgerHasNoProgressiveWatermark() {
-        SpannerChangeStreamPartitionSplit finished =
-                SpannerChangeStreamPartitionSplit.initial(START, START, 2_000)
+        ChangeStreamPartitionSplit finished =
+                ChangeStreamPartitionSplit.initial(START, START, 2_000)
                         .withLifecycleState(PartitionLifecycleState.FINISHED);
 
         assertThat(
@@ -82,12 +82,12 @@ class SpannerChangeStreamWatermarksTest {
                 .isEmpty();
     }
 
-    private static SpannerChangeStreamPartitionSplit child(
+    private static ChangeStreamPartitionSplit child(
             String token,
-            SpannerChangeStreamPartitionSplit parent,
+            ChangeStreamPartitionSplit parent,
             Instant watermark,
             PartitionLifecycleState state) {
-        return new SpannerChangeStreamPartitionSplit(
+        return new ChangeStreamPartitionSplit(
                 token,
                 Collections.singletonList(parent.splitId()),
                 START,

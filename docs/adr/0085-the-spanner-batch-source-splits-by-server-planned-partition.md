@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0085: The Spanner batch source splits by server-planned partition, and a partition is the unit of progress
 
 - Status: Accepted
-- Date: 2026-08-10, revised by [#587] (2026-08-13)
-- Issues: [#221], [#36], [#224], [#587]
+- Date: 2026-08-10, revised by [#587] (2026-08-13) and [#1053] (2026-08-23)
+- Issues: [#221], [#36], [#224], [#587], [#1053]
 - Modules: spanner (`source`, `source.batch`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Source
 
@@ -121,9 +121,15 @@ emulator.
 
 ## Decision
 
+**The bounded source's source, split and enumerator families use `BatchRead`.**
+The source, split, split state, enumerator, enumerator state and their serializers use that phrase
+consistently.
+`PartitionPlanner` and `PartitionPlan` retain the vendor noun because they model the actual Spanner
+operation that creates batch-read partitions, rather than the Flink path that consumes them.
+
 **A split is one server-planned partition, and the partition is the unit of progress.** The
 enumerator plans once, hands the partitions out one per request, and a reader that is interrupted
-re-reads its partition from the start on restore. `PartitionSplitState.toSplit()` returns the
+re-reads its partition from the start on restore. `BatchReadSplitState.toSplit()` returns the
 split unchanged: there is no offset to resume at that the service will honour.
 
 **An offset-skip resume is declined**, and the reason is the API rather than the cost.
@@ -256,3 +262,4 @@ against, and an SDK release that moves any of them fails a test at compile time.
 [#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
 [#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
 [#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587
+[#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053

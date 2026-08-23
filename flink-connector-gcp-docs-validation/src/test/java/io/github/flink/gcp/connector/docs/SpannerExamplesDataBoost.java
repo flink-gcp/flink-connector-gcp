@@ -21,7 +21,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.Order;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderDeserializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 
@@ -32,7 +32,7 @@ final class SpannerExamplesDataBoost {
     static void build(StreamExecutionEnvironment env) {
         // tag::spanner-examples-data-boost[]
         SpannerSource.<Order>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                 .readOperation(
                         SpannerReadOperation.query(
                                 Statement.of(

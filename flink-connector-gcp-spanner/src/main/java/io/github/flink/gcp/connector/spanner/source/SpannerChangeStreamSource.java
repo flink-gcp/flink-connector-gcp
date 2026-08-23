@@ -31,17 +31,17 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorStateSerializer;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerChangeStreamReader;
 
 /** FLIP-27 source for Cloud Spanner Change Streams. */
 @Public
 public final class SpannerChangeStreamSource<T>
-        implements Source<T, SpannerChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>,
+        implements Source<T, ChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>,
                 ResultTypeQueryable<T> {
 
     private static final long serialVersionUID = 1L;
@@ -69,28 +69,28 @@ public final class SpannerChangeStreamSource<T>
     }
 
     @Override
-    public SourceReader<T, SpannerChangeStreamPartitionSplit> createReader(
-            SourceReaderContext context) throws Exception {
+    public SourceReader<T, ChangeStreamPartitionSplit> createReader(SourceReaderContext context)
+            throws Exception {
         config.getDeserializer().open(new ReaderInitializationContext(context));
         return new SpannerChangeStreamReader<>(context, config);
     }
 
     @Override
-    public SplitEnumerator<SpannerChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>
-            createEnumerator(SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context) {
+    public SplitEnumerator<ChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>
+            createEnumerator(SplitEnumeratorContext<ChangeStreamPartitionSplit> context) {
         return enumerator(context, null);
     }
 
     @Override
-    public SplitEnumerator<SpannerChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>
+    public SplitEnumerator<ChangeStreamPartitionSplit, SpannerChangeStreamEnumeratorState>
             restoreEnumerator(
-                    SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context,
+                    SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
                     SpannerChangeStreamEnumeratorState checkpoint) {
         return enumerator(context, checkpoint);
     }
 
     private SpannerChangeStreamSplitEnumerator enumerator(
-            SplitEnumeratorContext<SpannerChangeStreamPartitionSplit> context,
+            SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
             SpannerChangeStreamEnumeratorState restored) {
         return new SpannerChangeStreamSplitEnumerator(
                 context,
@@ -103,8 +103,8 @@ public final class SpannerChangeStreamSource<T>
     }
 
     @Override
-    public SimpleVersionedSerializer<SpannerChangeStreamPartitionSplit> getSplitSerializer() {
-        return new SpannerChangeStreamPartitionSplitSerializer();
+    public SimpleVersionedSerializer<ChangeStreamPartitionSplit> getSplitSerializer() {
+        return new ChangeStreamPartitionSplitSerializer();
     }
 
     @Override

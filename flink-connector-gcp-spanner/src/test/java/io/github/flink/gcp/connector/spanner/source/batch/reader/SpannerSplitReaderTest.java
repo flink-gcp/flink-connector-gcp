@@ -24,7 +24,7 @@ import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TestPartitions;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.TestStructs;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -44,8 +44,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link SpannerSplitReader}. */
 class SpannerSplitReaderTest {
 
-    private static final io.github.flink.gcp.connector.spanner.SpannerDatabase DATABASE =
-            io.github.flink.gcp.connector.spanner.SpannerDatabase.of("p", "i", "db");
+    private static final io.github.flink.gcp.connector.spanner.DatabaseDestination DATABASE =
+            io.github.flink.gcp.connector.spanner.DatabaseDestination.of("p", "i", "db");
 
     private TestReaderMetrics metrics;
 
@@ -293,8 +293,8 @@ class SpannerSplitReaderTest {
         return new SpannerSplitReader(DATABASE, opener, maxRowsPerFetch, metrics.metrics());
     }
 
-    private static PartitionSplit split(String token) {
-        return new PartitionSplit(
+    private static BatchReadSplit split(String token) {
+        return new BatchReadSplit(
                 token,
                 TestPartitions.batchTransactionId(),
                 TestPartitions.queryPartition(token, "SELECT id FROM singers"));

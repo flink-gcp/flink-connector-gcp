@@ -24,7 +24,7 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.InstanceAdminClient;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -37,7 +37,7 @@ class DefaultSpannerChangeStreamCoordinatorClientFactoryTest {
 
     @Test
     void usesSevenDaysWhenNoAbsentRetentionFallbackIsConfigured() {
-        SpannerDatabase database = SpannerDatabase.of("project", "instance", "database");
+        DatabaseDestination database = DatabaseDestination.of("project", "instance", "database");
 
         DefaultSpannerChangeStreamCoordinatorClientFactory factoryWithDefault =
                 new DefaultSpannerChangeStreamCoordinatorClientFactory(database, "orders", null);
@@ -56,7 +56,7 @@ class DefaultSpannerChangeStreamCoordinatorClientFactoryTest {
         FailingSpanner spanner = new FailingSpanner(failure);
         DefaultSpannerChangeStreamCoordinatorClientFactory factory =
                 new DefaultSpannerChangeStreamCoordinatorClientFactory(
-                        SpannerDatabase.of("project", "instance", "database"),
+                        DatabaseDestination.of("project", "instance", "database"),
                         "orders",
                         Duration.ofDays(7),
                         null);
