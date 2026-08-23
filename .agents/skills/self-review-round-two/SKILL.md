@@ -52,7 +52,7 @@ the PR description and commit message had repeated the sentence verbatim. **Rest
 asserting it**, so check the premise against the artifact rather than against the issue — and when
 it fails, correct the record in the PR, because the issue is what the next reader will find.
 
-[#352]: https://github.com/laughingman7743/flink-connector-gcp/issues/352
+[#352]: https://github.com/flink-gcp/flink-connector-gcp/issues/352
 
 ## Step 2: the outward lenses
 

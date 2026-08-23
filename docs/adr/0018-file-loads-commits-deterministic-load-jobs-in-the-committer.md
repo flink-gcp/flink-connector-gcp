@@ -214,6 +214,28 @@ limitations under the License.
   `BigQueryLoadJobRunnerRealGcpITCase` holds the re-attach against the suite's regional dataset
   with no location configured — the only coverage of the path a fresh-id happy run cannot reach.
 
+## Design references
+
+Moved here from the module README's provenance section ([#1096]), because the designs credited
+are the ones this record's decisions rest on:
+
+- [Apache Beam](https://github.com/apache/beam) `BigQueryIO`'s FILE_LOADS design — the
+  `BatchLoads`/`WritePartition`/`WriteTables`/`WriteRename` decomposition: per-destination
+  bin-packing against load-job limits, the temp-table + copy-job overflow path, updating the
+  final table schema before the copy (copy jobs support no schema update options), GC of staged
+  files only after the final load, copy, or query completes, and the streaming
+  `triggeringFrequency` model, whose trigger role the Flink checkpoint takes here.
+- [GoogleCloudDataproc/flink-bigquery-connector](https://github.com/GoogleCloudDataproc/flink-bigquery-connector)'s
+  `BigQueryIndirectSink` / `BigQueryLoadJobOperator` — a SinkV2 post-commit topology on a single
+  non-parallel operator, deterministic BigQuery job ids with get-then-submit re-attach for
+  exactly-once retries, 1.5 GB size-based file rolling, and best-effort cleanup. The post-commit
+  half is what [#69] replaced with the committer; the deterministic-id half is what the Decision
+  keeps.
+- [Apache Flink](https://github.com/apache/flink)'s SinkV2 committer/committable machinery
+  (`CommitterOperator`, `GlobalCommitterOperator`) and the `FileSink` pre-commit-topology
+  precedent, studied under [#69] to establish that streaming commits must run in the committer;
+  the stamper and committer here are independent implementations over the public SinkV2 API.
+
 [#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
 [#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
 [#69]: https://github.com/laughingman7743/flink-connector-gcp/issues/69
@@ -225,3 +247,4 @@ limitations under the License.
 [#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491
 [#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598
 [#646]: https://github.com/laughingman7743/flink-connector-gcp/issues/646
+[#1096]: https://github.com/flink-gcp/flink-connector-gcp/issues/1096
