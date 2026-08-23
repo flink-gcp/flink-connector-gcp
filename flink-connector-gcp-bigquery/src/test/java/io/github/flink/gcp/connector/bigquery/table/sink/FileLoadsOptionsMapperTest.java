@@ -87,7 +87,7 @@ class FileLoadsOptionsMapperTest {
                 BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_ATTEMPTS);
         SETTER_TO_OPTION.put(
                 "perDestinationMetrics",
-                BigQueryConnectorOptions.SINK_FILE_LOADS_PER_DESTINATION_METRICS);
+                BigQueryConnectorOptions.SINK_FILE_LOADS_METRICS_PER_DESTINATION);
     }
 
     private static String key(String setter) {

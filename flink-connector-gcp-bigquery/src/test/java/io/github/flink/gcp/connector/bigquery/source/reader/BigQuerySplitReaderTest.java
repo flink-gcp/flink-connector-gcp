@@ -23,7 +23,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.TestSplitsChang
 
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.apache.avro.generic.GenericRecord;
@@ -390,12 +390,12 @@ class BigQuerySplitReaderTest {
         };
     }
 
-    private static BigQueryReadStreamSplit split(long offset) {
+    private static ReadStreamSplit split(long offset) {
         return split(offset, null);
     }
 
-    private static BigQueryReadStreamSplit split(long offset, @Nullable Instant expireTime) {
-        return new BigQueryReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON, expireTime);
+    private static ReadStreamSplit split(long offset, @Nullable Instant expireTime) {
+        return new ReadStreamSplit(STREAM, offset, TestRows.SCHEMA_JSON, expireTime);
     }
 
     private static List<GenericRecord> collectInto(RecordsWithSplitIds<GenericRecord> records) {
@@ -484,7 +484,7 @@ class BigQuerySplitReaderTest {
         public void close() {}
     }
 
-    private static SplitsAddition<BigQueryReadStreamSplit> addition(BigQueryReadStreamSplit split) {
+    private static SplitsAddition<ReadStreamSplit> addition(ReadStreamSplit split) {
         return new SplitsAddition<>(Collections.singletonList(split));
     }
 

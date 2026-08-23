@@ -130,7 +130,7 @@ class BigQuerySerializerFidelityITCase {
         BigQueryDefaultStreamSink<T> sink =
                 (BigQueryDefaultStreamSink<T>)
                         BigQuerySink.<T>builder()
-                                .destination(RealBigQuery.destination(table))
+                                .table(RealBigQuery.destination(table))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<T> writer =

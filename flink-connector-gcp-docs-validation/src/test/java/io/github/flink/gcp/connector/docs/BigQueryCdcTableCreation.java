@@ -39,7 +39,7 @@ final class BigQueryCdcTableCreation {
         Sink<MyMutation> sink =
                 BigQuerySink.<MyMutation>builder()
                         .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
-                        .destination(TableDestination.of("my-project", "my_dataset", "accounts"))
+                        .table(TableDestination.of("my-project", "my_dataset", "accounts"))
                         .serializer(serializer)
                         .cdcTableOptions(
                                 CdcTableOptions.builder()

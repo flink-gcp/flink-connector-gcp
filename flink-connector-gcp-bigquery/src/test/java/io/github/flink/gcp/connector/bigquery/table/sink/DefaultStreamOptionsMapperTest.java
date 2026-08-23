@@ -96,7 +96,7 @@ class DefaultStreamOptionsMapperTest {
                 "flushInterval", BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL);
         SETTER_TO_OPTION.put(
                 "perDestinationMetrics",
-                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS);
+                BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION);
     }
 
     private static String key(String setter) {

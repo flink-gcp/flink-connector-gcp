@@ -175,7 +175,7 @@ class LoadJobOrchestratorTest {
             BigQuerySinkBuilder<Object> builder =
                     BigQuerySink.builder()
                             .writeMethod(WriteMethod.FILE_LOADS)
-                            .destination(T1)
+                            .table(T1)
                             .serializer(new SchemaOnlySerializer(serializerSchema))
                             .fileLoadsOptions(options);
             customizer.accept(builder);

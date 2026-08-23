@@ -24,8 +24,8 @@ import org.apache.flink.connector.base.source.reader.SingleThreadMultiplexSource
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitState;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.apache.avro.generic.GenericRecord;
 
 import java.util.Map;
@@ -47,7 +47,7 @@ import java.util.function.Supplier;
 @Internal
 public class BigQuerySourceReader<T>
         extends SingleThreadMultiplexSourceReaderBase<
-                GenericRecord, T, BigQueryReadStreamSplit, BigQueryReadStreamSplitState> {
+                GenericRecord, T, ReadStreamSplit, BigQueryReadStreamSplitState> {
 
     private final RowStreamOpener opener;
 
@@ -61,7 +61,7 @@ public class BigQuerySourceReader<T>
      * @param opener the stream opener shared by this subtask's split readers; closed here, once
      */
     public BigQuerySourceReader(
-            Supplier<SplitReader<GenericRecord, BigQueryReadStreamSplit>> splitReaderSupplier,
+            Supplier<SplitReader<GenericRecord, ReadStreamSplit>> splitReaderSupplier,
             RecordEmitter<GenericRecord, T, BigQueryReadStreamSplitState> recordEmitter,
             Configuration config,
             SourceReaderContext context,
@@ -80,13 +80,12 @@ public class BigQuerySourceReader<T>
     }
 
     @Override
-    protected BigQueryReadStreamSplitState initializedState(BigQueryReadStreamSplit split) {
+    protected BigQueryReadStreamSplitState initializedState(ReadStreamSplit split) {
         return new BigQueryReadStreamSplitState(split);
     }
 
     @Override
-    protected BigQueryReadStreamSplit toSplitType(
-            String splitId, BigQueryReadStreamSplitState splitState) {
+    protected ReadStreamSplit toSplitType(String splitId, BigQueryReadStreamSplitState splitState) {
         return splitState.toSplit();
     }
 

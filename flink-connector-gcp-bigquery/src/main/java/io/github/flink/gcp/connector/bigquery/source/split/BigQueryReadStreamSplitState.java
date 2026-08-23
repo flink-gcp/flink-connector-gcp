@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 /**
- * The mutable reading progress of one {@link BigQueryReadStreamSplit}.
+ * The mutable reading progress of one {@link ReadStreamSplit}.
  *
  * <p>Separate from the split because the two are touched by different threads: the split reader
  * runs on the fetcher thread and holds the split it was handed, while the record emitter runs on
@@ -32,7 +32,7 @@ import org.apache.flink.util.Preconditions;
 @Internal
 public final class BigQueryReadStreamSplitState {
 
-    private final BigQueryReadStreamSplit split;
+    private final ReadStreamSplit split;
 
     private long offset;
 
@@ -41,7 +41,7 @@ public final class BigQueryReadStreamSplitState {
      *
      * @param split the split being read
      */
-    public BigQueryReadStreamSplitState(BigQueryReadStreamSplit split) {
+    public BigQueryReadStreamSplitState(ReadStreamSplit split) {
         this.split = Preconditions.checkNotNull(split, "split must not be null");
         this.offset = split.getOffset();
     }
@@ -63,8 +63,8 @@ public final class BigQueryReadStreamSplitState {
     }
 
     /** Returns the immutable split at the progress reached so far. */
-    public BigQueryReadStreamSplit toSplit() {
-        return new BigQueryReadStreamSplit(
+    public ReadStreamSplit toSplit() {
+        return new ReadStreamSplit(
                 split.getStreamName(),
                 offset,
                 split.getAvroSchemaJson(),

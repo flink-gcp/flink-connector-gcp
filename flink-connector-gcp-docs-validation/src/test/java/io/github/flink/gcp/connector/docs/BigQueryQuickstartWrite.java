@@ -48,8 +48,7 @@ public class BigQueryQuickstartWrite {
         env.fromData("{\"order_id\":\"a-1\",\"amount\":10}", "{\"order_id\":\"a-2\",\"amount\":20}")
                 .sinkTo(
                         BigQuerySink.<String>builder()
-                                .destination(
-                                        TableDestination.of("my-project", "my_dataset", "orders"))
+                                .table(TableDestination.of("my-project", "my_dataset", "orders"))
                                 .serializer(JsonDocumentSerializer.of(schema))
                                 .build());
 

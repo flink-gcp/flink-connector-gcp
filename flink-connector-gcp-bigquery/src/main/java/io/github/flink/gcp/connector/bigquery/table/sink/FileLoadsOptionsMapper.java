@@ -69,7 +69,7 @@ public final class FileLoadsOptionsMapper {
                     BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_BACKOFF,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_ATTEMPTS,
-                    BigQueryConnectorOptions.SINK_FILE_LOADS_PER_DESTINATION_METRICS);
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_METRICS_PER_DESTINATION);
 
     private FileLoadsOptionsMapper() {}
 
@@ -163,7 +163,7 @@ public final class FileLoadsOptionsMapper {
 
         OptionSetters.apply(
                 config,
-                BigQueryConnectorOptions.SINK_FILE_LOADS_PER_DESTINATION_METRICS,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
 
         return builder.build();

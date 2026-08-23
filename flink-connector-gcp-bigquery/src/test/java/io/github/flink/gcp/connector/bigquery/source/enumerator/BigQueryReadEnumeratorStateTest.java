@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.source.enumerator;
 
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -36,9 +36,9 @@ class BigQueryReadEnumeratorStateTest {
 
     private static final String SESSION = "projects/p/locations/l/sessions/s";
     private static final Instant EXPIRES = Instant.parse("2026-08-12T18:00:00Z");
-    private static final List<BigQueryReadStreamSplit> SPLITS =
+    private static final List<ReadStreamSplit> SPLITS =
             Collections.singletonList(
-                    new BigQueryReadStreamSplit(SESSION + "/streams/one", 0L, "{}", EXPIRES));
+                    new ReadStreamSplit(SESSION + "/streams/one", 0L, "{}", EXPIRES));
 
     @Test
     void equalStatesAgreeOnEqualsAndHashCode() {

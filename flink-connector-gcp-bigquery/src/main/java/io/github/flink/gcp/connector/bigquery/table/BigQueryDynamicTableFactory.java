@@ -161,7 +161,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_CONNECTIONS_PER_REGION,
                         BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT,
                         BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL,
-                        BigQueryConnectorOptions.SINK_DEFAULT_STREAM_PER_DESTINATION_METRICS,
+                        BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION,
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES,
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT,
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF,
@@ -184,7 +184,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_BACKOFF,
                         BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_MAX_ATTEMPTS,
-                        BigQueryConnectorOptions.SINK_FILE_LOADS_PER_DESTINATION_METRICS,
+                        BigQueryConnectorOptions.SINK_FILE_LOADS_METRICS_PER_DESTINATION,
                         FactoryUtil.SINK_PARALLELISM,
                         FactoryUtil.SOURCE_PARALLELISM));
     }

@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.bigquery.source.enumerator;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -129,8 +129,8 @@ class BigQueryReadEnumeratorStateSerializerTest {
         return out.getCopyOfBuffer();
     }
 
-    private static BigQueryReadStreamSplit split(int index, long offset) {
-        return new BigQueryReadStreamSplit(
+    private static ReadStreamSplit split(int index, long offset) {
+        return new ReadStreamSplit(
                 "projects/p/locations/l/sessions/s/streams/" + index,
                 offset,
                 TestRows.SCHEMA_JSON,

@@ -32,7 +32,7 @@ final class BigQueryConnectorTuning {
         // tag::bigquery-connector-tuning[]
         Sink<MyEvent> sink =
                 BigQuerySink.<MyEvent>builder()
-                        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                        .table(TableDestination.of("my-project", "my_dataset", "events"))
                         .serializer(new MyEventProtoSerializer())
                         .defaultStreamOptions(
                                 DefaultStreamOptions.builder()

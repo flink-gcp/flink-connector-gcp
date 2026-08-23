@@ -36,7 +36,7 @@ final class BigQueryConnectorExactlyOnceBufferedStreams {
         Sink<MyEvent> sink =
                 BigQuerySink.<MyEvent>builder()
                         .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                        .table(TableDestination.of("my-project", "my_dataset", "events"))
                         .serializer(new MyEventProtoSerializer())
                         .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                         .build();

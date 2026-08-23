@@ -798,7 +798,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         BigQuerySinkConfig<String> config =
                 ((BigQueryDefaultStreamSink<String>)
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new EvolvingSerializer(V2))
                                         .createDisposition(CreateDisposition.CREATE_NEVER)
                                         .schemaUpdateOptions(
@@ -880,7 +880,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
         BigQuerySinkConfig<String> config =
                 ((BigQueryDefaultStreamSink<String>)
                                 BigQuerySink.<String>builder()
-                                        .destination(DESTINATION)
+                                        .table(DESTINATION)
                                         .serializer(new EvolvingSerializer(V2))
                                         .failureHandler(
                                                 (FailureHandler<BigQueryFailure>) routed::add)

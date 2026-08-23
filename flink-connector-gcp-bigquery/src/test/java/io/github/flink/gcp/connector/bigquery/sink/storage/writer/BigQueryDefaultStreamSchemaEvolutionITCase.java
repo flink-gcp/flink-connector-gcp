@@ -219,7 +219,7 @@ class BigQueryDefaultStreamSchemaEvolutionITCase {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(destination)
+                                .table(destination)
                                 .serializer(serializer)
                                 .createDisposition(CreateDisposition.CREATE_NEVER)
                                 .schemaUpdateOptions(

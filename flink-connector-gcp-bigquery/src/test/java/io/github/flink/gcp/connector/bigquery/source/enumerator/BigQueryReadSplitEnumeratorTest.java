@@ -27,7 +27,7 @@ import io.github.flink.gcp.connector.bigquery.source.BigQuerySourceConfig;
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.TestSources;
 import io.github.flink.gcp.connector.bigquery.source.query.ScriptedQueryRunner;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
@@ -59,8 +59,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void createsTheSessionExactlyOnceOnAFreshStart() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -77,8 +76,7 @@ class BigQueryReadSplitEnumeratorTest {
         // The guard the whole design rests on: a second session would pin a second snapshot of the
         // table, so a failed-over job would read it as of two different instants.
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
         BigQueryReadEnumeratorState restored =
                 new BigQueryReadEnumeratorState(
                         true,
@@ -99,8 +97,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void checkpointsTheSessionItCreated() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -124,8 +121,7 @@ class BigQueryReadSplitEnumeratorTest {
     void failsTheJobWhenTheSessionCannotBeCreated() throws Exception {
         ScriptedReadSessionCreator creator =
                 ScriptedReadSessionCreator.failing(new IllegalStateException("denied"));
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null)) {
             enumerator.start();
@@ -141,8 +137,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void closesTheSessionCreatorItOwns() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(2);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
         BigQueryReadSplitEnumerator enumerator = enumerator(context, creator, null);
 
         enumerator.start();
@@ -153,8 +148,7 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void reportsWhatItAssignedReturnedAndCreated() throws Exception {
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 3)) {
             context.registerReader(0);
             enumerator.handleSplitRequest(0, "localhost");
@@ -176,8 +170,7 @@ class BigQueryReadSplitEnumeratorTest {
         // the session that a reader is given no other way: the Avro schema, without which it
         // cannot decode a row, and the expiry, without which a failure past it is a bare stream
         // error. Both would fail in the reader rather than here.
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
         try (BigQueryReadSplitEnumerator enumerator = started(context, 3)) {
             context.registerReader(0);
 
@@ -203,8 +196,7 @@ class BigQueryReadSplitEnumeratorTest {
     void runsTheQueryOnceAndCreatesTheSessionAgainstWhereItLanded() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(1);
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator = queryEnumerator(context, creator, runner)) {
             enumerator.start();
@@ -224,8 +216,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void derivesTheReuseIdentityFromTheJobNameTheMetricGroupCarries() throws Exception {
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
         context.putMetricVariable("<job_name>", "my pipeline");
 
         try (BigQueryReadSplitEnumerator enumerator =
@@ -253,8 +244,7 @@ class BigQueryReadSplitEnumeratorTest {
         // production fallback under test: a runtime that did not fill the variable in must get
         // today's behaviour, not a failed job.
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 new BigQueryReadSplitEnumerator(
@@ -277,8 +267,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void withoutTheReuseKnobNoIdentityIsDerivedEvenWithAJobName() throws Exception {
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
         context.putMetricVariable("<job_name>", "my pipeline");
 
         try (BigQueryReadSplitEnumerator enumerator =
@@ -295,8 +284,7 @@ class BigQueryReadSplitEnumeratorTest {
         // The identity wiring sits after the forView branch, so this pins that a view's generated
         // SELECT is reused under the same rules as a hand-written query.
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
         context.putMetricVariable("<job_name>", "my pipeline");
 
         try (BigQueryReadSplitEnumerator enumerator =
@@ -322,8 +310,7 @@ class BigQueryReadSplitEnumeratorTest {
     void countsAReuseApartFromASubmission() throws Exception {
         ScriptedQueryRunner runner =
                 ScriptedQueryRunner.answering(TestSources.QUERY_RESULT).reattaching();
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 queryEnumerator(context, ScriptedReadSessionCreator.withStreams(1), runner)) {
@@ -340,8 +327,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void handsTheRunnerTheQueryAndWhereItsResultShouldGo() throws Exception {
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
         BigQuerySourceConfig<?> config =
                 TestSources.queryConfig(
                         builder ->
@@ -367,8 +353,7 @@ class BigQueryReadSplitEnumeratorTest {
         // query is the one that would be billed again, against a result the readers are not
         // reading.
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
         BigQueryReadEnumeratorState restored =
                 new BigQueryReadEnumeratorState(
                         true,
@@ -393,8 +378,7 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void runsNoQueryForASourceThatNamedATable() throws Exception {
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 enumerator(context, ScriptedReadSessionCreator.withStreams(1), null)) {
@@ -411,8 +395,7 @@ class BigQueryReadSplitEnumeratorTest {
     void failsTheJobWhenTheQueryFails() throws Exception {
         ScriptedQueryRunner runner =
                 ScriptedQueryRunner.failing(new IOException("the query was invalid"));
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 queryEnumerator(context, ScriptedReadSessionCreator.withStreams(1), runner)) {
@@ -430,8 +413,7 @@ class BigQueryReadSplitEnumeratorTest {
     void materializesATableThatTurnsOutToBeAView() throws Exception {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(1);
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 new BigQueryReadSplitEnumerator(
@@ -460,8 +442,7 @@ class BigQueryReadSplitEnumeratorTest {
         ScriptedReadSessionCreator creator = ScriptedReadSessionCreator.withStreams(1);
         ScriptedQueryRunner runner =
                 ScriptedQueryRunner.answering(TestSources.QUERY_RESULT).answeringNotAView();
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 new BigQueryReadSplitEnumerator(
@@ -485,8 +466,7 @@ class BigQueryReadSplitEnumeratorTest {
     void asksNothingAboutATableWhenViewsAreNotMaterialized() throws Exception {
         // The default: no metadata call at all, which is the property the opt-in exists to protect.
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 new BigQueryReadSplitEnumerator(
@@ -506,8 +486,7 @@ class BigQueryReadSplitEnumeratorTest {
     @Test
     void foldsTheProjectionIntoTheQueryItWritesForAView() throws Exception {
         ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 new BigQueryReadSplitEnumerator(
@@ -536,8 +515,7 @@ class BigQueryReadSplitEnumeratorTest {
         ScriptedQueryRunner runner =
                 ScriptedQueryRunner.answering(TestSources.QUERY_RESULT)
                         .failingTheViewCheck(new IOException("denied by IAM"));
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (BigQueryReadSplitEnumerator enumerator =
                 new BigQueryReadSplitEnumerator(
@@ -562,8 +540,7 @@ class BigQueryReadSplitEnumeratorTest {
                         ScriptedReadSessionCreator.SESSION,
                         Instant.now().minusSeconds(60),
                         Collections.singletonList(split(0, 7)));
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
                 BigQueryReadSplitEnumerator enumerator =
@@ -591,8 +568,7 @@ class BigQueryReadSplitEnumeratorTest {
                         ScriptedReadSessionCreator.SESSION,
                         Instant.now().plusSeconds(3_600),
                         Collections.singletonList(split(0, 7)));
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
         try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
                 BigQueryReadSplitEnumerator enumerator =
@@ -606,8 +582,7 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void warnsWhenBigQueryAnswersFewerStreamsThanTheParallelism() throws Exception {
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
 
         try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
                 BigQueryReadSplitEnumerator enumerator =
@@ -628,8 +603,7 @@ class BigQueryReadSplitEnumeratorTest {
 
     @Test
     void staysQuietWhenEverySubtaskHasAStream() throws Exception {
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(2);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(2);
 
         try (LogCapture capture = LogCapture.of(BigQueryReadSplitEnumerator.class);
                 BigQueryReadSplitEnumerator enumerator =
@@ -646,7 +620,7 @@ class BigQueryReadSplitEnumeratorTest {
         // Flink's own contexts always offer a metric group, but the API does not promise one, and
         // a context answering with nothing must not fail the planning call — there is simply
         // nothing to count into.
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> submitDelegate =
+        FakeSplitEnumeratorContext<ReadStreamSplit> submitDelegate =
                 new FakeSplitEnumeratorContext<>(1);
         ScriptedQueryRunner submitted = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
         try (BigQueryReadSplitEnumerator enumerator =
@@ -661,7 +635,7 @@ class BigQueryReadSplitEnumeratorTest {
         }
 
         // Both counter arms: a reuse is counted apart from a submission, so each has its own guard.
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> reuseDelegate =
+        FakeSplitEnumeratorContext<ReadStreamSplit> reuseDelegate =
                 new FakeSplitEnumeratorContext<>(1);
         ScriptedQueryRunner reused =
                 ScriptedQueryRunner.answering(TestSources.QUERY_RESULT).reattaching();
@@ -681,12 +655,11 @@ class BigQueryReadSplitEnumeratorTest {
      * A context that offers no metric group, which the shared fake cannot express and Flink's own
      * contexts never do.
      */
-    private static final class WithoutMetrics
-            implements SplitEnumeratorContext<BigQueryReadStreamSplit> {
+    private static final class WithoutMetrics implements SplitEnumeratorContext<ReadStreamSplit> {
 
-        private final FakeSplitEnumeratorContext<BigQueryReadStreamSplit> delegate;
+        private final FakeSplitEnumeratorContext<ReadStreamSplit> delegate;
 
-        private WithoutMetrics(FakeSplitEnumeratorContext<BigQueryReadStreamSplit> delegate) {
+        private WithoutMetrics(FakeSplitEnumeratorContext<ReadStreamSplit> delegate) {
             this.delegate = delegate;
         }
 
@@ -712,7 +685,7 @@ class BigQueryReadSplitEnumeratorTest {
         }
 
         @Override
-        public void assignSplits(SplitsAssignment<BigQueryReadStreamSplit> newSplitAssignments) {
+        public void assignSplits(SplitsAssignment<ReadStreamSplit> newSplitAssignments) {
             delegate.assignSplits(newSplitAssignments);
         }
 
@@ -742,15 +715,15 @@ class BigQueryReadSplitEnumeratorTest {
     }
 
     private static BigQueryReadSplitEnumerator queryEnumerator(
-            SplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            SplitEnumeratorContext<ReadStreamSplit> context,
             ScriptedReadSessionCreator creator,
             ScriptedQueryRunner runner) {
         return new BigQueryReadSplitEnumerator(
                 context, TestSources.queryConfig(), creator, runner, null);
     }
 
-    private static BigQueryReadStreamSplit split(int index, long offset) {
-        return new BigQueryReadStreamSplit(
+    private static ReadStreamSplit split(int index, long offset) {
+        return new ReadStreamSplit(
                 ScriptedReadSessionCreator.streamName(index),
                 offset,
                 TestRows.SCHEMA_JSON,
@@ -758,7 +731,7 @@ class BigQueryReadSplitEnumeratorTest {
     }
 
     private static BigQueryReadSplitEnumerator enumerator(
-            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            FakeSplitEnumeratorContext<ReadStreamSplit> context,
             ScriptedReadSessionCreator creator,
             BigQueryReadEnumeratorState restored) {
         return new BigQueryReadSplitEnumerator(
@@ -767,7 +740,7 @@ class BigQueryReadSplitEnumeratorTest {
 
     /** An enumerator whose session has been created, with the given number of streams. */
     private static BigQueryReadSplitEnumerator started(
-            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context, int streamCount) {
+            FakeSplitEnumeratorContext<ReadStreamSplit> context, int streamCount) {
         BigQueryReadSplitEnumerator enumerator =
                 enumerator(context, ScriptedReadSessionCreator.withStreams(streamCount), null);
         enumerator.start();

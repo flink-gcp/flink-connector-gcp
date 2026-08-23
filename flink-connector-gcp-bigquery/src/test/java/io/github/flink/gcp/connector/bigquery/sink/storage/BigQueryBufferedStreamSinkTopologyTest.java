@@ -78,7 +78,7 @@ class BigQueryBufferedStreamSinkTopologyTest {
     private static Sink<String> sink() {
         return BigQuerySink.<String>builder()
                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                .destination(TableDestination.of("p", "d", "t"))
+                .table(TableDestination.of("p", "d", "t"))
                 .serializer(new TestSerializer())
                 .bufferedStreamOptions(BufferedStreamOptions.builder().build())
                 .build();

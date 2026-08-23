@@ -32,7 +32,7 @@ final class BigQueryConnectorErrorHandling {
         // tag::bigquery-connector-error-handling[]
         Sink<MyEvent> sink =
                 BigQuerySink.<MyEvent>builder()
-                        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                        .table(TableDestination.of("my-project", "my_dataset", "events"))
                         .serializer(new MyEventProtoSerializer())
                         .failureHandler(FailureHandler.logAndDrop())
                         .build();

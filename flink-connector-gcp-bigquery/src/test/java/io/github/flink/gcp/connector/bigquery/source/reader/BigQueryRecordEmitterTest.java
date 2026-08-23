@@ -22,8 +22,8 @@ import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
 import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitState;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,7 +50,7 @@ class BigQueryRecordEmitterTest {
         output = new CollectingSourceOutput<>();
         state =
                 new BigQueryReadStreamSplitState(
-                        new BigQueryReadStreamSplit(STREAM, 0, TestRows.SCHEMA_JSON, null));
+                        new ReadStreamSplit(STREAM, 0, TestRows.SCHEMA_JSON, null));
     }
 
     @Test

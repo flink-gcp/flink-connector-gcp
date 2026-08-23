@@ -43,8 +43,8 @@ import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySourceReader
 import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySplitReader;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitSerializer;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitSerializer;
 import org.apache.avro.generic.GenericRecord;
 
 import javax.annotation.Nullable;
@@ -63,8 +63,7 @@ import java.util.function.Supplier;
  */
 @Internal
 public class BigQueryStorageReadSource<T>
-        implements Source<T, BigQueryReadStreamSplit, BigQueryReadEnumeratorState>,
-                ResultTypeQueryable<T> {
+        implements Source<T, ReadStreamSplit, BigQueryReadEnumeratorState>, ResultTypeQueryable<T> {
 
     private static final long serialVersionUID = 1L;
 
@@ -90,7 +89,7 @@ public class BigQueryStorageReadSource<T>
     }
 
     @Override
-    public SourceReader<T, BigQueryReadStreamSplit> createReader(SourceReaderContext context)
+    public SourceReader<T, ReadStreamSplit> createReader(SourceReaderContext context)
             throws Exception {
         BigQueryRowDeserializer<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
@@ -101,7 +100,7 @@ public class BigQueryStorageReadSource<T>
         // Before any fetcher starts, which is what the SPI's contract asks for: an implementation
         // whose client captures the listener when it is built would ignore a later registration.
         opener.setRetryListener(metrics::readRetried);
-        Supplier<SplitReader<GenericRecord, BigQueryReadStreamSplit>> splitReaderSupplier =
+        Supplier<SplitReader<GenericRecord, ReadStreamSplit>> splitReaderSupplier =
                 () ->
                         new BigQuerySplitReader(
                                 opener,
@@ -117,15 +116,14 @@ public class BigQueryStorageReadSource<T>
     }
 
     @Override
-    public SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> createEnumerator(
-            SplitEnumeratorContext<BigQueryReadStreamSplit> context) throws Exception {
+    public SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> createEnumerator(
+            SplitEnumeratorContext<ReadStreamSplit> context) throws Exception {
         return enumerator(context, null);
     }
 
     @Override
-    public SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> restoreEnumerator(
-            SplitEnumeratorContext<BigQueryReadStreamSplit> context,
-            BigQueryReadEnumeratorState checkpoint)
+    public SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> restoreEnumerator(
+            SplitEnumeratorContext<ReadStreamSplit> context, BigQueryReadEnumeratorState checkpoint)
             throws Exception {
         return enumerator(context, checkpoint);
     }
@@ -148,7 +146,7 @@ public class BigQueryStorageReadSource<T>
      * @throws Exception if the session creator cannot be created
      */
     private BigQueryReadSplitEnumerator enumerator(
-            SplitEnumeratorContext<BigQueryReadStreamSplit> context,
+            SplitEnumeratorContext<ReadStreamSplit> context,
             @Nullable BigQueryReadEnumeratorState checkpoint)
             throws Exception {
         ReadSessionCreator sessionCreator = config.getSessionCreatorFactory().create();
@@ -163,8 +161,8 @@ public class BigQueryStorageReadSource<T>
     }
 
     @Override
-    public SimpleVersionedSerializer<BigQueryReadStreamSplit> getSplitSerializer() {
-        return new BigQueryReadStreamSplitSerializer();
+    public SimpleVersionedSerializer<ReadStreamSplit> getSplitSerializer() {
+        return new ReadStreamSplitSerializer();
     }
 
     @Override

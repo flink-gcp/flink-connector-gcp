@@ -72,7 +72,7 @@ import java.util.concurrent.TimeoutException;
  *
  * <pre>{@code
  * BigQuerySink.<Order>builder()
- *         .destination(TableDestination.of("my-project", "my_dataset", "orders"))
+ *         .table(TableDestination.of("my-project", "my_dataset", "orders"))
  *         .serializer(serializer)
  *         .failureHandler(
  *                 FailureHandler.sendToDeadLetterQueue(

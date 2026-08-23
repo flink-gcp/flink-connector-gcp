@@ -21,8 +21,8 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplitSerializer;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitSerializer;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -70,8 +70,8 @@ public final class BigQueryReadEnumeratorStateSerializer
             out.writeInt(state.getSessionExpireTime().getNano());
         }
         out.writeInt(state.getPendingSplits().size());
-        for (BigQueryReadStreamSplit split : state.getPendingSplits()) {
-            BigQueryReadStreamSplitSerializer.writeSplit(out, split);
+        for (ReadStreamSplit split : state.getPendingSplits()) {
+            ReadStreamSplitSerializer.writeSplit(out, split);
         }
         return out.getCopyOfBuffer();
     }
@@ -89,8 +89,8 @@ public final class BigQueryReadEnumeratorStateSerializer
         }
         int splitVersion =
                 version == VERSION_WITHOUT_SPLIT_EXPIRY
-                        ? BigQueryReadStreamSplitSerializer.VERSION_WITHOUT_EXPIRY
-                        : BigQueryReadStreamSplitSerializer.VERSION_WITH_EXPIRY;
+                        ? ReadStreamSplitSerializer.VERSION_WITHOUT_EXPIRY
+                        : ReadStreamSplitSerializer.VERSION_WITH_EXPIRY;
         DataInputDeserializer in = new DataInputDeserializer(serialized);
         boolean initialized = in.readBoolean();
         String sessionName = in.readBoolean() ? in.readUTF() : null;
@@ -101,9 +101,9 @@ public final class BigQueryReadEnumeratorStateSerializer
             throw new IOException(
                     "Corrupt BigQuery read enumerator state: negative split count " + splitCount);
         }
-        List<BigQueryReadStreamSplit> splits = new ArrayList<>(Math.min(splitCount, 1024));
+        List<ReadStreamSplit> splits = new ArrayList<>(Math.min(splitCount, 1024));
         for (int i = 0; i < splitCount; i++) {
-            splits.add(BigQueryReadStreamSplitSerializer.readSplit(in, splitVersion));
+            splits.add(ReadStreamSplitSerializer.readSplit(in, splitVersion));
         }
         return new BigQueryReadEnumeratorState(initialized, sessionName, expireTime, splits);
     }

@@ -29,7 +29,7 @@ import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessio
 import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
@@ -233,9 +233,9 @@ class BigQuerySourceBuilderTest {
                 new BigQueryReadEnumeratorState(false, null, null, Collections.emptyList());
 
         for (BigQueryStorageReadSource<GenericRecord> source : sources) {
-            FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
+            FakeSplitEnumeratorContext<ReadStreamSplit> context =
                     new FakeSplitEnumeratorContext<>(1);
-            try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> enumerator =
+            try (SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> enumerator =
                     InstantiationUtil.clone(source).restoreEnumerator(context, beforePlanning)) {
                 enumerator.start();
                 assertThatThrownBy(context::runAsyncCalls)
@@ -256,10 +256,9 @@ class BigQuerySourceBuilderTest {
         BigQueryReadEnumeratorState initialized =
                 new BigQueryReadEnumeratorState(
                         true, "projects/p/locations/us/sessions/s", null, Collections.emptyList());
-        FakeSplitEnumeratorContext<BigQueryReadStreamSplit> context =
-                new FakeSplitEnumeratorContext<>(1);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
 
-        try (SplitEnumerator<BigQueryReadStreamSplit, BigQueryReadEnumeratorState> enumerator =
+        try (SplitEnumerator<ReadStreamSplit, BigQueryReadEnumeratorState> enumerator =
                 source.restoreEnumerator(context, initialized)) {
             enumerator.start();
             context.runAsyncCalls();

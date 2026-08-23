@@ -168,7 +168,7 @@ class BigQueryFileLoadsSchemaEvolutionITCase {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.FILE_LOADS)
-                                .destination(RealBigQuery.destination(table))
+                                .table(RealBigQuery.destination(table))
                                 .serializer(new RowSerializer())
                                 .schemaUpdateOptions(updateOptions)
                                 .fileLoadsOptions(

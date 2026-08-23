@@ -73,8 +73,7 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
         BigQueryDefaultStreamSink<Presence> sink =
                 (BigQueryDefaultStreamSink<Presence>)
                         BigQuerySink.<Presence>builder()
-                                .destination(
-                                        TableDestination.of(PROJECT, DATASET, "proto_presence"))
+                                .table(TableDestination.of(PROJECT, DATASET, "proto_presence"))
                                 .serializer(serializer)
                                 .build();
         SinkWriter<Presence> writer =

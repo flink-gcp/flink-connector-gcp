@@ -176,9 +176,9 @@ or SDK already uses. The full list of defaults is in the
 
 | Option | Type | Maps to |
 |---|---|---|
-| `project` | String | The project part of `destination(...)`; also the source billing project unless `source.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `source.parent-project` |
-| `dataset` | String | The dataset part of `destination(...)`; required for a sink or direct table source, unused by a query source |
-| `table` | String | The table part of `destination(...)`; required for a sink or direct table source. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
+| `project` | String | The project part of `table(...)`; also the source billing project unless `source.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `source.parent-project` |
+| `dataset` | String | The dataset part of `table(...)`; required for a sink or direct table source, unused by a query source |
+| `table` | String | The table part of `table(...)`; required for a sink or direct table source. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
 | `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Read or Write API's gRPC endpoint as `host:port`. Parsed when the statement is planned, so a malformed value fails on the client in either direction, and the rejection names `emulator-endpoint` — the key written in the DDL. Refused outright under `file-loads`, before its shape is looked at |
 | `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, used for source query/view materialization and sink table metadata. Separate because BigQuery serves the two transports on different ports. Parsed and refused on the same terms as `emulator-endpoint`, under its own name. A direct table source leaves it unused — one `WITH` clause serves both directions — but a malformed value is still rejected |
 | `service-account-key-file` | String | `serviceAccountKeyFile(...)`; a service-account JSON key-file path loaded on JobManagers and TaskManagers at runtime. Absent uses ADC; rejected with either emulator endpoint |
@@ -581,7 +581,7 @@ defaults.
 | `sink.default-stream.max-connections-per-region` | Integer | `maxConnectionsPerRegion(...)` |
 | `sink.default-stream.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)` |
 | `sink.default-stream.flush-interval` | Duration | `flushInterval(...)` |
-| `sink.default-stream.per-destination-metrics` | Boolean | `perDestinationMetrics(...)` |
+| `sink.default-stream.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` |
 
 ### Sink tuning — `storage-api-exactly-once`
 
@@ -636,7 +636,7 @@ default, and required by the write method rather than by the connector — and l
 | `sink.file-loads.schema-reconcile.initial-backoff` | Duration | `schemaReconcileInitialBackoff(...)` |
 | `sink.file-loads.schema-reconcile.max-backoff` | Duration | `schemaReconcileMaxBackoff(...)` |
 | `sink.file-loads.schema-reconcile.max-attempts` | Integer | `schemaReconcileMaxAttempts(...)` |
-| `sink.file-loads.per-destination-metrics` | Boolean | `perDestinationMetrics(...)` |
+| `sink.file-loads.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` |
 
 ## Type mapping
 

@@ -209,7 +209,7 @@ class BigQueryBufferedStreamWriterTest {
             BigQueryProtoSerializer<? super String> serializer,
             FailureHandler<BigQueryFailure> handler,
             CreateDisposition createDisposition) {
-        var builder = BigQuerySink.<String>builder().destination(DESTINATION);
+        var builder = BigQuerySink.<String>builder().table(DESTINATION);
         builder.serializer(serializer);
         if (handler != null) {
             builder.failureHandler(handler);
@@ -549,7 +549,7 @@ class BigQueryBufferedStreamWriterTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new ProtoStringSerializer())
                                 .bufferedStreamOptions(fastOptions(3))
                                 .additionalFields(
@@ -601,7 +601,7 @@ class BigQueryBufferedStreamWriterTest {
                 (BigQueryBufferedStreamSink<String>)
                         BigQuerySink.<String>builder()
                                 .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new ProtoStringSerializer())
                                 .bufferedStreamOptions(fastOptions(3))
                                 .additionalFields(

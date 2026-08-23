@@ -32,7 +32,7 @@ final class BigQueryConnectorJsonRecords {
         // tag::bigquery-connector-json-records-sink[]
         Sink<String> sink =
                 BigQuerySink.<String>builder()
-                        .destination(TableDestination.of("my-project", "my_dataset", "events"))
+                        .table(TableDestination.of("my-project", "my_dataset", "events"))
                         .serializer(JsonDocumentSerializer.of(schema))
                         .build();
         // end::bigquery-connector-json-records-sink[]

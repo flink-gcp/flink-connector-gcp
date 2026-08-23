@@ -29,7 +29,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
-import io.github.flink.gcp.connector.bigquery.source.split.BigQueryReadStreamSplit;
+import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.slf4j.Logger;
@@ -55,7 +55,7 @@ import java.util.Deque;
  * because a {@code SplitReader} may be handed several at once.
  */
 @Internal
-public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryReadStreamSplit> {
+public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStreamSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigQuerySplitReader.class);
 
@@ -64,7 +64,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
     private final BigQuerySourceReaderMetrics metrics;
     @Nullable private final Schema readerSchema;
 
-    private final Deque<BigQueryReadStreamSplit> queued = new ArrayDeque<>();
+    private final Deque<ReadStreamSplit> queued = new ArrayDeque<>();
 
     /**
      * Volatile because {@link #wakeUp()} runs on the task thread while {@code fetch()} is in flight
@@ -188,7 +188,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
      * as a finished split.
      */
     private void takeNextSplit() {
-        BigQueryReadStreamSplit split = queued.poll();
+        ReadStreamSplit split = queued.poll();
         active = split == null ? null : new ActiveStream(split);
     }
 
@@ -204,11 +204,11 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
     }
 
     @Override
-    public void handleSplitsChanges(SplitsChange<BigQueryReadStreamSplit> splitsChanges) {
+    public void handleSplitsChanges(SplitsChange<ReadStreamSplit> splitsChanges) {
         if (splitsChanges instanceof SplitsAddition) {
             queued.addAll(splitsChanges.splits());
         } else if (splitsChanges instanceof SplitsRemoval) {
-            for (BigQueryReadStreamSplit split : splitsChanges.splits()) {
+            for (ReadStreamSplit split : splitsChanges.splits()) {
                 removeSplit(split);
             }
         } else {
@@ -216,7 +216,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
         }
     }
 
-    private void removeSplit(BigQueryReadStreamSplit split) {
+    private void removeSplit(ReadStreamSplit split) {
         queued.removeIf(queuedSplit -> queuedSplit.splitId().equals(split.splitId()));
         ActiveStream stream = active;
         if (stream != null && stream.split.splitId().equals(split.splitId())) {
@@ -245,7 +245,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
     /** One open {@code ReadRows} call, and how far into its stream this reader has handed rows. */
     private final class ActiveStream implements AutoCloseable {
 
-        private final BigQueryReadStreamSplit split;
+        private final ReadStreamSplit split;
         private final AvroRowCursor cursor;
 
         /** Rows of this stream handed to the task thread, including those still in the queue. */
@@ -257,7 +257,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, BigQueryR
         /** Set by {@link #wakeUp()} on the task thread, read by the fetcher thread. */
         private volatile boolean cancelled;
 
-        private ActiveStream(BigQueryReadStreamSplit split) {
+        private ActiveStream(ReadStreamSplit split) {
             this.split = split;
             this.cursor =
                     new AvroRowCursor(

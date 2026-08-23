@@ -28,7 +28,7 @@ import java.time.Instant;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class BigQueryReadStreamSplitSerializerTest {
+class ReadStreamSplitSerializerTest {
 
     private static final String STREAM = "projects/p/locations/l/sessions/s/streams/one";
     private static final String SCHEMA =
@@ -36,15 +36,13 @@ class BigQueryReadStreamSplitSerializerTest {
 
     private static final Instant EXPIRE_TIME = Instant.parse("2026-08-09T18:00:00.123456789Z");
 
-    private final BigQueryReadStreamSplitSerializer serializer =
-            new BigQueryReadStreamSplitSerializer();
+    private final ReadStreamSplitSerializer serializer = new ReadStreamSplitSerializer();
 
     @Test
     void roundTripsASplit() throws Exception {
-        BigQueryReadStreamSplit split =
-                new BigQueryReadStreamSplit(STREAM, 42, SCHEMA, EXPIRE_TIME);
+        ReadStreamSplit split = new ReadStreamSplit(STREAM, 42, SCHEMA, EXPIRE_TIME);
 
-        BigQueryReadStreamSplit restored =
+        ReadStreamSplit restored =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
 
         assertThat(restored).isEqualTo(split);
@@ -55,9 +53,9 @@ class BigQueryReadStreamSplitSerializerTest {
 
     @Test
     void roundTripsASplitWithoutASessionExpiry() throws Exception {
-        BigQueryReadStreamSplit split = new BigQueryReadStreamSplit(STREAM, 42, SCHEMA, null);
+        ReadStreamSplit split = new ReadStreamSplit(STREAM, 42, SCHEMA, null);
 
-        BigQueryReadStreamSplit restored =
+        ReadStreamSplit restored =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
 
         assertThat(restored).isEqualTo(split);
@@ -75,10 +73,9 @@ class BigQueryReadStreamSplitSerializerTest {
         out.writeInt(schema.length);
         out.write(schema);
 
-        BigQueryReadStreamSplit restored =
+        ReadStreamSplit restored =
                 serializer.deserialize(
-                        BigQueryReadStreamSplitSerializer.VERSION_WITHOUT_EXPIRY,
-                        out.getCopyOfBuffer());
+                        ReadStreamSplitSerializer.VERSION_WITHOUT_EXPIRY, out.getCopyOfBuffer());
 
         assertThat(restored.getStreamName()).isEqualTo(STREAM);
         assertThat(restored.getOffset()).isEqualTo(42);
@@ -91,8 +88,7 @@ class BigQueryReadStreamSplitSerializerTest {
         // Pins the layout rather than the bytes: a field added in the middle would round-trip fine
         // and still break a state written by an older job. The expiry is appended, which is what
         // lets a version 1 payload be read by stopping where it stops.
-        byte[] bytes =
-                serializer.serialize(new BigQueryReadStreamSplit(STREAM, 42, SCHEMA, EXPIRE_TIME));
+        byte[] bytes = serializer.serialize(new ReadStreamSplit(STREAM, 42, SCHEMA, EXPIRE_TIME));
 
         DataInputDeserializer in = new DataInputDeserializer(bytes);
         assertThat(in.readUTF()).isEqualTo(STREAM);
@@ -120,7 +116,7 @@ class BigQueryReadStreamSplitSerializerTest {
         }
         String wide = "{\"type\":\"record\",\"name\":\"Row\",\"fields\":[" + fields + "]}";
         assertThat(wide.getBytes(StandardCharsets.UTF_8).length).isGreaterThan(65535);
-        BigQueryReadStreamSplit split = new BigQueryReadStreamSplit(STREAM, 0, wide, EXPIRE_TIME);
+        ReadStreamSplit split = new ReadStreamSplit(STREAM, 0, wide, EXPIRE_TIME);
 
         assertThat(serializer.deserialize(serializer.getVersion(), serializer.serialize(split)))
                 .isEqualTo(split);
@@ -128,7 +124,7 @@ class BigQueryReadStreamSplitSerializerTest {
 
     @Test
     void rejectsAnUnknownVersionNamingBoth() throws Exception {
-        byte[] bytes = serializer.serialize(new BigQueryReadStreamSplit(STREAM, 0, SCHEMA, null));
+        byte[] bytes = serializer.serialize(new ReadStreamSplit(STREAM, 0, SCHEMA, null));
 
         assertThatThrownBy(() -> serializer.deserialize(99, bytes))
                 .isInstanceOf(IOException.class)

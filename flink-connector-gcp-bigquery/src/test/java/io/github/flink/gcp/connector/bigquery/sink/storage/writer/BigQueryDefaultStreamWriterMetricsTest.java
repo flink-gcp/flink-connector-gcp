@@ -322,7 +322,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new ValidEmptyProtoSerializer())
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
@@ -357,7 +357,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new ValidEmptyProtoSerializer())
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
@@ -391,7 +391,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()
-                                .destination(DESTINATION)
+                                .table(DESTINATION)
                                 .serializer(new ValidEmptyProtoSerializer())
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
