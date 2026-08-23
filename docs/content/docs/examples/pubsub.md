@@ -24,6 +24,73 @@ limitations under the License.
 
 Starting from the [Cloud Pub/Sub quickstart]({{< relref "docs/quickstart/pubsub" >}}) jobs.
 
+## Publishing and consuming with SQL
+
+Create the subscription before publishing so it retains every message from the example:
+
+```sh
+gcloud pubsub topics create orders --project=my-project
+gcloud pubsub subscriptions create orders-sub \
+  --topic=orders \
+  --enable-message-ordering \
+  --project=my-project
+```
+
+The sink table publishes JSON payloads, attributes, and an ordering key to the topic:
+
+```sql
+CREATE TABLE outgoing_orders (
+  order_id STRING,
+  amount INT,
+  attrs MAP<STRING, STRING> METADATA FROM 'attributes',
+  ordering_key STRING METADATA FROM 'ordering-key'
+) WITH (
+  'connector' = 'pubsub',
+  'project' = 'my-project',
+  'topic' = 'orders',
+  'format' = 'json',
+  'sink.message-ordering.enabled' = 'true'
+);
+
+INSERT INTO outgoing_orders
+VALUES
+  ('a-1', 10, MAP['source', 'sql'], 'customer-1'),
+  ('a-2', 20, MAP['source', 'sql'], 'customer-1');
+```
+
+The source table consumes those payloads from the subscription and can expose Pub/Sub fields as virtual metadata columns:
+
+```sql
+SET 'execution.checkpointing.interval' = '10 s';
+
+CREATE TABLE incoming_orders (
+  order_id STRING,
+  amount INT,
+  message_id STRING METADATA FROM 'message-id' VIRTUAL,
+  publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
+  attrs MAP<STRING, STRING> METADATA FROM 'attributes' VIRTUAL,
+  ordering_key STRING METADATA FROM 'ordering-key' VIRTUAL,
+  WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
+) WITH (
+  'connector' = 'pubsub',
+  'project' = 'my-project',
+  'subscription' = 'orders-sub',
+  'format' = 'json',
+  'scan.ordering-mode' = 'per-key'
+);
+
+SELECT order_id, amount, attrs, ordering_key, message_id, publish_time
+FROM incoming_orders;
+```
+
+The source is unbounded, so the `SELECT` continues waiting for later messages.
+With ordering enabled on the sink and subscription and `scan.ordering-mode` set to `per-key`, Pub/Sub and the source preserve publish order separately for each non-empty ordering key within this subscription; they do not establish one global order across keys, subscriptions, or topics.
+The table sink routes one non-empty key to one writer subtask before publishing, while null and empty keys remain unordered.
+The source pins this subscription to one reader subtask and preserves order only up to its output; repartition downstream by `ordering_key` when later operators must retain the same per-key order.
+The connector remains at-least-once, so recovery may replay a message even though the relative order for its key is preserved.
+Checkpointing acknowledges messages only after their output is durable and flushes messages still batched by the sink; configure it for both directions in a production job.
+The subscription must exist unless `scan.auto-create.*` settings explicitly authorize source-side creation, and the source never creates its topic.
+
 ## A topic per record
 
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#pubsub-topics) explains the shared resolver contract and the ordering boundary for a dynamically selected topic.
