@@ -22,8 +22,8 @@ import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.metrics.MetricValues;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
-import io.github.flink.gcp.connector.spanner.SpannerMetricValues;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 
 import java.util.Collection;
@@ -129,8 +129,7 @@ final class SpannerChangeStreamReaderMetrics {
             timing.lastRecordMillis.set(now);
         }
         if (!heartbeat) {
-            long waitMillis =
-                    SpannerMetricValues.elapsedMillis(now, timing.waitStartedMillis.get());
+            long waitMillis = MetricValues.elapsedMillis(now, timing.waitStartedMillis.get());
             lastRecordWaitMillis.set(waitMillis);
             longestRecordWaitMillis.accumulateAndGet(waitMillis, Math::max);
         }
@@ -177,7 +176,7 @@ final class SpannerChangeStreamReaderMetrics {
         long oldest = oldestQueuedPositionMillis.get();
         return oldest == NO_POSITION
                 ? 0
-                : SpannerMetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
+                : MetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
     }
 
     private long missedHeartbeatIntervals() {
@@ -188,8 +187,7 @@ final class SpannerChangeStreamReaderMetrics {
                 maximum =
                         Math.max(
                                 maximum,
-                                SpannerMetricValues.elapsedMillis(
-                                                now, timing.lastRecordMillis.get())
+                                MetricValues.elapsedMillis(now, timing.lastRecordMillis.get())
                                         / timing.heartbeatMillis);
             }
         }

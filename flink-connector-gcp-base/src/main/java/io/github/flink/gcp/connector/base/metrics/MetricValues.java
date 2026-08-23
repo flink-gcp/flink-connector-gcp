@@ -14,24 +14,25 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable;
+package io.github.flink.gcp.connector.base.metrics;
 
 import org.apache.flink.annotation.Internal;
 
-/** Overflow-safe values shared by Bigtable lag and health metrics. */
+/** Shared boundary handling for connector metric values. */
 @Internal
-public final class BigtableMetricValues {
+public final class MetricValues {
 
-    public static long elapsedMillis(long now, long then) {
-        if (now <= then) {
+    /** Returns elapsed milliseconds, clamped for future values and saturated on overflow. */
+    public static long elapsedMillis(long now, long earlier) {
+        if (now <= earlier) {
             return 0;
         }
         try {
-            return Math.subtractExact(now, then);
+            return Math.subtractExact(now, earlier);
         } catch (ArithmeticException ignored) {
             return Long.MAX_VALUE;
         }
     }
 
-    private BigtableMetricValues() {}
+    private MetricValues() {}
 }

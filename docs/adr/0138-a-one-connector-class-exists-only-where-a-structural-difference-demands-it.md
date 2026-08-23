@@ -17,14 +17,15 @@ limitations under the License.
 # ADR-0138: A one-connector class exists only where a structural difference demands it
 
 - Status: Accepted
-- Date: 2026-08-23
-- Issues: [#1044], [#782]
-- Modules: all connectors, test-utils
+- Date: 2026-08-23; revised by [#1056] (2026-08-23)
+- Issues: [#1044], [#782], [#1056]
+- Modules: base, all connectors, test-utils
 - Current behavior: the decisions below are the durable record of the gaps judged deliberate;
   the review-thread copy of the full matrix, including the routed half, is the [#1044] comment
   at <https://github.com/flink-gcp/flink-connector-gcp/issues/782#issuecomment-5383714375>. The
-  alignment half is routed to the module audits ([#775], [#776], [#779], [#781]) and the
-  Bigtable naming sub-issue [#1052]
+  `elapsedMillis` alignment from [#775] is implemented by [#1056], the `resolveRestored` rename
+  was completed through [#1052], and the Cloud Tasks classifier extraction was completed through
+  [#779]; the remaining alignment findings are routed to the module audits ([#776], [#781])
 
 ## Context
 
@@ -124,12 +125,12 @@ modules, and it is not decided here.
 
 ## Consequences
 
-- The alignment half of the matrix lands through the audits: the shared `elapsedMillis` base
-  helper ([#775] — `BigtableMetricValues`/`SpannerMetricValues` are the same pure function
-  twice), the shared Spanner emulator test client ([#776] — the one duplicated construction
-  left in the test trees), the Cloud Tasks classifier extraction ([#779]), the Spanner
-  change-stream reader decomposition ([#781]), and the `resolveRestored` private-method rename
-  ([#1052]).
+- `MetricValues` in `base.metrics` owns the overflow-safe `elapsedMillis` policy used by Bigtable
+  and Spanner ([#775], implemented by [#1056]). The `resolveRestored` private-method rename was
+  completed through [#1052], and the Cloud Tasks classifier extraction was completed through
+  [#779]. The other alignment findings remain routed to the shared Spanner emulator test client
+  ([#776] — the one duplicated construction left in the test trees) and the Spanner change-stream
+  reader decomposition ([#781]).
 - The module references for Spanner and Bigtable carry pointers to the records above beside the
   designs they qualify.
 - Both [#782] artifacts are posted, and every finding of the cross-module review is routed or
@@ -147,6 +148,7 @@ modules, and it is not decided here.
 [#1046]: https://github.com/flink-gcp/flink-connector-gcp/issues/1046
 [#1052]: https://github.com/flink-gcp/flink-connector-gcp/issues/1052
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
+[#1056]: https://github.com/flink-gcp/flink-connector-gcp/issues/1056
 [ADR-0048]: 0048-the-cloud-tasks-sink-owns-its-retry-loop-and-never-creates-queues.md
 [ADR-0050]: 0050-test-utils-holds-test-support-only-with-all-provided-dependencies.md
 [ADR-0071]: 0071-a-lost-table-creation-race-is-retried-by-a-wrapped-table-admin.md

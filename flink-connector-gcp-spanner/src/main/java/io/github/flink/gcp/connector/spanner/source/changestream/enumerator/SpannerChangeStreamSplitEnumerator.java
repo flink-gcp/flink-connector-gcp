@@ -30,11 +30,11 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.MetricValues;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver.RestoreExpiry;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
-import io.github.flink.gcp.connector.spanner.SpannerMetricValues;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
@@ -812,7 +812,7 @@ public final class SpannerChangeStreamSplitEnumerator
         long oldest = oldestScheduledPositionMillis.get();
         return oldest == Long.MAX_VALUE
                 ? 0
-                : SpannerMetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
+                : MetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
     }
 
     @Override

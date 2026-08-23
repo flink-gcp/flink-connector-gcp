@@ -23,8 +23,8 @@ import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamMutation;
+import io.github.flink.gcp.connector.base.metrics.MetricValues;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
-import io.github.flink.gcp.connector.bigtable.BigtableMetricValues;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 
 import java.time.Instant;
@@ -188,7 +188,7 @@ public final class BigtableChangeStreamReaderMetrics {
         long oldest = oldestQueuedPositionMillis.get();
         return oldest == NO_POSITION
                 ? 0
-                : BigtableMetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
+                : MetricValues.elapsedMillis(currentTimeMillis.getAsLong(), oldest);
     }
 
     private long missedHeartbeatIntervals() {
@@ -198,7 +198,7 @@ public final class BigtableChangeStreamReaderMetrics {
             maximum =
                     Math.max(
                             maximum,
-                            BigtableMetricValues.elapsedMillis(now, timing.lastResponseMillis.get())
+                            MetricValues.elapsedMillis(now, timing.lastResponseMillis.get())
                                     / DataClientChangeStreamOpener.HEARTBEAT_INTERVAL.toMillis());
         }
         return maximum;

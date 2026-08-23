@@ -17,16 +17,19 @@ limitations under the License.
 # ADR-0037: `base.metrics` helpers, and `numRecordsSend` counts each record once at first hand-off
 
 - Status: Accepted
-- Date: 2026-08-03
-- Issues: [#208] (first consumers Pub/Sub and Cloud Tasks [#209]), superseding the [#37]
-  design's "retries re-count"
+- Date: 2026-08-03; revised by [#1056] (2026-08-23)
+- Issues: [#208] (first consumers Pub/Sub and Cloud Tasks [#209]), which superseded the
+  [#37] design's "retries re-count"; expanded by [#1056]
 - Modules: base (consumed by every connector)
 - Current behavior: each connector's docs page § Metrics
 
 ## Decision
 
-`base.metrics` is `@Internal` throughout — nothing here is implemented by a user. Two types:
+`base.metrics` is `@Internal` throughout — nothing here is implemented by a user. Three types:
 
+- `MetricValues.elapsedMillis` returns zero for equal or future values and saturates subtraction
+  overflow at `Long.MAX_VALUE`, so Bigtable and Spanner lag and health gauges share one boundary
+  policy ([#1056]).
 - `ErrorClassCounters` registers `errorClass.CODE.errors`, `CODE` being a gax `StatusCode.Code`
   name or `UNCLASSIFIED`; child counters are created on first use (registering ~17 rows per
   subtask for statuses a job never sees is what the laziness avoids), and **which throwable in a
@@ -40,7 +43,7 @@ limitations under the License.
   hands out a `Counters` handle rather than taking a destination name per record, so the name is
   composed once and a disabled instance costs two null checks. `Counters.recordsSent(long)` is
   the batching form of the same counter, added for BigQuery ([#210]).
-- Both types are **task-thread only** — plain `SimpleCounter`s, valid because every sink
+- Both counter helpers are **task-thread only** — plain `SimpleCounter`s, valid because every sink
   increment site in this repository runs on the task thread, unlike the Pub/Sub *source*, whose
   SDK callback threads forced `ThreadSafeSimpleCounter`. A connector counting from a callback
   thread must not reuse them as they stand. `flink-test-utils` is a *test*-scope dependency here
@@ -63,3 +66,4 @@ informative than a re-counted send.
 [#208]: https://github.com/laughingman7743/flink-connector-gcp/issues/208
 [#209]: https://github.com/laughingman7743/flink-connector-gcp/issues/209
 [#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
+[#1056]: https://github.com/flink-gcp/flink-connector-gcp/issues/1056
