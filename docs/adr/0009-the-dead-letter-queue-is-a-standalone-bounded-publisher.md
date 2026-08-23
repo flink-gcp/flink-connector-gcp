@@ -196,17 +196,17 @@ each of the four carries `deadLetter` in its name.
   taking the adder as an argument, since there are now two registrars; it was a private class
   inside `PubSubWriterMetrics`.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
-[#211]: https://github.com/laughingman7743/flink-connector-gcp/issues/211
-[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
-[#276]: https://github.com/laughingman7743/flink-connector-gcp/issues/276
-[#310]: https://github.com/laughingman7743/flink-connector-gcp/issues/310
-[#312]: https://github.com/laughingman7743/flink-connector-gcp/issues/312
-[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
-[#328]: https://github.com/laughingman7743/flink-connector-gcp/issues/328
-[#329]: https://github.com/laughingman7743/flink-connector-gcp/issues/329
-[#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
-[#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
-[#405]: https://github.com/laughingman7743/flink-connector-gcp/issues/405
-[#546]: https://github.com/laughingman7743/flink-connector-gcp/issues/546
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119
+[#211]: https://github.com/flink-gcp/flink-connector-gcp/issues/211
+[#265]: https://github.com/flink-gcp/flink-connector-gcp/issues/265
+[#276]: https://github.com/flink-gcp/flink-connector-gcp/issues/276
+[#310]: https://github.com/flink-gcp/flink-connector-gcp/issues/310
+[#312]: https://github.com/flink-gcp/flink-connector-gcp/issues/312
+[#321]: https://github.com/flink-gcp/flink-connector-gcp/issues/321
+[#328]: https://github.com/flink-gcp/flink-connector-gcp/issues/328
+[#329]: https://github.com/flink-gcp/flink-connector-gcp/issues/329
+[#333]: https://github.com/flink-gcp/flink-connector-gcp/issues/333
+[#334]: https://github.com/flink-gcp/flink-connector-gcp/issues/334
+[#405]: https://github.com/flink-gcp/flink-connector-gcp/issues/405
+[#546]: https://github.com/flink-gcp/flink-connector-gcp/issues/546

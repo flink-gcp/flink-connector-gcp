@@ -86,4 +86,4 @@ carried was the `STRICT` trap from the other side: `yyyy` is `YEAR_OF_ERA`, so i
 proleptic year 0 as `0001` and year -1 as `0002` — a silently wrong year, the same shape of
 defect the resolver style now rules out.
 
-[#282]: https://github.com/laughingman7743/flink-connector-gcp/issues/282
+[#282]: https://github.com/flink-gcp/flink-connector-gcp/issues/282

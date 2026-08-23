@@ -116,7 +116,7 @@ carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1
 - **A Dataproc-style per-version module split** — buys isolation the handful of same-FQCN
   compat files, none of them longer than an interface stub, already provides.
 
-[#29]: https://github.com/laughingman7743/flink-connector-gcp/issues/29
-[#32]: https://github.com/laughingman7743/flink-connector-gcp/issues/32
-[#39]: https://github.com/laughingman7743/flink-connector-gcp/issues/39
-[#404]: https://github.com/laughingman7743/flink-connector-gcp/issues/404
+[#29]: https://github.com/flink-gcp/flink-connector-gcp/issues/29
+[#32]: https://github.com/flink-gcp/flink-connector-gcp/issues/32
+[#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
+[#404]: https://github.com/flink-gcp/flink-connector-gcp/issues/404

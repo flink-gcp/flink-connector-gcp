@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-06 (measured across PRs
-  [#314](https://github.com/laughingman7743/flink-connector-gcp/pull/314) and
-  [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317))
+  [#314](https://github.com/flink-gcp/flink-connector-gcp/pull/314) and
+  [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317))
 - Issues: —
 - Modules: all (workflow)
 - Current behavior: root `AGENTS.md` § GitHub workflow (the imperative form, with the review
@@ -46,13 +46,13 @@ Three rules the rounds share:
   whichever one an agent happened to read.
 - **A deferred measurement is a claim**: if a premise was flagged as reasoned-but-unmeasured,
   round two measures it, because the flag is not a substitute.
-- **The mutation batch is re-run after acting on a review**, not only before — PR [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317)'s
+- **The mutation batch is re-run after acting on a review**, not only before — PR [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317)'s
   rework left alive a mutant that had been alive all along, because no test pinned that the
   call sites feed the counter the metric reports.
 
 ## Evidence
 
-Measured on 2026-08-06 across PRs [#314](https://github.com/laughingman7743/flink-connector-gcp/pull/314) and [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317), both of which had passed round one and were
+Measured on 2026-08-06 across PRs [#314](https://github.com/flink-gcp/flink-connector-gcp/pull/314) and [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317), both of which had passed round one and were
 CI-green: round two found, in each, **claims written in the PR's own javadoc, docs or
 description that were false** — "it reaches SQL unchanged as an `IllegalStateException`"
 (`FactoryUtil` wraps everything a factory throws), "the only shape that works" (it forced the
@@ -61,9 +61,9 @@ storage, not the instrument), "the repository's first main-code static" (it is t
 docs recommend). None of those is reachable from a lens aimed at the diff.
 
 A third PR extended *where* those claims come from rather than the finding rate. On
-[#386](https://github.com/laughingman7743/flink-connector-gcp/pull/386) the false one was the
+[#386](https://github.com/flink-gcp/flink-connector-gcp/pull/386) the false one was the
 **issue's own premise**, restated verbatim in the description and the commit message:
-[#352](https://github.com/laughingman7743/flink-connector-gcp/issues/352) said a bundled licence
+[#352](https://github.com/flink-gcp/flink-connector-gcp/issues/352) said a bundled licence
 text carried no GPL-2.0 text at all, and it carries the whole of it. Restating an issue is
 asserting it, and a premise cited as context does not read like a claim being made — so the round's
 claim list names the issue as a fifth source, beside the description, the comments, the docs and
@@ -71,7 +71,7 @@ the commit message.
 
 ## Consequences
 
-- The cost is real — three agents plus verification, and on PR [#317](https://github.com/laughingman7743/flink-connector-gcp/pull/317) round two changed the
+- The cost is real — three agents plus verification, and on PR [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317) round two changed the
   design — so the full second round is for changes whose description makes claims about
   framework behaviour, deployment, or "this is the only way", not for a typo fix.
 - Findings *and* deferrals, with their reasons, are recorded as a PR comment; recording is

@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 (measured on PR
-  [#242](https://github.com/laughingman7743/flink-connector-gcp/pull/242), under [#209])
+  [#242](https://github.com/flink-gcp/flink-connector-gcp/pull/242), under [#209])
 - Issues: [#209]
 - Modules: all connectors (tests)
 - Current behavior: root `AGENTS.md` § Cross-connector contracts
@@ -39,11 +39,11 @@ is not optional, or a later simplification pass removes it.
 ## Evidence
 
 Measured on Cloud Tasks (PR
-[#242](https://github.com/laughingman7743/flink-connector-gcp/pull/242), under [#209]):
+[#242](https://github.com/flink-gcp/flink-connector-gcp/pull/242), under [#209]):
 `DefaultTaskCreatorFactory.create()` builds its client eagerly, so the production-path metric
 test passed two local runs and then failed in CI. The Pub/Sub twin of the same test passed
 without an endpoint only because that sink creates its publishers lazily — a property of that
 sink, not a general rule, which is why the contract binds every connector rather than the ones
 that happen to authenticate during `createWriter`.
 
-[#209]: https://github.com/laughingman7743/flink-connector-gcp/issues/209
+[#209]: https://github.com/flink-gcp/flink-connector-gcp/issues/209

@@ -98,7 +98,7 @@ transitively is unaffected. ADR-0035 records the exclusion only one tree takes.
 `pluginManagement`, and a module switches it on by declaring the plugin.** The two poms were very
 nearly one: of the Pub/Sub module's 232 non-comment, non-blank lines, **230 also appear** in the
 BigQuery module's 269 once the connector name is normalised (measured 2026-08-09; the count on
-[#339](https://github.com/laughingman7743/flink-connector-gcp/pull/339), 215 of 224 against 253,
+[#339](https://github.com/flink-gcp/flink-connector-gcp/pull/339), 215 of 224 against 253,
 strips comments differently and reaches the same conclusion). The duplication had already been paid
 for: that pull request changed the shade filter list three times — `META-INF/versions/*/`
 `module-info.class` widened to `META-INF/versions/**`, then `META-INF/native-image/**` and
@@ -305,9 +305,9 @@ bound failures"; and it reaches the trees only through the few artifacts that de
   its own client, takes that exclusion by reference in its pom. An exclusion every tree takes is
   this record's, which is where `javax.annotation-api` sits.
 
-[#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
-[#138]: https://github.com/laughingman7743/flink-connector-gcp/issues/138
-[#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
-[#346]: https://github.com/laughingman7743/flink-connector-gcp/issues/346
-[#352]: https://github.com/laughingman7743/flink-connector-gcp/issues/352
-[#412]: https://github.com/laughingman7743/flink-connector-gcp/issues/412
+[#26]: https://github.com/flink-gcp/flink-connector-gcp/issues/26
+[#138]: https://github.com/flink-gcp/flink-connector-gcp/issues/138
+[#290]: https://github.com/flink-gcp/flink-connector-gcp/issues/290
+[#346]: https://github.com/flink-gcp/flink-connector-gcp/issues/346
+[#352]: https://github.com/flink-gcp/flink-connector-gcp/issues/352
+[#412]: https://github.com/flink-gcp/flink-connector-gcp/issues/412

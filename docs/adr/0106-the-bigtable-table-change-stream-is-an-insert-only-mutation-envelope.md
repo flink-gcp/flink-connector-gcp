@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#523](https://github.com/laughingman7743/flink-connector-gcp/issues/523), [#600](https://github.com/laughingman7743/flink-connector-gcp/issues/600), [#601](https://github.com/laughingman7743/flink-connector-gcp/issues/601), [#602](https://github.com/laughingman7743/flink-connector-gcp/issues/602), [#603](https://github.com/laughingman7743/flink-connector-gcp/issues/603)
+- Issues: [#523](https://github.com/flink-gcp/flink-connector-gcp/issues/523), [#600](https://github.com/flink-gcp/flink-connector-gcp/issues/600), [#601](https://github.com/flink-gcp/flink-connector-gcp/issues/601), [#602](https://github.com/flink-gcp/flink-connector-gcp/issues/602), [#603](https://github.com/flink-gcp/flink-connector-gcp/issues/603)
 - Modules: bigtable (`table`, `table.source`)
 - Current behavior: [Change Streams](../content/docs/connectors/table/bigtable.md#change-streams)
 

@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#582](https://github.com/laughingman7743/flink-connector-gcp/issues/582), [#583](https://github.com/laughingman7743/flink-connector-gcp/issues/583) (under [#225](https://github.com/laughingman7743/flink-connector-gcp/issues/225)), [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635)
+- Issues: [#582](https://github.com/flink-gcp/flink-connector-gcp/issues/582), [#583](https://github.com/flink-gcp/flink-connector-gcp/issues/583) (under [#225](https://github.com/flink-gcp/flink-connector-gcp/issues/225)), [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 

@@ -78,7 +78,7 @@ two agreeing. This supersedes the "not symmetric on purpose" reasoning first rec
   default. `SchemaUnifier` needed no change: it only relaxes, so derived-`REQUIRED` against an
   existing `NULLABLE` column is a silent no-op already pinned by `modesAreNeverTightened`.
 
-[#50]: https://github.com/laughingman7743/flink-connector-gcp/issues/50
-[#124]: https://github.com/laughingman7743/flink-connector-gcp/issues/124
-[#145]: https://github.com/laughingman7743/flink-connector-gcp/issues/145
-[#281]: https://github.com/laughingman7743/flink-connector-gcp/issues/281
+[#50]: https://github.com/flink-gcp/flink-connector-gcp/issues/50
+[#124]: https://github.com/flink-gcp/flink-connector-gcp/issues/124
+[#145]: https://github.com/flink-gcp/flink-connector-gcp/issues/145
+[#281]: https://github.com/flink-gcp/flink-connector-gcp/issues/281

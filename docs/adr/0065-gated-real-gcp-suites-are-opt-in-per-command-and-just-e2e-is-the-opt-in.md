@@ -47,4 +47,4 @@ a missing variable an error, and a post-run assertion (`scripts/e2e-gated-its.sh
 derives the class list from the gating annotation) checks the gated classes actually
 executed.
 
-[#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
+[#245]: https://github.com/flink-gcp/flink-connector-gcp/issues/245

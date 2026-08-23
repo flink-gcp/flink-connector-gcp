@@ -65,7 +65,7 @@ would also require.
 - Compilation and exact synchronization do not prove that an example is useful or correct at
   runtime; review retains that responsibility.
 
-[#658]: https://github.com/laughingman7743/flink-connector-gcp/issues/658
-[#694]: https://github.com/laughingman7743/flink-connector-gcp/issues/694
-[#701]: https://github.com/laughingman7743/flink-connector-gcp/pull/701
-[#705]: https://github.com/laughingman7743/flink-connector-gcp/issues/705
+[#658]: https://github.com/flink-gcp/flink-connector-gcp/issues/658
+[#694]: https://github.com/flink-gcp/flink-connector-gcp/issues/694
+[#701]: https://github.com/flink-gcp/flink-connector-gcp/pull/701
+[#705]: https://github.com/flink-gcp/flink-connector-gcp/issues/705

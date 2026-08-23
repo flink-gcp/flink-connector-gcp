@@ -83,9 +83,9 @@ not a real window), the residual SDK-bug hang is already bounded by Flink's chec
 failover, and a second timeout would race the SDK's hardcoded 5 minutes and could tear down
 slow-but-progressing appends.
 
-[#13]: https://github.com/laughingman7743/flink-connector-gcp/issues/13
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#276]: https://github.com/laughingman7743/flink-connector-gcp/issues/276
-[#163]: https://github.com/laughingman7743/flink-connector-gcp/issues/163
-[#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
-[#213]: https://github.com/laughingman7743/flink-connector-gcp/issues/213
+[#13]: https://github.com/flink-gcp/flink-connector-gcp/issues/13
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#276]: https://github.com/flink-gcp/flink-connector-gcp/issues/276
+[#163]: https://github.com/flink-gcp/flink-connector-gcp/issues/163
+[#205]: https://github.com/flink-gcp/flink-connector-gcp/issues/205
+[#213]: https://github.com/flink-gcp/flink-connector-gcp/issues/213

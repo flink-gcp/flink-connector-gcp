@@ -81,8 +81,8 @@ limitations under the License.
   and `getTarget()` reconstructs the input. One message covers every malformed value, which is
   why the old "must not be blank" is gone: a blank endpoint is not a separate kind of mistake.
 
-[#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
-[#197]: https://github.com/laughingman7743/flink-connector-gcp/issues/197
-[#235]: https://github.com/laughingman7743/flink-connector-gcp/issues/235
+[#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
+[#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119
+[#197]: https://github.com/flink-gcp/flink-connector-gcp/issues/197
+[#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
 [#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895

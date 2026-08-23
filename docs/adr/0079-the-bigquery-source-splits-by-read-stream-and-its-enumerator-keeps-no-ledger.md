@@ -182,11 +182,11 @@ the Avro-namespace reason above.
   query input is [#392], landed and recorded in ADR-0087; Arrow was [#393], measured and declined in
   ADR-0090, so Avro is the source's only wire format.
 
-[#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
-[#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
-[#391]: https://github.com/laughingman7743/flink-connector-gcp/issues/391
-[#392]: https://github.com/laughingman7743/flink-connector-gcp/issues/392
-[#393]: https://github.com/laughingman7743/flink-connector-gcp/issues/393
-[#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
-[#542]: https://github.com/laughingman7743/flink-connector-gcp/issues/542
-[#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587
+[#64]: https://github.com/flink-gcp/flink-connector-gcp/issues/64
+[#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
+[#391]: https://github.com/flink-gcp/flink-connector-gcp/issues/391
+[#392]: https://github.com/flink-gcp/flink-connector-gcp/issues/392
+[#393]: https://github.com/flink-gcp/flink-connector-gcp/issues/393
+[#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452
+[#542]: https://github.com/flink-gcp/flink-connector-gcp/issues/542
+[#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587

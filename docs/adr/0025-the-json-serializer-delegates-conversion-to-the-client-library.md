@@ -96,6 +96,6 @@ Verify the *fix* with the second route (minutes), the *submitted test* with the 
 submitting — an unrun upstream test wastes a reviewer's cycle on a repository that requires two
 approvals.
 
-[#66]: https://github.com/laughingman7743/flink-connector-gcp/issues/66
-[#131]: https://github.com/laughingman7743/flink-connector-gcp/issues/131
-[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
+[#66]: https://github.com/flink-gcp/flink-connector-gcp/issues/66
+[#131]: https://github.com/flink-gcp/flink-connector-gcp/issues/131
+[#265]: https://github.com/flink-gcp/flink-connector-gcp/issues/265

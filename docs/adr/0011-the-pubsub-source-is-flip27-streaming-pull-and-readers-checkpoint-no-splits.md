@@ -101,12 +101,12 @@ and test-only when this was written; [#139] and [#546] gave it a production call
 own `serviceAccountKeyFile` reaches the admin through it — so it is an ordinary public constructor
 now, and this paragraph no longer claims otherwise.
 
-[#47]: https://github.com/laughingman7743/flink-connector-gcp/issues/47
-[#79]: https://github.com/laughingman7743/flink-connector-gcp/issues/79
-[#80]: https://github.com/laughingman7743/flink-connector-gcp/issues/80
-[#81]: https://github.com/laughingman7743/flink-connector-gcp/issues/81
-[#82]: https://github.com/laughingman7743/flink-connector-gcp/issues/82
-[#101]: https://github.com/laughingman7743/flink-connector-gcp/issues/101
-[#118]: https://github.com/laughingman7743/flink-connector-gcp/issues/118
+[#47]: https://github.com/flink-gcp/flink-connector-gcp/issues/47
+[#79]: https://github.com/flink-gcp/flink-connector-gcp/issues/79
+[#80]: https://github.com/flink-gcp/flink-connector-gcp/issues/80
+[#81]: https://github.com/flink-gcp/flink-connector-gcp/issues/81
+[#82]: https://github.com/flink-gcp/flink-connector-gcp/issues/82
+[#101]: https://github.com/flink-gcp/flink-connector-gcp/issues/101
+[#118]: https://github.com/flink-gcp/flink-connector-gcp/issues/118
 [#139]: https://github.com/flink-gcp/flink-connector-gcp/issues/139
 [#546]: https://github.com/flink-gcp/flink-connector-gcp/issues/546

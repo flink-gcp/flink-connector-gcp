@@ -67,5 +67,5 @@ Consequences that are decisions, not accidents:
 Both measured rows are pinned against real BigQuery by
 `BigQueryFileLoadsSchemaEvolutionITCase`.
 
-[#142]: https://github.com/laughingman7743/flink-connector-gcp/issues/142
-[#72]: https://github.com/laughingman7743/flink-connector-gcp/issues/72
+[#142]: https://github.com/flink-gcp/flink-connector-gcp/issues/142
+[#72]: https://github.com/flink-gcp/flink-connector-gcp/issues/72

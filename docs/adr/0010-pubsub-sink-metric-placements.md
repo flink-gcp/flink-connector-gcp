@@ -59,6 +59,6 @@ programmatic metric accessor on `Publisher` — only
 not meters — so the flink-connector-kafka-style passthrough of client-native metrics has no
 source to read here.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#78]: https://github.com/laughingman7743/flink-connector-gcp/issues/78
-[#208]: https://github.com/laughingman7743/flink-connector-gcp/issues/208
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#78]: https://github.com/flink-gcp/flink-connector-gcp/issues/78
+[#208]: https://github.com/flink-gcp/flink-connector-gcp/issues/208

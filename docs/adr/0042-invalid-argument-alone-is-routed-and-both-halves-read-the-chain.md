@@ -47,5 +47,5 @@ limitations under the License.
   test. `BigtableErrorClassifier.firstMatching(throwable, codes)` is the shared primitive, the
   same shape `CloudTasksErrorClassifier` uses.
 
-[#33]: https://github.com/laughingman7743/flink-connector-gcp/issues/33
-[#207]: https://github.com/laughingman7743/flink-connector-gcp/issues/207
+[#33]: https://github.com/flink-gcp/flink-connector-gcp/issues/33
+[#207]: https://github.com/flink-gcp/flink-connector-gcp/issues/207

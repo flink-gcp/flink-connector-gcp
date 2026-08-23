@@ -75,9 +75,9 @@ sink gated class lives — deliberately at the outcome level (survivors publishe
 invalid message routed, flush green), since the outcome is what the fix guarantees whatever the
 service's rejection granularity.
 
-[#208]: https://github.com/laughingman7743/flink-connector-gcp/issues/208
-[#239]: https://github.com/laughingman7743/flink-connector-gcp/issues/239
-[#264]: https://github.com/laughingman7743/flink-connector-gcp/issues/264
-[#269]: https://github.com/laughingman7743/flink-connector-gcp/issues/269
-[#303]: https://github.com/laughingman7743/flink-connector-gcp/issues/303
-[#361]: https://github.com/laughingman7743/flink-connector-gcp/issues/361
+[#208]: https://github.com/flink-gcp/flink-connector-gcp/issues/208
+[#239]: https://github.com/flink-gcp/flink-connector-gcp/issues/239
+[#264]: https://github.com/flink-gcp/flink-connector-gcp/issues/264
+[#269]: https://github.com/flink-gcp/flink-connector-gcp/issues/269
+[#303]: https://github.com/flink-gcp/flink-connector-gcp/issues/303
+[#361]: https://github.com/flink-gcp/flink-connector-gcp/issues/361

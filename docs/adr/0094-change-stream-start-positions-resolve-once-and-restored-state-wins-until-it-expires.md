@@ -18,11 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-10
-- Issues: [#492](https://github.com/laughingman7743/flink-connector-gcp/issues/492),
-  [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
-  [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
-  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
-  [#800](https://github.com/laughingman7743/flink-connector-gcp/issues/800)
+- Issues: [#492](https://github.com/flink-gcp/flink-connector-gcp/issues/492),
+  [#35](https://github.com/flink-gcp/flink-connector-gcp/issues/35),
+  [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
+  [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
+  [#800](https://github.com/flink-gcp/flink-connector-gcp/issues/800)
 - Modules: base, bigtable, spanner
 - Current behavior: generated API reference for `base.source.StartPosition`; the connector pages
   join when the change-stream sources land
@@ -36,9 +36,9 @@ connector would duplicate the user-visible boundary behavior: what "now" means, 
 before retention is accepted, and whether an expired restore may silently skip records.
 
 The shared type is implemented before its two consumers because their settled implementation order
-is [#492](https://github.com/laughingman7743/flink-connector-gcp/issues/492), then
-[#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35), then
-[#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222). It is nevertheless a
+is [#492](https://github.com/flink-gcp/flink-connector-gcp/issues/492), then
+[#35](https://github.com/flink-gcp/flink-connector-gcp/issues/35), then
+[#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222). It is nevertheless a
 two-consumer API rather than a speculative base utility: both connector designs name the type and
 their builders' mapping onto it.
 

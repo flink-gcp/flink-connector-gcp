@@ -249,15 +249,15 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
   — beyond the mutation builders and the static factories, `toProto()` is its only instance
   method. This is why the fix is upstream by elimination rather than by preference.
 
-[#33]: https://github.com/laughingman7743/flink-connector-gcp/issues/33
-[#85]: https://github.com/laughingman7743/flink-connector-gcp/issues/85
-[#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
-[#213]: https://github.com/laughingman7743/flink-connector-gcp/issues/213
-[#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
-[#217]: https://github.com/laughingman7743/flink-connector-gcp/issues/217
-[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
-[#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
-[#131]: https://github.com/laughingman7743/flink-connector-gcp/issues/131
-[#236]: https://github.com/laughingman7743/flink-connector-gcp/issues/236
-[#400]: https://github.com/laughingman7743/flink-connector-gcp/issues/400
-[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436
+[#33]: https://github.com/flink-gcp/flink-connector-gcp/issues/33
+[#85]: https://github.com/flink-gcp/flink-connector-gcp/issues/85
+[#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119
+[#213]: https://github.com/flink-gcp/flink-connector-gcp/issues/213
+[#216]: https://github.com/flink-gcp/flink-connector-gcp/issues/216
+[#217]: https://github.com/flink-gcp/flink-connector-gcp/issues/217
+[#232]: https://github.com/flink-gcp/flink-connector-gcp/issues/232
+[#233]: https://github.com/flink-gcp/flink-connector-gcp/issues/233
+[#131]: https://github.com/flink-gcp/flink-connector-gcp/issues/131
+[#236]: https://github.com/flink-gcp/flink-connector-gcp/issues/236
+[#400]: https://github.com/flink-gcp/flink-connector-gcp/issues/400
+[#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436

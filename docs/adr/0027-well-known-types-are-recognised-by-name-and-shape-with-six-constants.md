@@ -91,8 +91,8 @@ name** — a descriptor built from a serialized `FileDescriptorSet` carries its 
 This is a **breaking schema change** for any existing table (`STRUCT` → scalar):
 `SchemaUnifier` rejects the union rather than corrupting rows.
 
-[#16]: https://github.com/laughingman7743/flink-connector-gcp/issues/16
-[#121]: https://github.com/laughingman7743/flink-connector-gcp/issues/121
-[#124]: https://github.com/laughingman7743/flink-connector-gcp/issues/124
-[#126]: https://github.com/laughingman7743/flink-connector-gcp/issues/126
-[#147]: https://github.com/laughingman7743/flink-connector-gcp/issues/147
+[#16]: https://github.com/flink-gcp/flink-connector-gcp/issues/16
+[#121]: https://github.com/flink-gcp/flink-connector-gcp/issues/121
+[#124]: https://github.com/flink-gcp/flink-connector-gcp/issues/124
+[#126]: https://github.com/flink-gcp/flink-connector-gcp/issues/126
+[#147]: https://github.com/flink-gcp/flink-connector-gcp/issues/147

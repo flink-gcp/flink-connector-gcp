@@ -275,12 +275,12 @@ sink": the *table* sink's empty-mutation refusal is one of the call sites listed
 - The per-fetch row cap is a correctness floor rather than a knob, and is reachable only through a
   `@VisibleForTesting` setter. Promoting it to a builder option needs a measurement.
 
-[#34]: https://github.com/laughingman7743/flink-connector-gcp/issues/34
-[#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
-[#248]: https://github.com/laughingman7743/flink-connector-gcp/issues/248
-[#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
-[#481]: https://github.com/laughingman7743/flink-connector-gcp/issues/481
-[#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587
-[#910]: https://github.com/laughingman7743/flink-connector-gcp/issues/910
-[#947]: https://github.com/laughingman7743/flink-connector-gcp/issues/947
+[#34]: https://github.com/flink-gcp/flink-connector-gcp/issues/34
+[#216]: https://github.com/flink-gcp/flink-connector-gcp/issues/216
+[#248]: https://github.com/flink-gcp/flink-connector-gcp/issues/248
+[#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452
+[#481]: https://github.com/flink-gcp/flink-connector-gcp/issues/481
+[#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587
+[#910]: https://github.com/flink-gcp/flink-connector-gcp/issues/910
+[#947]: https://github.com/flink-gcp/flink-connector-gcp/issues/947
 [#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948

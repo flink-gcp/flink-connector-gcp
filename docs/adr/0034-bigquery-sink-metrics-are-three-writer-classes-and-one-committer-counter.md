@@ -83,10 +83,10 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
   `TestSinkWriterMetricGroup`; the buffered and FILE_LOADS ones ride their behavioural tests'
   fakes, while the default-stream one carries its own.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
-[#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
-[#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77
-[#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
+[#210]: https://github.com/flink-gcp/flink-connector-gcp/issues/210
+[#76]: https://github.com/flink-gcp/flink-connector-gcp/issues/76
+[#77]: https://github.com/flink-gcp/flink-connector-gcp/issues/77
+[#598]: https://github.com/flink-gcp/flink-connector-gcp/issues/598
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051

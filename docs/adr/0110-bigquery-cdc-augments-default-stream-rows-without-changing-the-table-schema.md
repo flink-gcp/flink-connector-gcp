@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#65](https://github.com/laughingman7743/flink-connector-gcp/issues/65),
-  [#625](https://github.com/laughingman7743/flink-connector-gcp/issues/625)
+- Issues: [#65](https://github.com/flink-gcp/flink-connector-gcp/issues/65),
+  [#625](https://github.com/flink-gcp/flink-connector-gcp/issues/625)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#change-data-capture`
 

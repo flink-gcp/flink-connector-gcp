@@ -132,17 +132,17 @@ limitations under the License.
 - No compat source roots: nothing here implements `Sink` across the 1.x/2.x gap; a sink
   test-double that does belongs in the module that needs it.
 
-[#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
-[#27]: https://github.com/laughingman7743/flink-connector-gcp/issues/27
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#181]: https://github.com/laughingman7743/flink-connector-gcp/issues/181
-[#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
-[#244]: https://github.com/laughingman7743/flink-connector-gcp/issues/244
-[#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
-[#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
-[#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
-[#437]: https://github.com/laughingman7743/flink-connector-gcp/issues/437
+[#26]: https://github.com/flink-gcp/flink-connector-gcp/issues/26
+[#27]: https://github.com/flink-gcp/flink-connector-gcp/issues/27
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
+[#181]: https://github.com/flink-gcp/flink-connector-gcp/issues/181
+[#216]: https://github.com/flink-gcp/flink-connector-gcp/issues/216
+[#244]: https://github.com/flink-gcp/flink-connector-gcp/issues/244
+[#245]: https://github.com/flink-gcp/flink-connector-gcp/issues/245
+[#290]: https://github.com/flink-gcp/flink-connector-gcp/issues/290
+[#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
+[#437]: https://github.com/flink-gcp/flink-connector-gcp/issues/437
 [#776]: https://github.com/flink-gcp/flink-connector-gcp/issues/776
 [#1044]: https://github.com/flink-gcp/flink-connector-gcp/issues/1044
 [#1057]: https://github.com/flink-gcp/flink-connector-gcp/issues/1057

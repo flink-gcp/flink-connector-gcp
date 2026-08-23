@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#471](https://github.com/laughingman7743/flink-connector-gcp/issues/471)
+- Issues: [#471](https://github.com/flink-gcp/flink-connector-gcp/issues/471)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` and
   `docs/content/docs/connectors/table/bigtable.md`

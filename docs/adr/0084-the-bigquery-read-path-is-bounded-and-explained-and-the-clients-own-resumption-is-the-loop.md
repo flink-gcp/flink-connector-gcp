@@ -185,10 +185,10 @@ the projection measurement above shows a single-column read collapses the fixtur
   `readRetries` reports that it is happening; deciding what to do about it is an operator's, and a
   connector-side response would be the retry loop this record declines.
 
-[#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
-[#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
-[#391]: https://github.com/laughingman7743/flink-connector-gcp/issues/391
-[#462]: https://github.com/laughingman7743/flink-connector-gcp/issues/462
+[#64]: https://github.com/flink-gcp/flink-connector-gcp/issues/64
+[#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
+[#391]: https://github.com/flink-gcp/flink-connector-gcp/issues/391
+[#462]: https://github.com/flink-gcp/flink-connector-gcp/issues/462
 [storage-read-monitoring]: https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use
 [storage-read-pricing]: https://cloud.google.com/bigquery/pricing#storage_read_api_pricing
 [storage-read-quotas]: https://cloud.google.com/bigquery/quotas#storage_read_api

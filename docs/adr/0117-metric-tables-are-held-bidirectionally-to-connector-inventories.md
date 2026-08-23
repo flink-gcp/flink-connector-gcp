@@ -26,7 +26,7 @@ limitations under the License.
 
 ## Context
 
-[PR #293](https://github.com/laughingman7743/flink-connector-gcp/pull/293) renamed three metrics and edited 16 documentation lines by hand across five pages.
+[PR #293](https://github.com/flink-gcp/flink-connector-gcp/pull/293) renamed three metrics and edited 16 documentation lines by hand across five pages.
 A repository-wide grep for the old names was the only evidence that every table and prose mention had moved together.
 A new metric with no row or a rename that missed one row would still have passed CI.
 
@@ -64,9 +64,9 @@ Whether a counter names an event and a gauge names state requires language judgm
 
 ## Evidence
 
-Issue [#296] reproduced every wrinkle found in the manual [PR #293](https://github.com/laughingman7743/flink-connector-gcp/pull/293) sweep before implementation:
+Issue [#296] reproduced every wrinkle found in the manual [PR #293](https://github.com/flink-gcp/flink-connector-gcp/pull/293) sweep before implementation:
 Flink-owned names, templated subgroups, one class spanning several tables, and a metric named only in prose.
-[PR #302](https://github.com/laughingman7743/flink-connector-gcp/pull/302) turned the prose-only `inFlightAppends` mention into a one-row table rather than adding a per-class mapping that would still leave prose unchecked.
+[PR #302](https://github.com/flink-gcp/flink-connector-gcp/pull/302) turned the prose-only `inFlightAppends` mention into a one-row table rather than adding a per-class mapping that would still leave prose unchecked.
 
 The pull request applied 19 mutants to the metric checker and four to the option-checker hardening.
 They covered the exact-header opt-in, registration inventory, kind agreement, standard marker, subgroup use, both failure directions, dead allowlist entries, fenced examples and malformed configuration.
@@ -91,5 +91,5 @@ Any prose mention still needs a repository-wide sweep because the checker intent
 
 The curation skill owns every judgment-bearing failure, including whether a real exception belongs on the source side or page side and what reason makes it reviewable later.
 
-[#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
-[#296]: https://github.com/laughingman7743/flink-connector-gcp/issues/296
+[#280]: https://github.com/flink-gcp/flink-connector-gcp/issues/280
+[#296]: https://github.com/flink-gcp/flink-connector-gcp/issues/296

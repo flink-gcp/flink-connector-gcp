@@ -18,10 +18,10 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-29 ([#5], landed by PR
-  [#168](https://github.com/laughingman7743/flink-connector-gcp/pull/168)); the apply
+  [#168](https://github.com/flink-gcp/flink-connector-gcp/pull/168)); the apply
   misconfiguration found and the recovery runbook recorded 2026-08-01 (PRs
-  [#170](https://github.com/laughingman7743/flink-connector-gcp/pull/170) and
-  [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)); the GitHub App
+  [#170](https://github.com/flink-gcp/flink-connector-gcp/pull/170) and
+  [#176](https://github.com/flink-gcp/flink-connector-gcp/pull/176)); the GitHub App
   deferred to go-public ([#177]) and adopted 2026-08-16 once the org existed ([#177],
   ADR-0121); the plan lookup repointed at `ci.yaml` 2026-08-09 ([#444])
 - Issues: [#5], [#177], [#444]
@@ -47,7 +47,7 @@ limitations under the License.
   `just tofu <args>` is the local equivalent.
 - **Plan, apply, comments and labels run on plain `GITHUB_TOKEN`** and continue to. The App
   was deferred to the dedicated org at go-public time ([#177]; decided with the user on PR
-  [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176), where a
+  [#176](https://github.com/flink-gcp/flink-connector-gcp/pull/176), where a
   dispatch-triggered fresh-apply workflow was built as an alternative and withdrawn in the
   App's favour), and the org now exists, so push-back runs as `flink-gcp-bot`
   ([ADR-0121](0121-ci-push-back-runs-as-an-org-owned-github-app-with-per-use-downscoped-tokens.md)),
@@ -58,9 +58,9 @@ limitations under the License.
 - **The apply workflow must set `TFACTION_IS_APPLY: "true"`** — tfaction's job_type is
   "terraform" for plan and apply alike, and setup falls back to `terraform_plan_config` (the
   read-only account) without it. That misconfiguration shipped with PR
-  [#168](https://github.com/laughingman7743/flink-connector-gcp/pull/168) and hid behind
+  [#168](https://github.com/flink-gcp/flink-connector-gcp/pull/168) and hid behind
   no-change applies until the first real write (PR
-  [#170](https://github.com/laughingman7743/flink-connector-gcp/pull/170)), whose 403s were
+  [#170](https://github.com/flink-gcp/flink-connector-gcp/pull/170)), whose 403s were
   then misdiagnosed twice:
   a missing service agent was blamed on evidence that never included the authenticated
   principal. **Read the auth step's log first.**
@@ -68,7 +68,7 @@ limitations under the License.
   job: the failure bumps the state serial, making the saved plan stale, so a re-run can only
   fail again ("Saved plan is stale") — and tofu cancels unstarted operations on the first
   error, so assume nothing from the failed apply exists until measured (PR
-  [#176](https://github.com/laughingman7743/flink-connector-gcp/pull/176)).
+  [#176](https://github.com/flink-gcp/flink-connector-gcp/pull/176)).
 - **`plan_workflow_name` names the workflow whose *run* owns the plan artifact, which is
   `ci.yaml`** ([#444]) — not the file the plan steps live in. tfaction passes the string
   as the `workflow_id` of `listWorkflowRuns`, filtered by the pull request's head branch and
@@ -83,7 +83,7 @@ limitations under the License.
   apply failed with "No workflow run is found". It stayed invisible for three days because nothing
   touched `opentofu/` in between, and the first change that did merged reviewed, planned and
   **unapplied**: the `roles/bigquery.readSessionUser` binding of PR
-  [#433](https://github.com/laughingman7743/flink-connector-gcp/pull/433) was in the code and
+  [#433](https://github.com/flink-gcp/flink-connector-gcp/pull/433) was in the code and
   not in the project. **Moving a workflow under an orchestrator can break a lookup that names
   it, and the break surfaces only on the next change of that kind.**
 - **A recovery pull request must itself change a file under the root module.** tfaction's
@@ -105,6 +105,6 @@ limitations under the License.
 - **The tofu version is pinned twice on purpose**: `mise.toml` (what installs) and
   `versions.tf` `required_version` (what refuses to run on a skew) — a bump edits both.
 
-[#5]: https://github.com/laughingman7743/flink-connector-gcp/issues/5
-[#177]: https://github.com/laughingman7743/flink-connector-gcp/issues/177
-[#444]: https://github.com/laughingman7743/flink-connector-gcp/issues/444
+[#5]: https://github.com/flink-gcp/flink-connector-gcp/issues/5
+[#177]: https://github.com/flink-gcp/flink-connector-gcp/issues/177
+[#444]: https://github.com/flink-gcp/flink-connector-gcp/issues/444

@@ -68,6 +68,6 @@ absorbed report is its only record.
   **severe** one of the two: it lands after the `FailureHandler` may have deliberately dropped
   those entry failures, so it fails a job the policy kept running.
 
-[#238]: https://github.com/laughingman7743/flink-connector-gcp/issues/238
-[#323]: https://github.com/laughingman7743/flink-connector-gcp/issues/323
-[#325]: https://github.com/laughingman7743/flink-connector-gcp/issues/325
+[#238]: https://github.com/flink-gcp/flink-connector-gcp/issues/238
+[#323]: https://github.com/flink-gcp/flink-connector-gcp/issues/323
+[#325]: https://github.com/flink-gcp/flink-connector-gcp/issues/325

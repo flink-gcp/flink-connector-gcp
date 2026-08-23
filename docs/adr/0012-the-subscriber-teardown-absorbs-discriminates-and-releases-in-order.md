@@ -232,14 +232,14 @@ fields and share only `startOrRelease`.
   report beside it; a case where one does — a re-report on a job that somehow survives, say — would
   be evidence to revisit this, not a gap to fill by symmetry.
 
-[#118]: https://github.com/laughingman7743/flink-connector-gcp/issues/118
-[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
-[#297]: https://github.com/laughingman7743/flink-connector-gcp/issues/297
-[#311]: https://github.com/laughingman7743/flink-connector-gcp/issues/311
-[#325]: https://github.com/laughingman7743/flink-connector-gcp/issues/325
-[#348]: https://github.com/laughingman7743/flink-connector-gcp/issues/348
-[#349]: https://github.com/laughingman7743/flink-connector-gcp/issues/349
-[#350]: https://github.com/laughingman7743/flink-connector-gcp/issues/350
-[#351]: https://github.com/laughingman7743/flink-connector-gcp/issues/351
-[#358]: https://github.com/laughingman7743/flink-connector-gcp/issues/358
+[#118]: https://github.com/flink-gcp/flink-connector-gcp/issues/118
+[#265]: https://github.com/flink-gcp/flink-connector-gcp/issues/265
+[#297]: https://github.com/flink-gcp/flink-connector-gcp/issues/297
+[#311]: https://github.com/flink-gcp/flink-connector-gcp/issues/311
+[#325]: https://github.com/flink-gcp/flink-connector-gcp/issues/325
+[#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348
+[#349]: https://github.com/flink-gcp/flink-connector-gcp/issues/349
+[#350]: https://github.com/flink-gcp/flink-connector-gcp/issues/350
+[#351]: https://github.com/flink-gcp/flink-connector-gcp/issues/351
+[#358]: https://github.com/flink-gcp/flink-connector-gcp/issues/358
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755

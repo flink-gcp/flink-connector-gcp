@@ -174,9 +174,9 @@ which is the layer that reads it.
   .TimeUtils` is unannotated, so it would owe an entry in `scripts/config/flink-api-tiers.toml`; the
   message reports milliseconds instead, as `BigQueryFileLoadsSink`'s does.
 
-[#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
-[#288]: https://github.com/laughingman7743/flink-connector-gcp/issues/288
-[#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
-[#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
-[#332]: https://github.com/laughingman7743/flink-connector-gcp/issues/332
-[#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77
+[#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
+[#288]: https://github.com/flink-gcp/flink-connector-gcp/issues/288
+[#289]: https://github.com/flink-gcp/flink-connector-gcp/issues/289
+[#326]: https://github.com/flink-gcp/flink-connector-gcp/issues/326
+[#332]: https://github.com/flink-gcp/flink-connector-gcp/issues/332
+[#77]: https://github.com/flink-gcp/flink-connector-gcp/issues/77

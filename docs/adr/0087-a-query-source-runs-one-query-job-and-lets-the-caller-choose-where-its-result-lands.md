@@ -192,8 +192,8 @@ argument for requiring a project id is one paragraph that would otherwise be res
 - Not done, and deliberately: a `queryResultProject`, so the result dataset must live in
   `parentProject`; and any Table API surface, which follows the [#57] pattern when it comes.
 
-[#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
-[#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
-[#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
-[#392]: https://github.com/laughingman7743/flink-connector-gcp/issues/392
-[#477]: https://github.com/laughingman7743/flink-connector-gcp/issues/477
+[#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
+[#64]: https://github.com/flink-gcp/flink-connector-gcp/issues/64
+[#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
+[#392]: https://github.com/flink-gcp/flink-connector-gcp/issues/392
+[#477]: https://github.com/flink-gcp/flink-connector-gcp/issues/477

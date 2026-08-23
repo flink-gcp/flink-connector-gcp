@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#250], live since the plan upgrade; shape decided with the user on PR
-  [#305](https://github.com/laughingman7743/flink-connector-gcp/pull/305)); the cost of moving
+  [#305](https://github.com/flink-gcp/flink-connector-gcp/pull/305)); the cost of moving
   the tofu plan under the orchestrator recorded 2026-08-09 ([#444])
 - Issues: [#250], [#444]
 - Modules: all (CI)
@@ -29,7 +29,7 @@ limitations under the License.
 A private free-plan repository cannot set required checks at all, so [#250] waited on the plan
 upgrade. When it landed, the shape chosen is suzuki-shunsuke's required-status-check pattern —
 decided with the user on PR
-[#305](https://github.com/laughingman7743/flink-connector-gcp/pull/305), after that PR
+[#305](https://github.com/flink-gcp/flink-connector-gcp/pull/305), after that PR
 briefly enumerated the checkers as their own required contexts.
 
 ## Decision
@@ -46,7 +46,7 @@ briefly enumerated the checkers as their own required contexts.
 
 ## Alternatives declined
 
-- **A settings-side list of required contexts** (what PR [#305](https://github.com/laughingman7743/flink-connector-gcp/pull/305) briefly had): it has to be
+- **A settings-side list of required contexts** (what PR [#305](https://github.com/flink-gcp/flink-connector-gcp/pull/305) briefly had): it has to be
   edited every time a job is added or retired, falls silently out of step with a renamed job,
   and cannot follow path-conditional jobs. A stale `needs` entry or `uses` path, by contrast,
   is a workflow-parse error no run survives unnoticed.
@@ -62,7 +62,7 @@ briefly enumerated the checkers as their own required contexts.
   naming `tofu-plan.yaml` when the plan moved here — could no longer find it. Every apply with
   something to apply failed until it was repointed at `ci.yaml`, months of infra changes later
   in the worst case; it happened to be three days
-  ([#444](https://github.com/laughingman7743/flink-connector-gcp/issues/444), ADR-0063, which
+  ([#444](https://github.com/flink-gcp/flink-connector-gcp/issues/444), ADR-0063, which
   carries the mechanics and the two constraints `ci.yaml` now carries).
 - `docs.yaml` and `lint.yaml` are required through the gate like everything else; their
   `paths` filters survive on the push trigger only, as cost control (ADR-0058).
@@ -74,8 +74,8 @@ briefly enumerated the checkers as their own required contexts.
   with every workflow showing active. Run `gh pr view <n> --json
   mergeable,mergeStateStatus` before debugging CI; a rebase starts the runs the moment the PR
   is mergeable. Measured on PR
-  [#301](https://github.com/laughingman7743/flink-connector-gcp/pull/301): ~30 minutes of
+  [#301](https://github.com/flink-gcp/flink-connector-gcp/pull/301): ~30 minutes of
   status-page/billing/trigger diagnosis before the merge state was checked.
 
-[#250]: https://github.com/laughingman7743/flink-connector-gcp/issues/250
-[#444]: https://github.com/laughingman7743/flink-connector-gcp/issues/444
+[#250]: https://github.com/flink-gcp/flink-connector-gcp/issues/250
+[#444]: https://github.com/flink-gcp/flink-connector-gcp/issues/444

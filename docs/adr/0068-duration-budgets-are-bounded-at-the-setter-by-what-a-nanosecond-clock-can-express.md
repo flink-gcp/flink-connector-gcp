@@ -305,9 +305,9 @@ the failure.**
   message named `expiration`, its option key's own last segment — until [ADR-0133], which renamed
   the message to the setter and the mapper's rejection to the full option key.
 
-[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
-[#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
-[#334]: https://github.com/laughingman7743/flink-connector-gcp/issues/334
-[#381]: https://github.com/laughingman7743/flink-connector-gcp/issues/381
-[#413]: https://github.com/laughingman7743/flink-connector-gcp/issues/413
+[#321]: https://github.com/flink-gcp/flink-connector-gcp/issues/321
+[#333]: https://github.com/flink-gcp/flink-connector-gcp/issues/333
+[#334]: https://github.com/flink-gcp/flink-connector-gcp/issues/334
+[#381]: https://github.com/flink-gcp/flink-connector-gcp/issues/381
+[#413]: https://github.com/flink-gcp/flink-connector-gcp/issues/413
 [ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

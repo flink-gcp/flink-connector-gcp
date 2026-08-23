@@ -88,6 +88,6 @@ restriction; under converter reuse it does not, and lifting it would mean a dire
 The load-job side of this — the format travelling in the committable and load jobs grouping on it —
 is ADR-0018, refined there rather than repeated here.
 
-[#281]: https://github.com/laughingman7743/flink-connector-gcp/issues/281
-[#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
-[#285]: https://github.com/laughingman7743/flink-connector-gcp/issues/285
+[#281]: https://github.com/flink-gcp/flink-connector-gcp/issues/281
+[#284]: https://github.com/flink-gcp/flink-connector-gcp/issues/284
+[#285]: https://github.com/flink-gcp/flink-connector-gcp/issues/285

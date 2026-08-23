@@ -267,8 +267,8 @@ The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the f
   causes is an undercount inside a 16-fold headroom, not a wrong answer. Reopen if a measurement
   shows the undercount reaching the limit.
 
-[#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
-[#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
-[#435]: https://github.com/laughingman7743/flink-connector-gcp/issues/435
-[#441]: https://github.com/laughingman7743/flink-connector-gcp/issues/441
-[#573]: https://github.com/laughingman7743/flink-connector-gcp/issues/573
+[#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
+[#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
+[#435]: https://github.com/flink-gcp/flink-connector-gcp/issues/435
+[#441]: https://github.com/flink-gcp/flink-connector-gcp/issues/441
+[#573]: https://github.com/flink-gcp/flink-connector-gcp/issues/573

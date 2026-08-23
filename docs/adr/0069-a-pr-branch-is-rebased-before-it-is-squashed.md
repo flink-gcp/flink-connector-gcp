@@ -144,5 +144,5 @@ guard.
 - A contaminated branch that was already pushed owes a PR comment saying what was reverted and
   restored: a reviewer who read the earlier diff read a wrong one.
 
-[#376]: https://github.com/laughingman7743/flink-connector-gcp/pull/376
-[#388]: https://github.com/laughingman7743/flink-connector-gcp/issues/388
+[#376]: https://github.com/flink-gcp/flink-connector-gcp/pull/376
+[#388]: https://github.com/flink-gcp/flink-connector-gcp/issues/388

@@ -63,7 +63,7 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
 - **`numRecordsSend` is counted inside `dispatch(...)`, guarded by `pending == null`** — that
   argument already means "first attempt", so retry-safety is carried by the method's own
   signature. Counting in `write()` instead — where it sat until PR
-  [#242](https://github.com/laughingman7743/flink-connector-gcp/pull/242)'s second review round
+  [#242](https://github.com/flink-gcp/flink-connector-gcp/pull/242)'s second review round
   — was wrong for the mirror reason: a `TaskCreator` throwing synchronously registers no
   callback, so that record reached Cloud Tasks not at all.
 - **Error classes count every failed attempt, retryable ones included** — the deliberate asymmetry
@@ -78,9 +78,9 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
   this writer keeps no per-destination state at all (one client serves every queue), so there is
   nowhere to cache one.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
-[#207]: https://github.com/laughingman7743/flink-connector-gcp/issues/207
-[#209]: https://github.com/laughingman7743/flink-connector-gcp/issues/209
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119
+[#207]: https://github.com/flink-gcp/flink-connector-gcp/issues/207
+[#209]: https://github.com/flink-gcp/flink-connector-gcp/issues/209
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
 [#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058

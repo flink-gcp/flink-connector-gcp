@@ -52,8 +52,8 @@ revisited per format is how the withdrawn claim got written in the first place.
 The sibling decision is ADR-0020, reached the same way — what the load job accepts is a question
 only a load job answers.
 
-[#145]: https://github.com/laughingman7743/flink-connector-gcp/issues/145
-[#281]: https://github.com/laughingman7743/flink-connector-gcp/issues/281
-[#283]: https://github.com/laughingman7743/flink-connector-gcp/issues/283
-[#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
-[#285]: https://github.com/laughingman7743/flink-connector-gcp/issues/285
+[#145]: https://github.com/flink-gcp/flink-connector-gcp/issues/145
+[#281]: https://github.com/flink-gcp/flink-connector-gcp/issues/281
+[#283]: https://github.com/flink-gcp/flink-connector-gcp/issues/283
+[#284]: https://github.com/flink-gcp/flink-connector-gcp/issues/284
+[#285]: https://github.com/flink-gcp/flink-connector-gcp/issues/285

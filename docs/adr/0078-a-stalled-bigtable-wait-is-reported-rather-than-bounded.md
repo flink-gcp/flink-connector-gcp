@@ -154,4 +154,4 @@ callers send immediately before.
   look at `inFlightEntries`" paragraph, at zero code. Declined: it helps only a reader who already
   suspects this connector, which is precisely what the measured failure mode denies them.
 
-[#431]: https://github.com/laughingman7743/flink-connector-gcp/issues/431
+[#431]: https://github.com/flink-gcp/flink-connector-gcp/issues/431

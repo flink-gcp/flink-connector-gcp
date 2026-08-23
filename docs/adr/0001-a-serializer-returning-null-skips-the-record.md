@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-04
-- Issues: [#230](https://github.com/laughingman7743/flink-connector-gcp/issues/230)
+- Issues: [#230](https://github.com/flink-gcp/flink-connector-gcp/issues/230)
 - Modules: all connector modules
 - Current behavior: each connector's DataStream page documents `recordsSkipped` and the skip
   semantics
@@ -27,7 +27,7 @@ limitations under the License.
 
 Every serialization SPI in this repository — `BigtableSerializationSchema`,
 `CloudTasksSerializationSchema`, `PubSubSerializationSchema`, `BigQueryProtoSerializationSchema` — can
-return `null`. Before [#230](https://github.com/laughingman7743/flink-connector-gcp/issues/230)
+return `null`. Before [#230](https://github.com/flink-gcp/flink-connector-gcp/issues/230)
 the meaning was undecided: Bigtable (following `google/flink-connector-gcp`'s
 `BaseRowMutationSerializer`) skipped, while other paths could fail with a bare NPE. The issue
 offered two resolutions: define `null` as a filter, or reject it with a named message.
@@ -69,7 +69,7 @@ Three implementation rules, none re-derivable from the contract alone:
   Bigtable connector here already shipped skip semantics.
 - What the argument does **not** rest on: Kafka's javadoc, which reads *"or null if the given
   element cannot be serialized"*. That is `null` overloaded to mean *failure*, silently dropped
-  — and [#37](https://github.com/laughingman7743/flink-connector-gcp/issues/37) replaced that
+  — and [#37](https://github.com/flink-gcp/flink-connector-gcp/issues/37) replaced that
   role here with a real failure channel, so the failure reading is unavailable by construction.
 
 ## Alternatives declined
@@ -85,5 +85,5 @@ Three implementation rules, none re-derivable from the contract alone:
 `recordsSkipped` is registered by all six writer metrics classes and is the **only** thing that
 reports a skip. That is the honest cost of the contract: a serializer skipping every record
 leaves an empty destination under a green job, which no failure counter sees — the
-[#206](https://github.com/laughingman7743/flink-connector-gcp/issues/206) exposure in another
+[#206](https://github.com/flink-gcp/flink-connector-gcp/issues/206) exposure in another
 shape, and the reason the counter is not optional.

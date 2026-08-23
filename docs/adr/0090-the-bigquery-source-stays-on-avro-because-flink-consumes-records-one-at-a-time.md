@@ -217,8 +217,8 @@ hard that boundary is rather than about it moving.
   if this is re-examined, so a paid gated benchmark for a feature that does not exist would be
   maintenance for nothing.
 
-[#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
-[#393]: https://github.com/laughingman7743/flink-connector-gcp/issues/393
+[#64]: https://github.com/flink-gcp/flink-connector-gcp/issues/64
+[#393]: https://github.com/flink-gcp/flink-connector-gcp/issues/393
 [discuss]: https://www.mail-archive.com/dev@flink.apache.org/msg65824.html
 [Auron]: https://github.com/apache/auron
 [Iron Vector]: https://irontools.dev/blog/introducing-iron-vector/

@@ -62,19 +62,19 @@ A changed default, constraint, or meaning must still update its row in the same 
 
 ## Evidence
 
-[PR #214](https://github.com/laughingman7743/flink-connector-gcp/pull/214) implemented the reference pages and the first bidirectional checker.
+[PR #214](https://github.com/flink-gcp/flink-connector-gcp/pull/214) implemented the reference pages and the first bidirectional checker.
 The checker found a documented `format` key that came from Flink's `FactoryUtil` rather than the connector's own `ConfigOption` class, establishing the need for the page-side direction.
 
 The same pull request's second review found that all four initial `[exempt]` entries were dead.
 Each bulk overload was already named in the same row as its singular form, so removing the entire allowlist changed no verdict.
 That finding added the dead-entry failure in both directions.
 
-[PR #252](https://github.com/laughingman7743/flink-connector-gcp/pull/252) added synthetic checker tests and applied 16 rule-level mutants across the three pre-existing checkers.
+[PR #252](https://github.com/flink-gcp/flink-connector-gcp/pull/252) added synthetic checker tests and applied 16 rule-level mutants across the three pre-existing checkers.
 Two option-checker mutants survived the first pass because their tests could not distinguish the mutated behavior: the header control used `Property`, and the commented setter was placed where the declaration regex could never match it.
 Rewriting those controls made both tests discriminate.
 
 Issue [#328] exposed a different reach gap when `PubSubDeadLetterQueue.Builder` carried public options but matched none of the supported filename shapes.
-[PR #395](https://github.com/laughingman7743/flink-connector-gcp/pull/395) measured broader globs, found that they admitted unrelated internal builders and an optionless base interface, and chose an explicit `sources` entry plus an unmapped-public-builder failure.
+[PR #395](https://github.com/flink-gcp/flink-connector-gcp/pull/395) measured broader globs, found that they admitted unrelated internal builders and an optionless base interface, and chose an explicit `sources` entry plus an unmapped-public-builder failure.
 
 ## Alternatives declined
 
@@ -91,5 +91,5 @@ Changing only a value or its meaning remains a review obligation because the che
 
 A checker failure is resolved through the curation skill's stable ladder: correct the source or row first, use `[exempt]` or `[extra]` only for a real directional exception, and record why the entry must remain.
 
-[#89]: https://github.com/laughingman7743/flink-connector-gcp/issues/89
-[#328]: https://github.com/laughingman7743/flink-connector-gcp/issues/328
+[#89]: https://github.com/flink-gcp/flink-connector-gcp/issues/89
+[#328]: https://github.com/flink-gcp/flink-connector-gcp/issues/328

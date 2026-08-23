@@ -178,5 +178,5 @@ present as terminal because a wrapper exception sat on top of it — the precede
   one.** Message text is not contract, and this repository has already paid for message-coupled
   logic elsewhere; a service reword would silently turn job failures into dropped records.
 
-[#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
-[#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
+[#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
+[#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224

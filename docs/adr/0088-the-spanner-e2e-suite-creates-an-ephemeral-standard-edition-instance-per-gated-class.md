@@ -133,11 +133,11 @@ explicitly, and `test_a_listing_that_fails_is_not_an_empty_sweep` is what caught
   needs a second identity and an impersonation grant, and the positive path already shows the
   permission is honoured. Recorded as not done rather than left implied.
 
-[#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
-[#441]: https://github.com/laughingman7743/flink-connector-gcp/issues/441
-[#535]: https://github.com/laughingman7743/flink-connector-gcp/issues/535
-[#469]: https://github.com/laughingman7743/flink-connector-gcp/pull/469
-[#476]: https://github.com/laughingman7743/flink-connector-gcp/pull/476
+[#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
+[#441]: https://github.com/flink-gcp/flink-connector-gcp/issues/441
+[#535]: https://github.com/flink-gcp/flink-connector-gcp/issues/535
+[#469]: https://github.com/flink-gcp/flink-connector-gcp/pull/469
+[#476]: https://github.com/flink-gcp/flink-connector-gcp/pull/476
 [ADR-0044]: 0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md
 [ADR-0076]: 0076-two-spanner-statuses-are-routed-and-a-request-failure-never-is.md
 [ADR-0085]: 0085-the-spanner-batch-source-splits-by-server-planned-partition.md

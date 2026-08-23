@@ -18,9 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-15
-- Issues: [#658](https://github.com/laughingman7743/flink-connector-gcp/issues/658),
-  [#665](https://github.com/laughingman7743/flink-connector-gcp/issues/665),
-  [#704](https://github.com/laughingman7743/flink-connector-gcp/issues/704)
+- Issues: [#658](https://github.com/flink-gcp/flink-connector-gcp/issues/658),
+  [#665](https://github.com/flink-gcp/flink-connector-gcp/issues/665),
+  [#704](https://github.com/flink-gcp/flink-connector-gcp/issues/704)
 - Modules: all (documentation tooling)
 - Current behavior: [Java snippet maintenance skill](../../.agents/skills/maintain-doc-java-snippets/SKILL.md),
   [`java-snippet` shortcode](../layouts/_shortcodes/java-snippet.html)
@@ -87,13 +87,13 @@ meaning requires migration.
 
 ## Evidence
 
-On 2026-08-14, [PR #662](https://github.com/laughingman7743/flink-connector-gcp/pull/662)
+On 2026-08-14, [PR #662](https://github.com/flink-gcp/flink-connector-gcp/pull/662)
 showed that replacing a builder call with a nonexistent method failed compilation in the named
 documentation source.
 It also showed that missing, duplicate and non-exact markers failed the Hugo build with the page,
 file, tag and observed count.
 
-On 2026-08-14, [PR #697](https://github.com/laughingman7743/flink-connector-gcp/pull/697)
+On 2026-08-14, [PR #697](https://github.com/flink-gcp/flink-connector-gcp/pull/697)
 injected eleven defects across extraction, marker recognition, marker counts, ordering, empty
 regions, diagnostics and support-type exclusion.
 Every defect failed its intended synthetic fixture, and the unmodified shortcode passed the full
@@ -125,5 +125,5 @@ The validation module stays behind the `docs-snippets` Maven profile and is neve
 The synthetic fixture tree is test input, not production documentation, and the production Hugo
 configuration does not mount it into generated output.
 
-[#658]: https://github.com/laughingman7743/flink-connector-gcp/issues/658
-[#665]: https://github.com/laughingman7743/flink-connector-gcp/issues/665
+[#658]: https://github.com/flink-gcp/flink-connector-gcp/issues/658
+[#665]: https://github.com/flink-gcp/flink-connector-gcp/issues/665

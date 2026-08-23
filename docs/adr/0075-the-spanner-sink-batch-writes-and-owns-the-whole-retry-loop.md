@@ -115,6 +115,6 @@ serializer's to supply.
   interleaved children applied atomically. Deferred on [#36] with the seam already in place: the
   writer batches in groups internally, so the overload is additive.
 
-[#36]: https://github.com/laughingman7743/flink-connector-gcp/issues/36
-[#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
+[#36]: https://github.com/flink-gcp/flink-connector-gcp/issues/36
+[#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053

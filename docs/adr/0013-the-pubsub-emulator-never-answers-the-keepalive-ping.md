@@ -45,4 +45,4 @@ opening response answers the ping sent at open).
   arrived in 105 ms and 104 ms. That measurement is what makes prolonged silence on a
   subscription with a backlog abnormal rather than expected.
 
-[#244]: https://github.com/laughingman7743/flink-connector-gcp/issues/244
+[#244]: https://github.com/flink-gcp/flink-connector-gcp/issues/244

@@ -121,13 +121,13 @@ not choosing, so only the "rejected for other methods" half carries safety and o
   branch turns on a creation, and its sibling still returns, because the drain has to know whether
   to skip row-level routing.
 
-[#15]: https://github.com/laughingman7743/flink-connector-gcp/issues/15
-[#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
-[#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
-[#121]: https://github.com/laughingman7743/flink-connector-gcp/issues/121
-[#147]: https://github.com/laughingman7743/flink-connector-gcp/issues/147
-[#197]: https://github.com/laughingman7743/flink-connector-gcp/issues/197
-[#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
+[#15]: https://github.com/flink-gcp/flink-connector-gcp/issues/15
+[#54]: https://github.com/flink-gcp/flink-connector-gcp/issues/54
+[#76]: https://github.com/flink-gcp/flink-connector-gcp/issues/76
+[#121]: https://github.com/flink-gcp/flink-connector-gcp/issues/121
+[#147]: https://github.com/flink-gcp/flink-connector-gcp/issues/147
+[#197]: https://github.com/flink-gcp/flink-connector-gcp/issues/197
+[#198]: https://github.com/flink-gcp/flink-connector-gcp/issues/198
 [#827]: https://github.com/flink-gcp/flink-connector-gcp/issues/827
 [#1043]: https://github.com/flink-gcp/flink-connector-gcp/issues/1043
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051

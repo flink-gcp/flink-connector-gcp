@@ -153,6 +153,6 @@ keeps meaning "the query was billed".
   reconfiguration); any attempt to detect redeploys; and a `<job_id>`-keyed mode, which the
   legibility finding above argues against resurrecting without new evidence.
 
-[#392]: https://github.com/laughingman7743/flink-connector-gcp/issues/392
-[#477]: https://github.com/laughingman7743/flink-connector-gcp/issues/477
-[#485]: https://github.com/laughingman7743/flink-connector-gcp/issues/485
+[#392]: https://github.com/flink-gcp/flink-connector-gcp/issues/392
+[#477]: https://github.com/flink-gcp/flink-connector-gcp/issues/477
+[#485]: https://github.com/flink-gcp/flink-connector-gcp/issues/485

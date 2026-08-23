@@ -189,15 +189,15 @@ outage. `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching
 hardcoded) for symmetry with `PubSubSubscriberOptions.shutdownTimeout`. [#321] then bounded the
 DLQ's **flush**, a separate budget (ADR-0009).
 
-[#78]: https://github.com/laughingman7743/flink-connector-gcp/issues/78
-[#215]: https://github.com/laughingman7743/flink-connector-gcp/issues/215
-[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
-[#309]: https://github.com/laughingman7743/flink-connector-gcp/issues/309
-[#310]: https://github.com/laughingman7743/flink-connector-gcp/issues/310
-[#311]: https://github.com/laughingman7743/flink-connector-gcp/issues/311
-[#312]: https://github.com/laughingman7743/flink-connector-gcp/issues/312
-[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
-[#324]: https://github.com/laughingman7743/flink-connector-gcp/issues/324
-[#328]: https://github.com/laughingman7743/flink-connector-gcp/issues/328
-[#329]: https://github.com/laughingman7743/flink-connector-gcp/issues/329
+[#78]: https://github.com/flink-gcp/flink-connector-gcp/issues/78
+[#215]: https://github.com/flink-gcp/flink-connector-gcp/issues/215
+[#265]: https://github.com/flink-gcp/flink-connector-gcp/issues/265
+[#309]: https://github.com/flink-gcp/flink-connector-gcp/issues/309
+[#310]: https://github.com/flink-gcp/flink-connector-gcp/issues/310
+[#311]: https://github.com/flink-gcp/flink-connector-gcp/issues/311
+[#312]: https://github.com/flink-gcp/flink-connector-gcp/issues/312
+[#321]: https://github.com/flink-gcp/flink-connector-gcp/issues/321
+[#324]: https://github.com/flink-gcp/flink-connector-gcp/issues/324
+[#328]: https://github.com/flink-gcp/flink-connector-gcp/issues/328
+[#329]: https://github.com/flink-gcp/flink-connector-gcp/issues/329
 [ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0104: Exactly-once modes use service-native replay protection and pass a performance gate
 
 - Status: Accepted
-- Date: 2026-08-13; revised by [#596](https://github.com/laughingman7743/flink-connector-gcp/issues/596) (2026-08-14)
-- Issues: [#591](https://github.com/laughingman7743/flink-connector-gcp/issues/591),
-  [#596](https://github.com/laughingman7743/flink-connector-gcp/issues/596)
+- Date: 2026-08-13; revised by [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596) (2026-08-14)
+- Issues: [#591](https://github.com/flink-gcp/flink-connector-gcp/issues/591),
+  [#596](https://github.com/flink-gcp/flink-connector-gcp/issues/596)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: `docs/content/docs/connectors/delivery-guarantees.md`
 

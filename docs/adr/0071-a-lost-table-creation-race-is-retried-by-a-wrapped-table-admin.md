@@ -188,5 +188,5 @@ Three things not to re-derive:
   returning: a `Table` is another SDK-owned value object nobody can construct (ADR-0067), and no
   caller reads the return. The move also gave the 409-is-success rule its first unit test.
 
-[#383]: https://github.com/laughingman7743/flink-connector-gcp/issues/383
+[#383]: https://github.com/flink-gcp/flink-connector-gcp/issues/383
 [#65]: https://github.com/flink-gcp/flink-connector-gcp/issues/65
