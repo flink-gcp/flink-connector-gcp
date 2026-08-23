@@ -82,7 +82,7 @@ changes; not worth avoiding until then."""
 [internal."org.apache.flink.util.ExceptionUtils"]
 reason = """
 findThrowable in every writer's error classification (cause-chain walks in
-AppendErrorClassifier, PubSubWriter, CloudTasksWriter), plus firstOrSuppressed
+AppendErrorClassifier, PubSubWriter, CloudTasksErrorClassifier), plus firstOrSuppressed
 and rethrowException in base.lifecycle (Closers and BoundedShutdown), which is what lets a close
 failure keep its own type. Small, stable-in-practice utility; inlining the
 helpers is the fallback."""

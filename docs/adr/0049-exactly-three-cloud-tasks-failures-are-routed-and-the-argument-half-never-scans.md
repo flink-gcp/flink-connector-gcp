@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0049: Exactly three Cloud Tasks failures are routed, and the `INVALID_ARGUMENT` half never scans
 
 - Status: Accepted
-- Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209]); revised by [#1051]
-  (2026-08-23)
-- Issues: [#207], [#209], [#1051] (the [#37] series)
+- Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209]); revised by [#1051] and
+  [#1058] (2026-08-23)
+- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series)
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md` § Failed-task
   policy, § Metrics
@@ -42,9 +42,10 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
   serializer returning **null** is in neither class (ADR-0001). `ALREADY_EXISTS` on a named task
   stays success.
 - **Classification is a precedence over the whole cause chain — but only the transient half**:
-  routing takes `firstMatching(throwable, TRANSIENT_CODES) == null && code == INVALID_ARGUMENT`,
-  where `code` is the chain's first classifiable status. The transient lookup scans the whole
-  chain, so "an unstable service can never produce a dead letter" is a property of the code. The
+  `CloudTasksErrorClassifier` (`sink.writer`) owns the two code predicates. Routing takes
+  `transientCode == null && code == INVALID_ARGUMENT`. Here `code` is the chain's first
+  classifiable status; `transientCode` scans the whole chain, so "an unstable service can never
+  produce a dead letter" is a property of the code. The
   `INVALID_ARGUMENT` half deliberately does **not** scan: searching for it anywhere would drop a
   task whose outermost status is `INTERNAL` or `UNKNOWN` — the mirror image of the mistake the
   transient scan prevents. **That asymmetry was found by mutation testing** — the scanning
@@ -82,3 +83,4 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
 [#207]: https://github.com/laughingman7743/flink-connector-gcp/issues/207
 [#209]: https://github.com/laughingman7743/flink-connector-gcp/issues/209
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
+[#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058

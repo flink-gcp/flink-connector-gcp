@@ -22,7 +22,6 @@ import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
-import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
@@ -35,7 +34,6 @@ import com.google.cloud.tasks.v2.TaskName;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
-import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.FailedTask;
@@ -51,9 +49,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.PriorityQueue;
-import java.util.Set;
 
 /**
  * At-least-once writer creating one Cloud Tasks task per record.
@@ -123,13 +119,6 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     private static final Logger LOG = LoggerFactory.getLogger(CloudTasksWriter.class);
 
     private static final char[] HEX = "0123456789abcdef".toCharArray();
-
-    /** Statuses the sink retries on its main budget; a chain carrying one is never data-shaped. */
-    private static final Set<StatusCode.Code> TRANSIENT_CODES =
-            EnumSet.of(
-                    StatusCode.Code.UNAVAILABLE,
-                    StatusCode.Code.DEADLINE_EXCEEDED,
-                    StatusCode.Code.RESOURCE_EXHAUSTED);
 
     private static final String COMPLETION_MAIL = "Complete a Cloud Tasks task creation";
     private static final String FAILURE_MAIL = "Fail a Cloud Tasks task creation";
@@ -440,7 +429,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             @Nullable PendingCreate pending,
             Throwable throwable) {
         inFlight--;
-        StatusCode.Code code = statusCode(throwable);
+        StatusCode.Code code = CloudTasksErrorClassifier.statusCode(throwable);
         boolean named = !request.getTask().getName().isEmpty();
         if (code == StatusCode.Code.ALREADY_EXISTS && named) {
             // The deduplication that naming asked for: Cloud Tasks still remembers this id, so the
@@ -465,7 +454,7 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         // the chain's *first* classifiable status: an INVALID_ARGUMENT buried under an INTERNAL or
         // an UNKNOWN describes the inner call, and dropping the task on it would discard a record
         // over a server-side failure.
-        StatusCode.Code transientCode = firstMatching(throwable, TRANSIENT_CODES);
+        StatusCode.Code transientCode = CloudTasksErrorClassifier.transientCode(throwable);
         if (transientCode == null && code == StatusCode.Code.INVALID_ARGUMENT) {
             // Before the asyncError check below, deliberately: the writer is about to fail either
             // way, but this task really did fail terminally, and a dead-letter destination missing
@@ -573,36 +562,6 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
                         + attempts
                         + " attempt(s).",
                 throwable);
-    }
-
-    /**
-     * Returns the status code the failure carries — the first element of the cause chain {@link
-     * StatusCodes#codeOf} can classify — or {@code null} when no element carries one, which is
-     * treated as terminal.
-     */
-    @Nullable
-    private static StatusCode.Code statusCode(Throwable throwable) {
-        return firstMatching(throwable, null);
-    }
-
-    /**
-     * Returns the first status code in the cause chain that is one of {@code codes}, or {@code
-     * null} when the chain carries none; a null {@code codes} accepts any classifiable status.
-     *
-     * <p>Searching the chain for a <em>specific</em> set is what makes the routing decision in
-     * {@link #onCreateFailed} a precedence rather than a first-match.
-     */
-    @Nullable
-    private static StatusCode.Code firstMatching(
-            Throwable throwable, @Nullable Set<StatusCode.Code> codes) {
-        return ExceptionUtils.findThrowable(
-                        throwable,
-                        t -> {
-                            StatusCode.Code code = StatusCodes.codeOf(t);
-                            return code != null && (codes == null || codes.contains(code));
-                        })
-                .map(StatusCodes::codeOf)
-                .orElse(null);
     }
 
     @VisibleForTesting

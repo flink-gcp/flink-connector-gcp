@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0137: A cross-connector name diverges only to name a real difference
 
 - Status: Accepted
-- Date: 2026-08-23; revised by [#1051] (2026-08-23) and [#1052] (2026-08-23)
-- Issues: [#1043], [#782], [#1051], [#1052]
+- Date: 2026-08-23; revised by [#1051] (2026-08-23), [#1052] (2026-08-23), and [#1058]
+  (2026-08-23)
+- Issues: [#1043], [#782], [#1051], [#1052], [#1058]
 - Modules: all connectors
 - Current behavior: the rules in this record, with the judged divergence table appended below
   as evidence; the drift half is routed as sub-issues [#1047]–[#1053]
@@ -97,8 +98,9 @@ no DML" is Spanner's recorded write-method decision, [ADR-0075]), the SDK resour
 resource is the seam (`PubSubPublisherSink`). `AppendErrorClassifier` keeps the `AppendRows`
 family word rather than a connector prefix — its module has three write families for a
 classifier to be about, so the family word is the precise one; the connector-prefixed siblings
-(`PubSubErrorClassifier`, `BigtableErrorClassifier`, `SpannerErrorClassifier`) classify their
-module's single write family, and the read side is role-named everywhere it exists
+(`PubSubErrorClassifier`, `CloudTasksErrorClassifier`, `BigtableErrorClassifier`,
+`SpannerErrorClassifier`) classify their module's single write family, and the read side is
+role-named everywhere it exists
 (`BigtableLookupErrorClassifier`, `SpannerLookupErrorClassifier`), so neither form is
 ambiguous.
 
@@ -232,7 +234,7 @@ Concept-to-name matrix (tier: P = `@Public`, PE = `@PublicEvolving`, I = `@Inter
 | Sink options | `BufferedStreamOptions`, `DefaultStreamOptions`, `FileLoadsOptions` P | `PubSubPublisherOptions` P | `CloudTasksWriterOptions` P | `BigtableWriterOptions` P | `SpannerWriterOptions` P |
 | Serialization SPI | **`BigQueryProtoSerializer`** P | `PubSubSerializationSchema` P | `CloudTasksSerializationSchema` P | `BigtableSerializationSchema` P | `SpannerMutationSerializationSchema` P |
 | Deserialization SPI | **`BigQueryRowDeserializer`** P | `PubSubDeserializationSchema` P | — | `BigtableRowDeserializationSchema` P | `SpannerStructDeserializationSchema` P |
-| Error classifier | **`AppendErrorClassifier`** I | `PubSubErrorClassifier` I | *(none)* | `BigtableErrorClassifier` I | `SpannerErrorClassifier` I |
+| Error classifier | **`AppendErrorClassifier`** I | `PubSubErrorClassifier` I | `CloudTasksErrorClassifier` I | `BigtableErrorClassifier` I | `SpannerErrorClassifier` I |
 | Failed element | `FailedRow` P (`sink.failure`) | `FailedMessage` P | `FailedTask` P | `FailedMutation` P | `FailedMutation` P |
 | Destination type | `TableDestination` P (`sink`) | `TopicDestination` P | `QueueDestination` P | `TableDestination` P (root) | `SpannerDatabase` P (root) |
 | Source impl | `BigQueryStorageReadSource` I | `PubSubStreamingPullSource` I | — | `BigtableScanSource` I | `SpannerBatchReadSource` I |
@@ -630,6 +632,7 @@ verdict-B rules and the staleness fixes.
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
 [#1052]: https://github.com/flink-gcp/flink-connector-gcp/issues/1052
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
+[#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058
 [ADR-0014]: 0014-the-pubsub-table-layer-maps-onto-the-datastream-builders.md
 [ADR-0028]: 0028-default-stream-tuning-recovery-vs-retry-naming-eviction-and-flush-interval.md
 [ADR-0038]: 0038-metric-names-are-per-connector-inventories-in-one-shape-without-flinks-num-prefix.md
