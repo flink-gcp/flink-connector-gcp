@@ -63,6 +63,9 @@ public abstract class BigQueryProtoSerializationSchema<T> implements Serializabl
 
     private static final long serialVersionUID = 1L;
 
+    /** Creates a serialization schema. */
+    public BigQueryProtoSerializationSchema() {}
+
     /**
      * Returns the BigQuery table schema of rows written to the given destination.
      *

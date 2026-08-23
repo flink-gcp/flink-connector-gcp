@@ -271,7 +271,7 @@ public final class BigtableConnectorOptions {
 
     /**
      * A semicolon-separated union of closed-start, open-end row-key ranges, for example
-     * '[a,m);[q,)'. Either endpoint may be omitted, but not both. Backslash escapes '\\', ';', ',',
+     * '[a,m);[q,)'. Either endpoint may be omitted, but not both. Backslash escapes '\', ';', ',',
      * '[', ']', '(' and ')' inside an endpoint. The ranges are additive with 'scan.row-prefix' and
      * 'scan.row-range.*', and 'scan.row-key-encoding' controls how each endpoint is decoded.
      */

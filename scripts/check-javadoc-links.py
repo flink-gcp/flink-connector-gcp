@@ -40,7 +40,19 @@ supertype is left alone. A reference that already carries a parameter list is
 not checked against the declared signatures. And it says nothing about whether
 a reference points at the *right* member.
 
-Exit codes: 0 clean, 1 an unresolvable reference, 2 no sources to read.
+Issue #1093 adds two rule families on the same index. A type whose nearest
+annotated enclosing declaration carries ``@Public``, ``@PublicEvolving`` or
+``@Experimental`` needs type-level Javadoc, and so does every public or
+protected member it declares — methods, constructors, fields, nested types,
+implicitly-public interface members and enum constants — with implicit default
+and canonical constructors made explicit so they can carry a comment, and
+``@Override`` members as the sole exemption, since their docs inherit. And a
+``public static final ConfigOption`` whose declaration builds its description
+from ``.withDescription`` string literals must carry Javadoc equal to that
+description, so the API reference cannot drift from the option's runtime
+description. Each failure carries its repair, which is why there is no allowlist.
+
+Exit codes: 0 clean, 1 a policy failure, 2 no sources to read.
 
 Standard library only, like the other repository checkers.
 """
@@ -49,6 +61,7 @@ from __future__ import annotations
 
 import re
 import sys
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,7 +72,10 @@ MAIN_SOURCE_PATTERN = "flink-*/src/main/java*/**/*.java"
 
 PACKAGE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
 IMPORT = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;", re.MULTILINE)
-TYPE_KEYWORD = re.compile(r"\b(class|interface|enum|record|@interface)\s+(\w+)")
+# `@interface` needs its own alternative without `\b`: no word boundary exists
+# between a space and `@`, so a `\b`-anchored alternation can never match it.
+TYPE_KEYWORD = re.compile(r"(@interface|\b(?:class|interface|enum|record))\s+(\w+)")
+AT_INTERFACE = re.compile(r"@interface\b")
 MODIFIERS = frozenset(
     [
         "public",
@@ -80,11 +96,33 @@ MODIFIERS = frozenset(
 )
 ANNOTATION = re.compile(r"@\w+(?:\.\w+)*")
 IDENTIFIER = re.compile(r"\b(\w+)\s*$")
+WORD = re.compile(r"\w+")
+# The Flink API-tier annotations, in the order surface_tier() reports them.
+FLINK_ANNOTATION = "org.apache.flink.annotation"
+TIERS = ("Public", "PublicEvolving", "Experimental", "Internal")
+DOCUMENTED_TIERS = frozenset(["Public", "PublicEvolving", "Experimental"])
+OVERRIDE = re.compile(r"@(?:java\.lang\.)?Override\b")
+WITH_DESCRIPTION = re.compile(r"\.\s*withDescription\s*\(")
 # `{@link Type#member}` and `@see Type#member`, with the reference split across
 # Javadoc lines exactly as the formatter leaves it.
 REFERENCE = re.compile(
     r"(?P<tag>\{@link(?:plain)?|@see)\s+(?P<type>[\w.$]*)#(?P<member>\w+)\s*(?P<next>.)"
 )
+
+
+@dataclass
+class Member:
+    """One declared member, held to the Javadoc-presence rules."""
+
+    name: str
+    kind: str  # "method", "constructor", "field" or "enum constant"
+    visibility: str
+    ann_start: int  # where its annotations begin; Javadoc sits above this
+    decl_start: int  # after annotations, the line the report names
+    statement_end: int  # the `;` or `{` ending the declaration, initializer walked
+    overridden: bool
+    head: str  # masked modifiers-and-type text, for the ConfigOption rule
+    canonical: bool = False  # whether a record constructor declares its canonical form
 
 
 @dataclass
@@ -98,9 +136,14 @@ class JavaType:
     body_start: int
     body_end: int = -1
     outer: JavaType | None = None
+    ann_start: int = -1
+    tier: str | None = None
+    visibility: str = "package"
     fields: dict[str, str] = field(default_factory=dict)
     methods: dict[str, list[str]] = field(default_factory=dict)
     nested: dict[str, JavaType] = field(default_factory=dict)
+    members: list[Member] = field(default_factory=list)
+    record_components: tuple[str, ...] = ()
 
 
 @dataclass
@@ -153,12 +196,16 @@ def mask(source: str) -> str:
 
 
 def skip_annotations(masked: str, index: int) -> int:
-    """Step over leading annotations and whitespace of a declaration."""
+    """Step over leading annotations and whitespace of a declaration.
+
+    ``@interface`` looks like an annotation use but opens an annotation type
+    declaration; eating it would drop the type from the index entirely.
+    """
     while index < len(masked):
         while index < len(masked) and masked[index].isspace():
             index += 1
         match = ANNOTATION.match(masked, index)
-        if match is None:
+        if match is None or AT_INTERFACE.match(masked, index):
             return index
         index = match.end()
         while index < len(masked) and masked[index].isspace():
@@ -175,6 +222,46 @@ def skip_annotations(masked: str, index: int) -> int:
                         break
                 index += 1
     return index
+
+
+def tier_of(annotations: str, imports: dict[str, str]) -> str | None:
+    """The Flink API-tier annotation a declaration carries, or None.
+
+    A simple name counts only when the file imports it from
+    ``org.apache.flink.annotation``: with ``AvoidStarImport`` on, an unimported
+    ``@Experimental`` is somebody else's annotation, not a tier. An annotation
+    written after the modifiers — ``public @PublicEvolving class`` — is not
+    seen, a documented limit: the formatter always puts annotations first.
+    """
+    for name in TIERS:
+        if re.search(rf"@org\.apache\.flink\.annotation\.{name}\b", annotations):
+            return name
+        if (
+            re.search(rf"@{name}\b", annotations)
+            and imports.get(name) == f"{FLINK_ANNOTATION}.{name}"
+        ):
+            return name
+    return None
+
+
+def member_visibility(head: str, enclosing: JavaType | None) -> str:
+    """What Java gives a declaration whose modifiers say nothing.
+
+    An interface member without a modifier is public; everything else without
+    one is package-private. Enum constants never reach here — they are recorded
+    as public directly — and an enum constructor's implicit ``private`` and the
+    returned ``package`` are both off the documented surface, so the
+    distinction is not worth carrying.
+    """
+    if re.search(r"\bprivate\b", head):
+        return "private"
+    if re.search(r"\bprotected\b", head):
+        return "protected"
+    if re.search(r"\bpublic\b", head):
+        return "public"
+    if enclosing is not None and enclosing.kind in ("interface", "@interface"):
+        return "public"
+    return "package"
 
 
 def parameter_types(masked: str, start: int, end: int) -> list[str]:
@@ -249,6 +336,11 @@ def find_header(masked: str, index: int) -> tuple[int, int, int] | None:
     params_end = -1
     while index < len(masked):
         character = masked[index]
+        if depth == 0 and character == "@":
+            following = skip_annotations(masked, index)
+            if following > index:
+                index = following
+                continue
         if character == "(":
             if depth == 0 and name_end < 0:
                 name_end = index
@@ -330,6 +422,18 @@ def index_source(path: Path, text: str) -> SourceFile:
                 decl_start=start,
                 body_start=terminator,
                 outer=enclosing,
+                ann_start=index,
+                tier=tier_of(masked[index:start], imports),
+                visibility=member_visibility(
+                    masked[start : keyword.start()], enclosing
+                ),
+                record_components=(
+                    tuple(parameter_types(masked, name_end + 1, params_end))
+                    if keyword.group(1) == "record"
+                    and name_end >= 0
+                    and params_end >= 0
+                    else ()
+                ),
             )
             if enclosing is None:
                 types.append(declared)
@@ -340,101 +444,308 @@ def index_source(path: Path, text: str) -> SourceFile:
             at_declaration = False
             continue
 
-        if enclosing is not None:
-            record_member(enclosing, masked, start, name_end, params_end, terminator)
-        at_declaration = False
         # Leave a brace or a `;` for the loop above to read, so depth and the
         # next declaration position stay right; an `=` hands over to the
         # initializer walk, which stops on the `;` the loop then reads.
-        index = (
+        statement_end = (
             skip_initializer(masked, terminator)
             if masked[terminator] == "="
             else terminator
         )
+        if enclosing is not None:
+            resume = record_member(
+                enclosing,
+                masked,
+                index,
+                start,
+                name_end,
+                params_end,
+                terminator,
+                statement_end,
+            )
+            if resume is not None:
+                # An enum constant list with class bodies runs past the
+                # terminator; resuming at its end leaves the closing `;` or
+                # `}` for the loop to read, like any other declaration.
+                statement_end = resume
+        at_declaration = False
+        index = statement_end
 
     for declared, _ in stack:
         declared.body_end = len(masked)
     return SourceFile(path, text, masked, package, imports, types)
 
 
-def enum_constants(masked: str, start: int, terminator: int) -> list[str]:
-    """Every constant a single enum constant-list declaration names."""
+def constant_list_end(masked: str, index: int) -> int:
+    """The offset ending an enum constant list that opens a class body.
+
+    The declaration scan stops at the first depth-0 ``{``, which for a
+    strategy-pattern constant is its body's opening brace, not the list's end.
+    This walks on from there — over every body and argument list — to the
+    ``;`` closing the list, or to the enum body's ``}`` when the ``;`` is
+    omitted.
+    """
     depth = 0
-    current = ""
-    segments: list[str] = []
-    for character in masked[start:terminator]:
+    while index < len(masked):
+        character = masked[index]
+        if character in "([{":
+            depth += 1
+        elif character == ";" and depth == 0:
+            return index
+        elif character in ")]}":
+            if character == "}" and depth == 0:
+                return index
+            depth -= 1
+        index += 1
+    return len(masked)
+
+
+def enum_constant_list(
+    masked: str, start: int, terminator: int
+) -> list[tuple[str, int, int]] | None:
+    """The constants one declaration lists, or None when it is not the list.
+
+    Returns ``(name, ann_start, name_start)`` per constant, so each carries its
+    own Javadoc position: a comma-separated list is one declaration to the
+    scan, but every constant in it is documented on its own. A segment that is
+    anything other than annotations, an identifier, an optional argument list
+    and an optional class body — a field's type, or an initializer's
+    ``static`` — makes the declaration not a constant list.
+    """
+    boundaries: list[tuple[int, int]] = []
+    depth = 0
+    segment_start = start
+    for offset in range(start, terminator):
+        character = masked[offset]
         if character in "([{":
             depth += 1
         elif character in ")]}":
             depth -= 1
+        elif character == "," and depth == 0:
+            boundaries.append((segment_start, offset))
+            segment_start = offset + 1
+    boundaries.append((segment_start, terminator))
+
+    constants: list[tuple[str, int, int]] = []
+    for segment_start, segment_end in boundaries:
+        ann_start = segment_start
+        while ann_start < segment_end and masked[ann_start].isspace():
+            ann_start += 1
+        if ann_start == segment_end:
+            continue  # a trailing comma
+        name_start = skip_annotations(masked, ann_start)
+        identifier = WORD.match(masked, name_start)
+        if identifier is None or identifier.group(0) in MODIFIERS:
+            return None
+        rest = masked[identifier.end() : segment_end].strip()
+        if rest and not rest.startswith(("(", "{")):
+            return None
+        constants.append((identifier.group(0), ann_start, name_start))
+    return constants or None
+
+
+def record_enum_constants(
+    enclosing: JavaType,
+    constants: list[tuple[str, int, int]],
+    ann_start: int,
+    terminator: int,
+):
+    """Attribute each listed constant, with its own Javadoc position.
+
+    The first constant's annotations were already consumed by the declaration
+    scan, so its position is the declaration's own.
+    """
+    for position, (name, constant_ann, name_start) in enumerate(constants):
+        enclosing.fields.setdefault(name, "public")
+        enclosing.members.append(
+            Member(
+                name=name,
+                kind="enum constant",
+                visibility="public",
+                ann_start=ann_start if position == 0 else constant_ann,
+                decl_start=name_start,
+                statement_end=terminator,
+                overridden=False,
+                head="",
+            )
+        )
+
+
+def split_declarators(head: str) -> list[str]:
+    """Split ``a, b`` declarators at top-level commas only.
+
+    A comma inside a generic argument, ``ConfigOption<Map<String, String>>``,
+    separates type arguments, not declarators; splitting there would mint a
+    public member named ``String``. The head never reaches past the first
+    depth-0 ``=``, so ``int a = 1, b = 2;`` records only ``a`` — no main source
+    declares one. Family 2 separately rejects that shape for ``ConfigOption``
+    constants, because one shared Javadoc cannot equal two distinct runtime
+    descriptions; its repair is to split the declaration.
+    """
+    declarators: list[str] = []
+    depth = 0
+    current = ""
+    for character in head:
+        if character in "<([":
+            depth += 1
+        elif character in ">)]":
+            depth -= 1
         if character == "," and depth == 0:
-            segments.append(current)
+            declarators.append(current)
             current = ""
         else:
             current += character
-    segments.append(current)
-
-    names = []
-    for segment in segments:
-        identifier = re.match(r"\s*(\w+)", segment)
-        if identifier is not None:
-            names.append(identifier.group(1))
-    return names
+    declarators.append(current)
+    return declarators
 
 
 def record_member(
     enclosing: JavaType,
     masked: str,
+    ann_start: int,
     start: int,
     name_end: int,
     params_end: int,
     terminator: int,
-):
-    """Attribute one field, method or enum constant to its declaring type."""
+    statement_end: int,
+) -> int | None:
+    """Attribute one field, method or enum constant to its declaring type.
+
+    Returns the offset the scan should resume at when the declaration was an
+    enum constant list running past its terminator — a body-opening constant —
+    and None otherwise, where the caller's position already stands.
+    """
+    overridden = OVERRIDE.search(masked, ann_start, start) is not None
     if 0 <= name_end < terminator:
         identifier = IDENTIFIER.search(masked, start, name_end)
         if identifier is None:
-            return
+            return None
         name = identifier.group(1)
         head = masked[start:name_end].strip()
-        words = [word for word in head.split() if word not in MODIFIERS]
         if name == enclosing.simple:
+            parameters = tuple(parameter_types(masked, name_end + 1, params_end))
+            enclosing.members.append(
+                Member(
+                    name=name,
+                    kind="constructor",
+                    visibility=member_visibility(head, enclosing),
+                    ann_start=ann_start,
+                    decl_start=start,
+                    statement_end=statement_end,
+                    overridden=overridden,
+                    head=head,
+                    canonical=(
+                        enclosing.kind == "record"
+                        and parameters == enclosing.record_components
+                    ),
+                )
+            )
             return
-        if len(words) <= 1 and enclosing.kind == "enum":
-            # Enum constants with arguments, not methods: `RETRY(3), NEVER(0);`
-            # is one declaration carrying every constant. Every other member
-            # with a parameter list has a return type before its name, and a
-            # constructor left above.
-            for constant in enum_constants(masked, start, terminator):
-                enclosing.fields.setdefault(constant, "public")
-            return
+        if enclosing.kind == "enum":
+            # Enum constants with arguments, not methods: `DEFAULT, RETRY(3);`
+            # is one declaration carrying every constant. Let the full-list
+            # grammar below distinguish it from a method: checking only the
+            # text before the first `(` loses bare constants preceding the
+            # first argument-bearing one.
+            list_end = (
+                constant_list_end(masked, terminator)
+                if masked[terminator] == "{"
+                else terminator
+            )
+            constants = enum_constant_list(masked, start, list_end)
+            if constants is not None:
+                record_enum_constants(enclosing, constants, ann_start, list_end)
+                return list_end if list_end != terminator else None
         enclosing.methods.setdefault(name, []).append(
             "(" + ", ".join(parameter_types(masked, name_end + 1, params_end)) + ")"
+        )
+        enclosing.members.append(
+            Member(
+                name=name,
+                kind="method",
+                visibility=member_visibility(head, enclosing),
+                ann_start=ann_start,
+                decl_start=start,
+                statement_end=statement_end,
+                overridden=overridden,
+                head=head,
+            )
         )
         return
 
     head = masked[start:terminator].strip()
+    if head and enclosing.kind == "enum" and masked[terminator] != "=":
+        # Enum constants without arguments: `MAX_AGE, UNION` up to the `;` —
+        # or the body's closing `}`, since the `;` is optional there. A
+        # constant opening a class body — the strategy-pattern shape — is one
+        # too: its body belongs to the constant's anonymous class, not the
+        # enum, so the returned offset jumps the scan over every body to the
+        # list's end.
+        list_end = (
+            constant_list_end(masked, terminator)
+            if masked[terminator] == "{"
+            else terminator
+        )
+        constants = enum_constant_list(masked, start, list_end)
+        if constants is not None:
+            record_enum_constants(enclosing, constants, ann_start, list_end)
+            return list_end if list_end != terminator else None
     if not head or masked[terminator] == "{":
-        return
+        identifier = IDENTIFIER.search(head) if head else None
+        if (
+            enclosing.kind == "record"
+            and identifier is not None
+            and identifier.group(1) == enclosing.simple
+        ):
+            # A compact record constructor: `[modifiers] Name {` with no
+            # parameter list is the canonical constructor's shorthand — a
+            # public constructor like any other to the presence rule.
+            enclosing.members.append(
+                Member(
+                    name=identifier.group(1),
+                    kind="constructor",
+                    visibility=member_visibility(head, enclosing),
+                    ann_start=ann_start,
+                    decl_start=start,
+                    statement_end=terminator,
+                    overridden=overridden,
+                    head=head,
+                    canonical=True,
+                )
+            )
+        return None
     identifier = IDENTIFIER.search(head)
     if identifier is None:
-        return
+        return None
     words = [word for word in head.split() if word not in MODIFIERS]
     if len(words) <= 1 and enclosing.kind != "enum":
-        return
+        return None
     visibility = (
         "private"
         if re.search(r"\bprivate\b", head)
         else "protected"
         if re.search(r"\bprotected\b", head)
         else "public"
-        if re.search(r"\bpublic\b", head) or enclosing.kind in ("interface", "enum")
+        if re.search(r"\bpublic\b", head)
+        or enclosing.kind in ("interface", "@interface", "enum")
         else "package"
     )
-    for declarator in head.split(","):
+    for declarator in split_declarators(head):
         candidate = IDENTIFIER.search(declarator.strip())
         if candidate is not None:
             enclosing.fields.setdefault(candidate.group(1), visibility)
+            enclosing.members.append(
+                Member(
+                    name=candidate.group(1),
+                    kind="field",
+                    visibility=member_visibility(head, enclosing),
+                    ann_start=ann_start,
+                    decl_start=start,
+                    statement_end=statement_end,
+                    overridden=overridden,
+                    head=head,
+                )
+            )
 
 
 def all_types(source: SourceFile) -> list[JavaType]:
@@ -578,7 +889,458 @@ def flatten(body: str) -> tuple[str, list[int]]:
     return "".join(joined), offsets
 
 
-def check() -> tuple[int, list[str]]:
+def javadoc_above(source: SourceFile):
+    """A lookup for the Javadoc body sitting immediately above an offset.
+
+    "Immediately above" means nothing but whitespace between the comment's end
+    and the offset — which is the declaration's first annotation where it has
+    any, so annotations sit between the Javadoc and the declaration exactly as
+    Javadoc itself reads them.
+    """
+    comments = doc_comments(source.text)
+    ends = [end for _, end, _ in comments]
+
+    def above(ann_start: int) -> str | None:
+        position = bisect_right(ends, ann_start) - 1
+        if position < 0:
+            return None
+        _, end, body = comments[position]
+        if source.text[end:ann_start].strip():
+            return None
+        return body
+
+    return above
+
+
+def surface_tier(declared: JavaType) -> str | None:
+    """The tier putting a type's own members on the documented surface, or None.
+
+    The nearest annotated enclosing declaration decides: a nested type with its
+    own tier annotation answers for its own members, ``@Internal`` on the
+    nearest one takes the type off the surface, and an unannotated nested type
+    inherits. A type the reader cannot reach — package-private or private
+    anywhere in its enclosing chain — is not on the surface either, because the
+    generated API reference never shows it.
+    """
+    annotated = declared
+    while annotated is not None and annotated.tier is None:
+        annotated = annotated.outer
+    if annotated is None or annotated.tier not in DOCUMENTED_TIERS:
+        return None
+    scope = declared
+    while scope is not None:
+        if scope.visibility not in ("public", "protected"):
+            return None
+        scope = scope.outer
+    return annotated.tier
+
+
+def presence_problems(source: SourceFile, above, counts: Counts) -> list[str]:
+    """Rule family 1: Javadoc presence on the tier-annotated surface."""
+    problems: list[str] = []
+    for declared in sorted(all_types(source), key=lambda entry: entry.decl_start):
+        tier = surface_tier(declared)
+        if tier is None:
+            continue
+        body = above(declared.ann_start)
+        if body is not None and javadoc_text(body):
+            counts.documented += 1
+        else:
+            # An empty `/** */` — or a margin-only multiline one, which is why
+            # emptiness is judged on the rendered text — satisfies no reader;
+            # it is a distinct failure from a missing comment only in what the
+            # repair asks for.
+            missing = (
+                "has an empty Javadoc; write"
+                if body is not None
+                else "has no Javadoc; add"
+            )
+            where = (
+                f"{relative(source.path)}:{line_at(source.text, declared.decl_start)}"
+            )
+            problems.append(
+                f"{where}: @{tier} {declared.kind} '{declared.simple}' {missing} "
+                f"a type-level comment above its annotations."
+            )
+        constructors = [
+            member for member in declared.members if member.kind == "constructor"
+        ]
+        has_implicit_constructor = (declared.kind == "class" and not constructors) or (
+            declared.kind == "record"
+            and not any(member.canonical for member in constructors)
+        )
+        if has_implicit_constructor:
+            where = (
+                f"{relative(source.path)}:{line_at(source.text, declared.decl_start)}"
+            )
+            problems.append(
+                f"{where}: {declared.visibility} {declared.kind} "
+                f"'{declared.simple}' exposes an implicit constructor with no "
+                "Javadoc; declare it explicitly and add one."
+            )
+        for member in declared.members:
+            if member.visibility not in ("public", "protected") or member.overridden:
+                continue
+            body = above(member.ann_start)
+            if body is not None and javadoc_text(body):
+                counts.documented += 1
+                continue
+            line = line_at(source.text, member.decl_start)
+            display = (
+                f"{member.name}()"
+                if member.kind in ("method", "constructor")
+                else member.name
+            )
+            missing = (
+                "has an empty Javadoc; write one"
+                if body is not None
+                else "has no Javadoc; add one"
+            )
+            description = None
+            if member.kind == "field" and member.visibility == "public":
+                option = declares_config_option(member.head)
+                constant = option and (
+                    (
+                        re.search(r"\bstatic\b", member.head)
+                        and re.search(r"\bfinal\b", member.head)
+                    )
+                    or declared.kind in ("interface", "@interface")
+                )
+                if constant:
+                    description = literal_description(source, member)
+            if description is not None:
+                missing += f' equal to its withDescription text "{clip(description)}"'
+            exemption = (
+                " (an @Override member inherits its docs and is exempt)"
+                if member.kind == "method"
+                else ""
+            )
+            problems.append(
+                f"{relative(source.path)}:{line}: {member.visibility} "
+                f"{member.kind} '{display}' of @{tier} type '{declared.simple}' "
+                f"{missing}{exemption}."
+            )
+    return problems
+
+
+def matching_paren(masked: str, open_paren: int) -> int:
+    """The offset of the ``)`` closing the ``(`` at ``open_paren``."""
+    depth = 0
+    for offset in range(open_paren, len(masked)):
+        if masked[offset] == "(":
+            depth += 1
+        elif masked[offset] == ")":
+            depth -= 1
+            if depth == 0:
+                return offset
+    return len(masked)
+
+
+JAVA_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "b": "\b",
+    "f": "\f",
+    "s": " ",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+}
+
+
+def unescape(literal: str) -> str:
+    """A Java string literal's content with its escape sequences decoded.
+
+    An escape this does not decode is kept literally, backslash included,
+    rather than guessed at or crashed on — a malformed ``\\uZZZZ`` would not
+    compile, but the checker also reads trees that do not compile yet. Octal
+    escapes are not decoded; no main source uses one.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(literal):
+        character = literal[index]
+        if character == "\\" and index + 1 < len(literal):
+            following = literal[index + 1]
+            if following == "u" and index + 6 <= len(literal):
+                try:
+                    out.append(chr(int(literal[index + 2 : index + 6], 16)))
+                    index += 6
+                    continue
+                except ValueError:
+                    pass
+            decoded = JAVA_ESCAPES.get(following)
+            if decoded is None:
+                out.append(character)
+                index += 1
+                continue
+            out.append(decoded)
+            index += 2
+        else:
+            out.append(character)
+            index += 1
+    return "".join(out)
+
+
+def string_literal_expression(text: str, start: int, end: int) -> list[str] | None:
+    """Raw literals when an expression contains only strings, ``+`` and parentheses."""
+    index = start
+
+    def skip_trivia():
+        nonlocal index
+        while index < end:
+            if text[index].isspace():
+                index += 1
+            elif text.startswith("//", index):
+                newline = text.find("\n", index + 2, end)
+                index = end if newline < 0 else newline + 1
+            elif text.startswith("/*", index):
+                terminator = text.find("*/", index + 2, end)
+                index = end if terminator < 0 else terminator + 2
+            else:
+                return
+
+    def expression() -> list[str] | None:
+        nonlocal index
+        values = term()
+        if values is None:
+            return None
+        while True:
+            skip_trivia()
+            if index >= end or text[index] != "+":
+                return values
+            index += 1
+            following = term()
+            if following is None:
+                return None
+            values.extend(following)
+
+    def term() -> list[str] | None:
+        nonlocal index
+        skip_trivia()
+        if text.startswith('"""', index):
+            stop = skip_text_block(text, index)
+            if stop > end:
+                return None
+            value = text[index + 3 : stop - 3]
+            index = stop
+            return [value]
+        if index < end and text[index] == '"':
+            stop = skip_quoted(text, index, '"')
+            if stop > end:
+                return None
+            value = text[index + 1 : stop - 1]
+            index = stop
+            return [value]
+        if index < end and text[index] == "(":
+            index += 1
+            values = expression()
+            skip_trivia()
+            if values is None or index >= end or text[index] != ")":
+                return None
+            index += 1
+            return values
+        return None
+
+    literals = expression()
+    skip_trivia()
+    return literals if literals is not None and index == end else None
+
+
+def javadoc_text(body: str) -> str:
+    """A Javadoc comment's prose with only the comment margin removed.
+
+    The margin is a leading ``*`` followed by a space, or a bare ``*`` line.
+    A content-leading ``*`` — ``*.googleapis.com``, say — is prose, not margin,
+    and stays.
+    """
+    lines: list[str] = []
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped == "*":
+            stripped = ""
+        elif stripped.startswith("* "):
+            stripped = stripped[2:]
+        lines.append(stripped)
+    return " ".join(" ".join(lines).split())
+
+
+def literal_description(source: SourceFile, member: Member) -> str | None:
+    """The description a constant's statement builds from string literals.
+
+    Returns the concatenated, unescaped, whitespace-normalized text, or None
+    when the statement carries no ``withDescription`` call or its argument is
+    not built from string literals alone — a ``Description`` object has no one
+    flat text to hold the Javadoc to. The statement's end was found with a
+    string-aware scan, so a description containing ``;`` does not end it.
+    """
+    found = None
+    for candidate in WITH_DESCRIPTION.finditer(
+        source.masked, member.decl_start, member.statement_end
+    ):
+        found = candidate
+    if found is None:
+        return None
+    open_paren = found.end() - 1
+    close = matching_paren(source.masked, open_paren)
+    literals = string_literal_expression(source.text, open_paren + 1, close)
+    if not literals:
+        return None
+    return " ".join("".join(unescape(literal) for literal in literals).split())
+
+
+def has_multiple_initialized_declarators(source: SourceFile, member: Member) -> bool:
+    """Whether a field initializer is followed by another top-level declarator."""
+    equals = source.masked.find("=", member.decl_start, member.statement_end)
+    if equals < 0:
+        return False
+    depth = 0
+    for character in source.masked[equals + 1 : member.statement_end]:
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            return True
+    return False
+
+
+def clip(text: str, limit: int = 100) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def divergence_clips(javadoc: str, description: str) -> tuple[str, str]:
+    """Both texts clipped to a window around their first difference.
+
+    A clipped head alone can show two identical-looking strings when the
+    difference sits past the clip, which tells the reader nothing; the window
+    starts shortly before the first differing character instead.
+    """
+    divergence = next(
+        (
+            offset
+            for offset, (ours, theirs) in enumerate(zip(javadoc, description))
+            if ours != theirs
+        ),
+        min(len(javadoc), len(description)),
+    )
+    start = max(0, divergence - 40)
+
+    def window(text: str) -> str:
+        return ("..." if start else "") + clip(text[start:])
+
+    return window(javadoc), window(description)
+
+
+def without_annotations(head: str) -> str:
+    """A declaration head with type-use annotations replaced by whitespace."""
+    stripped = list(head)
+    index = 0
+    while found := ANNOTATION.search(head, index):
+        end = found.end()
+        while end < len(head) and head[end].isspace():
+            end += 1
+        if end < len(head) and head[end] == "(":
+            end = matching_paren(head, end) + 1
+        stripped[found.start() : end] = " " * (end - found.start())
+        index = end
+    return "".join(stripped)
+
+
+def declares_config_option(head: str) -> bool:
+    """True when the field's declared type is itself ``ConfigOption``.
+
+    A container of options — ``List<ConfigOption<?>> ALL`` — carries the name
+    only inside a type argument; a ``withDescription`` in its initializer
+    belongs to the nested options, not to the field, so comparing the field's
+    Javadoc against it would be a false failure. The first non-modifier word
+    of the head is the declared type; a dotted qualification is stripped, so
+    the fully qualified spelling counts too, while a type merely *containing*
+    the name — ``MyConfigOptionHolder`` — does not.
+    """
+    for word in without_annotations(head).split():
+        if word in MODIFIERS:
+            continue
+        base = word.split("<", 1)[0]
+        return base.rsplit(".", 1)[-1] == "ConfigOption"
+    return False
+
+
+def option_description_problems(source: SourceFile, above, counts: Counts) -> list[str]:
+    """Rule family 2: a ConfigOption's Javadoc equals its withDescription text."""
+    problems: list[str] = []
+    for declared in sorted(all_types(source), key=lambda entry: entry.decl_start):
+        for member in declared.members:
+            if member.kind != "field" or member.visibility != "public":
+                continue
+            if not declares_config_option(member.head):
+                continue
+            constant = (
+                re.search(r"\bstatic\b", member.head)
+                and re.search(r"\bfinal\b", member.head)
+            ) or declared.kind in ("interface", "@interface")
+            if not constant:
+                continue
+            if has_multiple_initialized_declarators(source, member):
+                where = (
+                    f"{relative(source.path)}:{line_at(source.text, member.decl_start)}"
+                )
+                problems.append(
+                    f"{where}: ConfigOption declaration starting at '{member.name}' "
+                    "has multiple declarators; split each constant into its own "
+                    "declaration so each Javadoc can equal its withDescription text."
+                )
+                continue
+            description = literal_description(source, member)
+            if description is None:
+                continue
+            body = above(member.ann_start)
+            if body is not None and not javadoc_text(body):
+                # An empty comment is no more a description than none at all.
+                body = None
+            if body is None:
+                if surface_tier(declared) is None:
+                    # On the tier-annotated surface the presence rule already
+                    # asks for the comment; off it, this rule does.
+                    where = (
+                        f"{relative(source.path)}:"
+                        f"{line_at(source.text, member.decl_start)}"
+                    )
+                    problems.append(
+                        f"{where}: ConfigOption '{member.name}' has no Javadoc; "
+                        f"add one equal to its withDescription text "
+                        f'"{clip(description)}".'
+                    )
+                continue
+            javadoc = javadoc_text(body)
+            if javadoc == description:
+                counts.options += 1
+            else:
+                shown_javadoc, shown_description = divergence_clips(
+                    javadoc, description
+                )
+                where = (
+                    f"{relative(source.path)}:{line_at(source.text, member.decl_start)}"
+                )
+                problems.append(
+                    f"{where}: make the Javadoc of '{member.name}' equal to its "
+                    f'withDescription text; the Javadoc reads "{shown_javadoc}" '
+                    f'but withDescription says "{shown_description}".'
+                )
+    return problems
+
+
+@dataclass
+class Counts:
+    """What the summary line reports when every rule holds."""
+
+    references: int = 0
+    documented: int = 0
+    options: int = 0
+
+
+def check() -> tuple[Counts, list[str]]:
     paths = sorted(ROOT.glob(MAIN_SOURCE_PATTERN))
     if not paths:
         raise FileNotFoundError(f"{MAIN_SOURCE_PATTERN} matched no Java sources.")
@@ -590,7 +1352,7 @@ def check() -> tuple[int, list[str]]:
             by_qualified[declared.qualified] = declared
 
     problems: list[str] = []
-    checked = 0
+    counts = Counts()
     for source in sources:
         for start, end, body in doc_comments(source.text):
             context = enclosing_type(source, start, end)
@@ -606,7 +1368,7 @@ def check() -> tuple[int, list[str]]:
                 if target is None:
                     continue
                 overloads = target.methods.get(member)
-                checked += 1
+                counts.references += 1
                 line = line_at(source.text, start + 3 + offsets[match.start()])
                 shown = (
                     f"{match.group('type')}#{member}"
@@ -641,12 +1403,16 @@ def check() -> tuple[int, list[str]]:
                         f"links whichever overload it picks first. Name the one meant: "
                         f"{listed}."
                     )
-    return checked, problems
+    for source in sources:
+        above = javadoc_above(source)
+        problems.extend(presence_problems(source, above, counts))
+        problems.extend(option_description_problems(source, above, counts))
+    return counts, problems
 
 
 def main() -> int:
     try:
-        checked, problems = check()
+        counts, problems = check()
     except (OSError, FileNotFoundError) as error:
         print(f"Could not read the Java sources: {error}", file=sys.stderr)
         return 2
@@ -655,13 +1421,16 @@ def main() -> int:
         for problem in problems:
             print(problem, file=sys.stderr)
         print(
-            f"{len(problems)} Javadoc references cannot resolve to what they name.",
+            f"{len(problems)} Javadoc problems; every message above names its repair.",
             file=sys.stderr,
         )
         return 1
 
     print(
-        f"{checked} parameterless Javadoc member references reach a member they can name."
+        f"{counts.references} parameterless Javadoc member references reach a member "
+        f"they can name; {counts.documented} tier-annotated declarations carry "
+        f"Javadoc; {counts.options} ConfigOption Javadocs equal their "
+        f"withDescription text."
     )
     return 0
 

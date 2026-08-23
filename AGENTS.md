@@ -76,6 +76,10 @@ green; use the clean-state procedures in that guide for such changes.
   not report. Only a public or protected field is linkable at all; where the sentence means
   internal state, write `{@code member}` rather than a link. `just check-javadoc-links` holds both,
   and its message carries the repair.
+- Every public or protected member of a `@Public`/`@PublicEvolving`/`@Experimental` type carries
+  Javadoc (make an implicit default or canonical constructor explicit; `@Override` inherits;
+  ADR-0143), and a `ConfigOption` constant's Javadoc equals its `withDescription` text. The same
+  checker holds both, with no allowlist — the failure carries the repair.
 - Option and metric inventories belong only in their reference/DataStream tables; use the matching
   `curate-*` skill when a checker fails.
 - Module `README.md` files are overviews: status table, minimal sample, docs link, and provenance.
