@@ -33,7 +33,7 @@ page, linked from each section.
 | [BigQuery]({{< relref "docs/examples/bigquery" >}}) | A table per day from the event timestamp, both exactly-once write methods and how to redeploy them, table auto-creation, the emulator |
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | A topic per record, topic and subscription auto-creation, the emulator |
 | [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
-| [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Several mutations per record, a table per day, skipping records, dropping bad rows, reading a key range, filtering on the server, the emulator |
+| [Bigtable]({{< relref "docs/examples/bigtable" >}}) | SQL scans, lookup joins, Change Streams and upsert pipelines; several mutations per record, dynamic tables, skipping and dropping records, bounded and filtered reads, application profiles and the emulator |
 | [Spanner]({{< relref "docs/examples/spanner" >}}) | Several tables from one stream, deletes, skipping records, dropping refused mutations, tuning the batch, the emulator |
 
 Two things cut across most of them, and are stated once here rather than five times.
