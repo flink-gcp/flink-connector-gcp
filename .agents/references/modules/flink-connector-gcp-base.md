@@ -31,6 +31,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 ## `base.metrics` and metric naming (`docs/adr/0037`, `0038`)
 
+- `MetricValues.elapsedMillis` clamps equal or future values to zero and saturates subtraction
+  overflow at `Long.MAX_VALUE`, so connector lag and health gauges share one boundary policy.
 - `ErrorClassCounters` and `DestinationMetrics` are **task-thread only** (plain counters); a
   connector counting from a callback thread must not reuse them. Entries are never removed —
   Flink cannot unregister a metric.

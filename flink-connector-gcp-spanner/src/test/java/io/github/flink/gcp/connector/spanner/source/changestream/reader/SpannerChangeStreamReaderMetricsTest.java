@@ -21,7 +21,6 @@ import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.runtime.metrics.groups.InternalSourceReaderMetricGroup;
 
-import io.github.flink.gcp.connector.spanner.SpannerMetricValues;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import org.junit.jupiter.api.Test;
@@ -132,13 +131,6 @@ class SpannerChangeStreamReaderMetricsTest {
         assertThat(gauge("missedHeartbeatIntervals")).isEqualTo(0L);
         now.set(10_199);
         assertThat(gauge("missedHeartbeatIntervals")).isEqualTo(1L);
-    }
-
-    @Test
-    void elapsedTimeClampsFutureValuesAndSaturatesOverflow() {
-        assertThat(SpannerMetricValues.elapsedMillis(100, 200)).isZero();
-        assertThat(SpannerMetricValues.elapsedMillis(Long.MAX_VALUE, Long.MIN_VALUE))
-                .isEqualTo(Long.MAX_VALUE);
     }
 
     private long counter(String name) {

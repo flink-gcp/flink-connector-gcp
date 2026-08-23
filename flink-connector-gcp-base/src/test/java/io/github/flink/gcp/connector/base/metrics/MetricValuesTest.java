@@ -14,18 +14,29 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.bigtable;
+package io.github.flink.gcp.connector.base.metrics;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class BigtableMetricValuesTest {
+/** Tests for {@link MetricValues}. */
+class MetricValuesTest {
 
     @Test
-    void elapsedMillisClampsClockSkewAndOverflow() {
-        assertThat(BigtableMetricValues.elapsedMillis(10, 11)).isZero();
-        assertThat(BigtableMetricValues.elapsedMillis(Long.MAX_VALUE, Long.MIN_VALUE))
+    void elapsedMillisReturnsTheAdvancingDifference() {
+        assertThat(MetricValues.elapsedMillis(11, 10)).isEqualTo(1);
+    }
+
+    @Test
+    void elapsedMillisClampsEqualAndFutureValues() {
+        assertThat(MetricValues.elapsedMillis(10, 10)).isZero();
+        assertThat(MetricValues.elapsedMillis(10, 11)).isZero();
+    }
+
+    @Test
+    void elapsedMillisSaturatesOverflow() {
+        assertThat(MetricValues.elapsedMillis(Long.MAX_VALUE, Long.MIN_VALUE))
                 .isEqualTo(Long.MAX_VALUE);
     }
 }
