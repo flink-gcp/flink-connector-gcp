@@ -33,7 +33,7 @@ import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreat
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStream;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.apache.avro.generic.GenericDatumReader;
 import org.apache.avro.generic.GenericRecord;
@@ -114,7 +114,7 @@ class BigQuerySourceRealGcpITCase {
                                 BigQuerySource.<GenericRecord>builder()
                                         .table(RealBigQuery.destination(TABLE))
                                         .deserializer(
-                                                BigQueryRowDeserializer.genericRecord(
+                                                BigQueryRowDeserializationSchema.genericRecord(
                                                         READER_SCHEMA))
                                         .build(),
                                 WatermarkStrategy.noWatermarks(),

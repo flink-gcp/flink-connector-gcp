@@ -139,7 +139,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         BigQuerySourceBuilder<RowData> builder =
                 BigQuerySource.<RowData>builder()
                         .deserializer(
-                                new RowDataDeserializer(
+                                new RowDataDeserializationSchema(
                                         physicalRowType, projectedFields, producedType))
                         .selectedFields(selectedFields());
         if (table != null) {

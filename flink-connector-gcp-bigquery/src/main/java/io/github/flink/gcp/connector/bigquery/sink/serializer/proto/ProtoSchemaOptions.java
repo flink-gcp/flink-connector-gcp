@@ -180,7 +180,7 @@ public final class ProtoSchemaOptions implements Serializable {
      * Returns whether the given field is mapped to a BigQuery {@code JSON} column <em>by this
      * configuration</em>. A {@code Struct}, {@code Value} or {@code ListValue} field becomes a
      * {@code JSON} column with no configuration at all, and is not reported here; {@code
-     * BigQueryProtoSerializer#getTableSchema} is the derived truth.
+     * BigQueryProtoSerializationSchema#getTableSchema} is the derived truth.
      *
      * <p>The configured path and every configured field option are consulted, and a field selected
      * by any of them is a JSON column (see {@link #carriesAnyOption} for what an option match
@@ -463,7 +463,7 @@ public final class ProtoSchemaOptions implements Serializable {
          * <em>not</em> an error — one configuration is meant to serve every message type a job
          * writes, and a message legitimately need not have geography columns — so a mistyped number
          * yields {@code STRING} columns instead of failing. Check the outcome with {@code
-         * BigQueryProtoSerializer#getTableSchema}.
+         * BigQueryProtoSerializationSchema#getTableSchema}.
          *
          * @param extensionNumber the extension number of the option within {@code
          *     google.protobuf.FieldOptions}
@@ -499,7 +499,7 @@ public final class ProtoSchemaOptions implements Serializable {
          * — one configuration is meant to serve every message type a job writes, and a message
          * legitimately need not have JSON columns — so a mistyped number yields {@code STRING} or
          * {@code STRUCT} columns instead of failing. Check the outcome with {@code
-         * BigQueryProtoSerializer#getTableSchema}.
+         * BigQueryProtoSerializationSchema#getTableSchema}.
          *
          * <p>Additive, like {@link #jsonFieldPath}. Registering a number that {@link
          * #jsonFieldOption} already supplied a name for keeps the name: an unnamed entry beside a

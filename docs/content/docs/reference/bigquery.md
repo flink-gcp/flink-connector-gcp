@@ -224,7 +224,7 @@ committables naming it change.
 
 ## `ProtoSchemaOptions`
 
-Passed to `ProtoMessageSerializer.of(...)`. Everything configured is unioned, so a field selected
+Passed to `ProtoMessageSerializationSchema.of(...)`. Everything configured is unioned, so a field selected
 any of these ways gets the column type. See [Protobuf
 messages]({{< relref "docs/connectors/datastream/bigquery" >}}#protobuf-messages),
 [JSON columns]({{< relref "docs/connectors/datastream/bigquery" >}}#json-columns) and
@@ -246,7 +246,7 @@ the number alone cannot tell your annotation from an unrelated one at the same n
 
 ## `AvroSchemaOptions`
 
-Passed to `AvroRecordSerializer.of(...)`. The two markers exist because Avro has no standard JSON
+Passed to `AvroRecordSerializationSchema.of(...)`. The two markers exist because Avro has no standard JSON
 logical type and nothing that says "this string is a geometry"; there is no annotation-driven form,
 because Avro has no field-option mechanism to key off. See
 [Avro records]({{< relref "docs/connectors/datastream/bigquery" >}}#avro-records).
@@ -257,9 +257,9 @@ because Avro has no field-option mechanism to key off. See
 | `jsonFieldPath` / `jsonFieldPaths` | no JSON columns | Maps the string field at a dotted path to a `JSON` column |
 | `geographyFieldPath` / `geographyFieldPaths` | no geography columns | Maps the string field at a dotted path to a `GEOGRAPHY` column |
 
-## `JsonDocumentSerializerOptions`
+## `JsonDocumentOptions`
 
-Passed to `JsonDocumentSerializer.of(...)`. There is deliberately no nullability option here —
+Passed to `JsonDocumentSerializationSchema.of(...)`. There is deliberately no nullability option here —
 you supply the schema, so a `REQUIRED` column in it is your own statement. See
 [JSON records]({{< relref "docs/connectors/datastream/bigquery" >}}#json-records).
 

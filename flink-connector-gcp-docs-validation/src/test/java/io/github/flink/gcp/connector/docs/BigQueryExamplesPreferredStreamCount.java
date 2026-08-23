@@ -20,7 +20,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -32,7 +32,7 @@ final class BigQueryExamplesPreferredStreamCount {
         // tag::bigquery-examples-preferred-stream-count[]
         BigQuerySource.<GenericRecord>builder()
                 .table(TableDestination.of("my-project", "my_dataset", "events"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(readerSchema))
                 .preferredMinStreamCount(3 * env.getParallelism())
                 .build();
         // end::bigquery-examples-preferred-stream-count[]

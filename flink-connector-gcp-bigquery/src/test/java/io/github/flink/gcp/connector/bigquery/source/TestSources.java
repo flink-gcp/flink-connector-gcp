@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.source;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.generic.GenericRecord;
 
 import java.util.function.UnaryOperator;
@@ -59,7 +59,9 @@ public final class TestSources {
         BigQuerySourceBuilder<GenericRecord> builder =
                 BigQuerySource.<GenericRecord>builder()
                         .table(TABLE)
-                        .deserializer(BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON))
+                        .deserializer(
+                                BigQueryRowDeserializationSchema.genericRecord(
+                                        TestRows.SCHEMA_JSON))
                         // The builder creates this source's real clients, which would demand
                         // application-default credentials on a machine that has them and fail in CI
                         // on one that does not. The endpoint is never connected to.
@@ -89,7 +91,9 @@ public final class TestSources {
                 BigQuerySource.<GenericRecord>builder()
                         .query(QUERY)
                         .parentProject(TABLE.getProject())
-                        .deserializer(BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON))
+                        .deserializer(
+                                BigQueryRowDeserializationSchema.genericRecord(
+                                        TestRows.SCHEMA_JSON))
                         // Both endpoints, for the reason the table configuration sets one: this
                         // source builds a REST client as well, and it would demand
                         // application-default credentials. Neither is ever connected to.

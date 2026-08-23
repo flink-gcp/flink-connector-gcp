@@ -26,7 +26,7 @@ limitations under the License.
 ## Context
 
 Every serialization SPI in this repository — `BigtableSerializationSchema`,
-`CloudTasksSerializationSchema`, `PubSubSerializationSchema`, `BigQueryProtoSerializer` — can
+`CloudTasksSerializationSchema`, `PubSubSerializationSchema`, `BigQueryProtoSerializationSchema` — can
 return `null`. Before [#230](https://github.com/laughingman7743/flink-connector-gcp/issues/230)
 the meaning was undecided: Bigtable (following `google/flink-connector-gcp`'s
 `BaseRowMutationSerializer`) skipped, while other paths could fail with a bare NPE. The issue

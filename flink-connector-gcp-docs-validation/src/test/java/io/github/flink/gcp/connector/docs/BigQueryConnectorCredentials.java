@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.docs;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.docs.BigQueryDocumentationTypes.MyEvent;
 import io.github.flink.gcp.connector.docs.BigQueryDocumentationTypes.MyEventProtoSerializer;
 import org.apache.avro.generic.GenericRecord;
@@ -42,7 +42,7 @@ final class BigQueryConnectorCredentials {
         // tag::bigquery-connector-credentials-source[]
         BigQuerySource.<GenericRecord>builder()
                 .table(TableDestination.of("my-project", "my_dataset", "events"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(schemaJson))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(schemaJson))
                 .serviceAccountKeyFile("/var/run/secrets/bigquery/key.json")
                 .build();
         // end::bigquery-connector-credentials-source[]

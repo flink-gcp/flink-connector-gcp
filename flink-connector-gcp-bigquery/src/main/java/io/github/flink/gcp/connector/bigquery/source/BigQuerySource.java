@@ -25,10 +25,10 @@ import org.apache.flink.annotation.Public;
  * pipeline and finishes once the table has been read, which is what a dimension-table join needs.
  *
  * <p>Rows arrive as Avro and are handed to a {@link
- * io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer}, which converts
- * each one into zero or more non-null records through a collector. Collecting nothing skips the
- * row. Column projection and row filtering are applied by BigQuery when the read session is
- * created, so what they exclude is neither transferred nor billed.
+ * io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema}, which
+ * converts each one into zero or more non-null records through a collector. Collecting nothing
+ * skips the row. Column projection and row filtering are applied by BigQuery when the read session
+ * is created, so what they exclude is neither transferred nor billed.
  *
  * <p>A read through this API is charged for the bytes BigQuery scans to serve it, unlike the sink's
  * {@code FILE_LOADS} write path, which is free.
@@ -38,7 +38,7 @@ import org.apache.flink.annotation.Public;
  * Source<GenericRecord, ?, ?> source =
  *         BigQuerySource.<GenericRecord>builder()
  *                 .table(TableDestination.of("my-project", "my_dataset", "my_table"))
- *                 .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+ *                 .deserializer(BigQueryRowDeserializationSchema.genericRecord(schema))
  *                 .rowRestriction("state = 'CA'")
  *                 .build();
  *

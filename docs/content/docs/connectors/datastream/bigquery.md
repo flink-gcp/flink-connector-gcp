@@ -188,7 +188,7 @@ assembled.
 
 API notes:
 
-- `BigQueryProtoSerializer` is an abstract class exposing `getDescriptor(TableDestination)` in
+- `BigQueryProtoSerializationSchema` is an abstract class exposing `getDescriptor(TableDestination)` in
   addition to `serialize`, so the sink can derive table/stream schemas *before* the first record
   of a destination (table auto-creation, write-stream and load-job schemas). Protobuf
   `Descriptor`s are not Java-serializable — obtain them statically or lazily, don't store them in
@@ -206,14 +206,14 @@ API notes:
   cache and reuse `TableDestination` instances. A deterministic record-specific routing failure
   can return `UnroutableRecord.of(payloadBytes, reason)` for the configured failure handler. A
   bare `null` or an unexpected resolver exception is always fatal.
-- `ProtoMessageSerializer.of(MyMessage.class)` is the built-in serializer for records that
+- `ProtoMessageSerializationSchema.of(MyMessage.class)` is the built-in serializer for records that
   already are protobuf messages. The BigQuery schema is derived from the message descriptor; see
   [Protobuf messages](#protobuf-messages) for the type mapping and for `ProtoSchemaOptions`.
-- `AvroRecordSerializer.of(schema)` is the built-in serializer for Avro records — both
+- `AvroRecordSerializationSchema.of(schema)` is the built-in serializer for Avro records — both
   `GenericRecord` and generated `SpecificRecord` streams, since it accepts `IndexedRecord`. The
   BigQuery schema is derived from the Avro writer schema; see [Avro records](#avro-records) for
   the type mapping and for `AvroSchemaOptions`.
-- `JsonDocumentSerializer.of(schema)` is the built-in serializer for records that are JSON documents, as
+- `JsonDocumentSerializationSchema.of(schema)` is the built-in serializer for records that are JSON documents, as
   text. JSON carries no schema, so the destination schema is supplied rather than derived; see
   [JSON records](#json-records).
 - `TableDestination` is pure table identity (`equals`/`hashCode` over project/dataset/table);
@@ -229,8 +229,8 @@ descriptor and row bytes unchanged and invokes no additional provider unless the
 independently configured CDC feature decorates the row with its write-only metadata.
 
 All three built-in serializers reach this common protobuf boundary, so additional fields work with
-`ProtoMessageSerializer`, `AvroRecordSerializer` and `JsonDocumentSerializer`, as well as custom
-`BigQueryProtoSerializer` implementations.
+`ProtoMessageSerializationSchema`, `AvroRecordSerializationSchema` and `JsonDocumentSerializationSchema`, as well as custom
+`BigQueryProtoSerializationSchema` implementations.
 The value provider receives the original input element: a protobuf message, an `IndexedRecord`, a
 JSON `String` or the custom serializer's input type.
 
@@ -422,7 +422,7 @@ nullable" is just not asking for the constraint.
 
 ## Protobuf messages
 
-`ProtoMessageSerializer` derives the BigQuery schema from the message descriptor and rewrites each
+`ProtoMessageSerializationSchema` derives the BigQuery schema from the message descriptor and rewrites each
 message into the protobuf row the Storage Write API accepts.
 
 | Protobuf | BigQuery |
@@ -749,7 +749,7 @@ supplied schema may contain is a separate question — `RANGE` it rejects outrig
 
 ## Avro records
 
-`AvroRecordSerializer` writes Avro records without a protobuf definition in sight. It takes
+`AvroRecordSerializationSchema` writes Avro records without a protobuf definition in sight. It takes
 one Avro writer schema for the whole job — as a `Schema` or as its JSON text, for jobs that read it
 from a schema registry or a configuration option — derives the BigQuery schema from it, and
 rewrites each record into the protobuf row the Storage Write API accepts.
@@ -844,7 +844,7 @@ BigQuery cannot store without losing information — `timestamp-nanos`, `local-t
 `duration`, `big-decimal`, and `uuid` on a `fixed`. A logical type Avro itself rejects as invalid is
 dropped by its parser, so the field lands on its base type.
 
-"Job start" is literal: the schema is derived when `AvroRecordSerializer.of(...)` is called, so a
+"Job start" is literal: the schema is derived when `AvroRecordSerializationSchema.of(...)` is called, so a
 mapping problem is thrown where the pipeline is built. Deferring it to the first record would put it
 inside the sink's per-record failure handling, where a log-and-drop or DLQ policy would swallow one
 misconfiguration once per record instead of failing the job.
@@ -862,14 +862,14 @@ A null array and an empty one are indistinguishable once written: `["null", arra
 `REPEATED` column, and BigQuery has no NULL array to map the difference onto.
 
 **Cost.** Conversion is one pass over each record, reading Avro values and writing protobuf ones.
-Note that a protobuf stream is not free either — `ProtoMessageSerializer` also rebuilds every record
+Note that a protobuf stream is not free either — `ProtoMessageSerializationSchema` also rebuilds every record
 into the row descriptor's shape, since the Storage Write API wants BigQuery's column layout rather
 than your message's — but it starts from protobuf accessors rather than Avro ones and has no logical
 types to convert.
 
 ## JSON records
 
-`JsonDocumentSerializer` writes records that are JSON documents, as `String`s. JSON carries no schema of its
+`JsonDocumentSerializationSchema` writes records that are JSON documents, as `String`s. JSON carries no schema of its
 own, so unlike the protobuf and Avro serializers this one cannot derive the destination schema — it
 is supplied, in whichever form the surrounding code already holds:
 
@@ -2063,7 +2063,7 @@ gone is probed past like a failed job, and the query runs again under a fresh re
 ### Deserialization
 
 Rows arrive as Avro and are decoded into a `GenericRecord`, which
-`BigQueryRowDeserializer.deserialize(GenericRecord, Collector)` converts into zero or more output
+`BigQueryRowDeserializationSchema.deserialize(GenericRecord, Collector)` converts into zero or more output
 records.
 Emitting nothing skips the row, and `recordsSkipped` is the only report of that successful skip.
 Every output must be non-null and emitted synchronously during the call; retaining the collector or
@@ -2490,7 +2490,7 @@ destinations (`BigQueryDynamicDestinationsITCase`), table auto-creation with cre
 the real service answers a masked `PERMISSION_DENIED`, so this class cannot see whether auto-creation
 would fire at all; the gated `BigQueryTableCreationFidelityITCase` below is what measures that),
 default-stream schema evolution (`BigQuerySchemaEvolutionITCase`), Avro records written through the facade into a table created
-from the serializer's own derived schema (`BigQueryAvroSerializerITCase` — run under
+from the serializer's own derived schema (`BigQueryAvroRecordSerializationSchemaITCase` — run under
 `deriveRequiredColumns()` and asserting the created table's modes, so the option is verified rather
 than merely exercised: `REQUIRED`/`NULLABLE`
 scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `STRUCT`, a map as
@@ -2498,7 +2498,7 @@ scalars, `TIMESTAMP`, `DATE`, `BYTES`, an enum, a `REPEATED` field, a nested `ST
 `DATETIME` and `NUMERIC` are excluded
 because the emulator implements neither the packed civil-time encoding nor the decimal byte
 encoding and reads those columns back as unrelated values whatever is written), the same for JSON
-documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializerITCase`),
+documents including the `ignoreUnknownFields` option (`BigQueryJsonDocumentSerializationSchemaITCase`),
 protobuf messages under `deriveRequiredColumns()` (`BigQueryProtoPresenceITCase` — the table is
 created with the derived `REQUIRED` columns and the values read back as presence says they should:
 presence-less columns carry `""`/`0`, `optional` and the unselected `oneof` branch come back NULL;

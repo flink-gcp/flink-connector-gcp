@@ -36,8 +36,8 @@ import java.io.IOException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link RowDataSerializer}. */
-class RowDataSerializerTest {
+/** Tests for {@link RowDataSerializationSchema}. */
+class RowDataSerializationSchemaTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my_dataset", "my_table");
@@ -52,8 +52,8 @@ class RowDataSerializerTest {
 
     @Test
     void derivesTheSchemaAndTheDescriptorFromTheRowType() {
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults());
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
 
         assertThat(serializer.getTableSchema(DESTINATION).getFieldsList())
                 .extracting(TableFieldSchema::getName)
@@ -63,8 +63,8 @@ class RowDataSerializerTest {
 
     @Test
     void theDescriptorIsCachedRatherThanRederivedPerCall() {
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults());
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
         assertThat(serializer.getDescriptor(DESTINATION))
                 .isSameAs(serializer.getDescriptor(DESTINATION));
     }
@@ -73,8 +73,8 @@ class RowDataSerializerTest {
     void oneSchemaServesEveryDestination() {
         // Fixed-destination only from SQL, but the SPI is per destination — so this pins that the
         // argument is deliberately ignored rather than accidentally unused.
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults());
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
         assertThat(serializer.getTableSchema(TableDestination.of("p", "d", "other")))
                 .isEqualTo(serializer.getTableSchema(DESTINATION));
     }
@@ -88,7 +88,10 @@ class RowDataSerializerTest {
                 (RowType)
                         DataTypes.ROW(DataTypes.FIELD("v", DataTypes.INTERVAL(DataTypes.DAY())))
                                 .getLogicalType();
-        assertThatThrownBy(() -> new RowDataSerializer(unmappable, RowDataSchemaOptions.defaults()))
+        assertThatThrownBy(
+                        () ->
+                                new RowDataSerializationSchema(
+                                        unmappable, RowDataSchemaOptions.defaults()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("no BigQuery equivalent");
     }
@@ -97,15 +100,15 @@ class RowDataSerializerTest {
     void theSchemaIsStaticSoThereIsNoFingerprint() {
         // A null fingerprint is what tells the writers this serializer's schema never evolves.
         assertThat(
-                        new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults())
+                        new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults())
                                 .getSchemaFingerprint(DESTINATION))
                 .isNull();
     }
 
     @Test
     void serializesARowIntoTheDerivedDescriptorsForm() throws Exception {
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults());
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
 
         DynamicMessage message =
                 DynamicMessage.parseFrom(
@@ -128,8 +131,8 @@ class RowDataSerializerTest {
                                         DataTypes.FIELD(
                                                 "required_value", DataTypes.STRING().notNull()))
                                 .getLogicalType();
-        RowDataSerializer serializer =
-                new RowDataSerializer(
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(
                         requiredRow,
                         RowDataSchemaOptions.builder().deriveRequiredColumns(true).build(),
                         new int[] {0});
@@ -160,8 +163,9 @@ class RowDataSerializerTest {
                                         DataTypes.FIELD("id", DataTypes.STRING().notNull()),
                                         DataTypes.FIELD("amount", DataTypes.BIGINT()))
                                 .getLogicalType();
-        RowDataSerializer physical =
-                new RowDataSerializer(cdcRow, RowDataSchemaOptions.defaults(), new int[] {0});
+        RowDataSerializationSchema physical =
+                new RowDataSerializationSchema(
+                        cdcRow, RowDataSchemaOptions.defaults(), new int[] {0});
         ProtoRowAugmentingSerializer<GenericRowData> cdc =
                 cdcSerializer(
                         physical,
@@ -216,8 +220,9 @@ class RowDataSerializerTest {
 
     @Test
     void rejectsUpdateBeforeAtTheSerializerBoundary() {
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults(), new int[] {0});
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(
+                        rowType(), RowDataSchemaOptions.defaults(), new int[] {0});
         GenericRowData updateBefore =
                 GenericRowData.ofKind(RowKind.UPDATE_BEFORE, StringData.fromString("alice"), 2L);
 
@@ -228,8 +233,9 @@ class RowDataSerializerTest {
 
     @Test
     void ignoresPlannerAppendedMetadataWhenSerializingThePhysicalRow() throws Exception {
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults(), new int[] {0});
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(
+                        rowType(), RowDataSchemaOptions.defaults(), new int[] {0});
         GenericRowData row =
                 GenericRowData.of(
                         StringData.fromString("alice"), 3L, StringData.fromString("0001/0002"));
@@ -246,12 +252,12 @@ class RowDataSerializerTest {
 
     @Test
     void survivesTheTripToATaskManager() throws Exception {
-        RowDataSerializer serializer =
-                new RowDataSerializer(rowType(), RowDataSchemaOptions.defaults());
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
 
         // The derived triple is transient, so this rebuilds it on the far side — which is the
         // whole reason the row type and the options are what the class holds.
-        RowDataSerializer copy = InstantiationUtil.clone(serializer);
+        RowDataSerializationSchema copy = InstantiationUtil.clone(serializer);
 
         assertThat(copy.getTableSchema(DESTINATION))
                 .isEqualTo(serializer.getTableSchema(DESTINATION));
@@ -269,7 +275,7 @@ class RowDataSerializerTest {
     }
 
     private static ProtoRowAugmentingSerializer<GenericRowData> cdcSerializer(
-            RowDataSerializer serializer, CdcOptions<GenericRowData> options) {
+            RowDataSerializationSchema serializer, CdcOptions<GenericRowData> options) {
         return new ProtoRowAugmentingSerializer<>(
                 serializer,
                 CdcProtoRowFields.create(options),

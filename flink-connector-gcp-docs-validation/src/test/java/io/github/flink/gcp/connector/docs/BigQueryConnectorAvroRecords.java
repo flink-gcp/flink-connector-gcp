@@ -20,7 +20,7 @@ import org.apache.flink.api.connector.sink2.Sink;
 
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -34,14 +34,14 @@ final class BigQueryConnectorAvroRecords {
         Sink<GenericRecord> sink =
                 BigQuerySink.<GenericRecord>builder()
                         .destinationResolver(myDestinationResolver)
-                        .serializer(AvroRecordSerializer.of(schema))
+                        .serializer(AvroRecordSerializationSchema.of(schema))
                         .build();
         // end::bigquery-connector-avro-records-sink[]
     }
 
     static void buildRequiredColumns(Schema schema) {
         // tag::bigquery-connector-avro-records-required-columns[]
-        AvroRecordSerializer.of(
+        AvroRecordSerializationSchema.of(
                 schema, AvroSchemaOptions.builder().deriveRequiredColumns().build());
         // end::bigquery-connector-avro-records-required-columns[]
     }

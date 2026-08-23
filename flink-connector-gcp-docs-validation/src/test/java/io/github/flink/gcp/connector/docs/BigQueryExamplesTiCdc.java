@@ -33,8 +33,8 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.TiCdcSequenceNumberProvider;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
 import org.json.JSONObject;
 
 import java.io.IOException;
@@ -73,7 +73,7 @@ final class BigQueryExamplesTiCdc {
                                                 "my-project", "analytics", "current_orders"))
                                 .serializer(
                                         new TiCdcEnvelopeSerializer(
-                                                JsonDocumentSerializer.of(rowSchema)))
+                                                JsonDocumentSerializationSchema.of(rowSchema)))
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
                                                 .primaryKeyColumns(Collections.singletonList("id"))
@@ -157,13 +157,14 @@ final class BigQueryExamplesTiCdc {
         }
     }
 
-    private static final class TiCdcEnvelopeSerializer extends BigQueryProtoSerializer<String> {
+    private static final class TiCdcEnvelopeSerializer
+            extends BigQueryProtoSerializationSchema<String> {
 
         private static final long serialVersionUID = 1L;
 
-        private final JsonDocumentSerializer delegate;
+        private final JsonDocumentSerializationSchema delegate;
 
-        private TiCdcEnvelopeSerializer(JsonDocumentSerializer delegate) {
+        private TiCdcEnvelopeSerializer(JsonDocumentSerializationSchema delegate) {
             this.delegate = delegate;
         }
 

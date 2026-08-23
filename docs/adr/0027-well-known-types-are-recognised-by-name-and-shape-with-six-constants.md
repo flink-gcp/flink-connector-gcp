@@ -41,7 +41,7 @@ name** — a descriptor built from a serialized `FileDescriptorSet` carries its 
   same rule ADR-0024 states: **a schema problem must not surface from `serialize()`**. Answering
   `NONE` rather than throwing is deliberate — there is nothing to reject, only a name that did
   not mean what it usually does. This could not be relocated with a `checkArgument`:
-  `ProtoMessageSerializer` builds its state lazily, so on a task manager even plan construction
+  `ProtoMessageSerializationSchema` builds its state lazily, so on a task manager even plan construction
   happens inside that catch; the failure had to be *removed*, not moved.
 - **Six constants, not sixteen**: the nine wrappers share one, because both the column type and
   the conversion kind come from the wrapper's `value` sub-field through the *same*

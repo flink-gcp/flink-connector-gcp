@@ -22,7 +22,7 @@ import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.SynchronousDeserializationCollector;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitState;
 import org.apache.avro.generic.GenericRecord;
 
@@ -42,7 +42,7 @@ import org.apache.avro.generic.GenericRecord;
 public class BigQueryRecordEmitter<T>
         implements RecordEmitter<GenericRecord, T, ReadStreamSplitState> {
 
-    private final BigQueryRowDeserializer<T> deserializer;
+    private final BigQueryRowDeserializationSchema<T> deserializer;
     private final BigQuerySourceReaderMetrics metrics;
 
     /**
@@ -52,7 +52,7 @@ public class BigQueryRecordEmitter<T>
      * @param metrics the reader's metrics
      */
     public BigQueryRecordEmitter(
-            BigQueryRowDeserializer<T> deserializer, BigQuerySourceReaderMetrics metrics) {
+            BigQueryRowDeserializationSchema<T> deserializer, BigQuerySourceReaderMetrics metrics) {
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");

@@ -20,7 +20,7 @@ import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.LegacySQLTypeName;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.TableId;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import org.junit.jupiter.api.Test;
@@ -51,7 +51,8 @@ class BigQueryProtoWellKnownTypesITCase extends AbstractBigQueryEmulatorITCase {
     void derivesACreatableTableForEveryWellKnownType() {
         createTable(
                 TABLE,
-                ProtoMessageSerializer.of(WellKnownTypes.class, ProtoSchemaOptions.defaults())
+                ProtoMessageSerializationSchema.of(
+                                WellKnownTypes.class, ProtoSchemaOptions.defaults())
                         .getTableSchema(null));
 
         Schema created = schemaOf(TABLE);

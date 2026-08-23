@@ -41,12 +41,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   documented, and `server_transaction_id` cannot break it because it is a distinguisher, not an
   order.
 
-## Facade and serializers (`docs/adr/0016`, `0023`–`0027`)
+## Facade and serializers (`docs/adr/0016`, `0023`–`0027`, `0140`)
 
 - One builder, per-write-method SinkV2 implementations; connection multiplexing is the SDK
   pool's, never a self-built writer pool (`docs/adr/0016`). Write-method-only options live in
   nested options objects; `build()` requires the matching one and rejects the others
   (`DefaultStreamOptions` is optional by design — `docs/adr/0028`).
+- Public conversion SPIs and ready-made format facades use the `*SerializationSchema` /
+  `*DeserializationSchema` vocabulary (`docs/adr/0140`). `JsonDocumentOptions` names the JSON
+  conversion policy because a JSON document carries no schema of its own. The package remains
+  `serializer`, and internal helpers keep `Serializer` or `Deserializer` where that word names
+  their implementation role.
 - A configured service-account key remains a path in the job graph and is loaded only when a
   runtime component creates its client.
   Every client in one write method must receive it; `FILE_LOADS` uses the same identity for
@@ -58,7 +63,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`docs/adr/0023`, `0024`, `0027`). A serializer `null` is a skip (`docs/adr/0001`) and does
   not loosen this rule. **The transient-and-rebuilt half is `LazyDerivedState`, and the
   descriptor derivation is `RowDescriptors.derive`** (`sink.serializer`, both `@Internal`): the
-  four record serializers — proto, Avro, JSON and `RowDataSerializer` — go through them, so a new
+  four record serializers — proto, Avro, JSON and `RowDataSerializationSchema` — go through them, so a new
   one adds a derivation rather than another double-checked holder (`docs/adr/0024`).
   `ProtoRowAugmentingSerializer` is not one of them: its cache is per destination and invalidated
   by fingerprint, which is a different shape.

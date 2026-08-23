@@ -40,7 +40,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.apache.avro.file.DataFileReader;
@@ -139,7 +139,7 @@ class FileLoadsWriterTest {
     }
 
     /** Serializes {@link TestRow}s into the wire form of the schema-derived descriptor. */
-    private static final class TestRowSerializer extends BigQueryProtoSerializer<TestRow> {
+    private static final class TestRowSerializer extends BigQueryProtoSerializationSchema<TestRow> {
         private static final long serialVersionUID = 1L;
 
         private final TableSchema schema;

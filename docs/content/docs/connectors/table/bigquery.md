@@ -76,7 +76,7 @@ a dependency list anyone wants to assemble by hand.
 The plain `flink-connector-gcp-bigquery` jar works too, where the deployment already resolves
 transitive dependencies. That is the right choice for a DataStream job built with Maven or Gradle —
 and for one using the Avro serializer it is the only choice: `avro` is relocated inside the
-uber-jar, so the `AvroRecordSerializer` in it takes a relocated `IndexedRecord` that an ordinary job
+uber-jar, so the `AvroRecordSerializationSchema` in it takes a relocated `IndexedRecord` that an ordinary job
 cannot supply. None of that applies to SQL, where the connector supplies its own `RowData`
 serializer.
 

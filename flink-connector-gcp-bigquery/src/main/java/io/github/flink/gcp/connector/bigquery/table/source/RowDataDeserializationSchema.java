@@ -22,21 +22,21 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Collector;
 
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.generic.GenericRecord;
 
 import javax.annotation.Nullable;
 
 /** Converts Storage Read Avro rows to the planner's internal row type. */
 @Internal
-final class RowDataDeserializer implements BigQueryRowDeserializer<RowData> {
+final class RowDataDeserializationSchema implements BigQueryRowDeserializationSchema<RowData> {
 
     private static final long serialVersionUID = 1L;
 
     private final GenericRecordToRowDataConverter converter;
     private final TypeInformation<RowData> producedType;
 
-    RowDataDeserializer(
+    RowDataDeserializationSchema(
             RowType physicalRowType,
             @Nullable int[] projectedFields,
             TypeInformation<RowData> producedType) {

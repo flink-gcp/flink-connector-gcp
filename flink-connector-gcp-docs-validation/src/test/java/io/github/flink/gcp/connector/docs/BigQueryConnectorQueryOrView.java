@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.docs;
 import org.apache.flink.api.connector.source.Source;
 
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -33,7 +33,7 @@ final class BigQueryConnectorQueryOrView {
                 BigQuerySource.<GenericRecord>builder()
                         .query("SELECT id, name FROM `my-project.my_dataset.my_view`")
                         .parentProject("my-project")
-                        .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+                        .deserializer(BigQueryRowDeserializationSchema.genericRecord(schema))
                         .build();
         // end::bigquery-connector-query-or-view[]
     }

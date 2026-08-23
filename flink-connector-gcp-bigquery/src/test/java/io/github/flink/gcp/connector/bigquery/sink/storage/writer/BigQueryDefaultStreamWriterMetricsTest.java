@@ -45,7 +45,7 @@ import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
@@ -674,12 +674,13 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     private BigQueryDefaultStreamWriter<String> writer(
-            BigQueryProtoSerializer<String> serializer, SchemaUpdateOptions schemaUpdateOptions) {
+            BigQueryProtoSerializationSchema<String> serializer,
+            SchemaUpdateOptions schemaUpdateOptions) {
         return writer(serializer, schemaUpdateOptions, (element, context) -> DESTINATION);
     }
 
     private BigQueryDefaultStreamWriter<String> writer(
-            BigQueryProtoSerializer<String> serializer,
+            BigQueryProtoSerializationSchema<String> serializer,
             SchemaUpdateOptions schemaUpdateOptions,
             io.github.flink.gcp.connector.bigquery.sink.DestinationResolver<? super String>
                     resolver) {
@@ -694,7 +695,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     private BigQuerySinkConfig<String> config(
-            BigQueryProtoSerializer<String> serializer,
+            BigQueryProtoSerializationSchema<String> serializer,
             SchemaUpdateOptions schemaUpdateOptions,
             io.github.flink.gcp.connector.bigquery.sink.DestinationResolver<? super String>
                     resolver) {
@@ -739,7 +740,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     /** Serializer writing the record's UTF-8 bytes, with a schema the live table does not cover. */
-    private static class StringSerializer extends BigQueryProtoSerializer<String> {
+    private static class StringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         @Override

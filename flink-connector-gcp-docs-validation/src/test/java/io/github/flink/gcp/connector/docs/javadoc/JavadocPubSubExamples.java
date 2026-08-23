@@ -23,7 +23,7 @@ import org.apache.flink.api.connector.source.Source;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.docs.PubSubDocumentationTypes.MyEvent;
 import io.github.flink.gcp.connector.docs.PubSubDocumentationTypes.MyEventSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue;
@@ -64,7 +64,7 @@ final class JavadocPubSubExamples {
         return source;
     }
 
-    static Sink<Order> deadLetterQueue(BigQueryProtoSerializer<Order> serializer) {
+    static Sink<Order> deadLetterQueue(BigQueryProtoSerializationSchema<Order> serializer) {
         Sink<Order> sink =
                 // tag::dead-letter-queue[]
                 BigQuerySink.<Order>builder()

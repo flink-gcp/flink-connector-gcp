@@ -25,7 +25,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 
 import java.time.Duration;
 import java.util.Collections;
@@ -34,7 +34,7 @@ final class BigQueryCdcTableCreation {
 
     private BigQueryCdcTableCreation() {}
 
-    static Sink<MyMutation> build(BigQueryProtoSerializer<MyMutation> serializer) {
+    static Sink<MyMutation> build(BigQueryProtoSerializationSchema<MyMutation> serializer) {
         // tag::bigquery-cdc-table-creation[]
         Sink<MyMutation> sink =
                 BigQuerySink.<MyMutation>builder()

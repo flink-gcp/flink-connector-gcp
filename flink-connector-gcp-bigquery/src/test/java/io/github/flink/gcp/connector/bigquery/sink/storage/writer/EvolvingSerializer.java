@@ -21,7 +21,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 
 /**
  * Test serializer over a mutable schema, writing rows via {@link DynamicMessage}. Records are
@@ -32,7 +32,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
  * <p>Shared by the emulator schema-evolution ITCase ({@link BigQuerySchemaEvolutionITCase}) and the
  * default- and buffered-stream real-GCP cases.
  */
-final class EvolvingSerializer extends BigQueryProtoSerializer<String> {
+final class EvolvingSerializer extends BigQueryProtoSerializationSchema<String> {
     private static final long serialVersionUID = 1L;
 
     private TableSchema schema;

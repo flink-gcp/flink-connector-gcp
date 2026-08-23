@@ -39,11 +39,11 @@ import com.google.protobuf.Timestamp;
 import com.google.protobuf.Value;
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
@@ -124,7 +124,7 @@ class BigQuerySerializerFidelityITCase {
     /** Builds the writer through the production factory and writes the rows in one flush. */
     @SafeVarargs
     private static <T> void writeRows(
-            String table, BigQueryProtoSerializer<? super T> serializer, T... rows)
+            String table, BigQueryProtoSerializationSchema<? super T> serializer, T... rows)
             throws Exception {
         @SuppressWarnings("unchecked")
         BigQueryDefaultStreamSink<T> sink =
@@ -158,8 +158,9 @@ class BigQuerySerializerFidelityITCase {
      */
     @Test
     void protoWellKnownTypesRoundTripOnTheService() throws Exception {
-        ProtoMessageSerializer<WellKnownTypes> serializer =
-                ProtoMessageSerializer.of(WellKnownTypes.class, ProtoSchemaOptions.defaults());
+        ProtoMessageSerializationSchema<WellKnownTypes> serializer =
+                ProtoMessageSerializationSchema.of(
+                        WellKnownTypes.class, ProtoSchemaOptions.defaults());
         RealBigQuery.createTable(PROTO_TABLE, serializer.getTableSchema(null));
 
         writeRows(
@@ -276,8 +277,8 @@ class BigQuerySerializerFidelityITCase {
     @Test
     void avroNumericAndCivilTimeColumnsRoundTripExactly() throws Exception {
         Schema schema = new Schema.Parser().parse(AVRO_SCHEMA_JSON);
-        AvroRecordSerializer serializer =
-                AvroRecordSerializer.of(
+        AvroRecordSerializationSchema serializer =
+                AvroRecordSerializationSchema.of(
                         schema,
                         AvroSchemaOptions.builder()
                                 .jsonFieldPath("payload")
@@ -375,7 +376,7 @@ class BigQuerySerializerFidelityITCase {
                         .addFields(jsonField("blob", TableFieldSchema.Type.BYTES))
                         .addFields(jsonField("payload", TableFieldSchema.Type.JSON))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema);
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema);
         RealBigQuery.createTable(JSON_TABLE, serializer.getTableSchema(null));
 
         writeRows(

@@ -53,7 +53,7 @@ import java.io.Serializable;
  * @param <T> type of the records produced by the source
  */
 @Public
-public interface BigQueryRowDeserializer<T> extends Serializable, ResultTypeQueryable<T> {
+public interface BigQueryRowDeserializationSchema<T> extends Serializable, ResultTypeQueryable<T> {
 
     /**
      * Initializes the deserializer on the subtask that will use it, before any row is read.
@@ -107,7 +107,7 @@ public interface BigQueryRowDeserializer<T> extends Serializable, ResultTypeQuer
      * @param readerSchema the Avro schema rows are read into
      * @return the deserializer
      */
-    static BigQueryRowDeserializer<GenericRecord> genericRecord(Schema readerSchema) {
+    static BigQueryRowDeserializationSchema<GenericRecord> genericRecord(Schema readerSchema) {
         return new GenericRecordDeserializer(readerSchema);
     }
 
@@ -118,7 +118,7 @@ public interface BigQueryRowDeserializer<T> extends Serializable, ResultTypeQuer
      * @return the deserializer
      * @see #genericRecord(Schema)
      */
-    static BigQueryRowDeserializer<GenericRecord> genericRecord(String readerSchemaJson) {
+    static BigQueryRowDeserializationSchema<GenericRecord> genericRecord(String readerSchemaJson) {
         return new GenericRecordDeserializer(readerSchemaJson);
     }
 }

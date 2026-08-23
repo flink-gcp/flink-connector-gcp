@@ -32,7 +32,7 @@ Each protobuf row carries a required `_CHANGE_TYPE` pseudocolumn and may carry a
 These values describe the mutation rather than physical table columns.
 
 The existing sink delegates physical schema derivation and row conversion to a
-`BigQueryProtoSerializer`.
+`BigQueryProtoSerializationSchema`.
 That contract supports fixed and dynamic destinations, derives the descriptor before opening a
 write stream, and treats a `null` serialized row as a skip.
 CDC must preserve those boundaries because the same serializer supplies table auto-creation and

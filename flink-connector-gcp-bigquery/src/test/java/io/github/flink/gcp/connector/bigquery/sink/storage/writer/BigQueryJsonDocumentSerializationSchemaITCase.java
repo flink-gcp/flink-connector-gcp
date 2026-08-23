@@ -25,8 +25,8 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializerOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -39,7 +39,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration test for {@link JsonDocumentSerializer} against the BigQuery emulator
+ * Integration test for {@link JsonDocumentSerializationSchema} against the BigQuery emulator
  * (goccy/bigquery-emulator): JSON documents written through the {@link BigQuerySink} facade into a
  * table created from the schema handed to the serializer.
  *
@@ -48,14 +48,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * nested {@code STRUCT} and a {@code JSON} column — and the {@code ignoreUnknownFields} option,
  * which is the reason a JSON stream survives producers that add fields ahead of the table. {@code
  * TIME}, {@code DATETIME} and {@code NUMERIC} are excluded for the reason recorded on {@link
- * BigQueryAvroSerializerITCase}: emulator 0.8.1 implements neither the packed civil-time nor the
- * decimal byte encoding.
+ * BigQueryAvroRecordSerializationSchemaITCase}: emulator 0.8.1 implements neither the packed
+ * civil-time nor the decimal byte encoding.
  *
  * <p>Only one flush happens here, for the emulator reason recorded on {@link
  * BigQueryDefaultStreamWriterITCase}: on a connection opened after an earlier one has closed, only
  * the first {@code AppendRows} request is durably applied.
  */
-class BigQueryJsonDocumentSerializerITCase extends AbstractBigQueryEmulatorITCase {
+class BigQueryJsonDocumentSerializationSchemaITCase extends AbstractBigQueryEmulatorITCase {
 
     private static TableFieldSchema field(
             String name, TableFieldSchema.Type type, TableFieldSchema.Mode mode) {
@@ -137,10 +137,9 @@ class BigQueryJsonDocumentSerializerITCase extends AbstractBigQueryEmulatorITCas
 
     @Test
     void writesJsonDocumentsThroughTheFacade() throws Exception {
-        JsonDocumentSerializer serializer =
-                JsonDocumentSerializer.of(
-                        schema(),
-                        JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+        JsonDocumentSerializationSchema serializer =
+                JsonDocumentSerializationSchema.of(
+                        schema(), JsonDocumentOptions.builder().ignoreUnknownFields().build());
         createTable("json_writes", serializer.getTableSchema(null));
 
         BigQueryDefaultStreamSink<String> sink =

@@ -307,7 +307,7 @@
                                     <pattern>org.apache.commons.compress</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.bigquery.shaded.org.apache.commons.compress</shadedPattern>
                                 </relocation>
-                                <!-- Avro is on the connector's own public API (AvroRecordSerializer
+                                <!-- Avro is on the connector's own public API (AvroRecordSerializationSchema
                                      takes an IndexedRecord), so relocating it makes that surface
                                      unusable from a DataStream job compiled against the plain
                                      connector artifact. That is the same trade every other jar of

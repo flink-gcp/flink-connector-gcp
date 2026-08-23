@@ -38,7 +38,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -87,7 +87,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     }
 
     /** Serializer writing the record string bytes with a fixed single-column schema. */
-    private static class StringSerializer extends BigQueryProtoSerializer<String> {
+    private static class StringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -205,7 +205,7 @@ class BigQueryDefaultStreamWriterAutoCreationTest {
     }
 
     private static BigQuerySinkConfig<String> augmentedConfig() {
-        BigQueryProtoSerializer<String> serializer =
+        BigQueryProtoSerializationSchema<String> serializer =
                 new StringSerializer() {
                     private static final long serialVersionUID = 1L;
 

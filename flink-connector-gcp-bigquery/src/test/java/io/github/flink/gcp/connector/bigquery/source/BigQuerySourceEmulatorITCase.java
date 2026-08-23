@@ -22,7 +22,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.StandardSQLTypeName;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeAll;
@@ -84,7 +84,7 @@ class BigQuerySourceEmulatorITCase extends AbstractBigQuerySourceEmulatorITCase 
                         .selectedFields("name")
                         .rowRestriction("id >= 4")
                         .deserializer(
-                                BigQueryRowDeserializer.genericRecord(
+                                BigQueryRowDeserializationSchema.genericRecord(
                                         "{\"type\":\"record\",\"name\":\"Person\",\"fields\":["
                                                 + "{\"name\":\"name\",\"type\":\"string\"}]}"))
                         .build();
@@ -111,7 +111,7 @@ class BigQuerySourceEmulatorITCase extends AbstractBigQuerySourceEmulatorITCase 
     private static BigQuerySourceBuilder<GenericRecord> sourceBuilder() {
         return BigQuerySource.<GenericRecord>builder()
                 .table(destination(TABLE))
-                .deserializer(BigQueryRowDeserializer.genericRecord(READER_SCHEMA))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(READER_SCHEMA))
                 .emulatorEndpoint(grpcEndpoint());
     }
 

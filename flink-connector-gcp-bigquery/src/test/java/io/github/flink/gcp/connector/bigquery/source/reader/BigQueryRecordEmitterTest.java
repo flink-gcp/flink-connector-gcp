@@ -21,7 +21,7 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitState;
 import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
@@ -168,7 +168,7 @@ class BigQueryRecordEmitterTest {
 
     private BigQueryRecordEmitter<String> emitter(RowFunction function) {
         return new BigQueryRecordEmitter<>(
-                new BigQueryRowDeserializer<String>() {
+                new BigQueryRowDeserializationSchema<String>() {
                     private static final long serialVersionUID = 1L;
 
                     @Override

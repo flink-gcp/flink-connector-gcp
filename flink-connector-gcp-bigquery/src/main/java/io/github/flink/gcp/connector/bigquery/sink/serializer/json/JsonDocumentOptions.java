@@ -27,25 +27,24 @@ import java.io.Serializable;
  * ProtoSchemaOptions} and {@link
  * io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions AvroSchemaOptions}
  * these carry no schema-mapping settings: a JSON document has no schema of its own, so the BigQuery
- * schema is supplied to {@link JsonDocumentSerializer} directly and already says what each column
- * is — {@code JSON} columns included.
+ * schema is supplied to {@link JsonDocumentSerializationSchema} directly and already says what each
+ * column is — {@code JSON} columns included.
  */
 @Public
-public final class JsonDocumentSerializerOptions implements Serializable {
+public final class JsonDocumentOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private static final JsonDocumentSerializerOptions DEFAULTS =
-            new JsonDocumentSerializerOptions(new Builder());
+    private static final JsonDocumentOptions DEFAULTS = new JsonDocumentOptions(new Builder());
 
     private final boolean ignoreUnknownFields;
 
-    private JsonDocumentSerializerOptions(Builder builder) {
+    private JsonDocumentOptions(Builder builder) {
         this.ignoreUnknownFields = builder.ignoreUnknownFields;
     }
 
     /** Returns the default options: a field the table does not have fails the record. */
-    public static JsonDocumentSerializerOptions defaults() {
+    public static JsonDocumentOptions defaults() {
         return DEFAULTS;
     }
 
@@ -59,7 +58,7 @@ public final class JsonDocumentSerializerOptions implements Serializable {
         return ignoreUnknownFields;
     }
 
-    /** Builder for {@link JsonDocumentSerializerOptions}. */
+    /** Builder for {@link JsonDocumentOptions}. */
     @Public
     public static final class Builder {
 
@@ -83,8 +82,8 @@ public final class JsonDocumentSerializerOptions implements Serializable {
         }
 
         /** Builds the options. */
-        public JsonDocumentSerializerOptions build() {
-            return new JsonDocumentSerializerOptions(this);
+        public JsonDocumentOptions build() {
+            return new JsonDocumentOptions(this);
         }
     }
 }

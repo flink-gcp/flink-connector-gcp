@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.docs;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -31,7 +31,7 @@ final class BigQueryConnectorViewMaterialization {
         BigQuerySource.<GenericRecord>builder()
                 .table(TableDestination.of("my-project", "my_dataset", "active_accounts"))
                 .materializeViews()
-                .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(schema))
                 .build();
         // end::bigquery-connector-view-materialization[]
     }

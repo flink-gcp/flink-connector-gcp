@@ -22,13 +22,13 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 
 /**
  * Test serializer with a fixed one-column ({@code name STRING}) schema, writing rows via {@link
  * DynamicMessage}; shared by the emulator integration tests.
  */
-final class NameColumnSerializer extends BigQueryProtoSerializer<String> {
+final class NameColumnSerializer extends BigQueryProtoSerializationSchema<String> {
     private static final long serialVersionUID = 1L;
 
     private transient Descriptors.Descriptor descriptor;

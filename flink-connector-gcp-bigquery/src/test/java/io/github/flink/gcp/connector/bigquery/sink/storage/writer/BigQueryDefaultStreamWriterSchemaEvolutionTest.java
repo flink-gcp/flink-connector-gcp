@@ -42,7 +42,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -113,7 +113,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
     }
 
     /** Serializer with a mutable schema; the fingerprint is a bumped version counter. */
-    private static class EvolvingSerializer extends BigQueryProtoSerializer<String> {
+    private static class EvolvingSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         private TableSchema schema;
@@ -273,13 +273,14 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
     }
 
     private static BigQuerySinkConfig<String> config(
-            BigQueryProtoSerializer<? super String> serializer, SchemaUpdateOptions options) {
+            BigQueryProtoSerializationSchema<? super String> serializer,
+            SchemaUpdateOptions options) {
         return config((element, context) -> DESTINATION, serializer, options);
     }
 
     private static BigQuerySinkConfig<String> config(
             DestinationResolver<? super String> resolver,
-            BigQueryProtoSerializer<? super String> serializer,
+            BigQueryProtoSerializationSchema<? super String> serializer,
             SchemaUpdateOptions options) {
         return ((BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()

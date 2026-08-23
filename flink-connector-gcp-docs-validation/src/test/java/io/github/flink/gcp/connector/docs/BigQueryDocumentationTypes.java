@@ -24,7 +24,7 @@ import com.google.protobuf.Empty;
 import com.google.protobuf.GeneratedMessage;
 import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 
 import java.time.Instant;
 
@@ -68,7 +68,7 @@ final class BigQueryDocumentationTypes {
                 geography;
     }
 
-    static final class MyEventProtoSerializer extends BigQueryProtoSerializer<MyEvent> {
+    static final class MyEventProtoSerializer extends BigQueryProtoSerializationSchema<MyEvent> {
 
         private static final long serialVersionUID = 1L;
 
@@ -88,7 +88,7 @@ final class BigQueryDocumentationTypes {
         }
     }
 
-    static final class MyOrderProtoSerializer extends BigQueryProtoSerializer<Order> {
+    static final class MyOrderProtoSerializer extends BigQueryProtoSerializationSchema<Order> {
 
         private static final long serialVersionUID = 1L;
 

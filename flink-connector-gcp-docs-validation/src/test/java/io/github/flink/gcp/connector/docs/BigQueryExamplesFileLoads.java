@@ -24,7 +24,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.docs.BigQueryDocumentationTypes.OrderEvent;
 import io.github.flink.gcp.connector.docs.BigQueryExamplesTablePerDay.DailyTableResolver;
 
@@ -35,7 +35,7 @@ final class BigQueryExamplesFileLoads {
     static void build(
             StreamExecutionEnvironment env,
             Source<OrderEvent, ?, ?> source,
-            BigQueryProtoSerializer<OrderEvent> serializer)
+            BigQueryProtoSerializationSchema<OrderEvent> serializer)
             throws Exception {
         // tag::bigquery-examples-file-loads[]
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);

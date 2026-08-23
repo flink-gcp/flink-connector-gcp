@@ -195,8 +195,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
         RowType rowType = (RowType) physicalDataType.getLogicalType();
-        RowDataSerializer serializer =
-                new RowDataSerializer(
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(
                         rowType, schemaOptions, cdcEnabled ? primaryKeyIndexes : new int[0]);
         BigQuerySinkBuilder<RowData> builder =
                 BigQuerySink.<RowData>builder().table(destination).serializer(serializer);

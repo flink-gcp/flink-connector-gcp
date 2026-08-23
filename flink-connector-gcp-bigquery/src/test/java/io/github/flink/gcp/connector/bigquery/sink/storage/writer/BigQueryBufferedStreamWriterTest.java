@@ -42,7 +42,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
@@ -78,7 +78,7 @@ class BigQueryBufferedStreamWriterTest {
      * Serializer writing the record string bytes; descriptor is irrelevant for the fake. Records
      * starting with {@code poison} fail, those starting with {@code skip} are skipped.
      */
-    static class StringSerializer extends BigQueryProtoSerializer<String> {
+    static class StringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -124,7 +124,7 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     /** Serializer with matching physical and protobuf schemas for additional-field assertions. */
-    static class ProtoStringSerializer extends BigQueryProtoSerializer<String> {
+    static class ProtoStringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         private static final TableSchema SCHEMA =
@@ -206,7 +206,7 @@ class BigQueryBufferedStreamWriterTest {
     }
 
     static BigQuerySinkConfig<String> config(
-            BigQueryProtoSerializer<? super String> serializer,
+            BigQueryProtoSerializationSchema<? super String> serializer,
             FailureHandler<BigQueryFailure> handler,
             CreateDisposition createDisposition) {
         var builder = BigQuerySink.<String>builder().table(DESTINATION);
@@ -671,7 +671,7 @@ class BigQueryBufferedStreamWriterTest {
     void routesOversizedRowsWithoutAppending() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         RecordingHandler handler = new RecordingHandler();
-        BigQueryProtoSerializer<String> oversized =
+        BigQueryProtoSerializationSchema<String> oversized =
                 new StringSerializer() {
                     private static final long serialVersionUID = 1L;
 

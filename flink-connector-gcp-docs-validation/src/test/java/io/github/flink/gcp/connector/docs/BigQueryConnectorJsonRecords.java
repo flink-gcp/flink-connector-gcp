@@ -21,8 +21,8 @@ import org.apache.flink.api.connector.sink2.Sink;
 import com.google.cloud.bigquery.Schema;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializerOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
 
 final class BigQueryConnectorJsonRecords {
 
@@ -33,15 +33,15 @@ final class BigQueryConnectorJsonRecords {
         Sink<String> sink =
                 BigQuerySink.<String>builder()
                         .table(TableDestination.of("my-project", "my_dataset", "events"))
-                        .serializer(JsonDocumentSerializer.of(schema))
+                        .serializer(JsonDocumentSerializationSchema.of(schema))
                         .build();
         // end::bigquery-connector-json-records-sink[]
     }
 
     static void buildIgnoringUnknownFields(Schema schema) {
         // tag::bigquery-connector-json-records-ignore-unknown-fields[]
-        JsonDocumentSerializer.of(
-                schema, JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+        JsonDocumentSerializationSchema.of(
+                schema, JsonDocumentOptions.builder().ignoreUnknownFields().build());
         // end::bigquery-connector-json-records-ignore-unknown-fields[]
     }
 }

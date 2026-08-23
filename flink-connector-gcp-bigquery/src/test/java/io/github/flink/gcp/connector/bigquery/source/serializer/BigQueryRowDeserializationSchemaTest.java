@@ -38,12 +38,12 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-class BigQueryRowDeserializerTest {
+class BigQueryRowDeserializationSchemaTest {
 
     @Test
     void handsTheRowOnUnchanged() throws Exception {
-        BigQueryRowDeserializer<GenericRecord> deserializer =
-                BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
+        BigQueryRowDeserializationSchema<GenericRecord> deserializer =
+                BigQueryRowDeserializationSchema.genericRecord(TestRows.SCHEMA_JSON);
         GenericRecord row = TestRows.rows(1).get(0);
         List<GenericRecord> records = new ArrayList<>();
 
@@ -64,8 +64,8 @@ class BigQueryRowDeserializerTest {
 
     @Test
     void answersWithTheSchemaItWasGiven() {
-        BigQueryRowDeserializer<GenericRecord> deserializer =
-                BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA);
+        BigQueryRowDeserializationSchema<GenericRecord> deserializer =
+                BigQueryRowDeserializationSchema.genericRecord(TestRows.SCHEMA);
 
         assertThat(deserializer.getReaderSchema()).isEqualTo(TestRows.SCHEMA);
     }
@@ -75,8 +75,8 @@ class BigQueryRowDeserializerTest {
         // The reason this implementation ships at all: TypeInformation.of(GenericRecord.class) is a
         // generic type backed by Kryo, and Kryo cannot serialize a GenericData.Record — it fails on
         // the record's own schema (measured 2026-08-09).
-        BigQueryRowDeserializer<GenericRecord> deserializer =
-                BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
+        BigQueryRowDeserializationSchema<GenericRecord> deserializer =
+                BigQueryRowDeserializationSchema.genericRecord(TestRows.SCHEMA_JSON);
         TypeSerializer<GenericRecord> serializer =
                 deserializer.getProducedType().createSerializer(new SerializerConfigImpl());
         GenericRecord row = new GenericData.Record(TestRows.SCHEMA);
@@ -99,7 +99,7 @@ class BigQueryRowDeserializerTest {
         // A schema problem must never surface from deserialize(): by then the job is running and
         // the
         // failure is a per-record one on a TaskManager.
-        assertThatThrownBy(() -> BigQueryRowDeserializer.genericRecord("{\"type\":"))
+        assertThatThrownBy(() -> BigQueryRowDeserializationSchema.genericRecord("{\"type\":"))
                 .isInstanceOf(SchemaParseException.class);
     }
 
@@ -107,10 +107,10 @@ class BigQueryRowDeserializerTest {
     void survivesTheJobGraphAsSerializedState() throws Exception {
         // Avro's Schema serialization replacement must preserve both the reader schema and the
         // TypeInformation derived from it when Flink ships the job graph.
-        BigQueryRowDeserializer<GenericRecord> deserializer =
-                BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
+        BigQueryRowDeserializationSchema<GenericRecord> deserializer =
+                BigQueryRowDeserializationSchema.genericRecord(TestRows.SCHEMA_JSON);
 
-        BigQueryRowDeserializer<GenericRecord> restored =
+        BigQueryRowDeserializationSchema<GenericRecord> restored =
                 InstantiationUtil.deserializeObject(
                         InstantiationUtil.serializeObject(deserializer),
                         getClass().getClassLoader());

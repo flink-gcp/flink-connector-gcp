@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.docs;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions.TimePartitioningType;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.docs.BigQueryDocumentationTypes.OrderEvent;
 import io.github.flink.gcp.connector.docs.BigQueryExamplesTablePerDay.DailyTableResolver;
 
@@ -30,7 +30,7 @@ final class BigQueryExamplesTableAutoCreation {
 
     private BigQueryExamplesTableAutoCreation() {}
 
-    static void build(BigQueryProtoSerializer<OrderEvent> serializer) {
+    static void build(BigQueryProtoSerializationSchema<OrderEvent> serializer) {
         // tag::bigquery-examples-table-auto-creation[]
         BigQuerySink.<OrderEvent>builder()
                 .destinationResolver(new DailyTableResolver("my-project", "my_dataset", "orders"))

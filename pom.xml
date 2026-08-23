@@ -976,7 +976,8 @@ limitations under the License.
                      element over with combine.self="override". It is not the same check and
                      is the better one here: javadoc resolves {@link} itself, outside doclint,
                      so an unresolvable reference is reported even under -Xdoclint:none
-                     (measured — two were, in JsonDocumentSerializerOptions). Note the plugin
+                     (measured — two were, in JsonDocumentSerializerOptions, now
+                     JsonDocumentOptions). Note the plugin
                      implements it by matching javadoc's last stderr line against
                      "N warning(s)", not with -Xwerror, so anything that writes to stderr
                      after that summary would silence it.

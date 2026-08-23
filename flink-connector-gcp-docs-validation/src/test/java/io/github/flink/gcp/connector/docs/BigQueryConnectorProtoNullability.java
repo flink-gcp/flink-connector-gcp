@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.docs;
 
-import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.docs.BigQueryDocumentationTypes.MyMessage;
 
@@ -26,7 +26,7 @@ final class BigQueryConnectorProtoNullability {
 
     static void build() {
         // tag::bigquery-connector-proto-nullability[]
-        ProtoMessageSerializer.of(
+        ProtoMessageSerializationSchema.of(
                 MyMessage.class, ProtoSchemaOptions.builder().deriveRequiredColumns().build());
         // end::bigquery-connector-proto-nullability[]
     }

@@ -33,7 +33,7 @@ import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BigQueryBufferedStreamSinkTopologyTest {
 
     /** A trivial serializable test serializer. */
-    private static class TestSerializer extends BigQueryProtoSerializer<Object> {
+    private static class TestSerializer extends BigQueryProtoSerializationSchema<Object> {
         private static final long serialVersionUID = 1L;
 
         @Override

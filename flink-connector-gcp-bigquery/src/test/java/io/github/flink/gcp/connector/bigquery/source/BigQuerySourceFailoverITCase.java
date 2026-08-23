@@ -30,7 +30,7 @@ import org.apache.flink.util.CloseableIterator;
 
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ScriptedReadSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.reader.ScriptedRowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -133,7 +133,7 @@ class BigQuerySourceFailoverITCase {
         }
         return BigQuerySource.<GenericRecord>builder()
                 .table(TestSources.TABLE)
-                .deserializer(BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(TestRows.SCHEMA_JSON))
                 .maxRecordsPerFetch(50)
                 .sessionCreatorFactory(ScriptedReadSessionCreator.Factory.withStreams(STREAMS))
                 // Ten milliseconds a block, so the job spends long enough reading for checkpoints

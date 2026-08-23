@@ -33,8 +33,8 @@ shipped Avro path before anything was built, and named a null result as a legiti
 
 ADR-0079 shipped that Avro path and left a door open for this one: as it read before this record, a
 batch-aware Arrow variant was to arrive as a sibling abstract class rather than as a widening of
-`BigQueryRowDeserializer`, one call per row being what the resume offset rests on. This record
-closes that door and says on what evidence.
+`BigQueryRowDeserializer` (now `BigQueryRowDeserializationSchema`), one call per row being what the
+resume offset rests on. This record closes that door and says on what evidence.
 
 ## Decision
 

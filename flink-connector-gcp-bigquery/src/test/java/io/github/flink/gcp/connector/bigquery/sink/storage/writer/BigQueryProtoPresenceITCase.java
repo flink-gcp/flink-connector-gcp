@@ -26,7 +26,7 @@ import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
 /**
- * Integration test for {@link ProtoMessageSerializer} with {@link
+ * Integration test for {@link ProtoMessageSerializationSchema} with {@link
  * ProtoSchemaOptions.Builder#deriveRequiredColumns()} against the BigQuery emulator
  * (goccy/bigquery-emulator): protobuf messages written through the {@link BigQuerySink} facade into
  * a table created from the serializer's own derived schema.
@@ -64,8 +64,8 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
 
     @Test
     void writesProtobufMessagesWithPresenceDerivedModes() throws Exception {
-        ProtoMessageSerializer<Presence> serializer =
-                ProtoMessageSerializer.of(
+        ProtoMessageSerializationSchema<Presence> serializer =
+                ProtoMessageSerializationSchema.of(
                         Presence.class,
                         ProtoSchemaOptions.builder().deriveRequiredColumns().build());
         createTable("proto_presence", serializer.getTableSchema(null));
@@ -136,10 +136,10 @@ class BigQueryProtoPresenceITCase extends AbstractBigQueryEmulatorITCase {
      *
      * <p>Two emulator 0.8.1 deviations shape this query, both around an <em>empty</em> repeated
      * column, and neither about the schema under test. {@code ARRAY_TO_STRING} — which {@link
-     * BigQueryAvroSerializerITCase} uses on a populated array — panics the emulator with a nil
-     * pointer dereference, so the length is read instead; and {@code ARRAY_LENGTH} of an empty
-     * array comes back NULL where BigQuery returns 0, so the {@code IFNULL} is there to make the
-     * expected value the same on both. On real BigQuery an empty {@code REPEATED} column is an
+     * BigQueryAvroRecordSerializationSchemaITCase} uses on a populated array — panics the emulator
+     * with a nil pointer dereference, so the length is read instead; and {@code ARRAY_LENGTH} of an
+     * empty array comes back NULL where BigQuery returns 0, so the {@code IFNULL} is there to make
+     * the expected value the same on both. On real BigQuery an empty {@code REPEATED} column is an
      * empty array and never NULL, so the wrapper is a no-op there.
      */
     private static List<String> rows() throws InterruptedException {

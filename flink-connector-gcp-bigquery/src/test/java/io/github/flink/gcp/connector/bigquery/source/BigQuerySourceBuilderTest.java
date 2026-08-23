@@ -28,7 +28,7 @@ import io.github.flink.gcp.connector.bigquery.source.enumerator.DefaultReadSessi
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadClientSessionCreator;
 import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.apache.avro.generic.GenericRecord;
@@ -583,8 +583,8 @@ class BigQuerySourceBuilderTest {
                 .hasMessageNotContaining(path);
     }
 
-    private static BigQueryRowDeserializer<GenericRecord> deserializer() {
-        return BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON);
+    private static BigQueryRowDeserializationSchema<GenericRecord> deserializer() {
+        return BigQueryRowDeserializationSchema.genericRecord(TestRows.SCHEMA_JSON);
     }
 
     private static ReadClientRowStreamOpener opener(BigQuerySourceConfig<?> config) {

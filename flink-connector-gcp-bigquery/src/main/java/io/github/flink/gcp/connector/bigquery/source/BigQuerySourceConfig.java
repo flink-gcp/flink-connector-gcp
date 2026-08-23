@@ -23,7 +23,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreatorFactory;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 
 import javax.annotation.Nullable;
 
@@ -52,7 +52,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     private final boolean materializeViews;
     @Nullable private final QueryRunner queryRunner;
     private final String parentProject;
-    private final BigQueryRowDeserializer<T> deserializer;
+    private final BigQueryRowDeserializationSchema<T> deserializer;
     private final List<String> selectedFields;
     @Nullable private final String rowRestriction;
     @Nullable private final Instant snapshotTime;
@@ -172,7 +172,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     }
 
     /** Returns the deserializer converting rows into records. */
-    public BigQueryRowDeserializer<T> getDeserializer() {
+    public BigQueryRowDeserializationSchema<T> getDeserializer() {
         return deserializer;
     }
 
@@ -245,7 +245,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         private boolean materializeViews;
         @Nullable private QueryRunner queryRunner;
         private String parentProject;
-        private BigQueryRowDeserializer<T> deserializer;
+        private BigQueryRowDeserializationSchema<T> deserializer;
         private List<String> selectedFields = Collections.emptyList();
         @Nullable private String rowRestriction;
         @Nullable private Instant snapshotTime;
@@ -306,7 +306,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         }
 
         /** Sets the deserializer converting rows into records. */
-        Builder<T> deserializer(BigQueryRowDeserializer<T> deserializer) {
+        Builder<T> deserializer(BigQueryRowDeserializationSchema<T> deserializer) {
             this.deserializer = deserializer;
             return this;
         }

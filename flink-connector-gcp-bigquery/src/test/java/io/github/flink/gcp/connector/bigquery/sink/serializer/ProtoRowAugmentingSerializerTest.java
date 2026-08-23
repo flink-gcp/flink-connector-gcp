@@ -338,8 +338,8 @@ class ProtoRowAugmentingSerializerTest {
     void derivesSchemaSurfacesOncePerDestinationAndFingerprint() throws Exception {
         AtomicInteger tableSchemaCalls = new AtomicInteger();
         AtomicInteger descriptorCalls = new AtomicInteger();
-        BigQueryProtoSerializer<TestRecord> delegate =
-                new BigQueryProtoSerializer<>() {
+        BigQueryProtoSerializationSchema<TestRecord> delegate =
+                new BigQueryProtoSerializationSchema<>() {
                     private static final long serialVersionUID = 1L;
 
                     @Override
@@ -487,7 +487,8 @@ class ProtoRowAugmentingSerializerTest {
     }
 
     private static ProtoRowAugmentingSerializer<TestRecord> serializer(
-            BigQueryProtoSerializer<TestRecord> delegate, AdditionalFields<TestRecord> options) {
+            BigQueryProtoSerializationSchema<TestRecord> delegate,
+            AdditionalFields<TestRecord> options) {
         List<ProtoRowAugmentationField<? super TestRecord>> fields = new ArrayList<>();
         options.getFields().forEach(field -> fields.add(ProtoRowAugmentationField.physical(field)));
         return new ProtoRowAugmentingSerializer<>(
@@ -547,7 +548,7 @@ class ProtoRowAugmentingSerializerTest {
         }
     }
 
-    private static class TestSerializer extends BigQueryProtoSerializer<TestRecord> {
+    private static class TestSerializer extends BigQueryProtoSerializationSchema<TestRecord> {
         private static final long serialVersionUID = 1L;
 
         private final TableSchema schema;
@@ -593,7 +594,8 @@ class ProtoRowAugmentingSerializerTest {
         }
     }
 
-    private static final class MutableSerializer extends BigQueryProtoSerializer<TestRecord> {
+    private static final class MutableSerializer
+            extends BigQueryProtoSerializationSchema<TestRecord> {
         private static final long serialVersionUID = 1L;
 
         private boolean evolved;
