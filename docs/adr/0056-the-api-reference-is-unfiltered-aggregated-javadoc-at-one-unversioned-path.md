@@ -47,6 +47,7 @@ Four sub-decisions, the first two measured rather than assumed:
   through `<additionalJOptions>` — and it turns out not to be the check worth having. JavaDoc
   resolves `{@link}` itself rather than through doclint, so an unresolvable reference is
   reported regardless (two existed when this landed, both in `JsonDocumentSerializerOptions`,
+  now `JsonDocumentOptions`,
   left behind by [#125]'s fully-qualified-link rule); a reference the reader cannot follow is
   what a published reference must be free of, a missing `@param` is not. Nothing links out
   through a fetched index: no `<links>`, which is the only setting here that would probe a

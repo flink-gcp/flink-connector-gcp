@@ -62,7 +62,7 @@ import java.util.List;
  * written), and nested/repeated fields (including maps) are converted recursively.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
- * {@link ProtoMessageSerializer}).
+ * {@link ProtoMessageSerializationSchema}).
  */
 @Internal
 public final class ProtoRowConverter {

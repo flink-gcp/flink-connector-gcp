@@ -56,8 +56,8 @@ configured CDC metadata retains its established write-only behavior.
 Configuring it supplies an ordered, job-graph-serializable list of `AdditionalField` declarations.
 
 **The public declarations live beside the common serializer SPI.**
-`ProtoMessageSerializer`, `AvroRecordSerializer` and `JsonDocumentSerializer` all produce the
-`TableSchema`, protobuf descriptor and protobuf row bytes defined by `BigQueryProtoSerializer`.
+`ProtoMessageSerializationSchema`, `AvroRecordSerializationSchema` and `JsonDocumentSerializationSchema` all produce the
+`TableSchema`, protobuf descriptor and protobuf row bytes defined by `BigQueryProtoSerializationSchema`.
 The sink adds fields after that common boundary, so the public `AdditionalField` types belong in
 `sink.serializer`, not in a format-specific package or a generic utility package.
 Each provider still receives the original serializer input element.

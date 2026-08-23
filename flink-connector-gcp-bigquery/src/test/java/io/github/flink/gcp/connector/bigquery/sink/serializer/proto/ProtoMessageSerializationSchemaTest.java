@@ -29,17 +29,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Tests for {@link ProtoMessageSerializer}, using {@link Timestamp} as an arbitrary generated
- * message class (as the root record type its fields map to plain INT64 columns).
+ * Tests for {@link ProtoMessageSerializationSchema}, using {@link Timestamp} as an arbitrary
+ * generated message class (as the root record type its fields map to plain INT64 columns).
  */
-class ProtoMessageSerializerTest {
+class ProtoMessageSerializationSchemaTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my_dataset", "my_table");
 
     @Test
     void exposesTheLosslessTableSchema() {
-        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+        ProtoMessageSerializationSchema<Timestamp> serializer =
+                ProtoMessageSerializationSchema.of(Timestamp.class);
 
         com.google.cloud.bigquery.storage.v1.TableSchema schema =
                 serializer.getTableSchema(DESTINATION);
@@ -51,7 +52,8 @@ class ProtoMessageSerializerTest {
 
     @Test
     void derivesRowDescriptorFromMessageClass() {
-        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+        ProtoMessageSerializationSchema<Timestamp> serializer =
+                ProtoMessageSerializationSchema.of(Timestamp.class);
 
         Descriptors.Descriptor descriptor = serializer.getDescriptor(DESTINATION);
 
@@ -66,7 +68,8 @@ class ProtoMessageSerializerTest {
 
     @Test
     void cachesTheDerivedDescriptor() {
-        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+        ProtoMessageSerializationSchema<Timestamp> serializer =
+                ProtoMessageSerializationSchema.of(Timestamp.class);
 
         assertThat(serializer.getDescriptor(DESTINATION))
                 .isSameAs(serializer.getDescriptor(DESTINATION));
@@ -74,7 +77,8 @@ class ProtoMessageSerializerTest {
 
     @Test
     void serializedRowsParseAgainstTheRowDescriptor() throws Exception {
-        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+        ProtoMessageSerializationSchema<Timestamp> serializer =
+                ProtoMessageSerializationSchema.of(Timestamp.class);
         Timestamp record = Timestamp.newBuilder().setSeconds(123L).setNanos(456).build();
 
         DynamicMessage row =
@@ -90,8 +94,8 @@ class ProtoMessageSerializerTest {
     void carriesSchemaOptionsThroughToBothConversionSides() throws Exception {
         // StringValue's single string field stands in for a column holding JSON text: the schema
         // must say JSON while the value is still written through as a string.
-        ProtoMessageSerializer<StringValue> serializer =
-                ProtoMessageSerializer.of(
+        ProtoMessageSerializationSchema<StringValue> serializer =
+                ProtoMessageSerializationSchema.of(
                         StringValue.class,
                         ProtoSchemaOptions.builder().jsonFieldPath("value").build());
 
@@ -116,8 +120,8 @@ class ProtoMessageSerializerTest {
     void carriesTheGeographyMarkerThroughToBothConversionSides() throws Exception {
         // As above, with StringValue's single string field standing in for a column holding a
         // geometry literal.
-        ProtoMessageSerializer<StringValue> serializer =
-                ProtoMessageSerializer.of(
+        ProtoMessageSerializationSchema<StringValue> serializer =
+                ProtoMessageSerializationSchema.of(
                         StringValue.class,
                         ProtoSchemaOptions.builder().geographyFieldPath("value").build());
 
@@ -144,7 +148,7 @@ class ProtoMessageSerializerTest {
     void schemaMappingProblemsFailWhenTheSerializerIsCreated() {
         assertThatThrownBy(
                         () ->
-                                ProtoMessageSerializer.of(
+                                ProtoMessageSerializationSchema.of(
                                         StringValue.class,
                                         ProtoSchemaOptions.builder()
                                                 .geographyFieldPath("no_such_field")
@@ -155,7 +159,7 @@ class ProtoMessageSerializerTest {
         // The JSON marker gets the same treatment, which is the half this closes for free.
         assertThatThrownBy(
                         () ->
-                                ProtoMessageSerializer.of(
+                                ProtoMessageSerializationSchema.of(
                                         StringValue.class,
                                         ProtoSchemaOptions.builder()
                                                 .jsonFieldPath("no_such_field")
@@ -166,11 +170,12 @@ class ProtoMessageSerializerTest {
 
     @Test
     void survivesJavaSerialization() throws Exception {
-        ProtoMessageSerializer<Timestamp> serializer = ProtoMessageSerializer.of(Timestamp.class);
+        ProtoMessageSerializationSchema<Timestamp> serializer =
+                ProtoMessageSerializationSchema.of(Timestamp.class);
         // Initialize transient state before cloning to prove it is rebuilt, not carried over.
         serializer.getDescriptor(DESTINATION);
 
-        ProtoMessageSerializer<Timestamp> copy = InstantiationUtil.clone(serializer);
+        ProtoMessageSerializationSchema<Timestamp> copy = InstantiationUtil.clone(serializer);
 
         Timestamp record = Timestamp.newBuilder().setSeconds(9L).setNanos(1000).build();
         DynamicMessage row =

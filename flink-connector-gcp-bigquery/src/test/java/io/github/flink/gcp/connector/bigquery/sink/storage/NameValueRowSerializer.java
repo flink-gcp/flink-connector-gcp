@@ -23,14 +23,14 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 
 /**
  * Test serializer for rows travelling as {@code "name|value"} strings, written into {@link #SCHEMA}
  * ({@code name STRING REQUIRED, value INT64 NULLABLE}). Shared by the storage-family real-GCP
  * ITCases, whose destination tables are created from {@link #SCHEMA} up front.
  */
-final class NameValueRowSerializer extends BigQueryProtoSerializer<String> {
+final class NameValueRowSerializer extends BigQueryProtoSerializationSchema<String> {
     private static final long serialVersionUID = 1L;
 
     static final TableSchema SCHEMA =

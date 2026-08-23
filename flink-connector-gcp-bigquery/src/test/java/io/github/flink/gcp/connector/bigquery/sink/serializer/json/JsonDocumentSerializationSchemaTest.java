@@ -38,8 +38,8 @@ import java.time.LocalDateTime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link JsonDocumentSerializer}. */
-class JsonDocumentSerializerTest {
+/** Tests for {@link JsonDocumentSerializationSchema}. */
+class JsonDocumentSerializationSchemaTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "dataset", "table");
@@ -57,7 +57,7 @@ class JsonDocumentSerializerTest {
                 .build();
     }
 
-    private static DynamicMessage row(JsonDocumentSerializer serializer, String json)
+    private static DynamicMessage row(JsonDocumentSerializationSchema serializer, String json)
             throws IOException {
         return DynamicMessage.parseFrom(
                 serializer.getDescriptor(DESTINATION), serializer.serialize(json));
@@ -69,7 +69,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void convertsJsonDocumentsAgainstTheSuppliedSchema() throws Exception {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         DynamicMessage row = row(serializer, "{\"name\":\"alice\",\"n\":3}");
 
@@ -79,14 +79,14 @@ class JsonDocumentSerializerTest {
 
     @Test
     void theSuppliedSchemaIsTheSchemaTheSinkSees() {
-        assertThat(JsonDocumentSerializer.of(schema()).getTableSchema(DESTINATION))
+        assertThat(JsonDocumentSerializationSchema.of(schema()).getTableSchema(DESTINATION))
                 .isEqualTo(schema());
     }
 
     @Test
     void acceptsTheRestClientSchemaForm() {
-        JsonDocumentSerializer serializer =
-                JsonDocumentSerializer.of(
+        JsonDocumentSerializationSchema serializer =
+                JsonDocumentSerializationSchema.of(
                         com.google.cloud.bigquery.Schema.of(
                                 Field.newBuilder("name", StandardSQLTypeName.STRING)
                                         .setMode(Field.Mode.REQUIRED)
@@ -123,7 +123,7 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Type.JSON,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(wide);
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(wide);
 
         DynamicMessage row =
                 row(
@@ -147,7 +147,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void jsonNullLeavesTheColumnUnset() throws Exception {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         DynamicMessage row = row(serializer, "{\"name\":\"alice\",\"n\":null}");
 
@@ -156,7 +156,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void malformedJsonIsRowLevelFailure() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         assertThatThrownBy(() -> serializer.serialize("{not json"))
                 .isInstanceOf(IOException.class)
@@ -168,7 +168,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void emptyJsonObjectIsRowLevelFailureWithItsOwnMessage() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         // The client library's own message for this is a bare "JSONObject is empty."
         assertThatThrownBy(() -> serializer.serialize("{}"))
@@ -178,7 +178,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void missingRequiredColumnIsRowLevelFailure() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         assertThatThrownBy(() -> serializer.serialize("{\"n\":1}"))
                 .isInstanceOf(IOException.class)
@@ -187,7 +187,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void valueThatWillNotConvertIsRowLevelFailure() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         // "n" alone would match the wrapper prefix and every other failure this class throws.
         assertThatThrownBy(() -> serializer.serialize("{\"name\":\"a\",\"n\":\"not a number\"}"))
@@ -198,7 +198,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void unknownFieldFailsTheRecordByDefault() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         assertThatThrownBy(() -> serializer.serialize("{\"name\":\"a\",\"extra\":1}"))
                 .isInstanceOf(IOException.class)
@@ -207,10 +207,9 @@ class JsonDocumentSerializerTest {
 
     @Test
     void unknownFieldIsDroppedWhenAskedFor() throws Exception {
-        JsonDocumentSerializer serializer =
-                JsonDocumentSerializer.of(
-                        schema(),
-                        JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+        JsonDocumentSerializationSchema serializer =
+                JsonDocumentSerializationSchema.of(
+                        schema(), JsonDocumentOptions.builder().ignoreUnknownFields().build());
 
         DynamicMessage row = row(serializer, "{\"name\":\"a\",\"extra\":1}");
 
@@ -219,7 +218,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void cachesTheDerivedDescriptor() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         assertThat(serializer.getDescriptor(DESTINATION))
                 .isSameAs(serializer.getDescriptor(DESTINATION));
@@ -227,19 +226,19 @@ class JsonDocumentSerializerTest {
 
     @Test
     void schemaIsStaticSoThereIsNoFingerprint() {
-        assertThat(JsonDocumentSerializer.of(schema()).getSchemaFingerprint(DESTINATION)).isNull();
+        assertThat(JsonDocumentSerializationSchema.of(schema()).getSchemaFingerprint(DESTINATION))
+                .isNull();
     }
 
     @Test
     void survivesJobGraphSerializationCarryingItsOptions() throws Exception {
-        JsonDocumentSerializer original =
-                JsonDocumentSerializer.of(
-                        schema(),
-                        JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+        JsonDocumentSerializationSchema original =
+                JsonDocumentSerializationSchema.of(
+                        schema(), JsonDocumentOptions.builder().ignoreUnknownFields().build());
         // Use it first, so the transient descriptor exists and has to be rebuilt.
         original.serialize("{\"name\":\"a\"}");
 
-        JsonDocumentSerializer copy = InstantiationUtil.clone(original);
+        JsonDocumentSerializationSchema copy = InstantiationUtil.clone(original);
 
         assertThat(copy.getTableSchema(DESTINATION)).isEqualTo(schema());
         assertThat(copy.serialize("{\"name\":\"b\",\"extra\":1}"))
@@ -257,7 +256,7 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
 
-        assertThatThrownBy(() -> JsonDocumentSerializer.of(unsupported))
+        assertThatThrownBy(() -> JsonDocumentSerializationSchema.of(unsupported))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -281,7 +280,7 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
 
-        assertThatThrownBy(() -> JsonDocumentSerializer.of(ambiguous))
+        assertThatThrownBy(() -> JsonDocumentSerializationSchema.of(ambiguous))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage(
                         "Failed to derive a BigQuery-storage compatible descriptor for the supplied"
@@ -290,27 +289,31 @@ class JsonDocumentSerializerTest {
 
     @Test
     void rejectsEmptyAndNullSchemas() {
-        assertThatThrownBy(() -> JsonDocumentSerializer.of(TableSchema.getDefaultInstance()))
+        assertThatThrownBy(
+                        () -> JsonDocumentSerializationSchema.of(TableSchema.getDefaultInstance()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("at least one field");
-        assertThatThrownBy(() -> JsonDocumentSerializer.of((TableSchema) null))
+        assertThatThrownBy(() -> JsonDocumentSerializationSchema.of((TableSchema) null))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> JsonDocumentSerializer.of((com.google.cloud.bigquery.Schema) null))
+        assertThatThrownBy(
+                        () ->
+                                JsonDocumentSerializationSchema.of(
+                                        (com.google.cloud.bigquery.Schema) null))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> JsonDocumentSerializer.of(schema(), null))
+        assertThatThrownBy(() -> JsonDocumentSerializationSchema.of(schema(), null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void rejectsNullRecords() {
-        assertThatThrownBy(() -> JsonDocumentSerializer.of(schema()).serialize(null))
+        assertThatThrownBy(() -> JsonDocumentSerializationSchema.of(schema()).serialize(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void descriptorFieldsCarryTheSchemaFieldNames() {
         Descriptors.Descriptor descriptor =
-                JsonDocumentSerializer.of(schema()).getDescriptor(DESTINATION);
+                JsonDocumentSerializationSchema.of(schema()).getDescriptor(DESTINATION);
 
         assertThat(descriptor.getFields())
                 .extracting(Descriptors.FieldDescriptor::getName)
@@ -327,7 +330,7 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Type.BYTES,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(withBytes);
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(withBytes);
 
         DynamicMessage row = row(serializer, "{\"blob\":[104,105]}");
         assertThat(value(row, "blob")).isEqualTo(ByteString.copyFromUtf8("hi"));
@@ -342,7 +345,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void aRecordCarryingMoreThanOneJsonValueIsRowLevelFailure() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         // Two concatenated documents — a mis-split newline-delimited stream. Parsing only the
         // first and dropping the rest would be silent data loss.
@@ -356,7 +359,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void trailingWhitespaceIsFine() throws Exception {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         assertThat(value(row(serializer, "  {\"name\":\"a\"}\n\n"), "name")).isEqualTo("a");
     }
@@ -371,7 +374,7 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Type.JSON,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(withJson);
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(withJson);
 
         assertThat(value(row(serializer, "{\"payload\":\"{\\\"k\\\":1}\"}"), "payload"))
                 .isEqualTo("{\"k\":1}");
@@ -398,7 +401,8 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Type.GEOGRAPHY,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(withGeography);
+        JsonDocumentSerializationSchema serializer =
+                JsonDocumentSerializationSchema.of(withGeography);
 
         assertThat(value(row(serializer, "{\"boundary\":\"POINT(1 2)\"}"), "boundary"))
                 .isEqualTo("POINT(1 2)");
@@ -424,7 +428,8 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Type.TIMESTAMP,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(withTimestamp);
+        JsonDocumentSerializationSchema serializer =
+                JsonDocumentSerializationSchema.of(withTimestamp);
 
         // Pinned deliberately, and the trap worth knowing about: a TIMESTAMP column reads a bare
         // number as epoch *microseconds*, so the two encodings a JSON document usually carries —
@@ -444,7 +449,7 @@ class JsonDocumentSerializerTest {
                                         TableFieldSchema.Type.STRING,
                                         TableFieldSchema.Mode.NULLABLE))
                         .build();
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(mixedCase);
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(mixedCase);
 
         // The descriptor lowercases, and the converter matches case-insensitively — so a key that
         // does not match the column's spelling is not an "unknown field".
@@ -457,7 +462,7 @@ class JsonDocumentSerializerTest {
 
     @Test
     void aConvertedFailureCarriesTheLibrarysOwnDiagnostic() {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         // Pins the shape of what a FailedRow carries. The client library's message is a map keyed
         // by row index, which reads oddly for a serializer handling one record at a time — but it
@@ -471,20 +476,20 @@ class JsonDocumentSerializerTest {
 
     @Test
     void optionsReachConversionThroughTheRestSchemaForm() throws Exception {
-        JsonDocumentSerializer serializer =
-                JsonDocumentSerializer.of(
+        JsonDocumentSerializationSchema serializer =
+                JsonDocumentSerializationSchema.of(
                         com.google.cloud.bigquery.Schema.of(
                                 Field.newBuilder("name", StandardSQLTypeName.STRING)
                                         .setMode(Field.Mode.REQUIRED)
                                         .build()),
-                        JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+                        JsonDocumentOptions.builder().ignoreUnknownFields().build());
 
         assertThat(value(row(serializer, "{\"name\":\"a\",\"extra\":1}"), "name")).isEqualTo("a");
     }
 
     @Test
     void keysDifferingOnlyByCaseCollapseIntoOneColumn() throws Exception {
-        JsonDocumentSerializer serializer = JsonDocumentSerializer.of(schema());
+        JsonDocumentSerializationSchema serializer = JsonDocumentSerializationSchema.of(schema());
 
         // Pinned deliberately: matching is case-insensitive, so these are not two fields and
         // neither is "unknown". One value wins and which one is not defined — org.json holds the

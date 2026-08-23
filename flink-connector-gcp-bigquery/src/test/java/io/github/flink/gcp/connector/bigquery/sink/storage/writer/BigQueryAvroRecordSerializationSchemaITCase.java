@@ -26,7 +26,7 @@ import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.TableId;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
 /**
- * Integration test for {@link AvroRecordSerializer} against the BigQuery emulator
+ * Integration test for {@link AvroRecordSerializationSchema} against the BigQuery emulator
  * (goccy/bigquery-emulator): Avro records written through the {@link BigQuerySink} facade into a
  * table created from the serializer's own derived schema.
  *
@@ -73,7 +73,7 @@ import static org.assertj.core.api.Assertions.tuple;
  * BigQueryDefaultStreamWriterITCase}: on a connection opened after an earlier one has closed, only
  * the first {@code AppendRows} request is durably applied.
  */
-class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
+class BigQueryAvroRecordSerializationSchemaITCase extends AbstractBigQueryEmulatorITCase {
 
     private static final String SCHEMA_JSON =
             "{\"type\":\"record\",\"name\":\"Event\",\"namespace\":\"it\",\"fields\":["
@@ -119,8 +119,8 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
     @Test
     void writesAvroRecordsThroughTheFacade() throws Exception {
         Schema schema = new Schema.Parser().parse(SCHEMA_JSON);
-        AvroRecordSerializer serializer =
-                AvroRecordSerializer.of(
+        AvroRecordSerializationSchema serializer =
+                AvroRecordSerializationSchema.of(
                         schema,
                         AvroSchemaOptions.builder()
                                 .jsonFieldPath("payload")
@@ -202,8 +202,8 @@ class BigQueryAvroSerializerITCase extends AbstractBigQueryEmulatorITCase {
     @Test
     void writesAvroRecordsUnderTheAllNullableDefault() throws Exception {
         Schema schema = new Schema.Parser().parse(SCHEMA_JSON);
-        AvroRecordSerializer serializer =
-                AvroRecordSerializer.of(
+        AvroRecordSerializationSchema serializer =
+                AvroRecordSerializationSchema.of(
                         schema,
                         AvroSchemaOptions.builder()
                                 .jsonFieldPath("payload")

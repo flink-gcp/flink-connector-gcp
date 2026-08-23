@@ -52,7 +52,7 @@ own:
   the jar, which no user can then satisfy by putting commons-logging in `lib/`. Two named
   patterns instead. `com.google` is the standing exception, wholesale in every SQL module, and
   it pays the same cost for `com.google.appengine` — an optional dependency already absent.
-- **`org.apache.avro` is relocated, which makes the uber-jar's `AvroRecordSerializer` unusable
+- **`org.apache.avro` is relocated, which makes the uber-jar's `AvroRecordSerializationSchema` unusable
   from a DataStream job** — its signature there takes a relocated `IndexedRecord`. Accepted
   rather than exempted: the same trade the Pub/Sub jar makes with `PubsubMessage`, and leaving
   Avro alone would put a second copy beside whatever `flink-avro` a SQL deployment carries. Both

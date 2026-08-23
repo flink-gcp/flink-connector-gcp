@@ -28,7 +28,7 @@ import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -174,7 +174,7 @@ class CdcProtoRowFieldsTest {
     @Test
     void preservesNestedDescriptorsAndSkipsReservedFieldNumbers() throws Exception {
         Descriptors.Descriptor nested = nestedDescriptorWithFieldNumber(18_999);
-        BigQueryProtoSerializer<TestRecord> serializer = descriptorOnlySerializer(nested);
+        BigQueryProtoSerializationSchema<TestRecord> serializer = descriptorOnlySerializer(nested);
         ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(serializer, record -> "1");
 
@@ -196,8 +196,8 @@ class CdcProtoRowFieldsTest {
                         optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64),
                         optionalField("name", 2, FieldDescriptorProto.Type.TYPE_STRING));
         AtomicInteger schemaVersion = new AtomicInteger();
-        BigQueryProtoSerializer<TestRecord> serializer =
-                new BigQueryProtoSerializer<>() {
+        BigQueryProtoSerializationSchema<TestRecord> serializer =
+                new BigQueryProtoSerializationSchema<>() {
                     private static final long serialVersionUID = 1L;
 
                     @Override
@@ -300,7 +300,7 @@ class CdcProtoRowFieldsTest {
     }
 
     private static ProtoRowAugmentingSerializer<TestRecord> cdcSerializer(
-            BigQueryProtoSerializer<TestRecord> serializer,
+            BigQueryProtoSerializationSchema<TestRecord> serializer,
             CdcSequenceNumberProvider<TestRecord> sequenceProvider) {
         return cdcSerializer(
                 serializer,
@@ -310,7 +310,8 @@ class CdcProtoRowFieldsTest {
     }
 
     private static ProtoRowAugmentingSerializer<TestRecord> cdcSerializer(
-            BigQueryProtoSerializer<TestRecord> serializer, CdcOptions<TestRecord> options) {
+            BigQueryProtoSerializationSchema<TestRecord> serializer,
+            CdcOptions<TestRecord> options) {
         return new ProtoRowAugmentingSerializer<>(
                 serializer,
                 CdcProtoRowFields.create(options),
@@ -424,9 +425,9 @@ class CdcProtoRowFieldsTest {
                 .build();
     }
 
-    private static BigQueryProtoSerializer<TestRecord> descriptorOnlySerializer(
+    private static BigQueryProtoSerializationSchema<TestRecord> descriptorOnlySerializer(
             Descriptors.Descriptor descriptor) {
-        return new BigQueryProtoSerializer<>() {
+        return new BigQueryProtoSerializationSchema<>() {
             private static final long serialVersionUID = 1L;
 
             @Override
@@ -446,7 +447,7 @@ class CdcProtoRowFieldsTest {
         };
     }
 
-    private static final class TestSerializer extends BigQueryProtoSerializer<TestRecord> {
+    private static final class TestSerializer extends BigQueryProtoSerializationSchema<TestRecord> {
         private static final long serialVersionUID = 1L;
 
         @Override

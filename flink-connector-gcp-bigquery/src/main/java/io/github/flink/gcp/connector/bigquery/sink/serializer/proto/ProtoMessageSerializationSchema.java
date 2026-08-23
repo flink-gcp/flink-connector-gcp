@@ -24,14 +24,14 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import java.io.IOException;
 
 /**
- * A {@link BigQueryProtoSerializer} for records that already are protobuf messages.
+ * A {@link BigQueryProtoSerializationSchema} for records that already are protobuf messages.
  *
  * <p>The BigQuery table schema is derived from the message's descriptor (see {@link
  * ProtoToTableSchemaConverter} for the type mapping), and each record is rewritten into a
@@ -52,7 +52,8 @@ import java.io.IOException;
  * @param <T> the protobuf message type of the records
  */
 @Public
-public final class ProtoMessageSerializer<T extends Message> extends BigQueryProtoSerializer<T> {
+public final class ProtoMessageSerializationSchema<T extends Message>
+        extends BigQueryProtoSerializationSchema<T> {
 
     private static final long serialVersionUID = 1L;
 
@@ -61,7 +62,7 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
 
     private final LazyDerivedState<ConversionState> conversionState = new LazyDerivedState<>();
 
-    private ProtoMessageSerializer(Class<T> messageClass, ProtoSchemaOptions options) {
+    private ProtoMessageSerializationSchema(Class<T> messageClass, ProtoSchemaOptions options) {
         this.messageClass =
                 Preconditions.checkNotNull(messageClass, "messageClass must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
@@ -83,7 +84,7 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
      * @param <T> the message type
      * @return the serializer
      */
-    public static <T extends Message> ProtoMessageSerializer<T> of(Class<T> messageClass) {
+    public static <T extends Message> ProtoMessageSerializationSchema<T> of(Class<T> messageClass) {
         return of(messageClass, ProtoSchemaOptions.defaults());
     }
 
@@ -96,9 +97,9 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
      * @param <T> the message type
      * @return the serializer
      */
-    public static <T extends Message> ProtoMessageSerializer<T> of(
+    public static <T extends Message> ProtoMessageSerializationSchema<T> of(
             Class<T> messageClass, ProtoSchemaOptions options) {
-        return new ProtoMessageSerializer<>(messageClass, options);
+        return new ProtoMessageSerializationSchema<>(messageClass, options);
     }
 
     @Override
@@ -117,7 +118,7 @@ public final class ProtoMessageSerializer<T extends Message> extends BigQueryPro
     }
 
     private ConversionState state() {
-        return conversionState.get(this, ProtoMessageSerializer::deriveConversionState);
+        return conversionState.get(this, ProtoMessageSerializationSchema::deriveConversionState);
     }
 
     private ConversionState deriveConversionState() {

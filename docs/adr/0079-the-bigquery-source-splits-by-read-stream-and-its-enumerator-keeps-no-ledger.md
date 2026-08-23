@@ -173,7 +173,7 @@ the Avro-namespace reason above.
   unannotated entry. A job using the shipped `GenericRecord` deserializer needs `flink-avro` on its
   classpath — which it needs anyway to move a `GenericRecord` between operators.
 - The SQL uber-jar relocates `org.apache.avro`, so the shaded artifact cannot serve the
-  `GenericRecord` deserializer; that is the trade ADR-0035 already made for `AvroRecordSerializer`,
+  `GenericRecord` deserializer; that is the trade ADR-0035 already made for `AvroRecordSerializationSchema`,
   and a DataStream job takes the plain connector jar.
 - Multiple streams are not covered by a real-GCP test: BigQuery decides the count from the table's
   size, and a table large enough to be split costs more than the assignment logic is worth there.

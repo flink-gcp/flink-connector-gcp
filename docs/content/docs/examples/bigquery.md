@@ -164,7 +164,7 @@ Pass the `KafkaSource<GenericRecord>` above as `kafkaSource`:
 {{< java-snippet file="BigQueryExamplesDebeziumPostgreSqlCdc.java" tag="bigquery-debezium-postgresql-cdc-datastream" >}}
 
 The adapter selects `after` for snapshot, create and update operations and `before` for a delete.
-The serializer passes only that nested row to `AvroRecordSerializer`; the two CDC providers still
+The serializer passes only that nested row to `AvroRecordSerializationSchema`; the two CDC providers still
 receive the complete envelope and derive the operation and sequence from it.
 The example uses the default stream because BigQuery CDC is supported only by
 `STORAGE_API_AT_LEAST_ONCE`.
@@ -370,7 +370,7 @@ Pass the `KafkaSource<String>` above as `kafkaSource`, and the destination table
 {{< java-snippet file="BigQueryExamplesTiCdc.java" tag="bigquery-ticdc-cdc-datastream" >}}
 
 The adapter selects `after` for create and update operations and `before` for a delete, and passes
-only that nested row to `JsonDocumentSerializer`.
+only that nested row to `JsonDocumentSerializationSchema`.
 JSON carries no schema, so that serializer takes the destination schema rather than deriving one.
 The two CDC providers still receive the complete message and derive the operation and sequence from
 it.

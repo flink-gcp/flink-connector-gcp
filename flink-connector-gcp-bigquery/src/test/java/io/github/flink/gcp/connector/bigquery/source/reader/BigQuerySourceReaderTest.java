@@ -23,7 +23,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigquery.source.TestRows;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.Awaits;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
@@ -178,8 +178,8 @@ class BigQuerySourceReaderTest {
                 opener);
     }
 
-    private static BigQueryRowDeserializer<String> nameDeserializer() {
-        return new BigQueryRowDeserializer<String>() {
+    private static BigQueryRowDeserializationSchema<String> nameDeserializer() {
+        return new BigQueryRowDeserializationSchema<String>() {
             private static final long serialVersionUID = 1L;
 
             @Override

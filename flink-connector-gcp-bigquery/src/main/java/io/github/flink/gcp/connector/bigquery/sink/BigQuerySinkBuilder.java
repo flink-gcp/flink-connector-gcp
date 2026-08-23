@@ -28,7 +28,7 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -51,7 +51,7 @@ public class BigQuerySinkBuilder<T> {
 
     private WriteMethod writeMethod = WriteMethod.STORAGE_API_AT_LEAST_ONCE;
     private DestinationResolver<? super T> destinationResolver;
-    private BigQueryProtoSerializer<? super T> serializer;
+    private BigQueryProtoSerializationSchema<? super T> serializer;
     private AdditionalFields<? super T> additionalFields;
     private CdcOptions<? super T> cdcOptions;
     private CdcTableOptionsProvider cdcTableOptionsProvider =
@@ -122,7 +122,8 @@ public class BigQuerySinkBuilder<T> {
      * @param serializer the serializer
      * @return this builder
      */
-    public BigQuerySinkBuilder<T> serializer(BigQueryProtoSerializer<? super T> serializer) {
+    public BigQuerySinkBuilder<T> serializer(
+            BigQueryProtoSerializationSchema<? super T> serializer) {
         this.serializer = Preconditions.checkNotNull(serializer, "serializer must not be null");
         return this;
     }

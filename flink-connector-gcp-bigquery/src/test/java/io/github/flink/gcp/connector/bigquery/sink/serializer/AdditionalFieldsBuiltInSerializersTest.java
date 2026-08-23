@@ -23,9 +23,9 @@ import com.google.protobuf.Timestamp;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -46,7 +46,7 @@ class AdditionalFieldsBuiltInSerializersTest {
         Timestamp record = Timestamp.newBuilder().setSeconds(123L).build();
 
         assertAdditionalField(
-                ProtoMessageSerializer.of(Timestamp.class),
+                ProtoMessageSerializationSchema.of(Timestamp.class),
                 record,
                 value -> Long.toString(value.getSeconds()),
                 "123");
@@ -63,7 +63,10 @@ class AdditionalFieldsBuiltInSerializersTest {
         record.put(0, "alice");
 
         assertAdditionalField(
-                AvroRecordSerializer.of(schema), record, value -> value.get(0).toString(), "alice");
+                AvroRecordSerializationSchema.of(schema),
+                record,
+                value -> value.get(0).toString(),
+                "alice");
     }
 
     @Test
@@ -78,11 +81,12 @@ class AdditionalFieldsBuiltInSerializersTest {
                                         .setMode(TableFieldSchema.Mode.REQUIRED))
                         .build();
 
-        assertAdditionalField(JsonDocumentSerializer.of(schema), record, value -> value, record);
+        assertAdditionalField(
+                JsonDocumentSerializationSchema.of(schema), record, value -> value, record);
     }
 
     private static <T> void assertAdditionalField(
-            BigQueryProtoSerializer<? super T> serializer,
+            BigQueryProtoSerializationSchema<? super T> serializer,
             T record,
             AdditionalFieldValueProvider<? super T> provider,
             String expectedValue)

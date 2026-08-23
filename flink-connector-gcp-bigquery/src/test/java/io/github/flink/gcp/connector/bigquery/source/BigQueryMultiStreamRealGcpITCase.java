@@ -30,7 +30,7 @@ import org.apache.flink.util.CloseableIterator;
 
 import io.github.flink.gcp.connector.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -181,7 +181,7 @@ class BigQueryMultiStreamRealGcpITCase {
                 // The public dataset cannot be billed for its own reads, so the session belongs to
                 // the project the gated suite runs in.
                 .parentProject(RealBigQuery.project())
-                .deserializer(BigQueryRowDeserializer.genericRecord(READER_SCHEMA))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(READER_SCHEMA))
                 .snapshotTime(snapshot)
                 .build();
     }

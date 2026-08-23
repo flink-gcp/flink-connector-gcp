@@ -25,7 +25,7 @@ import java.util.Objects;
  * Options gating connector-driven destination table schema updates.
  *
  * <p>When the serializer's schema (from {@link
- * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer#getTableSchema})
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema#getTableSchema})
  * evolves past the destination table's schema, the sink can update the table itself via the
  * BigQuery API before continuing to write. The update is a <em>union</em>: existing table fields
  * are never dropped or reordered, new fields are appended, and field type changes are always

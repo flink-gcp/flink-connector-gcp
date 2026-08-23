@@ -31,10 +31,10 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.SpannerCdcSequenceNumber;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoSchemaOptions;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -65,7 +65,7 @@ final class JavadocBigQueryExamples {
         Source<GenericRecord, ?, ?> source =
                 BigQuerySource.<GenericRecord>builder()
                         .table(TableDestination.of("my-project", "my_dataset", "my_table"))
-                        .deserializer(BigQueryRowDeserializer.genericRecord(schema))
+                        .deserializer(BigQueryRowDeserializationSchema.genericRecord(schema))
                         .rowRestriction("state = 'CA'")
                         .build();
 
@@ -134,7 +134,8 @@ final class JavadocBigQueryExamples {
         }
     }
 
-    private static final class MyEventProtoSerializer extends BigQueryProtoSerializer<MyEvent> {
+    private static final class MyEventProtoSerializer
+            extends BigQueryProtoSerializationSchema<MyEvent> {
 
         private static final long serialVersionUID = 1L;
 

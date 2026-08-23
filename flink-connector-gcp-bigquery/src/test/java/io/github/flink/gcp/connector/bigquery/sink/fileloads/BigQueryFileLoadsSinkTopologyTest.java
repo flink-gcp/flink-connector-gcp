@@ -35,7 +35,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.GcsStagingStorage;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
@@ -77,7 +77,7 @@ class BigQueryFileLoadsSinkTopologyTest {
     }
 
     /** A trivial serializable test serializer. */
-    private static class TestSerializer extends BigQueryProtoSerializer<Object> {
+    private static class TestSerializer extends BigQueryProtoSerializationSchema<Object> {
         private static final long serialVersionUID = 1L;
 
         @Override

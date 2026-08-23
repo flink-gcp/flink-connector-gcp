@@ -20,7 +20,7 @@ import org.apache.flink.api.connector.source.Source;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -39,7 +39,7 @@ final class BigQueryExamplesReadingOneColumn {
         Source<GenericRecord, ?, ?> source =
                 BigQuerySource.<GenericRecord>builder()
                         .table(TableDestination.of("my-project", "analytics", "events"))
-                        .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                        .deserializer(BigQueryRowDeserializationSchema.genericRecord(readerSchema))
                         .selectedFields("user_id")
                         .rowRestriction("event_date = '2026-08-01' AND country = 'JP'")
                         .build();

@@ -26,7 +26,7 @@ import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
 
 public class BigQueryQuickstartWrite {
 
@@ -49,7 +49,7 @@ public class BigQueryQuickstartWrite {
                 .sinkTo(
                         BigQuerySink.<String>builder()
                                 .table(TableDestination.of("my-project", "my_dataset", "orders"))
-                                .serializer(JsonDocumentSerializer.of(schema))
+                                .serializer(JsonDocumentSerializationSchema.of(schema))
                                 .build());
 
         env.execute("bigquery-quickstart");

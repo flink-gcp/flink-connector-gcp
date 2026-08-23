@@ -18,22 +18,22 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 
 /**
  * Base for the FILE_LOADS ITCase serializers: one schema for every destination, and a row
  * descriptor derived once. Subclasses supply {@link #getTableSchema} and {@link #serialize} only.
  *
- * <p>The descriptor is the whole point. {@link BigQueryProtoSerializer#getDescriptor} already
- * derives one from the table schema and its javadoc asks implementations to override it with a
- * cached one — which is all this does, so nothing here repeats the conversion or its checked
+ * <p>The descriptor is the whole point. {@link BigQueryProtoSerializationSchema#getDescriptor}
+ * already derives one from the table schema and its javadoc asks implementations to override it
+ * with a cached one — which is all this does, so nothing here repeats the conversion or its checked
  * exception.
  *
  * <p>The schema arrives as an overridden method rather than a constructor argument so that nothing
  * new is captured when the sink is Java-serialized into the job graph: subclasses return their own
  * {@code static final} constant, and the cached descriptor is {@code transient}.
  */
-abstract class FixedSchemaProtoSerializer<T> extends BigQueryProtoSerializer<T> {
+abstract class FixedSchemaProtoSerializer<T> extends BigQueryProtoSerializationSchema<T> {
 
     private static final long serialVersionUID = 1L;
 

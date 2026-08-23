@@ -34,7 +34,7 @@ import java.util.Objects;
  * CreateDisposition#CREATE_IF_NEEDED}: time partitioning and clustering.
  *
  * <p>The table <em>schema</em> is not part of these options — it always comes from {@link
- * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer#getTableSchema}.
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema#getTableSchema}.
  * Partitioning and clustering only affect table creation. CDC properties are configured through
  * {@link CdcTableOptions} because they also describe existing-table verification and
  * reconciliation.

@@ -29,7 +29,7 @@ import io.github.flink.gcp.connector.bigquery.source.query.BigQueryQueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryJobIdentity;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryResult;
 import io.github.flink.gcp.connector.bigquery.source.query.QuerySpec;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.AfterAll;
@@ -145,7 +145,7 @@ class BigQueryQuerySourceRealGcpITCase {
                                         .materializeViews()
                                         .selectedFields("id")
                                         .deserializer(
-                                                BigQueryRowDeserializer.genericRecord(
+                                                BigQueryRowDeserializationSchema.genericRecord(
                                                         READER_SCHEMA))
                                         .build(),
                                 WatermarkStrategy.noWatermarks(),
@@ -171,7 +171,7 @@ class BigQueryQuerySourceRealGcpITCase {
                                         .table(RealBigQuery.destination(TABLE))
                                         .materializeViews()
                                         .deserializer(
-                                                BigQueryRowDeserializer.genericRecord(
+                                                BigQueryRowDeserializationSchema.genericRecord(
                                                         READER_SCHEMA))
                                         .build(),
                                 WatermarkStrategy.noWatermarks(),
@@ -192,7 +192,7 @@ class BigQueryQuerySourceRealGcpITCase {
         Source<GenericRecord, ?, ?> source =
                 BigQuerySource.<GenericRecord>builder()
                         .table(RealBigQuery.destination(VIEW))
-                        .deserializer(BigQueryRowDeserializer.genericRecord(READER_SCHEMA))
+                        .deserializer(BigQueryRowDeserializationSchema.genericRecord(READER_SCHEMA))
                         .build();
 
         assertThatThrownBy(
@@ -314,7 +314,8 @@ class BigQueryQuerySourceRealGcpITCase {
                 BigQuerySource.<GenericRecord>builder()
                         .query("SELECT id FROM " + RealBigQuery.tablePath(VIEW))
                         .parentProject(RealBigQuery.project())
-                        .deserializer(BigQueryRowDeserializer.genericRecord(READER_SCHEMA));
+                        .deserializer(
+                                BigQueryRowDeserializationSchema.genericRecord(READER_SCHEMA));
 
         List<Long> ids = new ArrayList<>();
         try (CloseableIterator<GenericRecord> records =

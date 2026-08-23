@@ -29,7 +29,7 @@ CREATE TABLE orders (
 ```
 
 This jar is for SQL. A DataStream job should depend on `flink-connector-gcp-bigquery` instead: the
-uber-jar relocates Avro, so the `AvroRecordSerializer` inside it takes a relocated `IndexedRecord`
+uber-jar relocates Avro, so the `AvroRecordSerializationSchema` inside it takes a relocated `IndexedRecord`
 that an ordinary job cannot supply.
 
 ## Bundled dependencies

@@ -19,10 +19,14 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-20 ([#63], applied to BigQuery first); the layer and naming rules settled
   2026-07-26 ([#119], [#121], [#125]); the Cloud Tasks example's premise updated 2026-08-22
-  ([#937], see ADR-0129)
-- Issues: [#63], [#119], [#121], [#125], [#280], [#937]
+  ([#937], see ADR-0129); revised by [#1048] (2026-08-23)
+- Issues: [#63], [#119], [#121], [#125], [#280], [#937], [#1048]
 - Modules: all connector modules
 - Current behavior: root `AGENTS.md` § Package layout convention (the imperative form)
+
+[ADR-0140](0140-bigquery-serialization-apis-use-flinks-schema-vocabulary.md) supersedes only the
+declined `BigQueryProtoSerializer` rename recorded below. Every package, layer and implementation
+naming decision in this record remains in force.
 
 ## Context
 
@@ -146,5 +150,6 @@ share one FQCN on purpose.
 [#125]: https://github.com/laughingman7743/flink-connector-gcp/issues/125
 [#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
+[#1048]: https://github.com/flink-gcp/flink-connector-gcp/issues/1048
 [#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md

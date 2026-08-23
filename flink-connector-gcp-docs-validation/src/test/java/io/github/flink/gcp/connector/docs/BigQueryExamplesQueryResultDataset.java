@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.docs;
 
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -33,7 +33,7 @@ final class BigQueryExamplesQueryResultDataset {
                                 + " JOIN `my-project.sales.customers` c USING (customer_id)")
                 .parentProject("my-project")
                 .queryResultDataset("scratch")
-                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(readerSchema))
                 .build();
         // end::bigquery-examples-query-result-dataset[]
     }

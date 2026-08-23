@@ -692,8 +692,8 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
 
 ## Package layout convention (all connector modules)
 
-Under `io.github.flink.gcp.connector.<product>` — migrated to ADR (`docs/adr/0055`, which
-carries the full skeleton, the evidence and the declined alternatives). The rules:
+Under `io.github.flink.gcp.connector.<product>` — migrated to ADR (`docs/adr/0055`, partially
+superseded by `docs/adr/0140`; the unchanged package decisions remain in force). The rules:
 
 - Public API lives at a package's root, implementation in subpackages beneath it; test sources
   mirror the main-tree packages — the **one** exception being a helper that must declare a
@@ -798,6 +798,11 @@ connector gets its own module file rather than a section here.
   The rules — SDK-seam vocabulary, sink-implementation, options-object and metric vocabulary —
   are in the ADR; the divergence-by-divergence review table is the #1043 artifact posted on
   #782, and a divergence covered by neither is judged fresh against the ADR's rules.
+
+- **A connector serialization SPI is named `*SerializationSchema` or `*DeserializationSchema`**
+  rather than `*Serializer` or `*Deserializer` (#1048; `docs/adr/0140`). Concrete format facades
+  carry the same suffix, while action methods and internal implementations keep the ordinary verb
+  or role name.
 
 - **A class that exists in one connector with no counterpart in the others names a structural
   difference, or it is routed** (#1044; `docs/adr/0138`): Spanner's missing destination-routing,

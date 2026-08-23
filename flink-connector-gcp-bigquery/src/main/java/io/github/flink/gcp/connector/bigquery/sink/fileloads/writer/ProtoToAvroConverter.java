@@ -50,9 +50,9 @@ import java.util.Map;
 
 /**
  * Converts serialized proto rows (the {@link
- * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer} wire form, whose
- * descriptors follow the {@code BQTableSchemaToProtoDescriptor} conventions) into Avro {@link
- * GenericRecord}s conforming to the schema produced by {@link TableSchemaToAvroConverter}.
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema} wire
+ * form, whose descriptors follow the {@code BQTableSchemaToProtoDescriptor} conventions) into Avro
+ * {@link GenericRecord}s conforming to the schema produced by {@link TableSchemaToAvroConverter}.
  *
  * <p>All descriptor-dependent decisions — proto/Avro field pairing (via {@link
  * BigQuerySchemaUtil#getFieldName}, which tracks the library's field-naming contract), value

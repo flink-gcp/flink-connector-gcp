@@ -25,7 +25,7 @@ limitations under the License.
 
 ## Decision
 
-`AvroRecordSerializer` is `ProtoMessageSerializer`'s shape with an Avro front end — the schema
+`AvroRecordSerializationSchema` is `ProtoMessageSerializationSchema`'s shape with an Avro front end — the schema
 is held as its **JSON text**, and the `TableSchema`/descriptor/row-converter triple is rebuilt
 lazily. A parsed Avro `Schema` is also serializable, so the JSON field is not required by Flink's
 job-graph serialization. It accepts **`IndexedRecord`**,
@@ -54,7 +54,7 @@ conversions enabled carries the latter and assuming the former would be a per-ro
 - The logical types BigQuery cannot store faithfully (`timestamp-nanos`,
   `local-timestamp-nanos`, `duration`, `big-decimal`, `uuid` on a `fixed`) are **rejected at job
   start** rather than silently falling back to the base type — literally at job start, because
-  the schema is derived in `AvroRecordSerializer.of(...)` rather than lazily: the lazy path
+  the schema is derived in `AvroRecordSerializationSchema.of(...)` rather than lazily: the lazy path
   first runs from `serialize()`, inside the writers' `FailureHandler` catch, where one
   misconfiguration would look like a poison record and a log-and-drop policy would swallow the
   whole stream.
@@ -66,9 +66,9 @@ conversions enabled carries the latter and assuming the former would be a per-ro
   on the task manager, and `RowDescriptors.derive` wraps the checked validation failure
   `BQTableSchemaToProtoDescriptor` can raise. Both are `@Internal` in `sink.serializer`, the
   nearest package every caller can import — the format packages must not import each other
-  (ADR-0055) and `RowDataSerializer` is in `table.sink` besides. Neither is BigQuery-specific
+  (ADR-0055) and `RowDataSerializationSchema` is in `table.sink` besides. Neither is BigQuery-specific
   enough to belong there on its own, so a second module needing one is a reason to move it to
-  `flink-connector-gcp-base`, not to copy it. `JsonDocumentSerializer` and `RowDataSerializer`
+  `flink-connector-gcp-base`, not to copy it. `JsonDocumentSerializationSchema` and `RowDataSerializationSchema`
   hold their state through the same two. Each serializer keeps its own derivation, called from its
   own constructor, and its own private conversion-state class: the triple is where the formats
   differ, and the JSON serializer has no row converter to put in one (ADR-0025). The serialized
@@ -90,7 +90,8 @@ conversions enabled carries the latter and assuming the former would be a per-ro
 Evidence caught in self-review and worth not re-deriving:
 
 - The serialized-form directions above were measured on 2026-08-22 with the actual
-  `JsonDocumentSerializer` compiled at `bd7a76f5` (immediately before [#828]) and `113981fd`.
+  `JsonDocumentSerializer` (now `JsonDocumentSerializationSchema`) compiled at `bd7a76f5`
+  (immediately before [#828]) and `113981fd`.
   Reading the old stream with the new class reached the first descriptor use and threw because
   `rowDescriptor` was null; reading the new stream with the old class restored and serialized a
   row successfully.

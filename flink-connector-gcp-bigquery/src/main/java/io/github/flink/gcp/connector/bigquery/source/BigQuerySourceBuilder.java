@@ -32,7 +32,7 @@ import io.github.flink.gcp.connector.bigquery.source.query.BigQueryQueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.query.QueryRunner;
 import io.github.flink.gcp.connector.bigquery.source.reader.ReadClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 
 import javax.annotation.Nullable;
@@ -87,7 +87,7 @@ public class BigQuerySourceBuilder<T> {
     @Nullable private Duration reuseQueryResultWithin;
     private boolean materializeViews;
     private String parentProject;
-    private BigQueryRowDeserializer<T> deserializer;
+    private BigQueryRowDeserializationSchema<T> deserializer;
     private List<String> selectedFields = Collections.emptyList();
     @Nullable private String rowRestriction;
     @Nullable private Instant snapshotTime;
@@ -301,7 +301,7 @@ public class BigQuerySourceBuilder<T> {
      * @param deserializer the deserializer
      * @return this builder
      */
-    public BigQuerySourceBuilder<T> deserializer(BigQueryRowDeserializer<T> deserializer) {
+    public BigQuerySourceBuilder<T> deserializer(BigQueryRowDeserializationSchema<T> deserializer) {
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
         return this;

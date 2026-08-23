@@ -20,7 +20,7 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 
 import io.github.flink.gcp.connector.bigquery.source.enumerator.BigQueryReadEnumeratorState;
 import io.github.flink.gcp.connector.bigquery.source.enumerator.ScriptedReadSessionCreator;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.apache.avro.generic.GenericRecord;
@@ -52,7 +52,9 @@ class BigQueryStorageReadSourceSessionCreatorLifecycleTest {
         return (BigQueryStorageReadSource<GenericRecord>)
                 BigQuerySource.<GenericRecord>builder()
                         .table(TestSources.TABLE)
-                        .deserializer(BigQueryRowDeserializer.genericRecord(TestRows.SCHEMA_JSON))
+                        .deserializer(
+                                BigQueryRowDeserializationSchema.genericRecord(
+                                        TestRows.SCHEMA_JSON))
                         .emulatorEndpoint("localhost:1")
                         .sessionCreatorFactory(creators)
                         .build();

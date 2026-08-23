@@ -36,7 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.BigQueryLoa
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeLoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -67,7 +67,8 @@ class FileLoadsCommitterTest {
                     .build();
 
     /** A serializer only used for its schema. */
-    private static final class SchemaOnlySerializer extends BigQueryProtoSerializer<Object> {
+    private static final class SchemaOnlySerializer
+            extends BigQueryProtoSerializationSchema<Object> {
         private static final long serialVersionUID = 1L;
 
         @Override

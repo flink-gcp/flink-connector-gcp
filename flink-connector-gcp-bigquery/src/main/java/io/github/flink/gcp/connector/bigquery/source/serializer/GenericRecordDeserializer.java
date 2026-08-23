@@ -39,7 +39,7 @@ import org.apache.avro.generic.GenericRecord;
  * this class exists rather than a documented one-liner for users to write.
  */
 @Internal
-final class GenericRecordDeserializer implements BigQueryRowDeserializer<GenericRecord> {
+final class GenericRecordDeserializer implements BigQueryRowDeserializationSchema<GenericRecord> {
 
     private static final long serialVersionUID = 1L;
 

@@ -28,7 +28,7 @@ import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowFields;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
 
@@ -55,7 +55,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             new FixedCdcTableOptionsProvider(CdcTableOptions.defaults());
 
     private final DestinationResolver<? super T> destinationResolver;
-    private final BigQueryProtoSerializer<? super T> serializer;
+    private final BigQueryProtoSerializationSchema<? super T> serializer;
     @Nullable private final CdcOptions<? super T> cdcOptions;
     @Nullable private final ProtoRowAugmentingSerializer<T> rowAugmentingSerializer;
     private final boolean manageCdcTableCreation;
@@ -72,7 +72,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     BigQuerySinkConfig(
             DestinationResolver<? super T> destinationResolver,
-            BigQueryProtoSerializer<? super T> serializer,
+            BigQueryProtoSerializationSchema<? super T> serializer,
             @Nullable AdditionalFields<? super T> additionalFields,
             @Nullable CdcOptions<? super T> cdcOptions,
             CreateDisposition createDisposition,
@@ -130,7 +130,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     }
 
     /** Returns the record serializer. */
-    public BigQueryProtoSerializer<? super T> getSerializer() {
+    public BigQueryProtoSerializationSchema<? super T> getSerializer() {
         return serializer;
     }
 

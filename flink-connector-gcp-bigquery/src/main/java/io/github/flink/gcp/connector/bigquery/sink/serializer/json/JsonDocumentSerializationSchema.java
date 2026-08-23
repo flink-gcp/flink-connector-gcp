@@ -25,7 +25,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
@@ -35,7 +35,7 @@ import org.json.JSONTokener;
 import java.io.IOException;
 
 /**
- * A {@link BigQueryProtoSerializer} for records that are JSON documents, as text.
+ * A {@link BigQueryProtoSerializationSchema} for records that are JSON documents, as text.
  *
  * <p>JSON carries no schema, so unlike the protobuf and Avro serializers this one cannot derive the
  * destination schema — it is supplied, either in the Storage API form the sink uses internally or
@@ -49,14 +49,15 @@ import java.io.IOException;
  *
  * <p>Anything wrong with a single document — malformed JSON, a value that will not convert, a
  * missing {@code REQUIRED} column, or a field the schema does not have unless {@link
- * JsonDocumentSerializerOptions.Builder#ignoreUnknownFields()} is set — is an {@link IOException},
- * which the sink routes to the configured failure handler.
+ * JsonDocumentOptions.Builder#ignoreUnknownFields()} is set — is an {@link IOException}, which the
+ * sink routes to the configured failure handler.
  *
  * <p>Conversion costs a JSON parse plus a pass over each record. Where the input format is yours to
  * choose and throughput matters, a native protobuf record avoids both.
  */
 @Public
-public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String> {
+public final class JsonDocumentSerializationSchema
+        extends BigQueryProtoSerializationSchema<String> {
 
     private static final long serialVersionUID = 1L;
 
@@ -66,11 +67,11 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
      */
     private final TableSchema tableSchema;
 
-    private final JsonDocumentSerializerOptions options;
+    private final JsonDocumentOptions options;
 
     private final LazyDerivedState<Descriptors.Descriptor> rowDescriptor = new LazyDerivedState<>();
 
-    private JsonDocumentSerializer(TableSchema tableSchema, JsonDocumentSerializerOptions options) {
+    private JsonDocumentSerializationSchema(TableSchema tableSchema, JsonDocumentOptions options) {
         this.tableSchema = Preconditions.checkNotNull(tableSchema, "tableSchema must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
         Preconditions.checkArgument(
@@ -86,8 +87,8 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
      * @param tableSchema the destination schema, in the Storage API form
      * @return the serializer
      */
-    public static JsonDocumentSerializer of(TableSchema tableSchema) {
-        return of(tableSchema, JsonDocumentSerializerOptions.defaults());
+    public static JsonDocumentSerializationSchema of(TableSchema tableSchema) {
+        return of(tableSchema, JsonDocumentOptions.defaults());
     }
 
     /**
@@ -97,9 +98,9 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
      * @param options the conversion options
      * @return the serializer
      */
-    public static JsonDocumentSerializer of(
-            TableSchema tableSchema, JsonDocumentSerializerOptions options) {
-        return new JsonDocumentSerializer(tableSchema, options);
+    public static JsonDocumentSerializationSchema of(
+            TableSchema tableSchema, JsonDocumentOptions options) {
+        return new JsonDocumentSerializationSchema(tableSchema, options);
     }
 
     /**
@@ -110,8 +111,8 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
      * @param schema the destination schema, in the REST client form
      * @return the serializer
      */
-    public static JsonDocumentSerializer of(Schema schema) {
-        return of(schema, JsonDocumentSerializerOptions.defaults());
+    public static JsonDocumentSerializationSchema of(Schema schema) {
+        return of(schema, JsonDocumentOptions.defaults());
     }
 
     /**
@@ -122,7 +123,7 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
      * @param options the conversion options
      * @return the serializer
      */
-    public static JsonDocumentSerializer of(Schema schema, JsonDocumentSerializerOptions options) {
+    public static JsonDocumentSerializationSchema of(Schema schema, JsonDocumentOptions options) {
         return of(
                 BigQuerySchemaConverter.toStorageSchema(
                         Preconditions.checkNotNull(schema, "schema must not be null")),
@@ -195,7 +196,7 @@ public final class JsonDocumentSerializer extends BigQueryProtoSerializer<String
     }
 
     private Descriptors.Descriptor descriptor() {
-        return rowDescriptor.get(this, JsonDocumentSerializer::deriveDescriptor);
+        return rowDescriptor.get(this, JsonDocumentSerializationSchema::deriveDescriptor);
     }
 
     private Descriptors.Descriptor deriveDescriptor() {

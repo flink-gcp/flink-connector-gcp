@@ -31,7 +31,7 @@ import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -74,7 +74,7 @@ class BigQueryDefaultStreamWriterEvictionTest {
     private final ManualProcessingTimeService timers = new ManualProcessingTimeService();
 
     /** Serializer writing the record string bytes; the descriptor is irrelevant for the fake. */
-    private static final class StringSerializer extends BigQueryProtoSerializer<String> {
+    private static final class StringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         @Override

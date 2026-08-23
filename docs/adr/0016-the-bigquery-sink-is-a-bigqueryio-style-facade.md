@@ -28,7 +28,7 @@ limitations under the License.
 - One builder, per-write-method SinkV2 implementations. Storage Write API connection
   multiplexing is delegated to the client SDK connection pool (`setEnableConnectionPool`); no
   self-built keyed writer pool.
-- The serializer SPI is an abstract class (`BigQueryProtoSerializer`) with
+- The serializer SPI is an abstract class (`BigQueryProtoSerializationSchema`) with
   `getDescriptor(TableDestination)` + `ByteString` rows — not a functional interface
   (descriptors are not Java-serializable). `serialize` returning null skips the record in all
   three writers (ADR-0001) — which does **not** loosen the eager-derivation rule: a schema

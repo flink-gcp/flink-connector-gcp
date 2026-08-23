@@ -43,7 +43,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
@@ -98,7 +98,8 @@ class LoadJobOrchestratorTest {
                     .build();
 
     /** A serializer only used for its schema. */
-    private static final class SchemaOnlySerializer extends BigQueryProtoSerializer<Object> {
+    private static final class SchemaOnlySerializer
+            extends BigQueryProtoSerializationSchema<Object> {
         private static final long serialVersionUID = 1L;
 
         private final TableSchema schema;

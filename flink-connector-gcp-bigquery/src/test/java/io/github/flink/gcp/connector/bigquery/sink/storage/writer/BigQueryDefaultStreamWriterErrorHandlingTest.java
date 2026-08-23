@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -77,7 +78,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     /** Serializer writing the record string bytes; records starting with "unserializable" fail. */
-    private static class StringSerializer extends BigQueryProtoSerializerStub {
+    private static class StringSerializer extends BigQueryProtoSerializationSchemaStub {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -90,7 +91,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     /** Serializer emitting one oversized row. */
-    private static class OversizedSerializer extends BigQueryProtoSerializerStub {
+    private static class OversizedSerializer extends BigQueryProtoSerializationSchemaStub {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -100,7 +101,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     /** Serializer failing with an unchecked exception for every record. */
-    private static class UncheckedFailingSerializer extends BigQueryProtoSerializerStub {
+    private static class UncheckedFailingSerializer extends BigQueryProtoSerializationSchemaStub {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -109,9 +110,8 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
         }
     }
 
-    private abstract static class BigQueryProtoSerializerStub
-            extends io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer<
-                    String> {
+    private abstract static class BigQueryProtoSerializationSchemaStub
+            extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -220,9 +220,7 @@ class BigQueryDefaultStreamWriterErrorHandlingTest {
     }
 
     private static BigQuerySinkConfig<String> config(
-            io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer<
-                            ? super String>
-                    serializer,
+            BigQueryProtoSerializationSchema<? super String> serializer,
             FailureHandler<BigQueryFailure> failureHandler) {
         return ((BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()

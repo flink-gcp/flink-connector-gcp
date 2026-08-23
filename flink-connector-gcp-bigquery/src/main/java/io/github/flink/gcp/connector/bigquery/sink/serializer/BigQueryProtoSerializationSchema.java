@@ -59,7 +59,7 @@ import java.io.Serializable;
  * @param <T> type of the records written by the sink
  */
 @Public
-public abstract class BigQueryProtoSerializer<T> implements Serializable {
+public abstract class BigQueryProtoSerializationSchema<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 

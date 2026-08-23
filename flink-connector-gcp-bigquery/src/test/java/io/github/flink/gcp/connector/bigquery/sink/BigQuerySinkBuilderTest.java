@@ -38,7 +38,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldValueProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -194,7 +194,7 @@ class BigQuerySinkBuilderTest {
     }
 
     /** A trivial serializable test serializer. */
-    private static class TestSerializer extends BigQueryProtoSerializer<Object> {
+    private static class TestSerializer extends BigQueryProtoSerializationSchema<Object> {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -930,7 +930,8 @@ class BigQuerySinkBuilderTest {
         Sink<String> sink =
                 BigQuerySink.<String>builder()
                         .destinationResolver(resolverForAnyType)
-                        .serializer(new TestSerializer()) // BigQueryProtoSerializer<Object>
+                        .serializer(
+                                new TestSerializer()) // BigQueryProtoSerializationSchema<Object>
                         .build();
 
         assertThat(sink).isInstanceOf(BigQueryDefaultStreamSink.class);

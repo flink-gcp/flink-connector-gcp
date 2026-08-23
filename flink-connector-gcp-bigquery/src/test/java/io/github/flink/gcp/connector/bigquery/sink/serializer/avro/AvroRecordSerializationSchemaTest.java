@@ -29,8 +29,8 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link AvroRecordSerializer}. */
-class AvroRecordSerializerTest {
+/** Tests for {@link AvroRecordSerializationSchema}. */
+class AvroRecordSerializationSchemaTest {
 
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "dataset", "table");
@@ -57,7 +57,7 @@ class AvroRecordSerializerTest {
 
     @Test
     void derivesTheTableSchemaFromTheAvroSchema() {
-        AvroRecordSerializer serializer = AvroRecordSerializer.of(schema());
+        AvroRecordSerializationSchema serializer = AvroRecordSerializationSchema.of(schema());
 
         assertThat(serializer.getTableSchema(DESTINATION).getFieldsList())
                 .extracting(
@@ -81,16 +81,16 @@ class AvroRecordSerializerTest {
 
     @Test
     void schemaObjectAndSchemaTextFactoriesAgree() {
-        assertThat(AvroRecordSerializer.of(SCHEMA_JSON).getTableSchema(DESTINATION))
-                .isEqualTo(AvroRecordSerializer.of(schema()).getTableSchema(DESTINATION));
+        assertThat(AvroRecordSerializationSchema.of(SCHEMA_JSON).getTableSchema(DESTINATION))
+                .isEqualTo(AvroRecordSerializationSchema.of(schema()).getTableSchema(DESTINATION));
     }
 
     @Test
     void optionsReachSchemaDerivation() {
         // Asserted through the opt-in, not the default: NULLABLE is now what a *lost* options
         // object would produce too, so only the tightening direction distinguishes the two.
-        AvroRecordSerializer serializer =
-                AvroRecordSerializer.of(
+        AvroRecordSerializationSchema serializer =
+                AvroRecordSerializationSchema.of(
                         schema(), AvroSchemaOptions.builder().deriveRequiredColumns().build());
 
         assertThat(serializer.getTableSchema(DESTINATION).getFields(0).getMode())
@@ -99,7 +99,7 @@ class AvroRecordSerializerTest {
 
     @Test
     void cachesTheDerivedDescriptor() {
-        AvroRecordSerializer serializer = AvroRecordSerializer.of(schema());
+        AvroRecordSerializationSchema serializer = AvroRecordSerializationSchema.of(schema());
 
         assertThat(serializer.getDescriptor(DESTINATION))
                 .isSameAs(serializer.getDescriptor(DESTINATION));
@@ -107,12 +107,13 @@ class AvroRecordSerializerTest {
 
     @Test
     void schemaIsStaticSoThereIsNoFingerprint() {
-        assertThat(AvroRecordSerializer.of(schema()).getSchemaFingerprint(DESTINATION)).isNull();
+        assertThat(AvroRecordSerializationSchema.of(schema()).getSchemaFingerprint(DESTINATION))
+                .isNull();
     }
 
     @Test
     void serializesRowsMatchingTheDerivedDescriptor() throws Exception {
-        AvroRecordSerializer serializer = AvroRecordSerializer.of(schema());
+        AvroRecordSerializationSchema serializer = AvroRecordSerializationSchema.of(schema());
 
         DynamicMessage row =
                 DynamicMessage.parseFrom(
@@ -125,8 +126,8 @@ class AvroRecordSerializerTest {
 
     @Test
     void survivesJobGraphSerializationCarryingItsOptions() throws Exception {
-        AvroRecordSerializer original =
-                AvroRecordSerializer.of(
+        AvroRecordSerializationSchema original =
+                AvroRecordSerializationSchema.of(
                         schema(),
                         AvroSchemaOptions.builder()
                                 .jsonFieldPath("name")
@@ -135,7 +136,7 @@ class AvroRecordSerializerTest {
         // Use it first, so the transient conversion state exists and has to be rebuilt.
         original.serialize(record("a", 1L));
 
-        AvroRecordSerializer copy = InstantiationUtil.clone(original);
+        AvroRecordSerializationSchema copy = InstantiationUtil.clone(original);
 
         assertThat(copy.getTableSchema(DESTINATION))
                 .isEqualTo(original.getTableSchema(DESTINATION));
@@ -159,8 +160,8 @@ class AvroRecordSerializerTest {
      */
     @Test
     void carriesTheGeographyMarkerThroughToBothConversionSides() throws Exception {
-        AvroRecordSerializer serializer =
-                AvroRecordSerializer.of(
+        AvroRecordSerializationSchema serializer =
+                AvroRecordSerializationSchema.of(
                         schema(), AvroSchemaOptions.builder().geographyFieldPath("note").build());
 
         assertThat(serializer.getTableSchema(DESTINATION).getFields(2).getType())
@@ -185,7 +186,7 @@ class AvroRecordSerializerTest {
         // and a log-and-drop policy would swallow the whole stream.
         assertThatThrownBy(
                         () ->
-                                AvroRecordSerializer.of(
+                                AvroRecordSerializationSchema.of(
                                         "{\"type\":\"record\",\"name\":\"Bad\",\"fields\":"
                                                 + "[{\"name\":\"f\",\"type\":"
                                                 + "[\"null\",\"string\",\"long\"]}]}"))
@@ -195,17 +196,17 @@ class AvroRecordSerializerTest {
 
     @Test
     void malformedSchemaTextFailsWhereItIsSupplied() {
-        assertThatThrownBy(() -> AvroRecordSerializer.of("{not a schema"))
+        assertThatThrownBy(() -> AvroRecordSerializationSchema.of("{not a schema"))
                 .isInstanceOf(org.apache.avro.SchemaParseException.class);
     }
 
     @Test
     void rejectsNullArguments() {
-        assertThatThrownBy(() -> AvroRecordSerializer.of((Schema) null))
+        assertThatThrownBy(() -> AvroRecordSerializationSchema.of((Schema) null))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> AvroRecordSerializer.of((String) null))
+        assertThatThrownBy(() -> AvroRecordSerializationSchema.of((String) null))
                 .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> AvroRecordSerializer.of(schema(), null))
+        assertThatThrownBy(() -> AvroRecordSerializationSchema.of(schema(), null))
                 .isInstanceOf(NullPointerException.class);
     }
 }

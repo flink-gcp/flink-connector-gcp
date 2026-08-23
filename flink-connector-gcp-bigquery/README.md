@@ -24,9 +24,9 @@ Sink<MyEvent> sink =
                 .build();
 ```
 
-Ready-made serializers cover the common input shapes: `ProtoMessageSerializer.of(MyMessage.class)`
-for records that already are protobuf messages, `AvroRecordSerializer.of(schema)` for Avro
-`GenericRecord` and `SpecificRecord` streams, and `JsonDocumentSerializer.of(schema)` for JSON documents
+Ready-made serializers cover the common input shapes: `ProtoMessageSerializationSchema.of(MyMessage.class)`
+for records that already are protobuf messages, `AvroRecordSerializationSchema.of(schema)` for Avro
+`GenericRecord` and `SpecificRecord` streams, and `JsonDocumentSerializationSchema.of(schema)` for JSON documents
 as text.
 
 ## Source
@@ -43,7 +43,7 @@ as text.
 Source<GenericRecord, ?, ?> source =
         BigQuerySource.<GenericRecord>builder()
                 .table(TableDestination.of("my-project", "my_dataset", "my_table"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(readerSchema))
                 .selectedFields("id", "name")
                 .build();
 ```
@@ -121,7 +121,7 @@ projects; when code is adapted from them, the fact is recorded here and in the r
 - [googleapis/java-bigquerystorage](https://github.com/googleapis/java-bigquerystorage) —
   `BQTableSchemaToProtoDescriptor`, `CivilTimeEncoder` and `BigDecimalByteStringEncoder` are
   **called** by every serializer here, and `JsonToProtoMessage` is the whole of
-  `JsonDocumentSerializer`'s conversion, so this is a runtime dependency rather than only a
+  `JsonDocumentSerializationSchema`'s conversion, so this is a runtime dependency rather than only a
   reference. `BqToBqStorageSchemaConverter` is the design reference for the schema conversion
   `StorageSchemaConverter` and `BigQuerySchemaConverter` implement independently in both
   directions

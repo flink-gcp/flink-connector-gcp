@@ -24,7 +24,7 @@ limitations under the License.
 
 ## Decision
 
-`JsonDocumentSerializer` takes **`String`** records and a **supplied** schema, since JSON has
+`JsonDocumentSerializationSchema` takes **`String`** records and a **supplied** schema, since JSON has
 none of its own — either the Storage `TableSchema` or the REST `Schema` (converted with the
 existing `BigQuerySchemaConverter`, which is why `google-cloud-bigquery` is on the module's
 public API). That is also why it needs no JSON-column marker: the schema already says `JSON`.

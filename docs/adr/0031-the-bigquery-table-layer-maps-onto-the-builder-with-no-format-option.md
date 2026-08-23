@@ -35,7 +35,7 @@ the Pub/Sub rules (ADR-0014) apply unchanged. What is this module's own:
   `WriteMethod.FILE_LOADS` in the same sentence, so the two spellings must not mix.
   `LoadJobSpec.toString()` uses Google's `JobInfo.CreateDisposition`, not ours, and the
   deterministic FILE_LOADS job id hashes destination and URIs only, so neither is affected.
-- **`RowDataSerializer` is `@Internal` in `table.sink`, not a public `sink.serializer.rowdata`
+- **`RowDataSerializationSchema` is `@Internal` in `table.sink`, not a public `sink.serializer.rowdata`
   family member**: promotion is cheap later (nothing is published), and starting internal keeps
   the new Flink-type mapping out of the API-tier audit surface until it has settled. Its schema
   options are the `@Internal` `RowDataSchemaOptions` rather than a reused `AvroSchemaOptions`.

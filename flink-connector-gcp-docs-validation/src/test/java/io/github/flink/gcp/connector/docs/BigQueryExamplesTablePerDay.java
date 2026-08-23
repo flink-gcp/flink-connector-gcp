@@ -21,7 +21,7 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.docs.BigQueryDocumentationTypes.OrderEvent;
 
 import java.time.Instant;
@@ -73,7 +73,7 @@ interface BigQueryExamplesTablePerDay {
     // end::bigquery-examples-table-per-day-resolver[]
     // CHECKSTYLE.ON: RedundantModifier
 
-    static void build(BigQueryProtoSerializer<OrderEvent> serializer) {
+    static void build(BigQueryProtoSerializationSchema<OrderEvent> serializer) {
         // tag::bigquery-examples-table-per-day-sink[]
         BigQuerySink.<OrderEvent>builder()
                 .destinationResolver(new DailyTableResolver("my-project", "my_dataset", "orders"))

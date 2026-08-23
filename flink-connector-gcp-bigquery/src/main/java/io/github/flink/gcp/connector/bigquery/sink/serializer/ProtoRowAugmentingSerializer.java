@@ -48,7 +48,7 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final BigQueryProtoSerializer<? super T> delegate;
+    private final BigQueryProtoSerializationSchema<? super T> delegate;
     private final List<ProtoRowAugmentationField<? super T>> fields;
     private final String descriptorFieldDescription;
     private final String rowFailureMessage;
@@ -56,7 +56,7 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
     private transient Map<TableDestination, SchemaSurfaces> schemaCache;
 
     public ProtoRowAugmentingSerializer(
-            BigQueryProtoSerializer<? super T> delegate,
+            BigQueryProtoSerializationSchema<? super T> delegate,
             List<? extends ProtoRowAugmentationField<? super T>> fields,
             String descriptorFieldDescription,
             String rowFailureMessage) {

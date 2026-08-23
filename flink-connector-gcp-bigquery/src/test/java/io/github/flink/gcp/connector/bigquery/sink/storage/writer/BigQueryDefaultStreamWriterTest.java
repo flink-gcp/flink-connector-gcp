@@ -49,7 +49,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetriableTableAdminException;
@@ -140,7 +140,7 @@ class BigQueryDefaultStreamWriterTest {
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     /** Serializer writing the record string bytes; descriptor is irrelevant for the fake. */
-    private static class StringSerializer extends BigQueryProtoSerializer<String> {
+    private static class StringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         private final List<TableDestination> descriptorRequests = new ArrayList<>();
@@ -170,7 +170,7 @@ class BigQueryDefaultStreamWriterTest {
     }
 
     /** Serializer emitting one oversized row. */
-    private static class OversizedSerializer extends BigQueryProtoSerializer<String> {
+    private static class OversizedSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         @Override
@@ -189,7 +189,7 @@ class BigQueryDefaultStreamWriterTest {
         }
     }
 
-    private static class CdcStringSerializer extends BigQueryProtoSerializer<String> {
+    private static class CdcStringSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         private static final TableSchema SCHEMA =
@@ -230,7 +230,7 @@ class BigQueryDefaultStreamWriterTest {
     }
 
     /** Serializer whose physical field collides case-insensitively with a CDC pseudocolumn. */
-    private static class ConflictingCdcSerializer extends BigQueryProtoSerializer<String> {
+    private static class ConflictingCdcSerializer extends BigQueryProtoSerializationSchema<String> {
         private static final long serialVersionUID = 1L;
 
         private static final TableSchema SCHEMA =
@@ -336,7 +336,7 @@ class BigQueryDefaultStreamWriterTest {
 
     private static BigQuerySinkConfig<String> config(
             DestinationResolver<? super String> resolver,
-            BigQueryProtoSerializer<? super String> serializer) {
+            BigQueryProtoSerializationSchema<? super String> serializer) {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
                         BigQuerySink.<String>builder()

@@ -42,7 +42,7 @@ import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySourceReader
 import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySourceReaderMetrics;
 import io.github.flink.gcp.connector.bigquery.source.reader.BigQuerySplitReader;
 import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplit;
 import io.github.flink.gcp.connector.bigquery.source.split.ReadStreamSplitSerializer;
 import org.apache.avro.generic.GenericRecord;
@@ -91,7 +91,7 @@ public class BigQueryStorageReadSource<T>
     @Override
     public SourceReader<T, ReadStreamSplit> createReader(SourceReaderContext context)
             throws Exception {
-        BigQueryRowDeserializer<T> deserializer = config.getDeserializer();
+        BigQueryRowDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
         BigQuerySourceReaderMetrics metrics =

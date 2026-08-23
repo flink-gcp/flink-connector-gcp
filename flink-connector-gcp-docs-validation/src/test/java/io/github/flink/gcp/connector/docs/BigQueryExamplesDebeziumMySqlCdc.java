@@ -41,8 +41,8 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.DebeziumMySqlCdcSequenceNumberProvider;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroRecordSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.avro.AvroSchemaOptions;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.IndexedRecord;
@@ -88,7 +88,7 @@ final class BigQueryExamplesDebeziumMySqlCdc {
                                                 "my-project", "analytics", "current_mysql_orders"))
                                 .serializer(
                                         new DebeziumEnvelopeSerializer(
-                                                AvroRecordSerializer.of(
+                                                AvroRecordSerializationSchema.of(
                                                         rowSchema,
                                                         AvroSchemaOptions.builder()
                                                                 .deriveRequiredColumns()
@@ -240,13 +240,13 @@ final class BigQueryExamplesDebeziumMySqlCdc {
     }
 
     private static final class DebeziumEnvelopeSerializer
-            extends BigQueryProtoSerializer<GenericRecord> {
+            extends BigQueryProtoSerializationSchema<GenericRecord> {
 
         private static final long serialVersionUID = 1L;
 
-        private final AvroRecordSerializer delegate;
+        private final AvroRecordSerializationSchema delegate;
 
-        private DebeziumEnvelopeSerializer(AvroRecordSerializer delegate) {
+        private DebeziumEnvelopeSerializer(AvroRecordSerializationSchema delegate) {
             this.delegate = delegate;
         }
 

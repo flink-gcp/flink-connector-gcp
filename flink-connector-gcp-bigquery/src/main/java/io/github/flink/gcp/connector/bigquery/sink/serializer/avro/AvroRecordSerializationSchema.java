@@ -23,7 +23,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import org.apache.avro.Schema;
@@ -32,7 +32,7 @@ import org.apache.avro.generic.IndexedRecord;
 import java.io.IOException;
 
 /**
- * A {@link BigQueryProtoSerializer} for Avro records.
+ * A {@link BigQueryProtoSerializationSchema} for Avro records.
  *
  * <p>The BigQuery table schema is derived from the Avro writer schema (see {@link
  * AvroToTableSchemaConverter} for the type mapping) and each record is rewritten into a
@@ -51,12 +51,13 @@ import java.io.IOException;
  * pipeline is built rather than on the first record.
  *
  * <p>Conversion costs one pass over each record, unlike {@link
- * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializer
- * ProtoMessageSerializer} on an already-protobuf stream. Where the input is under your control and
- * throughput matters, a native protobuf record avoids it.
+ * io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema
+ * ProtoMessageSerializationSchema} on an already-protobuf stream. Where the input is under your
+ * control and throughput matters, a native protobuf record avoids it.
  */
 @Public
-public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedRecord> {
+public final class AvroRecordSerializationSchema
+        extends BigQueryProtoSerializationSchema<IndexedRecord> {
 
     private static final long serialVersionUID = 1L;
 
@@ -65,7 +66,7 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
 
     private final LazyDerivedState<ConversionState> conversionState = new LazyDerivedState<>();
 
-    private AvroRecordSerializer(String avroSchemaJson, AvroSchemaOptions options) {
+    private AvroRecordSerializationSchema(String avroSchemaJson, AvroSchemaOptions options) {
         this.avroSchemaJson =
                 Preconditions.checkNotNull(avroSchemaJson, "avroSchemaJson must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
@@ -83,7 +84,7 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
      * @param avroSchema the Avro record schema of the incoming records
      * @return the serializer
      */
-    public static AvroRecordSerializer of(Schema avroSchema) {
+    public static AvroRecordSerializationSchema of(Schema avroSchema) {
         return of(avroSchema, AvroSchemaOptions.defaults());
     }
 
@@ -94,8 +95,8 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
      * @param options the schema mapping options
      * @return the serializer
      */
-    public static AvroRecordSerializer of(Schema avroSchema, AvroSchemaOptions options) {
-        return new AvroRecordSerializer(
+    public static AvroRecordSerializationSchema of(Schema avroSchema, AvroSchemaOptions options) {
+        return new AvroRecordSerializationSchema(
                 Preconditions.checkNotNull(avroSchema, "avroSchema must not be null").toString(),
                 options);
     }
@@ -107,7 +108,7 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
      * @param avroSchemaJson the Avro record schema, as JSON text
      * @return the serializer
      */
-    public static AvroRecordSerializer of(String avroSchemaJson) {
+    public static AvroRecordSerializationSchema of(String avroSchemaJson) {
         return of(avroSchemaJson, AvroSchemaOptions.defaults());
     }
 
@@ -119,7 +120,8 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
      * @param options the schema mapping options
      * @return the serializer
      */
-    public static AvroRecordSerializer of(String avroSchemaJson, AvroSchemaOptions options) {
+    public static AvroRecordSerializationSchema of(
+            String avroSchemaJson, AvroSchemaOptions options) {
         // Parsed here rather than kept as text: a malformed schema is worth reporting from the
         // call that supplied it, and both entry points then reach the constructor the same way.
         return of(
@@ -146,7 +148,7 @@ public final class AvroRecordSerializer extends BigQueryProtoSerializer<IndexedR
     }
 
     private ConversionState state() {
-        return conversionState.get(this, AvroRecordSerializer::deriveConversionState);
+        return conversionState.get(this, AvroRecordSerializationSchema::deriveConversionState);
     }
 
     private ConversionState deriveConversionState() {

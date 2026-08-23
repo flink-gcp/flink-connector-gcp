@@ -77,12 +77,12 @@ exception and *is* rejected in `build()`, being broken for every message rather 
 A configured marking **wins over well-known-type recognition and is then rejected** for not
 being a string, rather than silently falling back to the automatic `JSON`.
 
-**Derivation is the right place because `ProtoMessageSerializer` derives eagerly in its
+**Derivation is the right place because `ProtoMessageSerializationSchema` derives eagerly in its
 constructor**, which [#126] fixed as part of the change: it did not, so every proto schema
 misconfiguration was reported from `serialize()`, inside the writers' `FailureHandler` catch,
 where log-and-drop swallows it once per record for the life of the job and leaves the table
 empty with the job green — the failure went through the *row-failure* path, and the fix was the
-one line `AvroRecordSerializer` had carried all along.
+one line `AvroRecordSerializationSchema` had carried all along.
 
 ## Evidence
 

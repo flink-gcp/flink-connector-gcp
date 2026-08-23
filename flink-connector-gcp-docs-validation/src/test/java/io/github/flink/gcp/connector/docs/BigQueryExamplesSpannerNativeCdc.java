@@ -32,8 +32,8 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeType;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.SpannerCdcSequenceNumber;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
@@ -72,7 +72,7 @@ final class BigQueryExamplesSpannerNativeCdc {
                                                 "my-project", "analytics", "current_orders"))
                                 .serializer(
                                         new OrderModSerializer(
-                                                JsonDocumentSerializer.of(rowSchema)))
+                                                JsonDocumentSerializationSchema.of(rowSchema)))
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
                                                 .primaryKeyColumns(
@@ -185,13 +185,14 @@ final class BigQueryExamplesSpannerNativeCdc {
 
     // end::bigquery-spanner-native-cdc-deserializer[]
 
-    private static final class OrderModSerializer extends BigQueryProtoSerializer<OrderMod> {
+    private static final class OrderModSerializer
+            extends BigQueryProtoSerializationSchema<OrderMod> {
 
         private static final long serialVersionUID = 1L;
 
-        private final JsonDocumentSerializer delegate;
+        private final JsonDocumentSerializationSchema delegate;
 
-        private OrderModSerializer(JsonDocumentSerializer delegate) {
+        private OrderModSerializer(JsonDocumentSerializationSchema delegate) {
             this.delegate = delegate;
         }
 

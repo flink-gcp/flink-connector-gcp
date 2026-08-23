@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0137: A cross-connector name diverges only to name a real difference
 
 - Status: Accepted
-- Date: 2026-08-23; revised by [#1049], [#1051], [#1052] and [#1058] (2026-08-23); BigQuery
-  read-side option keys migrated by [#1047] (2026-08-23)
-- Issues: [#1043], [#782], [#1047], [#1049], [#1051], [#1052], [#1058]
+- Date: 2026-08-23; revised by [#1048], [#1049], [#1051], [#1052] and [#1058]
+  (2026-08-23); BigQuery read-side option keys migrated by [#1047] (2026-08-23)
+- Issues: [#1043], [#782], [#1047], [#1048], [#1049], [#1051], [#1052], [#1058]
 - Modules: all connectors
 - Current behavior: the rules in this record, with the judged divergence table appended below
   as evidence; the drift half is routed as sub-issues [#1047]–[#1053]
@@ -232,8 +232,8 @@ Concept-to-name matrix (tier: P = `@Public`, PE = `@PublicEvolving`, I = `@Inter
 | Writer | `BigQuery{Buffered,Default}StreamWriter`, `FileLoadsWriter` I | `PubSubWriter` I | `CloudTasksWriter` I | `BigtableWriter` I | `SpannerWriter` I |
 | Writer metrics | `{BufferedStream,DefaultStream,FileLoads}WriterMetrics` I | **`PubSubSinkWriterMetrics`** I | `CloudTasksWriterMetrics` I | `BigtableWriterMetrics` I | `SpannerWriterMetrics` I |
 | Sink options | `BufferedStreamOptions`, `DefaultStreamOptions`, `FileLoadsOptions` P | `PubSubPublisherOptions` P | `CloudTasksWriterOptions` P | `BigtableWriterOptions` P | `SpannerWriterOptions` P |
-| Serialization SPI | **`BigQueryProtoSerializer`** P | `PubSubSerializationSchema` P | `CloudTasksSerializationSchema` P | `BigtableSerializationSchema` P | `SpannerMutationSerializationSchema` P |
-| Deserialization SPI | **`BigQueryRowDeserializer`** P | `PubSubDeserializationSchema` P | — | `BigtableRowDeserializationSchema` P | `SpannerStructDeserializationSchema` P |
+| Serialization SPI | `BigQueryProtoSerializationSchema` P | `PubSubSerializationSchema` P | `CloudTasksSerializationSchema` P | `BigtableSerializationSchema` P | `SpannerMutationSerializationSchema` P |
+| Deserialization SPI | `BigQueryRowDeserializationSchema` P | `PubSubDeserializationSchema` P | — | `BigtableRowDeserializationSchema` P | `SpannerStructDeserializationSchema` P |
 | Error classifier | **`AppendErrorClassifier`** I | `PubSubErrorClassifier` I | `CloudTasksErrorClassifier` I | `BigtableErrorClassifier` I | `SpannerErrorClassifier` I |
 | Failed element | `FailedRow` P (`sink.failure`) | `FailedMessage` P | `FailedTask` P | `FailedMutation` P | `FailedMutation` P |
 | Destination type | `TableDestination` P (`sink`) | `TopicDestination` P | `QueueDestination` P | `TableDestination` P (root) | `SpannerDatabase` P (root) |
@@ -241,29 +241,31 @@ Concept-to-name matrix (tier: P = `@Public`, PE = `@PublicEvolving`, I = `@Inter
 | Enumerator | `BigQueryReadSplitEnumerator` I | `PubSubSplitEnumerator` I | — | `BigtableScanSplitEnumerator` I | **`SpannerPartitionSplitEnumerator`** I |
 | Enumerator state | `BigQueryReadEnumeratorState` I | `PubSubEnumeratorState` I | — | `BigtableScanEnumeratorState` I | `SpannerBatchEnumeratorState` I |
 | Split | `ReadStreamSplit` I | `SubscriptionSplit` I | — | `RowRangeSplit` I / `ChangeStreamPartitionSplit` I | `PartitionSplit` I / **`SpannerChangeStreamPartitionSplit`** I |
-| Table row SPI | **`RowDataSerializer`/`RowDataDeserializer`** I | `RowData{Ser,Deser}ializationSchema` I | `RowDataSerializationSchema` I | `RowData{Ser,Deser}ializationSchema` I | `RowData{Ser,Deser}ializationSchema` I |
+| Table row SPI | `RowData{Ser,Deser}ializationSchema` I | `RowData{Ser,Deser}ializationSchema` I | `RowDataSerializationSchema` I | `RowData{Ser,Deser}ializationSchema` I | `RowData{Ser,Deser}ializationSchema` I |
 | Options mapper (writer) | family-named `*OptionsMapper` I | `PublisherOptionsMapper` I | **`CloudTasksWriterOptionsMapper`** I | `WriterOptionsMapper` I | `WriterOptionsMapper` I |
 | Credentials | `BigQueryCredentials` I, root | `PubSubCredentials` I, root | **`CloudTasksCredentials`** –, `sink.writer` | `BigtableCredentials` I, root | `SpannerCredentials` I, root |
 
 #### Judged divergences (class names)
 
-**C1. Serialization SPI: `*Serializer`/`*Deserializer` (BigQuery) vs `*SerializationSchema`/
-`*DeserializationSchema` (all four siblings).** `@Public`, user-facing — the most visible naming
-divergence in the repository, and the ecosystem is unanimous against it: Flink core's SPI is
+**C1. Serialization SPI was `*Serializer`/`*Deserializer` in BigQuery and
+`*SerializationSchema`/`*DeserializationSchema` in all four siblings.** `@Public`, user-facing —
+the most visible naming divergence in the repository, and the ecosystem is unanimous against it:
+Flink core's SPI is
 `SerializationSchema`/`DeserializationSchema`, and the official connectors name theirs
 `KafkaRecordSerializationSchema`/`KafkaRecordDeserializationSchema`,
 `PulsarSerializationSchema`, `KinesisDeserializationSchema` — the vocabulary this repository's
 other four connectors already use. ADR-0055 declined renaming `BigQueryProtoSerializer` once,
 but on intra-module grounds (the [#125](https://github.com/flink-gcp/flink-connector-gcp/issues/125) format split; ~20-test churn) that predate both the
 cross-module lens and the 1.0.0 freeze; `BigQueryRowDeserializer` has no record at all.
-**Verdict: D — rename the family (`BigQueryProtoSerializationSchema`,
+**Verdict: D — [#1048] renamed the family to `BigQueryProtoSerializationSchema` and
 `BigQueryRowDeserializationSchema` — the exact pattern of Bigtable's
-`BigtableRowDeserializationSchema` — and the format facades with them); a superseding ADR
-records the reversal of ADR-0055's declined alternative. Routed as a sub-issue of [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777).**
+`BigtableRowDeserializationSchema` — and renamed the format facades with them; [ADR-0140]
+records the reversal of ADR-0055's declined alternative.**
 
 **C2. BigQuery table-layer `RowDataSerializer`/`RowDataDeserializer`.** `@Internal`; the four
-siblings agree on `RowDataSerializationSchema`/`RowDataDeserializationSchema`. Pure drift.
-**Verdict: C — folded into C1's sub-issue (same vocabulary, same module).**
+siblings agreed on `RowDataSerializationSchema`/`RowDataDeserializationSchema`. Pure drift.
+**Verdict: C — [#1048] folded the rename into C1's work because it is the same vocabulary in the
+same module.**
 
 **C3. Bounded-read vocabulary: Read (BigQuery) / Scan (Bigtable) / Batch (Spanner).** All
 `@Internal`. The cross-connector difference is vendor vocabulary — read stream/session
@@ -619,7 +621,7 @@ verdict-B rules and the staleness fixes.
 | Route | Items |
 |---|---|
 | [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047): `source.*` → `scan.*` migration | O2 (12 keys, including `source.retry-max-attempts` → `scan.retry.max-attempts`) |
-| [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) sub-issue: serialization SPI rename | C1 + C2 (superseding ADR for ADR-0055's declined alternative) |
+| [#1048] sub-issue of [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777): serialization SPI rename | C1 + C2 ([ADR-0140] supersedes ADR-0055's declined alternative) |
 | [#1049](https://github.com/flink-gcp/flink-connector-gcp/issues/1049): BigQuery naming alignment | O4, O10, C4 (`ReadStreamSplit`) — O1's BigQuery half and O6 withdrawn (vendor names) |
 | [#778](https://github.com/flink-gcp/flink-connector-gcp/issues/778) sub-issue: naming alignment | C6, C13 (`PubSubStartPosition`), O8, O12/M4 (DLQ `outstanding` vocabulary) |
 | [#779](https://github.com/flink-gcp/flink-connector-gcp/issues/779) sub-issue: naming alignment | O5 (`retry*` → `recovery*`), C10, O1 (key grouping — the surviving half), C12 (`CloudTasksCredentials` gains `@Internal`) |
@@ -652,3 +654,4 @@ verdict-B rules and the staleness fixes.
 [ADR-0083]: 0083-the-pull-assignment-split-enumerator-is-one-base-class.md
 [ADR-0085]: 0085-the-spanner-batch-source-splits-by-server-planned-partition.md
 [ADR-0117]: 0117-metric-tables-are-held-bidirectionally-to-connector-inventories.md
+[ADR-0140]: 0140-bigquery-serialization-apis-use-flinks-schema-vocabulary.md

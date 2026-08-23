@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.docs;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.source.BigQuerySource;
-import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializer;
+import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -33,7 +33,7 @@ final class BigQueryExamplesReadingSnapshot {
         BigQuerySource.<GenericRecord>builder()
                 .table(TableDestination.of("my-project", "my_dataset", "accounts"))
                 .snapshotTime(Instant.parse("2026-08-01T00:00:00Z"))
-                .deserializer(BigQueryRowDeserializer.genericRecord(readerSchema))
+                .deserializer(BigQueryRowDeserializationSchema.genericRecord(readerSchema))
                 .build();
         // end::bigquery-examples-reading-snapshot[]
     }

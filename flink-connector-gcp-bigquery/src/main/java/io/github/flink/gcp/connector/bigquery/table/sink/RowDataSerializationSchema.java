@@ -26,7 +26,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
@@ -54,7 +54,7 @@ import java.io.IOException;
  * at this layer anyway.
  */
 @Internal
-final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
+final class RowDataSerializationSchema extends BigQueryProtoSerializationSchema<RowData> {
 
     private static final long serialVersionUID = 1L;
 
@@ -71,12 +71,12 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
      * @param options the schema mapping options
      * @throws IllegalArgumentException if a column has no BigQuery equivalent
      */
-    public RowDataSerializer(RowType rowType, RowDataSchemaOptions options) {
+    public RowDataSerializationSchema(RowType rowType, RowDataSchemaOptions options) {
         this(rowType, options, new int[0]);
     }
 
     /** Creates a serializer whose CDC deletes contain only the selected physical key columns. */
-    public RowDataSerializer(
+    public RowDataSerializationSchema(
             RowType rowType, RowDataSchemaOptions options, int[] primaryKeyIndexes) {
         this.rowType = Preconditions.checkNotNull(rowType, "rowType must not be null");
         this.options = Preconditions.checkNotNull(options, "options must not be null");
@@ -111,7 +111,7 @@ final class RowDataSerializer extends BigQueryProtoSerializer<RowData> {
     }
 
     private ConversionState state() {
-        return conversionState.get(this, RowDataSerializer::deriveConversionState);
+        return conversionState.get(this, RowDataSerializationSchema::deriveConversionState);
     }
 
     private ConversionState deriveConversionState() {

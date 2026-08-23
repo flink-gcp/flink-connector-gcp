@@ -22,20 +22,19 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Tests for {@link JsonDocumentSerializerOptions}. */
-class JsonDocumentSerializerOptionsTest {
+/** Tests for {@link JsonDocumentOptions}. */
+class JsonDocumentOptionsTest {
 
     @Test
     void defaultsFailOnAnUnknownField() {
-        assertThat(JsonDocumentSerializerOptions.defaults().isIgnoreUnknownFields()).isFalse();
+        assertThat(JsonDocumentOptions.defaults().isIgnoreUnknownFields()).isFalse();
     }
 
     @Test
     void ignoreUnknownFieldsIsOptIn() {
-        assertThat(JsonDocumentSerializerOptions.builder().build().isIgnoreUnknownFields())
-                .isFalse();
+        assertThat(JsonDocumentOptions.builder().build().isIgnoreUnknownFields()).isFalse();
         assertThat(
-                        JsonDocumentSerializerOptions.builder()
+                        JsonDocumentOptions.builder()
                                 .ignoreUnknownFields()
                                 .build()
                                 .isIgnoreUnknownFields())
@@ -44,8 +43,8 @@ class JsonDocumentSerializerOptionsTest {
 
     @Test
     void buildingTwiceFromOneBuilderDoesNotShareState() {
-        JsonDocumentSerializerOptions.Builder builder = JsonDocumentSerializerOptions.builder();
-        JsonDocumentSerializerOptions first = builder.build();
+        JsonDocumentOptions.Builder builder = JsonDocumentOptions.builder();
+        JsonDocumentOptions first = builder.build();
         builder.ignoreUnknownFields();
 
         assertThat(first.isIgnoreUnknownFields()).isFalse();
@@ -54,9 +53,9 @@ class JsonDocumentSerializerOptionsTest {
 
     @Test
     void survivesJavaSerialization() throws Exception {
-        JsonDocumentSerializerOptions copy =
+        JsonDocumentOptions copy =
                 InstantiationUtil.clone(
-                        JsonDocumentSerializerOptions.builder().ignoreUnknownFields().build());
+                        JsonDocumentOptions.builder().ignoreUnknownFields().build());
 
         assertThat(copy.isIgnoreUnknownFields()).isTrue();
     }
