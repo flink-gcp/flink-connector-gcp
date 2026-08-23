@@ -195,6 +195,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `DataClientRowStreamOpener` and the change-stream `DataClientChangeStreamOpener` — are
   unaffected, because a reader's copy is deserialized per task attempt.
 
+- **The three lazy data-client seams rely on their owners' teardown, not on client leases**
+  (`docs/adr/0142`). The scan reader stops its fetchers before closing the row-stream opener; the
+  Change Streams reader cancels active reads before closing its opener; and the scan enumerator
+  may close its sampler while asynchronous sampling is in flight, after which the shared
+  enumerator ignores the completion. `LazyBigtableDataClient.close()` clears both the client and
+  pushed credentials, and credential injection takes the same monitor so nothing can restore the
+  holder's provider after close. That guarantee covers the holder's reference, not another seam
+  that shares the same provider, such as the Change Streams restore resolver. A lease would
+  duplicate those three lifecycle protocols and make the coordinator wait for a sampling RPC it
+  currently abandons during teardown.
+
 - **The assignment protocol is the base module's** (`docs/adr/0083`): `BigtableScanSplitEnumerator`
   extends `PullAssignmentSplitEnumerator` and supplies the sampling — `restore`, the sampling call,
   the plan and its report, the counters, its own `snapshotState`. What the bullets below say about

@@ -69,7 +69,8 @@ public interface RowKeySampler extends AutoCloseable {
      * <p>Declared here rather than on the implementation so that the enumerator needs no cast, and
      * abstract rather than defaulted because an implementation that quietly skipped it would sample
      * as the process's application default credentials instead of the configured service account —
-     * a misconfiguration nothing would report.
+     * a misconfiguration nothing would report. The owner does not call this method after closing
+     * the sampler.
      *
      * @param credentials the provider to build clients with, or {@code null} to leave the client's
      *     application default credentials in place

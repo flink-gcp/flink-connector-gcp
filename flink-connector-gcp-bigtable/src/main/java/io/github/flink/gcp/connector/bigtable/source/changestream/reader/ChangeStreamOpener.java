@@ -54,7 +54,8 @@ public interface ChangeStreamOpener extends Serializable, AutoCloseable {
      * <p>Declared here rather than on the implementation so that the reader needs no cast, and
      * abstract rather than defaulted because an implementation that quietly skipped it would open
      * its stream as the process's application default credentials instead of the configured service
-     * account — a misconfiguration nothing would report.
+     * account — a misconfiguration nothing would report. The owner does not call this method after
+     * closing the opener.
      *
      * @param credentials the provider to build clients with, or {@code null} to leave the client's
      *     application default credentials in place

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable;
 
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -178,6 +180,49 @@ class LazyBigtableDataClientTest {
             releaseConstruction.countDown();
             holder.close();
             client.close();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void closeClearsCredentialsAndRefusesAWaitingInjection() throws Exception {
+        LazyBigtableDataClient holder = new LazyBigtableDataClient("test holder", null, null);
+        NoCredentialsProvider credentials = NoCredentialsProvider.create();
+        holder.useCredentials(credentials);
+        assertThat(holder.settings(TABLE).getStubSettings().getCredentialsProvider())
+                .isSameAs(credentials);
+        CountDownLatch injectionStarted = new CountDownLatch(1);
+        AtomicReference<Thread> injectionThread = new AtomicReference<>();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        try {
+            Future<?> injection;
+            synchronized (holder) {
+                injection =
+                        executor.submit(
+                                () -> {
+                                    injectionThread.set(Thread.currentThread());
+                                    injectionStarted.countDown();
+                                    holder.useCredentials(credentials);
+                                });
+                await(injectionStarted);
+                awaitBlocked(
+                        injectionThread.get(),
+                        injection,
+                        "credential injection must wait for the close monitor");
+                holder.close();
+            }
+
+            assertThatThrownBy(() -> injection.get(WAIT_SECONDS, TimeUnit.SECONDS))
+                    .isInstanceOf(ExecutionException.class)
+                    .hasCauseInstanceOf(IllegalStateException.class)
+                    .hasRootCauseMessage(
+                            "The Bigtable test holder was closed before credentials were supplied.");
+            assertThat(holder.settings(TABLE).getStubSettings().getCredentialsProvider())
+                    .isNotSameAs(credentials);
+        } finally {
+            holder.close();
             executor.shutdownNow();
             assertThat(executor.awaitTermination(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         }

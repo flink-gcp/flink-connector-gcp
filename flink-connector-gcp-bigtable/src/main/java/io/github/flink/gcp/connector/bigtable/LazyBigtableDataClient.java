@@ -55,6 +55,13 @@ import java.io.Serializable;
  * the work to while {@code close()} runs on the coordinator thread; the change-stream reader has no
  * fetcher pool and opens and closes on its one task thread, inheriting the guarding rather than
  * needing it.
+ *
+ * <p>The holder does not lease a client returned by {@link #get(TableDestination)}. Synchronizing
+ * the return would still let {@code close()} run before the caller starts its operation, while
+ * holding the monitor for an operation would make coordinator teardown wait for a service round
+ * trip. Each owner therefore supplies the operation lifecycle: the scan reader stops its fetchers
+ * before closing the opener, the change-stream reader cancels its active reads first, and an
+ * enumerator ignores a sampling completion that arrives after teardown.
  */
 @Internal
 public final class LazyBigtableDataClient implements Serializable {
@@ -70,9 +77,9 @@ public final class LazyBigtableDataClient implements Serializable {
     /**
      * What the owning component loaded and pushed in.
      *
-     * <p>{@code volatile} for the same reason as the client above: it is written on the thread that
-     * creates the reader or the enumerator and read on the one that builds the client, and the
-     * happens-before edge between those two is the caller's rather than this class's.
+     * <p>Production injection, client construction and clearing all take this object's monitor.
+     * {@code volatile} also makes the value visible to the direct test-only {@link
+     * #settings(TableDestination)} accessor, which deliberately does not acquire that monitor.
      */
     @Nullable private transient volatile CredentialsProvider credentials;
 
@@ -132,27 +139,41 @@ public final class LazyBigtableDataClient implements Serializable {
     }
 
     /**
-     * Builds the client settings. Visible to the module's tests through each seam, because the
-     * mapping is otherwise observable only through the client's behaviour: an application profile
-     * that never reaches the client looks exactly like one that does.
+     * Builds the client settings.
+     *
+     * <p>The method is public so module tests can inspect the mapping directly. That direct test
+     * access deliberately performs no lifecycle check: holder tests use it after close to observe
+     * credential clearing without constructing a client. Production operations reach the method
+     * only through {@link #get(TableDestination)}, which refuses use after close.
      */
+    @VisibleForTesting
     public BigtableDataSettings settings(TableDestination table) throws IOException {
         return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials)
                 .build();
     }
 
-    /** Takes the provider the seam's owner loaded, or {@code null} to keep ADC. */
-    public void useCredentials(@Nullable CredentialsProvider credentials) {
+    /**
+     * Takes the provider the seam's owner loaded, or {@code null} to keep ADC.
+     *
+     * <p>The owner supplies credentials before first use and before close. Injection waits for any
+     * client construction already holding this object's monitor.
+     *
+     * @throws IllegalStateException if the holder is already closed
+     */
+    public synchronized void useCredentials(@Nullable CredentialsProvider credentials) {
+        Preconditions.checkState(
+                !closed, "The Bigtable %s was closed before credentials were supplied.", owner);
         this.credentials = credentials;
     }
 
-    /** Closes the client if one was built, and refuses to build another. */
+    /** Closes the client if one was built, clears credentials, and refuses later use. */
     public void close() throws IOException {
         BigtableDataClient toClose;
         synchronized (this) {
             closed = true;
             toClose = client;
             client = null;
+            credentials = null;
         }
         if (toClose != null) {
             toClose.close();

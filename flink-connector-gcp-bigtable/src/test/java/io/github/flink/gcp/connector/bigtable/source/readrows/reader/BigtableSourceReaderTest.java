@@ -101,6 +101,21 @@ class BigtableSourceReaderTest {
     }
 
     @Test
+    void closesTheOpenerAfterItsFetcherStream() throws Exception {
+        ScriptedRowStreamOpener opener = ScriptedRowStreamOpener.over("reader-order", "a");
+        opener.blockAfter(0, ScriptedRowStreamOpener.CancelBehaviour.ENDS_QUIETLY);
+        BigtableSourceReader<String> reader = reader(opener);
+        reader.addSplits(
+                Collections.singletonList(new RowRangeSplit("0", ByteStringRange.unbounded())));
+        reader.start();
+        opener.awaitBlocked();
+
+        reader.close();
+
+        assertThat(opener.lifecycleEvents()).containsExactly("stream", "opener");
+    }
+
+    @Test
     void checkpointsASplitAtTheRangeItHasLeft() {
         // toSplitType is what a checkpoint stores, and it is reached only through the reader.
         BigtableSourceReader<String> reader =
