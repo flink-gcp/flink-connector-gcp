@@ -139,8 +139,8 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
     private final MailboxExecutor mailboxExecutor;
     private final TimeSource timeSource;
     private final int maxInFlightTasks;
-    private final RetrySchedule retrySchedule;
-    private final RetrySchedule notFoundSchedule;
+    private final RetrySchedule recoverySchedule;
+    private final RetrySchedule notFoundRecoverySchedule;
     @Nullable private final TaskIdExtractor<? super T> taskIdExtractor;
     private final FailureHandler<? super FailedTask> failedTaskHandler;
     private final CloudTasksWriterMetrics metrics;
@@ -197,8 +197,8 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         this.timeSource = timeSource;
         CloudTasksWriterOptions options = config.getWriterOptions();
         this.maxInFlightTasks = options.getMaxInFlightTasks();
-        this.retrySchedule = options.toRetrySchedule();
-        this.notFoundSchedule = options.toNotFoundRetrySchedule();
+        this.recoverySchedule = options.toRecoverySchedule();
+        this.notFoundRecoverySchedule = options.toNotFoundRecoverySchedule();
         this.taskIdExtractor = config.getTaskIdExtractor();
         this.digest = taskIdExtractor == null ? null : sha256();
         this.failedTaskHandler = config.getFailedTaskHandler();
@@ -452,9 +452,10 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
             metrics.taskDeduplicated();
             return;
         }
-        // Every remaining failure is counted, retryable ones included: those are this sink's own
-        // retries, and the sum over the retryable codes is what a separate retries counter would
-        // have said. The deduplication above is not one — it is the success naming asked for.
+        // Every remaining failure is counted, retryable ones included. These are attempt
+        // classifications, not an exact retry count: first failures count, and the outer status
+        // recorded here can differ from the nested status that selects recovery below. The
+        // deduplication above is not a failure — it is the success naming asked for.
         metrics.createFailure(code);
         // Routed only when the failure is unambiguously data-shaped, which takes both halves of
         // this condition. The transient lookup scans the *whole* chain, so an unstable service
@@ -479,16 +480,16 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         }
         PendingCreate entry = pending != null ? pending : new PendingCreate(destination, request);
         if (transientCode != null) {
-            if (++entry.attempts < retrySchedule.maxAttempts()) {
-                park(entry, retrySchedule.backoffMs(entry.attempts));
+            if (++entry.attempts < recoverySchedule.maxAttempts()) {
+                park(entry, recoverySchedule.backoffMs(entry.attempts));
             } else {
                 asyncError = exhausted(request, entry.attempts, transientCode, throwable);
             }
             return;
         }
         if (code == StatusCode.Code.NOT_FOUND) {
-            if (++entry.notFoundAttempts < notFoundSchedule.maxAttempts()) {
-                park(entry, notFoundSchedule.backoffMs(entry.notFoundAttempts));
+            if (++entry.notFoundAttempts < notFoundRecoverySchedule.maxAttempts()) {
+                park(entry, notFoundRecoverySchedule.backoffMs(entry.notFoundAttempts));
             } else {
                 asyncError =
                         new IOException(

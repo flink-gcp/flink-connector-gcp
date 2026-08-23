@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-07-28 ([#54], with the naming revised on user feedback 2026-07-29); buffered-path
   knobs 2026-08-01 ([#198]); buffered-path eviction 2026-08-13 ([#76]); revised by [#1043]
-  (2026-08-23)
-- Issues: [#54], [#76], [#198], [#1043]
+  (2026-08-23) and [#1051] (2026-08-23)
+- Issues: [#54], [#76], [#198], [#1043], [#1051]
 - Modules: bigquery (`sink.storage`); the `recovery*` naming rule also governs cloudtasks and
   spanner since the [#1043] revision
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Tuning;
@@ -52,6 +52,11 @@ not choosing, so only the "rejected for other methods" half carries safety and o
   cross-module asymmetry: Cloud Tasks' `retry*` names a *connector-driven* schedule — its
   module has no second retry layer, so bare `retry*` is unambiguous there and renaming would
   churn a published-in-docs surface for no local gain.
+- **[#1051] applies the rule to both Cloud Tasks budgets.** The ordinary transient budget uses
+  `sink.recovery.*` and `recovery*`. The separate short `NOT_FOUND` budget nests its qualifier
+  under the same Table API family (`sink.recovery.not-found.*`) and uses
+  `notFoundRecovery*` in the DataStream API, so both surfaces name it as connector-owned recovery
+  without losing the failure that selects the budget.
 - **[#198] gave the buffered path the same five SDK knobs**, deleting
   `StreamWriterRowAppenderFactory.RETRY_SETTINGS`; the SDK mapping stays in that factory as an
   overloaded `toRetrySettings`, **not** on the options class — the mapping-on-the-options rule

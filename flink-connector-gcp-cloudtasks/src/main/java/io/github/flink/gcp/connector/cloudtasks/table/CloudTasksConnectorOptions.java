@@ -184,8 +184,8 @@ public final class CloudTasksConnectorOptions {
                             "Host and port of a Cloud Tasks emulator. It uses plaintext with no"
                                     + " credentials and is for tests only.");
 
-    public static final ConfigOption<Integer> SINK_MAX_IN_FLIGHT_TASKS =
-            ConfigOptions.key("sink.max-in-flight-tasks")
+    public static final ConfigOption<Integer> SINK_IN_FLIGHT_MAX_TASKS =
+            ConfigOptions.key("sink.in-flight.max-tasks")
                     .intType()
                     .noDefaultValue()
                     .withDescription("The cap on outstanding task creations per sink subtask.");
@@ -198,39 +198,39 @@ public final class CloudTasksConnectorOptions {
                             "The number of gRPC channels the client opens; unset leaves the"
                                     + " client's default single channel.");
 
-    public static final ConfigOption<Duration> SINK_RETRY_INITIAL_BACKOFF =
-            ConfigOptions.key("sink.retry.initial-backoff")
+    public static final ConfigOption<Duration> SINK_RECOVERY_INITIAL_BACKOFF =
+            ConfigOptions.key("sink.recovery.initial-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The first backoff for transient CreateTask failures.");
 
-    public static final ConfigOption<Duration> SINK_RETRY_MAX_BACKOFF =
-            ConfigOptions.key("sink.retry.max-backoff")
+    public static final ConfigOption<Duration> SINK_RECOVERY_MAX_BACKOFF =
+            ConfigOptions.key("sink.recovery.max-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The cap on the transient-failure retry backoff.");
 
-    public static final ConfigOption<Integer> SINK_RETRY_MAX_ATTEMPTS =
-            ConfigOptions.key("sink.retry.max-attempts")
+    public static final ConfigOption<Integer> SINK_RECOVERY_MAX_ATTEMPTS =
+            ConfigOptions.key("sink.recovery.max-attempts")
                     .intType()
                     .noDefaultValue()
                     .withDescription(
                             "The maximum transient-failure attempts, including the first.");
 
-    public static final ConfigOption<Duration> SINK_NOT_FOUND_RETRY_INITIAL_BACKOFF =
-            ConfigOptions.key("sink.not-found-retry.initial-backoff")
+    public static final ConfigOption<Duration> SINK_RECOVERY_NOT_FOUND_INITIAL_BACKOFF =
+            ConfigOptions.key("sink.recovery.not-found.initial-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The first backoff of the separate NOT_FOUND retry budget.");
 
-    public static final ConfigOption<Duration> SINK_NOT_FOUND_RETRY_MAX_BACKOFF =
-            ConfigOptions.key("sink.not-found-retry.max-backoff")
+    public static final ConfigOption<Duration> SINK_RECOVERY_NOT_FOUND_MAX_BACKOFF =
+            ConfigOptions.key("sink.recovery.not-found.max-backoff")
                     .durationType()
                     .noDefaultValue()
                     .withDescription("The cap on the NOT_FOUND retry backoff.");
 
-    public static final ConfigOption<Integer> SINK_NOT_FOUND_RETRY_MAX_ATTEMPTS =
-            ConfigOptions.key("sink.not-found-retry.max-attempts")
+    public static final ConfigOption<Integer> SINK_RECOVERY_NOT_FOUND_MAX_ATTEMPTS =
+            ConfigOptions.key("sink.recovery.not-found.max-attempts")
                     .intType()
                     .noDefaultValue()
                     .withDescription("The maximum NOT_FOUND attempts, including the first.");

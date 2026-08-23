@@ -37,37 +37,37 @@ class CloudTasksWriterOptionsTest {
                 .hasSameHashCodeAs(CloudTasksWriterOptions.builder().build());
         assertThat(defaults.getMaxInFlightTasks()).isEqualTo(1000);
         assertThat(defaults.getChannelPoolSize()).isNull();
-        assertThat(defaults.getRetryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
-        assertThat(defaults.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
-        assertThat(defaults.getRetryMaxAttempts()).isEqualTo(8);
-        assertThat(defaults.getNotFoundInitialBackoff()).isEqualTo(Duration.ofMillis(500));
-        assertThat(defaults.getNotFoundMaxBackoff()).isEqualTo(Duration.ofSeconds(2));
-        assertThat(defaults.getNotFoundMaxAttempts()).isEqualTo(3);
+        assertThat(defaults.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(100));
+        assertThat(defaults.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
+        assertThat(defaults.getRecoveryMaxAttempts()).isEqualTo(8);
+        assertThat(defaults.getNotFoundRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(500));
+        assertThat(defaults.getNotFoundRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(2));
+        assertThat(defaults.getNotFoundRecoveryMaxAttempts()).isEqualTo(3);
     }
 
     @Test
     void schedulesCarryTheConfiguredBudgets() {
         CloudTasksWriterOptions options =
                 CloudTasksWriterOptions.builder()
-                        .retryMaxAttempts(4)
-                        .retryInitialBackoff(Duration.ofMillis(2_000))
-                        .retryMaxBackoff(Duration.ofMillis(4_000))
-                        .notFoundMaxAttempts(2)
-                        .notFoundInitialBackoff(Duration.ofMillis(1_000))
-                        .notFoundMaxBackoff(Duration.ofMillis(1_000))
+                        .recoveryMaxAttempts(4)
+                        .recoveryInitialBackoff(Duration.ofMillis(2_000))
+                        .recoveryMaxBackoff(Duration.ofMillis(4_000))
+                        .notFoundRecoveryMaxAttempts(2)
+                        .notFoundRecoveryInitialBackoff(Duration.ofMillis(1_000))
+                        .notFoundRecoveryMaxBackoff(Duration.ofMillis(1_000))
                         .build();
 
-        assertThat(options.toRetrySchedule().maxAttempts()).isEqualTo(4);
-        assertThat(options.toNotFoundRetrySchedule().maxAttempts()).isEqualTo(2);
+        assertThat(options.toRecoverySchedule().maxAttempts()).isEqualTo(4);
+        assertThat(options.toNotFoundRecoverySchedule().maxAttempts()).isEqualTo(2);
         // Both schedules are jittered to de-synchronize parallel subtasks backing off against the
         // same queue.
-        assertThat(options.toRetrySchedule().jitterRatio())
+        assertThat(options.toRecoverySchedule().jitterRatio())
                 .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
-        assertThat(options.toNotFoundRetrySchedule().jitterRatio())
+        assertThat(options.toNotFoundRecoverySchedule().jitterRatio())
                 .isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
         // The backoffs pin that each budget's durations reach its own schedule, in milliseconds.
-        assertThat(options.toRetrySchedule().backoffMs(1)).isBetween(1_500L, 2_500L);
-        assertThat(options.toNotFoundRetrySchedule().backoffMs(1)).isBetween(750L, 1_250L);
+        assertThat(options.toRecoverySchedule().backoffMs(1)).isBetween(1_500L, 2_500L);
+        assertThat(options.toNotFoundRecoverySchedule().backoffMs(1)).isBetween(750L, 1_250L);
     }
 
     @Test
@@ -76,9 +76,9 @@ class CloudTasksWriterOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> CloudTasksWriterOptions.builder().channelPoolSize(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().retryMaxAttempts(0))
+        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().notFoundMaxAttempts(0))
+        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().notFoundRecoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -87,9 +87,9 @@ class CloudTasksWriterOptionsTest {
         assertThatThrownBy(
                         () ->
                                 CloudTasksWriterOptions.builder()
-                                        .retryInitialBackoff(Duration.ofNanos(1)))
+                                        .recoveryInitialBackoff(Duration.ofNanos(1)))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().notFoundMaxBackoff(null))
+        assertThatThrownBy(() -> CloudTasksWriterOptions.builder().notFoundRecoveryMaxBackoff(null))
                 .isInstanceOf(NullPointerException.class);
     }
 
@@ -98,19 +98,19 @@ class CloudTasksWriterOptionsTest {
         assertThatThrownBy(
                         () ->
                                 CloudTasksWriterOptions.builder()
-                                        .retryInitialBackoff(Duration.ofSeconds(2))
-                                        .retryMaxBackoff(Duration.ofSeconds(1))
+                                        .recoveryInitialBackoff(Duration.ofSeconds(2))
+                                        .recoveryMaxBackoff(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("retryMaxBackoff");
+                .hasMessageContaining("recoveryMaxBackoff");
         assertThatThrownBy(
                         () ->
                                 CloudTasksWriterOptions.builder()
-                                        .notFoundInitialBackoff(Duration.ofSeconds(2))
-                                        .notFoundMaxBackoff(Duration.ofSeconds(1))
+                                        .notFoundRecoveryInitialBackoff(Duration.ofSeconds(2))
+                                        .notFoundRecoveryMaxBackoff(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("notFoundMaxBackoff");
+                .hasMessageContaining("notFoundRecoveryMaxBackoff");
     }
 
     @Test
@@ -124,6 +124,8 @@ class CloudTasksWriterOptionsTest {
                 .isNotEqualTo(CloudTasksWriterOptions.defaults());
         assertThat(fullyPopulated().toString())
                 .startsWith("CloudTasksWriterOptions{maxInFlightTasks=17")
+                .contains("recoveryInitialBackoff=PT0.2S")
+                .contains("notFoundRecoveryInitialBackoff=PT0.6S")
                 .contains("perDestinationMetrics=true");
     }
 
@@ -139,22 +141,26 @@ class CloudTasksWriterOptionsTest {
         assertThat(variedBy(builder -> builder.channelPoolSize(5)))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
-        assertThat(variedBy(builder -> builder.retryInitialBackoff(Duration.ofMillis(300))))
+        assertThat(variedBy(builder -> builder.recoveryInitialBackoff(Duration.ofMillis(300))))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
-        assertThat(variedBy(builder -> builder.retryMaxBackoff(Duration.ofSeconds(30))))
+        assertThat(variedBy(builder -> builder.recoveryMaxBackoff(Duration.ofSeconds(30))))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
-        assertThat(variedBy(builder -> builder.retryMaxAttempts(9)))
+        assertThat(variedBy(builder -> builder.recoveryMaxAttempts(9)))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
-        assertThat(variedBy(builder -> builder.notFoundInitialBackoff(Duration.ofMillis(700))))
+        assertThat(
+                        variedBy(
+                                builder ->
+                                        builder.notFoundRecoveryInitialBackoff(
+                                                Duration.ofMillis(700))))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
-        assertThat(variedBy(builder -> builder.notFoundMaxBackoff(Duration.ofSeconds(4))))
+        assertThat(variedBy(builder -> builder.notFoundRecoveryMaxBackoff(Duration.ofSeconds(4))))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
-        assertThat(variedBy(builder -> builder.notFoundMaxAttempts(5)))
+        assertThat(variedBy(builder -> builder.notFoundRecoveryMaxAttempts(5)))
                 .isNotEqualTo(fullyPopulated())
                 .doesNotHaveSameHashCodeAs(fullyPopulated());
         assertThat(variedBy(builder -> builder.perDestinationMetrics(false)))
@@ -176,12 +182,12 @@ class CloudTasksWriterOptionsTest {
         return CloudTasksWriterOptions.builder()
                 .maxInFlightTasks(17)
                 .channelPoolSize(2)
-                .retryInitialBackoff(Duration.ofMillis(200))
-                .retryMaxBackoff(Duration.ofSeconds(20))
-                .retryMaxAttempts(4)
-                .notFoundInitialBackoff(Duration.ofMillis(600))
-                .notFoundMaxBackoff(Duration.ofSeconds(3))
-                .notFoundMaxAttempts(2)
+                .recoveryInitialBackoff(Duration.ofMillis(200))
+                .recoveryMaxBackoff(Duration.ofSeconds(20))
+                .recoveryMaxAttempts(4)
+                .notFoundRecoveryInitialBackoff(Duration.ofMillis(600))
+                .notFoundRecoveryMaxBackoff(Duration.ofSeconds(3))
+                .notFoundRecoveryMaxAttempts(2)
                 .perDestinationMetrics(true);
     }
 }

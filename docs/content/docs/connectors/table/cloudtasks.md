@@ -544,13 +544,13 @@ explains why `NOT_FOUND` has a separate short budget and why no setting controls
 
 | Option | Type | Default | Maps to |
 |---|---|---|---|
-| `sink.max-in-flight-tasks` | Integer | 1000 | `maxInFlightTasks` |
+| `sink.in-flight.max-tasks` | Integer | 1000 | `maxInFlightTasks` |
 | `sink.channel-pool-size` | Integer | the client's single channel | `channelPoolSize`; rejected beside `emulator-endpoint` |
-| `sink.retry.initial-backoff` | Duration | 100 ms | `retryInitialBackoff` |
-| `sink.retry.max-backoff` | Duration | 10 s | `retryMaxBackoff` |
-| `sink.retry.max-attempts` | Integer | 8 | `retryMaxAttempts` |
-| `sink.not-found-retry.initial-backoff` | Duration | 500 ms | `notFoundInitialBackoff` |
-| `sink.not-found-retry.max-backoff` | Duration | 2 s | `notFoundMaxBackoff` |
-| `sink.not-found-retry.max-attempts` | Integer | 3 | `notFoundMaxAttempts` |
+| `sink.recovery.initial-backoff` | Duration | 100 ms | `recoveryInitialBackoff` |
+| `sink.recovery.max-backoff` | Duration | 10 s | `recoveryMaxBackoff` |
+| `sink.recovery.max-attempts` | Integer | 8 | `recoveryMaxAttempts` |
+| `sink.recovery.not-found.initial-backoff` | Duration | 500 ms | `notFoundRecoveryInitialBackoff` |
+| `sink.recovery.not-found.max-backoff` | Duration | 2 s | `notFoundRecoveryMaxBackoff` |
+| `sink.recovery.not-found.max-attempts` | Integer | 3 | `notFoundRecoveryMaxAttempts` |
 | `sink.metrics.per-destination` | Boolean | `false` | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | job parallelism | the sink operator parallelism |

@@ -1101,8 +1101,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // Every failure with a confirmed identity is counted, fatal ones included and fatal ones
         // after the first: the client has already spent its own retries, so each is a distinct
         // give-up rather than an attempt. Which means the sum over the transient codes is not this
-        // connector's retry volume, unlike the Cloud Tasks sink's — the retries it would measure
-        // are inside the SDK and never surface here. A NOT_FOUND parked for repair below is
+        // connector's retry volume: the retries it would measure are inside the SDK and never
+        // surface here. A NOT_FOUND parked for repair below is
         // counted too, unlike a parked row-level report: the table's absence fails every entry
         // alike, so there is no identity left to confirm, and each re-application that fails again
         // is a fresh give-up. The Pub/Sub writer counts its parked NOT_FOUNDs the same way.

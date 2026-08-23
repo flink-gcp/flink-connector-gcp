@@ -842,8 +842,9 @@ repair added to a table that already existed — the signal that what a job decl
 table holds had drifted apart. Both are registered whatever the disposition, so a `CREATE_NEVER`
 dashboard reads zeroes rather than holes.
 
-**`errorClass` does not measure retry volume here, unlike the Cloud Tasks sink.** That connector
-owns its retries, so the sum over its transient codes *is* its retry count; this one leaves retrying
+**`errorClass` does not measure retry volume here.** Cloud Tasks owns its retries, but its error
+classes still describe failed attempts rather than retry count: first failures count, and a retry
+selected from a nested status is classified under the outer status. This connector leaves retrying
 to the client (see [Retries belong to the client](#retries-belong-to-the-client)), which retries per
 entry inside the batcher and surfaces nothing until it gives up. Every code counted here is
 therefore a mutation the client already exhausted its budget on — `UNAVAILABLE` here means an outage

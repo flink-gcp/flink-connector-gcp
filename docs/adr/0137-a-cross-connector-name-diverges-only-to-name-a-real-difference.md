@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0137: A cross-connector name diverges only to name a real difference
 
 - Status: Accepted
-- Date: 2026-08-23
-- Issues: [#1043], [#782]
+- Date: 2026-08-23; retry-counter wording revised by [#1051] (2026-08-23)
+- Issues: [#1043], [#782], [#1051]
 - Modules: all connectors
 - Current behavior: the rules in this record, with the judged divergence table appended below
   as evidence; the drift half is routed as sub-issues [#1047]–[#1053]
@@ -147,9 +147,9 @@ same `of(project, …)` shape in the same role, was the one outlier; it is renam
   fleet-wide existence rule.* BigQuery's `appendRetries` counts its connector-owned recovery
   loop's re-issues while its `readRetries` counts the client library's own `ReadRows` retries
   ("which nothing else reports" — `BigQueryMetricNames`); Cloud Tasks owns its retry loop and
-  registers no counter (a per-module decision its module reference records — the transient
-  `errorClass` sum counts every failed attempt, first failures included, so it is an upper
-  bound on the retry volume, not the volume itself);
+  registers no counter (a per-module decision its module reference records — `errorClass`
+  classifies failed attempts rather than retry volume: first failures count, and a retry selected
+  by a nested transient status is counted under the outer status);
   Bigtable's SDK owns the retries and none is exposed ([ADR-0043]). Existence is a per-module
   decision on the per-module records; the cross-connector rule is only that `mutationsRetried`
   and `appendRetries` name genuinely different units, so their shapes differ legitimately.

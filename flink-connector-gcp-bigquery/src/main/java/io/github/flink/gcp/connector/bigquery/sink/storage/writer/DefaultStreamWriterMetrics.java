@@ -41,8 +41,9 @@ import javax.annotation.Nullable;
  * <p><b>{@code numRecordsSend} counts records, not append attempts.</b> A batch is counted once,
  * inside the append that first hands it to the client library; the re-appends this writer issues
  * while repairing a destination go through a different call site and are counted as {@code
- * appendRetries} instead. Retry volume by status is read from the error-class counters, which
- * <em>do</em> count every failed attempt.
+ * appendRetries} instead. The error-class counters classify every failed append; they are not retry
+ * volume because they include first and terminal failures, and repair can start from a
+ * non-transient status.
  *
  * <p>{@code currentSendTime} is deliberately left unset: an append may be re-issued across several
  * backoffs and a table creation, so the interval between hand-off and acknowledgement would
@@ -171,8 +172,8 @@ final class DefaultStreamWriterMetrics {
 
     /**
      * Counts one failed append under the status code that classifies it — every failure the task
-     * thread classifies, first attempts and re-appends alike, so the sum over the transient codes
-     * is the retry volume the {@code appendRetries} counter measures from the other side.
+     * thread classifies, first attempts and re-appends alike. No status-filtered sum is exact retry
+     * volume; {@code appendRetries} counts the connector-issued re-appends directly.
      *
      * @param code the status code, or {@code null} for a failure carrying none
      */

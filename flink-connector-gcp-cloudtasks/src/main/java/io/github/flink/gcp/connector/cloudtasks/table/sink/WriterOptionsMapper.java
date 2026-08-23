@@ -25,15 +25,15 @@ import io.github.flink.gcp.connector.cloudtasks.table.OptionSetters;
 
 /** Maps Table API options onto the DataStream writer options. */
 @Internal
-public final class CloudTasksWriterOptionsMapper {
+public final class WriterOptionsMapper {
 
-    private CloudTasksWriterOptionsMapper() {}
+    private WriterOptionsMapper() {}
 
     public static CloudTasksWriterOptions map(ReadableConfig config) {
         CloudTasksWriterOptions.Builder builder = CloudTasksWriterOptions.builder();
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS,
+                CloudTasksConnectorOptions.SINK_IN_FLIGHT_MAX_TASKS,
                 builder::maxInFlightTasks);
         OptionSetters.apply(
                 config,
@@ -41,28 +41,28 @@ public final class CloudTasksWriterOptionsMapper {
                 builder::channelPoolSize);
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
-                builder::retryInitialBackoff);
+                CloudTasksConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                builder::recoveryInitialBackoff);
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_RETRY_MAX_BACKOFF,
-                builder::retryMaxBackoff);
+                CloudTasksConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                builder::recoveryMaxBackoff);
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
-                builder::retryMaxAttempts);
+                CloudTasksConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                builder::recoveryMaxAttempts);
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_INITIAL_BACKOFF,
-                builder::notFoundInitialBackoff);
+                CloudTasksConnectorOptions.SINK_RECOVERY_NOT_FOUND_INITIAL_BACKOFF,
+                builder::notFoundRecoveryInitialBackoff);
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_BACKOFF,
-                builder::notFoundMaxBackoff);
+                CloudTasksConnectorOptions.SINK_RECOVERY_NOT_FOUND_MAX_BACKOFF,
+                builder::notFoundRecoveryMaxBackoff);
         OptionSetters.apply(
                 config,
-                CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_ATTEMPTS,
-                builder::notFoundMaxAttempts);
+                CloudTasksConnectorOptions.SINK_RECOVERY_NOT_FOUND_MAX_ATTEMPTS,
+                builder::notFoundRecoveryMaxAttempts);
         OptionSetters.apply(
                 config,
                 CloudTasksConnectorOptions.SINK_METRICS_PER_DESTINATION,

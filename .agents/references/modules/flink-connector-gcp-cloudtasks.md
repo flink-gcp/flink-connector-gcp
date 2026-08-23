@@ -46,10 +46,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The transient half of classification scans the whole chain; the `INVALID_ARGUMENT` half
   deliberately does **not** — the asymmetry was found by mutation testing, and the scanning
   variant is the worse code. The routing branch sits before the `asyncError` early-return.
-- `numRecordsSend` counts inside `dispatch(...)` under `pending == null`; error classes count
-  every attempt (the sum over transient codes *is* the retry volume — no separate retries
-  counter); `ALREADY_EXISTS` is `tasksDeduplicated`, never an error; per-queue counters are
-  looked up per record (no per-destination state exists to cache a handle on).
+- `numRecordsSend` counts inside `dispatch(...)` under `pending == null`; error classes classify
+  every failed attempt under its outermost status, so no sum is exact retry volume: first failures
+  count, while a retry selected by a nested transient status is counted under the outer status.
+  No separate retries counter exists. `ALREADY_EXISTS` is `tasksDeduplicated`, never an error;
+  per-queue counters are looked up per record (no per-destination state exists to cache a handle
+  on).
 
 ## Table sink (`docs/adr/0107`)
 

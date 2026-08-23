@@ -160,9 +160,9 @@ class CloudTasksTaskCreationITCase extends AbstractCloudTasksEmulatorITCase {
                                 CloudTasksWriterOptions.builder()
                                         // Distinguishable budgets: were NOT_FOUND classified onto
                                         // the transient one, the attempt count below would differ.
-                                        .retryMaxAttempts(20)
-                                        .notFoundMaxAttempts(2)
-                                        .notFoundInitialBackoff(Duration.ofMillis(500))
+                                        .recoveryMaxAttempts(20)
+                                        .notFoundRecoveryMaxAttempts(2)
+                                        .notFoundRecoveryInitialBackoff(Duration.ofMillis(500))
                                         .build());
 
         long startedAt = System.nanoTime();

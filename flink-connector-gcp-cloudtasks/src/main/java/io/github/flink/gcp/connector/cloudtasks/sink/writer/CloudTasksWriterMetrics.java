@@ -140,9 +140,9 @@ final class CloudTasksWriterMetrics {
 
     /**
      * Counts one failed creation attempt under the status code that classifies it. Unlike the
-     * Pub/Sub sink, every attempt is counted, retryable ones included: those are this sink's own
-     * retries, and the sum over the retryable codes is what a separate retries counter would have
-     * reported.
+     * Pub/Sub sink, every failed attempt is counted, retryable ones included. These counters do not
+     * report exact retry volume because they include each chain's first failure and classify it as
+     * described below; no separate exact retries counter is registered.
      *
      * <p>The code passed in is the chain's <b>outermost</b> classifiable status, which is not
      * always the one the writer acts on: routing scans the whole chain for a transient status

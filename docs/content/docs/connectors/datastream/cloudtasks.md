@@ -604,10 +604,11 @@ connector in this repository counts the same way, whether its retries live in th
 is what makes the number comparable across them. The consequence: `numBytesSend` is payload volume
 rather than wire volume.
 
-**`errorClass` counts every attempt, retryable ones included** — that is the difference from
-`numRecordsSend`, and it is deliberate: the sum over `UNAVAILABLE`, `DEADLINE_EXCEEDED` and
-`RESOURCE_EXHAUSTED` *is* the retry volume, which is why there is no separate retries counter. A
-`NOT_FOUND` run is visible the same way, under its own name.
+**`errorClass` counts every failed attempt, retryable ones included** — that is the difference from
+`numRecordsSend`, and it is deliberate. It is not an exact retry counter: first failures count, and
+the metric uses the outermost status while retry routing scans the whole exception chain, so a retry
+selected by a nested transient status appears under the outer status instead. There is no separate
+exact retries counter. A `NOT_FOUND` run is visible the same way, under its own name.
 
 `tasksDeduplicated` counts the `ALREADY_EXISTS` answers that named tasks exist to produce. They are
 successes, not failures: they appear in neither `numRecordsSendErrors` nor `errorClass`, so a job
