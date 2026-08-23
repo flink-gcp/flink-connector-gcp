@@ -172,6 +172,9 @@ def test_module_readme_is_ignored_before_module_matching(fake_repo, ci_maven_arg
         "scripts/config/option-docs.toml",
         "pyproject.toml",
         "uv.lock",
+        # The contributor guide: no Maven build reads it, but rat scans it —
+        # pom.xml excludes **/README.md and not CONTRIBUTING.md (#1095).
+        "CONTRIBUTING.md",
     ],
 )
 def test_root_only_paths_buy_the_rat_check(fake_repo, ci_maven_args, path):

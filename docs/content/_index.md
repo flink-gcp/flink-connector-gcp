@@ -23,9 +23,10 @@ limitations under the License.
 
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/).
 
-> **Status: early development.** Nothing is released yet; APIs and coordinates will change.
-> Building from source is described in the
-> [repository README]({{< param BookRepo >}}#build).
+> **Status: approaching the first release, 1.0.0.** Until it reaches Maven Central
+> ([#39]({{< param BookRepo >}}/issues/39)), artifacts come from a local build; building
+> from source and working on the connectors is covered by
+> [Development]({{< relref "docs/development" >}}).
 
 The [Quickstart]({{< relref "docs/quickstart" >}}) builds and installs the connectors, sets up
 credentials and runs one complete job per connector; [Examples]({{< relref "docs/examples" >}})

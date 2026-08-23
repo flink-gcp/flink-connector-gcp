@@ -41,10 +41,12 @@ section below links to it.
 **Two surfaces are documented elsewhere, deliberately.** The SQL connector pages —
 [BigQuery]({{< relref "docs/connectors/table/bigquery" >}}),
 [Pub/Sub]({{< relref "docs/connectors/table/pubsub" >}}),
-[Cloud Tasks]({{< relref "docs/connectors/table/cloudtasks" >}}) and
-[Bigtable]({{< relref "docs/connectors/table/bigtable" >}}) — carry the full `WITH` option surface,
-because a SQL option exists only where a builder setter does and the mapping between them is the
-thing worth reading. And every type named here — including the enums, the destination types and the
+[Cloud Tasks]({{< relref "docs/connectors/table/cloudtasks" >}}),
+[Bigtable]({{< relref "docs/connectors/table/bigtable" >}}) and
+[Spanner]({{< relref "docs/connectors/table/spanner" >}}) — carry the full `WITH` option
+surface: most SQL options exist where a builder setter does and the mapping between them is
+the thing worth reading, and the table-owned selectors with no builder counterpart — a
+`scan.mode`, a schema mapping — are documented nowhere else. And every type named here — including the enums, the destination types and the
 SPIs an option takes — is in the [Java API reference]({{< param ApiDocsURL >}}), generated from the
 source.
 

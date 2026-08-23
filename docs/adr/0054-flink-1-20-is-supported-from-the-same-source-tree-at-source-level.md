@@ -21,7 +21,8 @@ limitations under the License.
   assumed); revised by [#404] (2026-08-09)
 - Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404]
 - Modules: all connectors
-- Current behavior: `docs/content/_index.md` supported-versions table, `README.md` § Build
+- Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
+  § Supported versions
 
 ## Context
 

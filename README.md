@@ -3,19 +3,23 @@
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/):
 BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
 
-> **Status: early development.** Nothing is released yet; APIs and coordinates will change.
+> **Status: approaching the first release, 1.0.0.** Artifacts will be published to Maven
+> Central ([#39](https://github.com/flink-gcp/flink-connector-gcp/issues/39)) under the
+> `io.github.flink-gcp` namespace, already verified
+> ([#724](https://github.com/flink-gcp/flink-connector-gcp/issues/724)); until the release
+> lands there, they come from a local build.
 
 ## Modules
 
 | Module | Description |
 |---|---|
-| `flink-connector-gcp-bigquery` | BigQuery sink with a unified write API: Storage Write API (at-least-once / exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations and native protobuf serialization |
+| `flink-connector-gcp-bigquery` | BigQuery sink with a unified write API: Storage Write API (at-least-once / exactly-once) and GCS-staged load jobs, with dynamic per-record table destinations, native protobuf serialization, and Table API / SQL sink and source support |
 | `flink-sql-connector-gcp-bigquery` | The BigQuery connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
-| `flink-connector-gcp-pubsub` | Cloud Pub/Sub sink (dynamic topic destinations) and source |
+| `flink-connector-gcp-pubsub` | Cloud Pub/Sub sink (dynamic topic destinations) and source, with Table API / SQL sink and source support |
 | `flink-sql-connector-gcp-pubsub` | The Pub/Sub connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
-| `flink-connector-gcp-cloudtasks` | Cloud Tasks sink |
+| `flink-connector-gcp-cloudtasks` | Cloud Tasks sink, with a Table API / SQL sink |
 | `flink-sql-connector-gcp-cloudtasks` | The Cloud Tasks connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
-| `flink-connector-gcp-bigtable` | Bigtable sink, bounded scan source, and Change Streams source (implemented in #35) |
+| `flink-connector-gcp-bigtable` | Bigtable sink, bounded scan source, and Change Streams source, with Table API / SQL sink, scan, lookup, and change-stream CDC support |
 | `flink-sql-connector-gcp-bigtable` | The Bigtable connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-spanner` | Spanner sink, bounded source and Change Streams source (both dialects), with Table API / SQL sink, scan, lookup, and change-stream CDC support |
 | `flink-sql-connector-gcp-spanner` | The Spanner connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
@@ -28,16 +32,25 @@ Requires JDK 17 or 21 and Maven (or use the included wrapper):
 ./mvnw verify
 ```
 
-That build is also `just verify`, which is what CI runs. The commands this repository is worked
-with — the build, formatting, linting, the documentation site, the binary-compatibility check —
-are recipes in the `justfile`, and the workflows call the same ones. Run `just --list` for the
-index; [mise](https://mise.jdx.dev/) installs the tools they need.
+CI runs the same build as `just verify`. The toolchain and the day-to-day recipes are covered
+by [Development](https://flink-gcp.github.io/flink-connector-gcp/docs/development/) on the
+documentation site.
 
-`main` supports **Flink 2.2 and 2.3**, mirroring Flink's own policy of supporting the current and
-the previous minor release, and additionally builds against **Flink 1.20** (the 1.x LTS) from
-the same source — `just verify-flink 1.20.4` builds and tests for it.
-See [Supported versions](https://flink-gcp.github.io/flink-connector-gcp/#supported-versions) for
-how the range is verified and why a single artifact covers it.
+## Supported versions
+
+| | Supported |
+|---|---|
+| Apache Flink | 2.2, 2.3, and 1.20 (LTS) |
+| Java | 17, 21 |
+
+The Flink range mirrors Flink's own support policy — the current and the previous minor
+release — so a new Flink minor moves both ends of the range. Moving it is a deliberate change
+backed by a weekly build over every supported version, never an automatic bump. Flink 1.20 is
+supported from the same source (`just verify-flink 1.20.4` builds and tests for it) and its
+lane is verified on Java 17 — the Java 21 row is a 2.x claim. Java 11 is not supported even
+though Flink 2.x declares it.
+See [Supported versions](https://flink-gcp.github.io/flink-connector-gcp/#supported-versions)
+for how the range is verified and why a single artifact covers the 2.x range.
 
 ## Getting started
 
@@ -47,6 +60,13 @@ artifacts from this build and sets up credentials, then has one complete job per
 destinations, exactly-once, auto-creation and emulator-backed local runs; and the
 [configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/) lists
 every option each connector takes, with its default.
+
+## Contributing
+
+Beyond a trivial fix, contributions start with an issue rather than a pull request — see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Contributing](https://flink-gcp.github.io/flink-connector-gcp/docs/development/contributing/)
+page on the documentation site.
 
 ## License
 
