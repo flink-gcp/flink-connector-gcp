@@ -43,6 +43,13 @@ import java.util.Iterator;
  * generation can start while the previous one is still finishing. Unguarded, the two would leak a
  * client that nothing is left holding. The monitor is this object's own, since a lock field would
  * have to travel in the job graph and {@code Object} is not serializable.
+ *
+ * <p>The guarding is monitor-only, deliberately: unlike the sibling connectors' lazy client seams,
+ * the client and {@code closed} fields are not {@code volatile} and there is no double-checked fast
+ * path, because every read and write of them happens inside {@code synchronized (this)} — the
+ * modifiers would guard reads that do not exist, and opening a stream is a per-split rarity for
+ * which taking the monitor costs nothing. Only {@code onRetry} is volatile, because its write does
+ * not take the monitor. ADR-0131's refinement records this as the shape's deliberate variant.
  */
 @Internal
 public final class ReadClientRowStreamOpener implements RowStreamOpener {

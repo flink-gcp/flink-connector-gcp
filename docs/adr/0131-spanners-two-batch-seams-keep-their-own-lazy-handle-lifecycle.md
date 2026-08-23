@@ -17,9 +17,11 @@ limitations under the License.
 # ADR-0131: Spanner's two batch seams keep their own lazy handle lifecycle
 
 - Status: Accepted
-- Date: 2026-08-22 (measured 2026-08-22 at `7e1a13c4`)
-- Issues: [#991](https://github.com/flink-gcp/flink-connector-gcp/issues/991)
-- Modules: spanner
+- Date: 2026-08-22 (measured 2026-08-22 at `7e1a13c4`); revised by
+  [#1046](https://github.com/flink-gcp/flink-connector-gcp/issues/1046) (2026-08-23)
+- Issues: [#991](https://github.com/flink-gcp/flink-connector-gcp/issues/991),
+  [#1046](https://github.com/flink-gcp/flink-connector-gcp/issues/1046)
+- Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
 - Current behavior: unchanged; each batch seam owns its own `Spanner` handle and closes it
 
 ## Context
@@ -90,9 +92,9 @@ planner thread    writes transaction = opened
 One Spanner session outlives the enumerator, and nothing counts or logs it. ADR-0128 already
 declined the flag-clearing repair for this same leak; a holder reaches it by a different route.
 
-Bigtable has no counterpart, which is why the holder pays there. Each of its two seams holds the
-holder and nothing else, and each `close()` is one delegating line. Neither owns a transaction, and
-neither re-checks anything after an unguarded call.
+Bigtable has no counterpart, which is why the holder pays there. Each of its three seams holds the
+holder and nothing else, and each `close()` is one delegating line. None owns a transaction, and
+none re-checks anything after an unguarded call.
 
 ## Alternatives declined
 
@@ -130,3 +132,45 @@ Re-propose the holder with an answer for the post-open re-check, superseding thi
 line count is not an answer, and neither is a holder that keeps the interlock by exposing its
 monitor to the planner: that couples the planner's transaction bookkeeping to the client holder's
 lock, which no contract on either side states.
+
+## Refinement (2026-08-23): the same question, put to the other lazy seams
+
+Settled by [#1046](https://github.com/flink-gcp/flink-connector-gcp/issues/1046). The counterpart
+review ([#782](https://github.com/flink-gcp/flink-connector-gcp/issues/782)) asked what this
+decision means for the lazy client seams it did not measure. Each was judged by the question above
+— does the seam own a second lifecycle on top of its client? — not by line count.
+
+**Bigtable's change-stream opener folded in.** `DataClientChangeStreamOpener` carried the module's
+third copy of the lifecycle: it was left out of
+[#956](https://github.com/flink-gcp/flink-connector-gcp/pull/956) because it took credentials by
+push while the scan seams still pulled, an asymmetry
+[#974](https://github.com/flink-gcp/flink-connector-gcp/pull/974) has since removed by making push
+the module-wide strategy. Measured, it owns no second lifecycle: `open(...)` returns nothing and
+retains nothing, every stream's lifecycle lives in the reader's `ActiveRead`, and nothing re-checks
+`closed` after an unguarded call. So the holder pays, and the Decision's count of Bigtable seams
+holding the holder is three from here on — the Spanner alternative's "candidate population of
+exactly two" is untouched, since nothing in Spanner changed. The fold changes the
+closed-before-use failure from a fixed sentence to the holder's, which names the seam and the
+table.
+
+**BigQuery's variant is deliberate, and now recorded.** `ReadClientRowStreamOpener` differs from
+the holder's shape in three ways that are one once named: it is monitor-only. Every read and write
+of its client and `closed` fields happens inside `synchronized (this)`, so `volatile` and the
+double-checked fast path would guard reads that do not exist, and opening a stream is a per-split
+rarity for which monitor entry costs nothing. Its credentials arrive by path-based pull because
+that is the BigQuery module's documented strategy — the key file remains a path in the job graph
+and each component loads its own — not a per-seam accident. The rationale lives in the class
+javadoc and the module reference; a holder for it stays declined for the reason above: a holder
+with one user is a rename.
+
+**Pub/Sub and Cloud Tasks have nothing to hold.** The factory seams that do travel in the job
+graph — `PublisherFactory` and `TaskCreatorFactory` are `Serializable` — declare the opposite
+contract to a lazy holder: all client state is created at `create(...)` time and none at
+construction. `SubscriberFactory` travels nowhere: it is created on the task manager inside
+`createReader`. So no cached client and no closed-before-use interlock exists to share.
+Pub/Sub's five construction sites — the
+publisher and subscriber factories, both admins, and the dead-letter queue — front four distinct
+settings builders, so a shared holder would remove only the per-builder emulator branch. The
+lazy-seam question does not arise there, and the counterpart matrix's routing of any consolidation
+appetite to [#1046](https://github.com/flink-gcp/flink-connector-gcp/issues/1046) closes with that
+answer.

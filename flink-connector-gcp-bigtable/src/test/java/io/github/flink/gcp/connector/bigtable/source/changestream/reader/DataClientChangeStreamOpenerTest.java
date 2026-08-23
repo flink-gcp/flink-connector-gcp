@@ -16,22 +16,43 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.rpc.ResponseObserver;
+import com.google.api.gax.rpc.StreamController;
 import com.google.bigtable.v2.ReadChangeStreamRequest;
 import com.google.bigtable.v2.RowRange;
 import com.google.cloud.bigtable.data.v2.internal.RequestContext;
+import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Tests for the settings and queries {@link DataClientChangeStreamOpener} builds, and for its
+ * lifecycle.
+ *
+ * <p>The application profile has its own test here for the same reason its scan siblings carry one:
+ * an opener that simply never passed the profile on would leave the shared {@code
+ * BigtableDataClients} test green while streaming through the wrong compute.
+ */
+@Timeout(30)
 class DataClientChangeStreamOpenerTest {
+
+    private static final TableDestination TABLE =
+            TableDestination.of("project", "instance", "table");
 
     @Test
     void injectsTheRuntimeCredentialProvider() throws Exception {
@@ -39,11 +60,45 @@ class DataClientChangeStreamOpenerTest {
         NoCredentialsProvider provider = NoCredentialsProvider.create();
         opener.useCredentials(provider);
 
-        assertThat(
-                        opener.settings(TableDestination.of("project", "instance", "table"))
-                                .getStubSettings()
-                                .getCredentialsProvider())
+        assertThat(opener.settings(TABLE).getStubSettings().getCredentialsProvider())
                 .isSameAs(provider);
+    }
+
+    @Test
+    void carriesTheApplicationProfileToTheClient() throws Exception {
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("single-cluster");
+
+        assertThat(opener.settings(TABLE).getProjectId()).isEqualTo("project");
+        assertThat(opener.settings(TABLE).getInstanceId()).isEqualTo("instance");
+        assertThat(opener.settings(TABLE).getAppProfileId()).isEqualTo("single-cluster");
+    }
+
+    @Test
+    void travelsInTheJobGraph() throws Exception {
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("single-cluster");
+
+        DataClientChangeStreamOpener back =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(opener), getClass().getClassLoader());
+
+        assertThat(back.settings(TABLE).getAppProfileId()).isEqualTo("single-cluster");
+    }
+
+    @Test
+    void closingWithoutHavingOpenedReleasesNothingAndFailsNothing() {
+        assertThatCode(() -> new DataClientChangeStreamOpener("profile").close())
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void refusesToBuildAClientAfterItHasBeenClosed() throws IOException {
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile");
+        opener.close();
+
+        assertThatThrownBy(() -> opener.open(TABLE, wholeKeyspace(), null, new DroppingObserver()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Bigtable change-stream opener")
+                .hasMessageContaining("was closed before it was used");
     }
 
     @Test
@@ -88,5 +143,28 @@ class DataClientChangeStreamOpenerTest {
 
         assertThat(request.getHeartbeatDuration().getSeconds()).isEqualTo(5);
         assertThat(request.getHeartbeatDuration().getNanos()).isZero();
+    }
+
+    private static ChangeStreamPartitionSplit wholeKeyspace() {
+        return new ChangeStreamPartitionSplit(
+                "change-stream-0",
+                ByteStringRange.unbounded(),
+                Collections.emptyList(),
+                Instant.parse("2026-08-12T00:00:00Z"));
+    }
+
+    private static final class DroppingObserver implements ResponseObserver<ChangeStreamRecord> {
+
+        @Override
+        public void onStart(StreamController controller) {}
+
+        @Override
+        public void onResponse(ChangeStreamRecord response) {}
+
+        @Override
+        public void onError(Throwable t) {}
+
+        @Override
+        public void onComplete() {}
     }
 }
