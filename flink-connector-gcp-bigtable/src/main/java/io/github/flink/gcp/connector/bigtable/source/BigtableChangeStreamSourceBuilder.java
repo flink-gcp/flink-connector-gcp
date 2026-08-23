@@ -41,7 +41,11 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
-/** Builds a {@link BigtableChangeStreamSource}. */
+/**
+ * Builds a {@link BigtableChangeStreamSource}.
+ *
+ * @param <T> the record type produced
+ */
 @PublicEvolving
 public final class BigtableChangeStreamSourceBuilder<T> {
 
@@ -67,11 +71,23 @@ public final class BigtableChangeStreamSourceBuilder<T> {
 
     BigtableChangeStreamSourceBuilder() {}
 
+    /**
+     * Sets the table whose change stream is read. Required.
+     *
+     * @param table the table
+     * @return this builder
+     */
     public BigtableChangeStreamSourceBuilder<T> table(TableDestination table) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         return this;
     }
 
+    /**
+     * Sets the deserializer that turns each change-stream mutation into user records. Required.
+     *
+     * @param deserializer the deserializer
+     * @return this builder
+     */
     public BigtableChangeStreamSourceBuilder<T> deserializer(
             BigtableChangeStreamDeserializationSchema<T> deserializer) {
         this.deserializer =
@@ -79,6 +95,14 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets the application profile the change stream is read through. Required, and the profile
+     * must route to a single cluster; the source rejects a visibly multi-cluster profile before
+     * reading.
+     *
+     * @param appProfileId the application profile id
+     * @return this builder
+     */
     public BigtableChangeStreamSourceBuilder<T> appProfileId(String appProfileId) {
         Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         Preconditions.checkArgument(!appProfileId.isBlank(), "appProfileId must not be blank");
@@ -108,6 +132,14 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Sets where a fresh run starts reading the stream. Optional; defaults to {@link
+     * StartPosition#latest()}. A restored run resumes from its checkpointed positions instead;
+     * {@link #resumeFallback(StartPosition)} governs a restored position that has expired.
+     *
+     * @param startPosition the start position
+     * @return this builder
+     */
     public BigtableChangeStreamSourceBuilder<T> startPosition(StartPosition startPosition) {
         this.startPosition =
                 Preconditions.checkNotNull(startPosition, "startPosition must not be null");
@@ -165,6 +197,9 @@ public final class BigtableChangeStreamSourceBuilder<T> {
      *
      * <p>An empty collection disables this filter. It is mutually exclusive with {@link
      * #familyExcludeList(Collection)}.
+     *
+     * @param patterns the family-name patterns
+     * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> familyIncludeList(Collection<String> patterns) {
         this.familyIncludeList = compilePatterns(patterns, "familyIncludeList");
@@ -176,6 +211,9 @@ public final class BigtableChangeStreamSourceBuilder<T> {
      *
      * <p>An empty collection disables this filter. It is mutually exclusive with {@link
      * #familyIncludeList(Collection)}.
+     *
+     * @param patterns the family-name patterns
+     * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> familyExcludeList(Collection<String> patterns) {
         this.familyExcludeList = compilePatterns(patterns, "familyExcludeList");
@@ -190,6 +228,9 @@ public final class BigtableChangeStreamSourceBuilder<T> {
      * Family-delete entries have no qualifier and are governed only by the family filter. An empty
      * collection disables this filter. It is mutually exclusive with {@link
      * #qualifierExcludeList(Collection)}.
+     *
+     * @param patterns the qualified-column patterns
+     * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> qualifierIncludeList(Collection<String> patterns) {
         this.qualifierIncludeList = compilePatterns(patterns, "qualifierIncludeList");
@@ -203,6 +244,9 @@ public final class BigtableChangeStreamSourceBuilder<T> {
      * {@link #qualifierIncludeList(Collection)}. Family-delete entries have no qualifier and are
      * governed only by the family filter. An empty collection disables this filter. It is mutually
      * exclusive with {@link #qualifierIncludeList(Collection)}.
+     *
+     * @param patterns the qualified-column patterns
+     * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> qualifierExcludeList(Collection<String> patterns) {
         this.qualifierExcludeList = compilePatterns(patterns, "qualifierExcludeList");
@@ -214,6 +258,9 @@ public final class BigtableChangeStreamSourceBuilder<T> {
      *
      * <p>The default is {@code false}, which delivers the mutation with an empty entry list so that
      * the atomic row mutation remains visible.
+     *
+     * @param skip whether to skip fully filtered mutations
+     * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> skipMessagesWithoutChange(boolean skip) {
         this.skipMessagesWithoutChange = skip;
@@ -244,6 +291,13 @@ public final class BigtableChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Builds the source.
+     *
+     * @return the source
+     * @throws IllegalStateException if a required option was not set, or if both sides of a
+     *     mutually exclusive filter pair were set
+     */
     public BigtableChangeStreamSource<T> build() {
         Preconditions.checkState(table != null, "A table is required: set table(...).");
         Preconditions.checkState(

@@ -55,6 +55,12 @@ public final class BigtableChangeStreamSource<T>
         this.config = config;
     }
 
+    /**
+     * Returns a builder for a Bigtable Change Streams source.
+     *
+     * @param <T> the record type produced
+     * @return the builder
+     */
     public static <T> BigtableChangeStreamSourceBuilder<T> builder() {
         return new BigtableChangeStreamSourceBuilder<>();
     }

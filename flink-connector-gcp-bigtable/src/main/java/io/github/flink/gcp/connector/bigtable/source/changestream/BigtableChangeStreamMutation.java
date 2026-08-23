@@ -62,6 +62,20 @@ public final class BigtableChangeStreamMutation implements Serializable {
     private final Instant estimatedLowWatermarkTime;
     private final List<Entry> entries;
 
+    /**
+     * Creates a mutation from its metadata and ordered entries. The connector builds instances from
+     * the service stream; user code normally only reads them, but a test may construct its own.
+     *
+     * @param rowKey the key of the mutated row
+     * @param type what produced the mutation
+     * @param sourceClusterId the id of the cluster the user write was applied on, or an empty
+     *     string for a garbage-collection mutation
+     * @param commitTime the timestamp at which Bigtable applied the mutation
+     * @param tieBreaker the conflict-resolution rank among writes sharing the commit timestamp
+     * @param token the encoded position at which the partition's stream resumes after this mutation
+     * @param estimatedLowWatermarkTime the service's delivery-progress estimate for the partition
+     * @param entries the ordered entries; copied, and must not be or contain null
+     */
     public BigtableChangeStreamMutation(
             ByteString rowKey,
             MutationType type,
@@ -86,34 +100,66 @@ public final class BigtableChangeStreamMutation implements Serializable {
         this.entries = Collections.unmodifiableList(new ArrayList<>(entries));
     }
 
+    /** Returns the key of the row every entry in this mutation applies to. */
     public ByteString getRowKey() {
         return rowKey;
     }
 
+    /**
+     * Returns what produced this mutation: a user write, or the table's garbage-collection policy.
+     */
     public MutationType getType() {
         return type;
     }
 
+    /**
+     * Returns the id of the cluster the user write was applied on, or an empty string for a
+     * garbage-collection mutation, which no cluster originates.
+     */
     public String getSourceClusterId() {
         return sourceClusterId;
     }
 
+    /** Returns the timestamp at which Bigtable applied the mutation on the server. */
     public Instant getCommitTime() {
         return commitTime;
     }
 
+    /**
+     * Returns the rank Bigtable uses to resolve conflicting writes: when the same cell is written
+     * on different clusters at the same commit timestamp, the write with the larger tie-breaker
+     * wins the eventually consistent state.
+     */
     public int getTieBreaker() {
         return tieBreaker;
     }
 
+    /**
+     * Returns the encoded position at which the partition's stream resumes reading after this
+     * mutation. Flink checkpoints govern where a restored job actually resumes — a delivered
+     * mutation's token is not yet durable — so this is exposed for applications that track stream
+     * positions themselves, and such an application must expect a replay of mutations it has
+     * already seen.
+     */
     public String getToken() {
         return token;
     }
 
+    /**
+     * Returns the service's estimate of a commit time below which the partition has usually
+     * delivered every record. Bigtable explicitly permits a later record below an earlier estimate,
+     * so this is delivery-progress information, not an ordering guarantee, and the source
+     * deliberately does not turn it into a Flink watermark.
+     */
     public Instant getEstimatedLowWatermarkTime() {
         return estimatedLowWatermarkTime;
     }
 
+    /**
+     * Returns the ordered entries of this atomic row mutation, as an unmodifiable list. In a
+     * mutation the source delivered, it is empty only when entry filtering removed every entry the
+     * service reported and the source is configured to still deliver such mutations.
+     */
     public List<Entry> getEntries() {
         return entries;
     }
@@ -150,9 +196,14 @@ public final class BigtableChangeStreamMutation implements Serializable {
                 entries);
     }
 
+    /** What produced a mutation: a user write, or the table's garbage-collection policy. */
     @PublicEvolving
     public enum MutationType {
+
+        /** A user-initiated write. */
         USER,
+
+        /** A mutation the table's garbage-collection policy applied. */
         GARBAGE_COLLECTION
     }
 
@@ -170,9 +221,10 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         private Entry() {}
 
+        /** Returns the name of the column family this entry applies to. */
         public abstract String getFamilyName();
 
-        /** Which of the entry subtypes this is. */
+        /** Returns which of the entry subtypes this is. */
         public abstract EntryKind getKind();
 
         abstract <R, A> R accept(
@@ -183,10 +235,20 @@ public final class BigtableChangeStreamMutation implements Serializable {
     /** Which subtype an {@link Entry} is. */
     @PublicEvolving
     public enum EntryKind {
+
+        /** A {@link SetCellEntry}. */
         SET_CELL,
+
+        /** A {@link DeleteCellsEntry}. */
         DELETE_CELLS,
+
+        /** A {@link DeleteFamilyEntry}. */
         DELETE_FAMILY,
+
+        /** An {@link AddToCellEntry}. */
         ADD_TO_CELL,
+
+        /** A {@link MergeToCellEntry}. */
         MERGE_TO_CELL
     }
 
@@ -200,6 +262,15 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private final long timestampMicros;
         private final ByteString value;
 
+        /**
+         * Creates a set-cell entry.
+         *
+         * @param familyName the column family written to
+         * @param qualifier the qualifier of the written column; may be empty
+         * @param timestampMicros the version timestamp of the written cell, in microseconds since
+         *     the epoch
+         * @param value the bytes written into the cell
+         */
         public SetCellEntry(
                 String familyName, ByteString qualifier, long timestampMicros, ByteString value) {
             this.familyName = Preconditions.checkNotNull(familyName, "familyName must not be null");
@@ -213,14 +284,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return familyName;
         }
 
+        /** Returns the qualifier of the written column; may be empty. */
         public ByteString getQualifier() {
             return qualifier;
         }
 
+        /** Returns the version timestamp of the written cell, in microseconds since the epoch. */
         public long getTimestampMicros() {
             return timestampMicros;
         }
 
+        /** Returns the bytes written into the cell. */
         public ByteString getValue() {
             return value;
         }
@@ -266,6 +340,13 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private final ByteString qualifier;
         private final TimestampRange timestampRange;
 
+        /**
+         * Creates a delete-cells entry.
+         *
+         * @param familyName the column family deleted from
+         * @param qualifier the qualifier of the deleted column; may be empty
+         * @param timestampRange the timestamp range whose cell versions were deleted
+         */
         public DeleteCellsEntry(
                 String familyName, ByteString qualifier, TimestampRange timestampRange) {
             this.familyName = Preconditions.checkNotNull(familyName, "familyName must not be null");
@@ -279,10 +360,12 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return familyName;
         }
 
+        /** Returns the qualifier of the deleted column; may be empty. */
         public ByteString getQualifier() {
             return qualifier;
         }
 
+        /** Returns the timestamp range whose cell versions were deleted. */
         public TimestampRange getTimestampRange() {
             return timestampRange;
         }
@@ -325,6 +408,11 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         private final String familyName;
 
+        /**
+         * Creates a delete-family entry.
+         *
+         * @param familyName the column family whose cells were all deleted
+         */
         public DeleteFamilyEntry(String familyName) {
             this.familyName = Preconditions.checkNotNull(familyName, "familyName must not be null");
         }
@@ -367,6 +455,16 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private final Value timestamp;
         private final Value input;
 
+        /**
+         * Creates an add-to-cell entry.
+         *
+         * @param familyName the aggregate column family added to
+         * @param qualifier the qualifier of the target column, which the service documents as a
+         *     {@link RawValue}
+         * @param timestamp the version timestamp of the target cell, which the service documents as
+         *     a {@link RawTimestamp}
+         * @param input the input accumulated into the cell, typed by the family's input type
+         */
         public AddToCellEntry(String familyName, Value qualifier, Value timestamp, Value input) {
             this.familyName = Preconditions.checkNotNull(familyName, "familyName must not be null");
             this.qualifier = Preconditions.checkNotNull(qualifier, "qualifier must not be null");
@@ -379,14 +477,23 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return familyName;
         }
 
+        /**
+         * Returns the qualifier of the target column. The service documents it as a {@link
+         * RawValue}; branch on {@link Value#getType()} rather than assuming the subtype.
+         */
         public Value getQualifier() {
             return qualifier;
         }
 
+        /**
+         * Returns the version timestamp of the target cell. The service documents it as a {@link
+         * RawTimestamp}; branch on {@link Value#getType()} rather than assuming the subtype.
+         */
         public Value getTimestamp() {
             return timestamp;
         }
 
+        /** Returns the input accumulated into the cell, typed by the family's input type. */
         public Value getInput() {
             return input;
         }
@@ -433,6 +540,16 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private final Value timestamp;
         private final Value input;
 
+        /**
+         * Creates a merge-to-cell entry.
+         *
+         * @param familyName the aggregate column family merged into
+         * @param qualifier the qualifier of the target column, which the service documents as a
+         *     {@link RawValue}
+         * @param timestamp the version timestamp of the target cell, which the service documents as
+         *     a {@link RawTimestamp}
+         * @param input the accumulator state merged into the cell, typed by the family's state type
+         */
         public MergeToCellEntry(String familyName, Value qualifier, Value timestamp, Value input) {
             this.familyName = Preconditions.checkNotNull(familyName, "familyName must not be null");
             this.qualifier = Preconditions.checkNotNull(qualifier, "qualifier must not be null");
@@ -445,14 +562,23 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return familyName;
         }
 
+        /**
+         * Returns the qualifier of the target column. The service documents it as a {@link
+         * RawValue}; branch on {@link Value#getType()} rather than assuming the subtype.
+         */
         public Value getQualifier() {
             return qualifier;
         }
 
+        /**
+         * Returns the version timestamp of the target cell. The service documents it as a {@link
+         * RawTimestamp}; branch on {@link Value#getType()} rather than assuming the subtype.
+         */
         public Value getTimestamp() {
             return timestamp;
         }
 
+        /** Returns the accumulator state merged into the cell, typed by the family's state type. */
         public Value getInput() {
             return input;
         }
@@ -501,6 +627,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         private Value() {}
 
+        /** Returns which of the value subtypes this is. */
         public abstract ValueType getType();
 
         abstract <R, A> R accept(
@@ -508,10 +635,17 @@ public final class BigtableChangeStreamMutation implements Serializable {
                 throws IOException;
     }
 
+    /** Which subtype a {@link Value} is. */
     @PublicEvolving
     public enum ValueType {
+
+        /** A {@link RawValue}. */
         RAW_VALUE,
+
+        /** A {@link RawTimestamp}. */
         RAW_TIMESTAMP,
+
+        /** An {@link Int64Value}. */
         INT64
     }
 
@@ -522,6 +656,11 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         private final ByteString value;
 
+        /**
+         * Creates a raw-bytes value.
+         *
+         * @param value the raw bytes, with no type information attached
+         */
         public RawValue(ByteString value) {
             this.value = Preconditions.checkNotNull(value, "value must not be null");
         }
@@ -531,6 +670,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return ValueType.RAW_VALUE;
         }
 
+        /** Returns the raw bytes, with no type information attached. */
         public ByteString getValue() {
             return value;
         }
@@ -559,6 +699,11 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         private final long value;
 
+        /**
+         * Creates a raw-timestamp value.
+         *
+         * @param value the cell timestamp, in microseconds since the epoch
+         */
         public RawTimestamp(long value) {
             this.value = value;
         }
@@ -568,6 +713,7 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return ValueType.RAW_TIMESTAMP;
         }
 
+        /** Returns the cell timestamp, in microseconds since the epoch. */
         public long getValue() {
             return value;
         }
@@ -596,6 +742,12 @@ public final class BigtableChangeStreamMutation implements Serializable {
 
         private final long value;
 
+        /**
+         * Creates a 64-bit integer value.
+         *
+         * @param value the integer the aggregate entry carries, as an {@code int64}-typed input or
+         *     accumulator state
+         */
         public Int64Value(long value) {
             this.value = value;
         }
@@ -605,6 +757,10 @@ public final class BigtableChangeStreamMutation implements Serializable {
             return ValueType.INT64;
         }
 
+        /**
+         * Returns the integer the aggregate entry carries, as an {@code int64}-typed input or
+         * accumulator state.
+         */
         public long getValue() {
             return value;
         }
@@ -639,22 +795,44 @@ public final class BigtableChangeStreamMutation implements Serializable {
             this.timestampMicros = timestampMicros;
         }
 
+        /**
+         * Returns the bound that leaves its end of the range unconstrained.
+         *
+         * @return the bound
+         */
         public static TimestampBound unbounded() {
             return new TimestampBound(BoundType.UNBOUNDED, 0L);
         }
 
+        /**
+         * Returns an exclusive bound at the given timestamp.
+         *
+         * @param timestampMicros the excluded boundary timestamp, in microseconds since the epoch
+         * @return the bound
+         */
         public static TimestampBound open(long timestampMicros) {
             return new TimestampBound(BoundType.OPEN, timestampMicros);
         }
 
+        /**
+         * Returns an inclusive bound at the given timestamp.
+         *
+         * @param timestampMicros the included boundary timestamp, in microseconds since the epoch
+         * @return the bound
+         */
         public static TimestampBound closed(long timestampMicros) {
             return new TimestampBound(BoundType.CLOSED, timestampMicros);
         }
 
+        /** Returns how this bound constrains its end of the range. */
         public BoundType getType() {
             return type;
         }
 
+        /**
+         * Returns the boundary timestamp in microseconds since the epoch, or empty when the bound
+         * is unbounded.
+         */
         public OptionalLong getTimestampMicros() {
             return type == BoundType.UNBOUNDED
                     ? OptionalLong.empty()
@@ -674,10 +852,20 @@ public final class BigtableChangeStreamMutation implements Serializable {
         }
     }
 
+    /**
+     * How a {@link TimestampBound} constrains its end of the range: exclusive, inclusive, or not at
+     * all.
+     */
     @PublicEvolving
     public enum BoundType {
+
+        /** The boundary timestamp is excluded from the range. */
         OPEN,
+
+        /** The boundary timestamp is included in the range. */
         CLOSED,
+
+        /** This end of the range is unconstrained, and the bound carries no timestamp. */
         UNBOUNDED
     }
 
@@ -689,15 +877,24 @@ public final class BigtableChangeStreamMutation implements Serializable {
         private final TimestampBound start;
         private final TimestampBound end;
 
+        /**
+         * Creates a timestamp range. Either bound may be {@link TimestampBound#unbounded()}, and
+         * the constructor does not validate the order of the two.
+         *
+         * @param start the lower bound
+         * @param end the upper bound
+         */
         public TimestampRange(TimestampBound start, TimestampBound end) {
             this.start = Preconditions.checkNotNull(start, "start must not be null");
             this.end = Preconditions.checkNotNull(end, "end must not be null");
         }
 
+        /** Returns the lower bound of the range, possibly {@link TimestampBound#unbounded()}. */
         public TimestampBound getStart() {
             return start;
         }
 
+        /** Returns the upper bound of the range, possibly {@link TimestampBound#unbounded()}. */
         public TimestampBound getEnd() {
             return end;
         }

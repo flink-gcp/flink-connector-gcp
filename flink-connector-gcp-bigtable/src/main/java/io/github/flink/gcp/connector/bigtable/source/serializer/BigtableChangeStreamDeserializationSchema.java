@@ -33,11 +33,20 @@ import java.io.Serializable;
  * <p>Returning successfully without collecting skips the mutation and increments {@code
  * recordsSkipped} once. Collected records must be non-null. The collector is valid only for the
  * synchronous duration of the call; an implementation must not retain it.
+ *
+ * @param <T> the record type produced
  */
 @PublicEvolving
 public interface BigtableChangeStreamDeserializationSchema<T>
         extends Serializable, ResultTypeQueryable<T> {
 
+    /**
+     * Prepares this deserializer, once per reader, before any mutation reaches it.
+     *
+     * @param context the initialization context, which carries the metric group and the user code
+     *     class loader
+     * @throws Exception if initialization fails, which fails the job
+     */
     default void open(DeserializationSchema.InitializationContext context) throws Exception {}
 
     /**
@@ -50,6 +59,13 @@ public interface BigtableChangeStreamDeserializationSchema<T>
      */
     void deserialize(BigtableChangeStreamMutation mutation, Collector<T> out) throws IOException;
 
+    /**
+     * Returns the type of the records this produces.
+     *
+     * <p>Declared here rather than inherited silently, because a source has no other way to type
+     * its output: nothing about a {@link BigtableChangeStreamMutation} says what a job means to
+     * make of it.
+     */
     @Override
     TypeInformation<T> getProducedType();
 }
