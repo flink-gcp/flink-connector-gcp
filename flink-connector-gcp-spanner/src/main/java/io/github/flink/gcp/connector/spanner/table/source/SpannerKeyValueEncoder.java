@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
@@ -34,6 +35,7 @@ import java.time.LocalDate;
 import java.util.Optional;
 
 /** Converts Flink row and literal values into native Spanner key parts. */
+@Internal
 final class SpannerKeyValueEncoder {
 
     private SpannerKeyValueEncoder() {}

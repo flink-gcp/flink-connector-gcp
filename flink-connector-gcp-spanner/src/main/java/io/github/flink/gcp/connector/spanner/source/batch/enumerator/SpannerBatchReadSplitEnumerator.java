@@ -27,8 +27,8 @@ import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
 import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadEnumeratorState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,16 +54,16 @@ import java.util.List;
  * non-empty": a plan that has been fully handed out must not be recomputed either.
  */
 @Internal
-public class SpannerPartitionSplitEnumerator
+public class SpannerBatchReadSplitEnumerator
         extends PullAssignmentSplitEnumerator<
-                PartitionSplit, SpannerBatchEnumeratorState, PartitionPlan> {
+                BatchReadSplit, SpannerBatchReadEnumeratorState, PartitionPlan> {
 
     private static final Logger LOG =
-            LoggerFactory.getLogger(SpannerPartitionSplitEnumerator.class);
+            LoggerFactory.getLogger(SpannerBatchReadSplitEnumerator.class);
 
     private final SpannerSourceConfig<?> config;
     private final PartitionPlanner planner;
-    @Nullable private final SpannerBatchEnumeratorState restoredState;
+    @Nullable private final SpannerBatchReadEnumeratorState restoredState;
 
     /**
      * Creates the enumerator.
@@ -74,11 +74,11 @@ public class SpannerPartitionSplitEnumerator
      *     enumerator, so it is never one an earlier enumerator already closed
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      */
-    public SpannerPartitionSplitEnumerator(
-            SplitEnumeratorContext<PartitionSplit> context,
+    public SpannerBatchReadSplitEnumerator(
+            SplitEnumeratorContext<BatchReadSplit> context,
             SpannerSourceConfig<?> config,
             PartitionPlanner planner,
-            @Nullable SpannerBatchEnumeratorState restoredState) {
+            @Nullable SpannerBatchReadEnumeratorState restoredState) {
         super(
                 context,
                 checkedPlanner(config, planner),
@@ -153,10 +153,10 @@ public class SpannerPartitionSplitEnumerator
     @Override
     protected void onPlanned(PartitionPlan plan) {
         List<Partition> partitions = plan.getPartitions();
-        List<PartitionSplit> splits = new ArrayList<>(partitions.size());
+        List<BatchReadSplit> splits = new ArrayList<>(partitions.size());
         for (int i = 0; i < partitions.size(); i++) {
             splits.add(
-                    new PartitionSplit(
+                    new BatchReadSplit(
                             String.valueOf(i), plan.getBatchTransactionId(), partitions.get(i)));
         }
         addPlannedSplits(splits);
@@ -217,7 +217,7 @@ public class SpannerPartitionSplitEnumerator
     }
 
     @Override
-    public SpannerBatchEnumeratorState snapshotState(long checkpointId) {
-        return new SpannerBatchEnumeratorState(isPlanned(), pendingSplits());
+    public SpannerBatchReadEnumeratorState snapshotState(long checkpointId) {
+        return new SpannerBatchReadEnumeratorState(isPlanned(), pendingSplits());
     }
 }

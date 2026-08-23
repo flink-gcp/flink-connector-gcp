@@ -99,7 +99,7 @@ public abstract class AbstractSpannerEmulatorITCase {
      * Creates a database of the given dialect with the given DDL and a name of its own, so tests
      * within a class never see each other's schema.
      */
-    protected static SpannerDatabase createDatabase(Dialect dialect, String... ddl)
+    protected static DatabaseDestination createDatabase(Dialect dialect, String... ddl)
             throws Exception {
         // Lower case, and underscores rather than the hyphens TestNames.unique would give: a
         // database id must match [a-z][a-z0-9_-]{1,29}.
@@ -118,11 +118,11 @@ public abstract class AbstractSpannerEmulatorITCase {
                         dialect,
                         Arrays.asList(ddl))
                 .get();
-        return SpannerDatabase.of(PROJECT, INSTANCE, databaseId);
+        return DatabaseDestination.of(PROJECT, INSTANCE, databaseId);
     }
 
     /** Runs a query against the database and materializes its rows. */
-    protected static List<Struct> query(SpannerDatabase database, String sql) {
+    protected static List<Struct> query(DatabaseDestination database, String sql) {
         DatabaseClient client = client(database);
         List<Struct> rows = new ArrayList<>();
         try (ResultSet resultSet = client.singleUse().executeQuery(Statement.of(sql))) {
@@ -136,14 +136,14 @@ public abstract class AbstractSpannerEmulatorITCase {
     /**
      * Applies mutations through the harness's own client, for arranging a test's starting state.
      */
-    protected static DatabaseClient client(SpannerDatabase database) {
+    protected static DatabaseClient client(DatabaseDestination database) {
         return spanner.getDatabaseClient(
                 DatabaseId.of(
                         database.getProject(), database.getInstance(), database.getDatabase()));
     }
 
     /** Applies schema changes to an existing emulator database. */
-    protected static void updateDdl(SpannerDatabase database, String... ddl) throws Exception {
+    protected static void updateDdl(DatabaseDestination database, String... ddl) throws Exception {
         spanner.getDatabaseAdminClient()
                 .updateDatabaseDdl(
                         database.getInstance(), database.getDatabase(), Arrays.asList(ddl), null)

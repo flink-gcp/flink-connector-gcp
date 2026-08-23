@@ -24,10 +24,10 @@ import org.apache.flink.util.InstantiationUtil;
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchEnumeratorState;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.DefaultPartitionPlannerFactory;
@@ -46,8 +46,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link SpannerSourceBuilder}. */
 class SpannerSourceBuilderTest {
 
-    private static final SpannerDatabase DATABASE =
-            SpannerDatabase.of("my-project", "my-instance", "my-db");
+    private static final DatabaseDestination DATABASE =
+            DatabaseDestination.of("my-project", "my-instance", "my-db");
     private static final SpannerReadOperation OPERATION =
             SpannerReadOperation.query(Statement.of("SELECT id FROM singers"));
 
@@ -77,10 +77,10 @@ class SpannerSourceBuilderTest {
 
     @Test
     void serviceAccountKeyFileSurvivesJobSubmissionSerialization() throws Exception {
-        Source<Long, PartitionSplit, SpannerBatchEnumeratorState> source =
+        Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source =
                 builder().serviceAccountKeyFile("/var/run/secrets/spanner.json").build();
 
-        Source<Long, PartitionSplit, SpannerBatchEnumeratorState> restored =
+        Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> restored =
                 InstantiationUtil.deserializeObject(
                         InstantiationUtil.serializeObject(source), getClass().getClassLoader());
 
@@ -146,7 +146,7 @@ class SpannerSourceBuilderTest {
 
     @Test
     void theSourceIsBoundedAndDeclaresTheDeserializersType() {
-        Source<Long, PartitionSplit, SpannerBatchEnumeratorState> source = builder().build();
+        Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source = builder().build();
 
         assertThat(source.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
         assertThat(((SpannerBatchReadSource<Long>) source).getProducedType())

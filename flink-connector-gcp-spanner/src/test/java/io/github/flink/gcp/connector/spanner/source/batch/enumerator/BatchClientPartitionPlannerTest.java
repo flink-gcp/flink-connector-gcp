@@ -23,7 +23,7 @@ import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import org.junit.jupiter.api.Test;
@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class BatchClientPartitionPlannerTest {
 
-    private static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "db");
+    private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "db");
 
     @Test
     void planningAfterCloseIsRefusedByName() throws Exception {

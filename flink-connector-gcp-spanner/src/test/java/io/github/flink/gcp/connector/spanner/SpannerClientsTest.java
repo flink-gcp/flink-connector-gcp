@@ -31,8 +31,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link SpannerClients}. */
 class SpannerClientsTest {
 
-    private static final SpannerDatabase DATABASE =
-            SpannerDatabase.of("my-project", "my-instance", "my-db");
+    private static final DatabaseDestination DATABASE =
+            DatabaseDestination.of("my-project", "my-instance", "my-db");
 
     @Test
     void anEmulatorEndpointAlsoTurnsOffCredentialsAndTransportSecurity() {

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.core.ApiFuture;
@@ -26,9 +27,9 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 
 import javax.annotation.Nullable;
@@ -36,10 +37,11 @@ import javax.annotation.Nullable;
 import java.util.List;
 
 /** Point reads through a client owned by one lookup function instance. */
+@Internal
 final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final String table;
     private final List<String> columns;
     @Nullable private final String emulatorEndpoint;
@@ -48,7 +50,7 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     @Nullable private transient DatabaseClient client;
 
     SpannerDatabaseRowLookup(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String table,
             List<String> columns,
             @Nullable String emulatorEndpoint) {
@@ -56,7 +58,7 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     }
 
     SpannerDatabaseRowLookup(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String table,
             List<String> columns,
             @Nullable String emulatorEndpoint,

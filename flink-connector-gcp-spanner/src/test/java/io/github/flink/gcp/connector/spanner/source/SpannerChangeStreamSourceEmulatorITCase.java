@@ -31,7 +31,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
@@ -54,7 +54,7 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void readsAcrossSchemaAndValueCaptureChanges(Dialect dialect) throws Exception {
-        SpannerDatabase database =
+        DatabaseDestination database =
                 createDatabase(
                         dialect, singersDdl(dialect), "CREATE CHANGE STREAM changes FOR singers");
         Timestamp first =
@@ -109,7 +109,7 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void projectsColumnsBeforeDeserialization(Dialect dialect) throws Exception {
-        SpannerDatabase database =
+        DatabaseDestination database =
                 createDatabase(
                         dialect,
                         singersWithSecretDdl(dialect),
@@ -169,13 +169,13 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
                         });
     }
 
-    private static List<DataChangeRecord> run(SpannerDatabase database, Instant start, Instant end)
-            throws Exception {
+    private static List<DataChangeRecord> run(
+            DatabaseDestination database, Instant start, Instant end) throws Exception {
         return run(database, start, end, ignored -> {});
     }
 
     private static List<DataChangeRecord> run(
-            SpannerDatabase database,
+            DatabaseDestination database,
             Instant start,
             Instant end,
             Consumer<SpannerChangeStreamSourceBuilder<DataChangeRecord>> configure)

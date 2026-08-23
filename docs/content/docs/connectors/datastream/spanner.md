@@ -51,7 +51,7 @@ The option accepts service-account JSON only, and a loading failure is sanitized
 
 ## The destination is a database, not a table
 
-The sink is configured with a `SpannerDatabase`. Which *table* a record goes to is not configured
+The sink is configured with a `DatabaseDestination`. Which *table* a record goes to is not configured
 at all: the serializer returns a `Mutation`, and a mutation names its own table. One sink therefore
 writes to as many tables of that database as its serializer produces.
 
@@ -264,13 +264,14 @@ The reasoning, the full measurement and the reopen condition are in
 
 Unlike every other Google client this project builds on, the Spanner client library does **not**
 retry the RPC this sink writes with — its generated settings give batch write an empty
-retryable-code set. So the retry loop is the sink's, which is why `SpannerWriterOptions` carries
-retry knobs where the Bigtable sink's deliberately does not.
+retryable-code set.
+So the retry loop is the sink's: Spanner's recovery knobs budget the write retry loop itself,
+whereas Bigtable's recovery knobs budget only table auto-creation repair.
 
 A retry re-sends exactly what is still undecided: the mutations whose group came back transient,
 plus the mutations whose group the service never reported on, which is what a stream failing
 part-way through leaves behind. Mutations already applied are never re-sent, so a retry does not
-multiply the duplicates an at-least-once sink can produce. Exhausting `retryMaxAttempts` fails the
+multiply the duplicates an at-least-once sink can produce. Exhausting `recoveryMaxAttempts` fails the
 job.
 
 ### Dead-letter payloads
@@ -625,6 +626,7 @@ Registered on the split enumerator's coordinator group and on each source reader
 | `queuedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest assigned but unopened partition, or zero when none are queued |
 | `missedHeartbeatIntervals` | gauge | Maximum whole heartbeat intervals since any active non-initial partition query last returned a record |
 | `lastChangeStreamRecordWaitMillis` | gauge | Wall-clock time spent waiting for the most recently returned non-heartbeat result |
+| `longestChangeStreamRecordWaitMillis` | gauge | Longest wall-clock wait for a returned non-heartbeat result in this reader task attempt; starts at zero after each restart and never decreases within the attempt |
 | `currentEmitEventTimeLag` | gauge (Flink standard) | Time between the latest emitted record's commit timestamp and now, frozen at the idle-start time while the subtask is idle |
 | `watermarkLag` | gauge (Flink standard) | Time between the current source watermark and now, frozen at the idle-start time while the subtask is idle |
 | `sourceIdleTime` | gauge (Flink standard) | Time since this source subtask last became idle, or zero while active |

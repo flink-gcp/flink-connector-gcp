@@ -24,7 +24,7 @@ Both dialects, GoogleSQL and PostgreSQL.
 ```java
 Sink<OrderEvent> sink =
         SpannerSink.<OrderEvent>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                 .serializer(
                         (event, context) ->
                                 Mutation.newInsertOrUpdateBuilder("Orders")

@@ -203,7 +203,7 @@ public abstract class AbstractSpannerRealGcpITCase {
     }
 
     /** Creates a database of the given dialect with the given DDL in the ephemeral instance. */
-    protected static SpannerDatabase createDatabase(Dialect dialect, String... ddl)
+    protected static DatabaseDestination createDatabase(Dialect dialect, String... ddl)
             throws Exception {
         // Lower case, and underscores rather than the hyphens TestNames.unique would give: a
         // database id must match [a-z][a-z0-9_-]{1,29}.
@@ -234,11 +234,11 @@ public abstract class AbstractSpannerRealGcpITCase {
         if (!ddlInCreate && ddl.length > 0) {
             admin.updateDatabaseDdl(instanceId, databaseId, Arrays.asList(ddl), null).get();
         }
-        return SpannerDatabase.of(PROJECT, instanceId, databaseId);
+        return DatabaseDestination.of(PROJECT, instanceId, databaseId);
     }
 
     /** Runs a query against the database and materializes its rows. */
-    protected static List<Struct> query(SpannerDatabase database, String sql) {
+    protected static List<Struct> query(DatabaseDestination database, String sql) {
         List<Struct> rows = new ArrayList<>();
         try (ResultSet resultSet = client(database).singleUse().executeQuery(Statement.of(sql))) {
             while (resultSet.next()) {
@@ -251,7 +251,7 @@ public abstract class AbstractSpannerRealGcpITCase {
     /**
      * Applies mutations through the harness's own client, for arranging a test's starting state.
      */
-    protected static DatabaseClient client(SpannerDatabase database) {
+    protected static DatabaseClient client(DatabaseDestination database) {
         return spanner.getDatabaseClient(
                 DatabaseId.of(
                         database.getProject(), database.getInstance(), database.getDatabase()));

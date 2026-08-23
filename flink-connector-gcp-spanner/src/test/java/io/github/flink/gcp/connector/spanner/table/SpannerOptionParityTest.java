@@ -69,9 +69,9 @@ class SpannerOptionParityTest {
                         "maxBatchBytes",
                         "maxCommitDelay",
                         "rpcPriority",
-                        "retryInitialBackoff",
-                        "retryMaxBackoff",
-                        "retryMaxAttempts");
+                        "recoveryInitialBackoff",
+                        "recoveryMaxBackoff",
+                        "recoveryMaxAttempts");
 
         assertThat(declaredKeys())
                 .contains(
@@ -80,9 +80,9 @@ class SpannerOptionParityTest {
                         "sink.buffer-flush.max-size",
                         "sink.buffer-flush.max-commit-delay",
                         "sink.rpc-priority",
-                        "sink.retry.initial-backoff",
-                        "sink.retry.max-backoff",
-                        "sink.retry.max-attempts");
+                        "sink.recovery.initial-backoff",
+                        "sink.recovery.max-backoff",
+                        "sink.recovery.max-attempts");
     }
 
     @Test
@@ -132,7 +132,7 @@ class SpannerOptionParityTest {
                         "scan.timestamp-bound.read-timestamp",
                         "scan.timestamp-bound.exact-staleness",
                         "scan.partition.max-partitions",
-                        "scan.partition.size",
+                        "scan.partition.size-bytes",
                         "scan.data-boost-enabled",
                         "scan.rpc-priority",
                         "service-account-key-file",
@@ -205,7 +205,7 @@ class SpannerOptionParityTest {
                         "scan.max-concurrent-queries-per-subtask",
                         "scan.index",
                         "scan.partition.max-partitions",
-                        "scan.partition.size",
+                        "scan.partition.size-bytes",
                         "scan.data-boost-enabled",
                         "scan.rpc-priority",
                         "scan.timestamp-bound.read-timestamp",
@@ -216,9 +216,9 @@ class SpannerOptionParityTest {
                         "sink.buffer-flush.max-size",
                         "sink.buffer-flush.max-commit-delay",
                         "sink.rpc-priority",
-                        "sink.retry.initial-backoff",
-                        "sink.retry.max-backoff",
-                        "sink.retry.max-attempts");
+                        "sink.recovery.initial-backoff",
+                        "sink.recovery.max-backoff",
+                        "sink.recovery.max-attempts");
     }
 
     private static Set<String> publicSettersOf(Class<?> builder) {

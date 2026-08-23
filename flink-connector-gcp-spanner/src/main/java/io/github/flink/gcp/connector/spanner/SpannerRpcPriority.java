@@ -30,7 +30,7 @@ import com.google.cloud.spanner.Options.RpcPriority;
  * not disturb it.
  *
  * <p>At the module root rather than under {@code sink}, because both directions take it — the same
- * reason {@link SpannerDatabase} is here.
+ * reason {@link DatabaseDestination} is here.
  *
  * <p>This mirrors the client library's own priority enum rather than exposing it, so the public API
  * stays free of SDK types and a client upgrade cannot change what a job's configuration means.

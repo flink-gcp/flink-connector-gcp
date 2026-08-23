@@ -23,7 +23,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.Singer;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.SingerDeserializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 
@@ -35,7 +35,7 @@ final class SpannerConnectorSource {
         // tag::spanner-connector-source[]
         Source<Singer, ?, ?> source =
                 SpannerSource.<Singer>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "my-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "my-db"))
                         .readOperation(
                                 SpannerReadOperation.query(
                                         Statement.of("SELECT id, name FROM singers")))

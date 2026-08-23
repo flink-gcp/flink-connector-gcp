@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.Dialect;
@@ -43,6 +45,7 @@ import java.util.Objects;
 import java.util.Set;
 
 /** Resolves a filtered table read from the access path's live key metadata. */
+@Internal
 final class SpannerTableReadResolver implements SpannerReadOperationResolver {
     private static final long serialVersionUID = 1L;
 

@@ -41,7 +41,7 @@ import java.util.Objects;
  * contractual order.
  */
 @Internal
-public final class PartitionSplit implements SourceSplit {
+public final class BatchReadSplit implements SourceSplit {
 
     private final String splitId;
     private final BatchTransactionId batchTransactionId;
@@ -54,7 +54,7 @@ public final class PartitionSplit implements SourceSplit {
      * @param batchTransactionId the snapshot every split of this plan reads at
      * @param partition the partition to read
      */
-    public PartitionSplit(
+    public BatchReadSplit(
             String splitId, BatchTransactionId batchTransactionId, Partition partition) {
         this.splitId = Preconditions.checkNotNull(splitId, "splitId must not be null");
         this.batchTransactionId =
@@ -91,10 +91,10 @@ public final class PartitionSplit implements SourceSplit {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof PartitionSplit)) {
+        if (!(o instanceof BatchReadSplit)) {
             return false;
         }
-        PartitionSplit that = (PartitionSplit) o;
+        BatchReadSplit that = (BatchReadSplit) o;
         return splitId.equals(that.splitId)
                 && batchTransactionId.equals(that.batchTransactionId)
                 && partition.equals(that.partition);

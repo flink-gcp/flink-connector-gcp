@@ -28,7 +28,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import org.junit.jupiter.api.Test;
 
@@ -56,7 +56,7 @@ class SpannerSinkJobITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void writesEveryRecordOfACheckpointedStreamingJob() throws Exception {
-        SpannerDatabase database = ordersDatabase();
+        DatabaseDestination database = ordersDatabase();
 
         StreamExecutionEnvironment env = miniCluster();
         // Slow enough that the job spans several checkpoints. The batch limits stay at their
@@ -84,7 +84,7 @@ class SpannerSinkJobITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void writesEveryRecordOfABoundedJobOnTheEndOfInputFlush() throws Exception {
-        SpannerDatabase database = ordersDatabase();
+        DatabaseDestination database = ordersDatabase();
 
         StreamExecutionEnvironment env = miniCluster();
         env.fromSequence(0, RECORDS - 1)
@@ -101,7 +101,7 @@ class SpannerSinkJobITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void skippedRecordsReachNoTable() throws Exception {
-        SpannerDatabase database = ordersDatabase();
+        DatabaseDestination database = ordersDatabase();
 
         StreamExecutionEnvironment env = miniCluster();
         env.fromSequence(0, RECORDS - 1)
@@ -136,7 +136,7 @@ class SpannerSinkJobITCase extends AbstractSpannerEmulatorITCase {
         return env;
     }
 
-    private static SpannerDatabase ordersDatabase() throws Exception {
+    private static DatabaseDestination ordersDatabase() throws Exception {
         return createDatabase(
                 Dialect.GOOGLE_STANDARD_SQL,
                 "CREATE TABLE orders (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)");
@@ -151,7 +151,7 @@ class SpannerSinkJobITCase extends AbstractSpannerEmulatorITCase {
                 .build();
     }
 
-    private static List<Long> ids(SpannerDatabase database) {
+    private static List<Long> ids(DatabaseDestination database) {
         List<Long> ids = new ArrayList<>();
         for (Struct row : query(database, "SELECT id FROM orders ORDER BY id")) {
             ids.add(row.getLong(0));

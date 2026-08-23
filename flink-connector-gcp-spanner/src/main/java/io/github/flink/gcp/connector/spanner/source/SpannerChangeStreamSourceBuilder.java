@@ -24,7 +24,7 @@ import org.apache.flink.util.StringUtils;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.DefaultSpannerChangeStreamCoordinatorClientFactory;
@@ -55,7 +55,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     private static final Duration MIN_HEARTBEAT_INTERVAL = Duration.ofSeconds(1);
     private static final Duration MAX_HEARTBEAT_INTERVAL = Duration.ofMinutes(5);
 
-    @Nullable private SpannerDatabase database;
+    @Nullable private DatabaseDestination database;
     @Nullable private String changeStreamName;
     @Nullable private SpannerChangeStreamDeserializationSchema<T> deserializer;
     private StartPosition startPosition = StartPosition.latest();
@@ -83,7 +83,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * @param database the database
      * @return this builder
      */
-    public SpannerChangeStreamSourceBuilder<T> database(SpannerDatabase database) {
+    public SpannerChangeStreamSourceBuilder<T> database(DatabaseDestination database) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         return this;
     }

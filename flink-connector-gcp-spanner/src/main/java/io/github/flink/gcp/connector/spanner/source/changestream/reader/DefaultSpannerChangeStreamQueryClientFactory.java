@@ -34,11 +34,11 @@ import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 
 import javax.annotation.Nullable;
 
@@ -62,7 +62,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final String changeStreamName;
     private final SpannerRpcPriority rpcPriority;
     private final int maxConcurrentQueries;
@@ -70,7 +70,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
     @Nullable private final String serviceAccountKeyFile;
 
     public DefaultSpannerChangeStreamQueryClientFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String changeStreamName,
             SpannerRpcPriority rpcPriority,
             int maxConcurrentQueries,
@@ -79,7 +79,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
     }
 
     public DefaultSpannerChangeStreamQueryClientFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String changeStreamName,
             SpannerRpcPriority rpcPriority,
             int maxConcurrentQueries,
@@ -150,7 +150,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
 
         @Override
         public synchronized QueryHandle open(
-                SpannerChangeStreamPartitionSplit split, SpannerChangeStreamQueryListener listener)
+                ChangeStreamPartitionSplit split, SpannerChangeStreamQueryListener listener)
                 throws Exception {
             Preconditions.checkState(!closed, "Change Streams query client is closed.");
             ReadOnlyTransaction transaction =

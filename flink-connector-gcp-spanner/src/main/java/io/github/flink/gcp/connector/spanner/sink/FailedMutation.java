@@ -23,7 +23,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 
 import javax.annotation.Nullable;
 
@@ -63,13 +63,13 @@ import java.io.UncheckedIOException;
 @Public
 public final class FailedMutation implements FailedElement {
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     @Nullable private final Mutation mutation;
     private final String errorMessage;
     @Nullable private final Throwable cause;
 
     private FailedMutation(
-            SpannerDatabase database,
+            DatabaseDestination database,
             @Nullable Mutation mutation,
             String errorMessage,
             @Nullable Throwable cause) {
@@ -91,7 +91,7 @@ public final class FailedMutation implements FailedElement {
      * @return the failed mutation
      */
     public static FailedMutation of(
-            SpannerDatabase database,
+            DatabaseDestination database,
             @Nullable Mutation mutation,
             String errorMessage,
             @Nullable Throwable cause) {
@@ -99,7 +99,7 @@ public final class FailedMutation implements FailedElement {
     }
 
     /** Returns the database the mutation was routed to. */
-    public SpannerDatabase getDatabase() {
+    public DatabaseDestination getDatabase() {
         return database;
     }
 

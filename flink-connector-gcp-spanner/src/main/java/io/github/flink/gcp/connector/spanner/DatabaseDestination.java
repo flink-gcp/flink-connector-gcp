@@ -46,7 +46,7 @@ import java.util.Objects;
  * <p>Instances are immutable and cheap to reuse.
  */
 @Public
-public final class SpannerDatabase implements Serializable {
+public final class DatabaseDestination implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
@@ -55,7 +55,7 @@ public final class SpannerDatabase implements Serializable {
     private final String database;
     private final int hash;
 
-    private SpannerDatabase(String project, String instance, String database) {
+    private DatabaseDestination(String project, String instance, String database) {
         this.project = project;
         this.instance = instance;
         this.database = database;
@@ -63,18 +63,18 @@ public final class SpannerDatabase implements Serializable {
     }
 
     /**
-     * Creates a {@link SpannerDatabase}.
+     * Creates a {@link DatabaseDestination}.
      *
      * @param project the Google Cloud project id
      * @param instance the Spanner instance id
      * @param database the Spanner database id
      * @return the database reference
      */
-    public static SpannerDatabase of(String project, String instance, String database) {
+    public static DatabaseDestination of(String project, String instance, String database) {
         ResourceNames.checkComponent(project, "project");
         ResourceNames.checkComponent(instance, "instance");
         ResourceNames.checkComponent(database, "database");
-        return new SpannerDatabase(project, instance, database);
+        return new DatabaseDestination(project, instance, database);
     }
 
     /** Returns the Google Cloud project id. */
@@ -109,7 +109,7 @@ public final class SpannerDatabase implements Serializable {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        SpannerDatabase that = (SpannerDatabase) o;
+        DatabaseDestination that = (DatabaseDestination) o;
         return project.equals(that.project)
                 && instance.equals(that.instance)
                 && database.equals(that.database);

@@ -22,7 +22,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderChange;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderChangeDeserializer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 
 final class SpannerConnectorChangeStreamSource {
@@ -33,7 +33,7 @@ final class SpannerConnectorChangeStreamSource {
         // tag::spanner-connector-change-stream-source[]
         SpannerChangeStreamSource<OrderChange> source =
                 SpannerChangeStreamSource.<OrderChange>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                         .changeStreamName("order_changes")
                         .deserializer(new OrderChangeDeserializer())
                         .serviceAccountKeyFile("/var/run/secrets/spanner/key.json")

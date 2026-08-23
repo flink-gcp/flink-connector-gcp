@@ -27,7 +27,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * failed reader held come back through {@code addSplitsBack}, and they are handed out again — so
  * the job reads on at the snapshot it already planned. Rebuilding an enumerator from a checkpoint
  * is a different path, and it is covered where it can be driven exactly, in {@code
- * SpannerPartitionSplitEnumeratorTest}.
+ * SpannerBatchReadSplitEnumeratorTest}.
  *
  * <p>The two halves of the recovery contract are both asserted. Every row the read covers arrives —
  * that is the completeness half — and some rows arrive twice, because a partition is the unit of
@@ -87,7 +87,7 @@ class SpannerSourceFailoverITCase extends AbstractSpannerEmulatorITCase {
     @Test
     void aFailedSubtaskRecoversDeliveringEveryRowAndRepeatingSome() throws Exception {
         FAILED.set(false);
-        SpannerDatabase database = seededDatabase();
+        DatabaseDestination database = seededDatabase();
 
         Configuration configuration = new Configuration();
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
@@ -151,8 +151,8 @@ class SpannerSourceFailoverITCase extends AbstractSpannerEmulatorITCase {
         }
     }
 
-    private static SpannerDatabase seededDatabase() throws Exception {
-        SpannerDatabase database =
+    private static DatabaseDestination seededDatabase() throws Exception {
+        DatabaseDestination database =
                 createDatabase(
                         Dialect.GOOGLE_STANDARD_SQL,
                         "CREATE TABLE singers (id INT64 NOT NULL, name STRING(64))"

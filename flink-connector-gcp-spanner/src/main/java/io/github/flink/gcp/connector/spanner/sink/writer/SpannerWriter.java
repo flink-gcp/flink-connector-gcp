@@ -30,7 +30,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.Retries;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkConfig;
@@ -103,7 +103,7 @@ public class SpannerWriter<T> implements SinkWriter<T> {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerWriter.class);
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerMutationSerializationSchema<? super T> serializer;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
     private final SpannerDatabaseAccess access;
@@ -143,9 +143,9 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         this.constraintViolationPolicy = config.getConstraintViolationPolicy();
 
         SpannerWriterOptions options = config.getWriterOptions();
-        // Validates the three retry knobs on the way past, which is why they are not re-checked
+        // Validates the three recovery knobs on the way past, which is why they are not re-checked
         // below.
-        this.retrySchedule = options.toRetrySchedule();
+        this.retrySchedule = options.toRecoverySchedule();
         // The batch limits are re-checked here and not only in the builder: Java deserialization
         // reconstructs the options object without running it, so a hand-rolled instance reaches
         // the task manager unvalidated, and a non-positive limit would flush an empty batch
@@ -283,7 +283,7 @@ public class SpannerWriter<T> implements SinkWriter<T> {
                                 + attempt
                                 + " attempt(s) against "
                                 + database
-                                + ". Raise retryMaxAttempts if the database is expected to be"
+                                + ". Raise recoveryMaxAttempts if the database is expected to be"
                                 + " unavailable for longer than the current budget.",
                         lastFailure);
             }

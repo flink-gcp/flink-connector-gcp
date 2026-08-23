@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.spanner.source.changestream.reader;
 
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Statement;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -65,8 +65,8 @@ class SpannerChangeStreamStatementsTest {
 
     @Test
     void initialUnboundedQueryBindsTypedNulls() {
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(
                         Instant.parse("2026-01-01T00:00:00Z"), null, 2_000);
 
         Statement statement =
@@ -77,11 +77,11 @@ class SpannerChangeStreamStatementsTest {
         assertThat(statement.getParameters().get("partition_token").isNull()).isTrue();
     }
 
-    private static SpannerChangeStreamPartitionSplit split() {
-        return new SpannerChangeStreamPartitionSplit(
+    private static ChangeStreamPartitionSplit split() {
+        return new ChangeStreamPartitionSplit(
                 "token",
                 java.util.Collections.singletonList(
-                        SpannerChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
+                        ChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
                 Instant.parse("2026-01-01T00:00:00Z"),
                 Instant.parse("2026-01-01T01:00:00Z"),
                 2_000,

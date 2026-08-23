@@ -22,7 +22,7 @@ import org.apache.flink.util.InstantiationUtil;
 import com.google.cloud.spanner.Mutation;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link SpannerSinkBuilder}. */
 class SpannerSinkBuilderTest {
 
-    private static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "d");
+    private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "d");
 
     @Test
     void buildsASinkFromTheTwoRequiredOptions() {

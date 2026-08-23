@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.batch;
 
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.ScriptedPartitionPlanner;
@@ -68,7 +68,7 @@ class SpannerBatchReadSourceCredentialsTest {
                 (SpannerBatchReadSource<Long>)
                         TestSources.withPlannerFactory(
                                         SpannerSource.<Long>builder()
-                                                .database(SpannerDatabase.of("p", "i", "d"))
+                                                .database(DatabaseDestination.of("p", "i", "d"))
                                                 .readOperation(TestSources.OPERATION)
                                                 .deserializer(new TestSources.IdDeserializer())
                                                 .serviceAccountKeyFile(MISSING_KEY),
@@ -83,7 +83,7 @@ class SpannerBatchReadSourceCredentialsTest {
     private static SpannerBatchReadSource<Long> source() {
         return (SpannerBatchReadSource<Long>)
                 SpannerSource.<Long>builder()
-                        .database(SpannerDatabase.of("p", "i", "d"))
+                        .database(DatabaseDestination.of("p", "i", "d"))
                         .readOperation(TestSources.OPERATION)
                         .deserializer(new TestSources.IdDeserializer())
                         .serviceAccountKeyFile(MISSING_KEY)

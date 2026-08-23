@@ -44,10 +44,10 @@ import java.util.Objects;
  * readers already hold — so one job would read two snapshots and call the result consistent.
  */
 @Internal
-public final class SpannerBatchEnumeratorState {
+public final class SpannerBatchReadEnumeratorState {
 
     private final boolean planned;
-    private final List<PartitionSplit> pendingSplits;
+    private final List<BatchReadSplit> pendingSplits;
 
     /**
      * Creates enumerator state.
@@ -55,7 +55,7 @@ public final class SpannerBatchEnumeratorState {
      * @param planned whether the read has already been planned into partitions
      * @param pendingSplits the splits not yet handed to a reader
      */
-    public SpannerBatchEnumeratorState(boolean planned, List<PartitionSplit> pendingSplits) {
+    public SpannerBatchReadEnumeratorState(boolean planned, List<BatchReadSplit> pendingSplits) {
         Preconditions.checkNotNull(pendingSplits, "pendingSplits must not be null");
         Preconditions.checkArgument(
                 planned || pendingSplits.isEmpty(),
@@ -79,7 +79,7 @@ public final class SpannerBatchEnumeratorState {
      *
      * @return the pending splits
      */
-    public List<PartitionSplit> getPendingSplits() {
+    public List<BatchReadSplit> getPendingSplits() {
         return pendingSplits;
     }
 
@@ -88,10 +88,10 @@ public final class SpannerBatchEnumeratorState {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof SpannerBatchEnumeratorState)) {
+        if (!(o instanceof SpannerBatchReadEnumeratorState)) {
             return false;
         }
-        SpannerBatchEnumeratorState other = (SpannerBatchEnumeratorState) o;
+        SpannerBatchReadEnumeratorState other = (SpannerBatchReadEnumeratorState) o;
         return planned == other.planned && pendingSplits.equals(other.pendingSplits);
     }
 
@@ -102,7 +102,7 @@ public final class SpannerBatchEnumeratorState {
 
     @Override
     public String toString() {
-        return "SpannerBatchEnumeratorState{planned="
+        return "SpannerBatchReadEnumeratorState{planned="
                 + planned
                 + ", pendingSplits="
                 + pendingSplits.size()

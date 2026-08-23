@@ -27,7 +27,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -56,7 +56,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 dialect == Dialect.POSTGRESQL
                         ? "ALTER CHANGE STREAM metadata_changes SET (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')"
                         : "ALTER CHANGE STREAM metadata_changes SET OPTIONS (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')";
-        SpannerDatabase database =
+        DatabaseDestination database =
                 createDatabase(
                         dialect,
                         tableDdl,
@@ -151,7 +151,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 dialect == Dialect.POSTGRESQL
                         ? "ALTER CHANGE STREAM changes SET (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')"
                         : "ALTER CHANGE STREAM changes SET OPTIONS (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')");
-        SpannerDatabase database = createDatabase(dialect, ddl.toArray(new String[0]));
+        DatabaseDestination database = createDatabase(dialect, ddl.toArray(new String[0]));
         String apiTable =
                 named
                         ? SpannerTableName.of(schema, tableName, dialect).apiName()
@@ -212,7 +212,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     @MethodSource("namedSchemaCases")
     void writesScansAndLooksUpANamedSchema(Dialect dialect, boolean async, boolean quoted)
             throws Exception {
-        SpannerDatabase database = namedSchemaDatabase(dialect, quoted);
+        DatabaseDestination database = namedSchemaDatabase(dialect, quoted);
         TableEnvironment sink =
                 TableEnvironment.create(
                         EnvironmentSettings.newInstance().inStreamingMode().build());
@@ -246,7 +246,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     @MethodSource("lookupCases")
     void looksUpCompositeHitsAndMissesInBothDialects(Dialect dialect, boolean async)
             throws Exception {
-        SpannerDatabase database = lookupDatabase(dialect);
+        DatabaseDestination database = lookupDatabase(dialect);
         client(database)
                 .write(
                         List.of(
@@ -282,7 +282,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @MethodSource("lookupCases")
     void looksUpUuidCompositeKeysInBothDialects(Dialect dialect, boolean async) throws Exception {
-        SpannerDatabase database = uuidLookupDatabase(dialect);
+        DatabaseDestination database = uuidLookupDatabase(dialect);
         UUID id = UUID.fromString("f81d4fae-7dec-11d0-a765-00a0c91e6bf6");
         client(database)
                 .write(
@@ -342,7 +342,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void scansProjectedColumnsAndAggregates(Dialect dialect) throws Exception {
-        SpannerDatabase database = database(dialect);
+        DatabaseDestination database = database(dialect);
         client(database)
                 .write(
                         List.of(
@@ -385,7 +385,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void scansASecondaryIndexWithAResidualFilter(Dialect dialect) throws Exception {
-        SpannerDatabase database = indexedDatabase(dialect);
+        DatabaseDestination database = indexedDatabase(dialect);
         client(database)
                 .write(
                         List.of(
@@ -440,7 +440,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
         return rows;
     }
 
-    private static SpannerDatabase database(Dialect dialect) throws Exception {
+    private static DatabaseDestination database(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -451,7 +451,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE records (id INT64 NOT NULL, name STRING(64), metadata JSON) PRIMARY KEY (id)");
     }
 
-    private static SpannerDatabase lookupDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination lookupDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -462,7 +462,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE TABLE lookup_records (id INT64 NOT NULL, tenant INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id, tenant)");
     }
 
-    private static SpannerDatabase uuidLookupDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination uuidLookupDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -477,7 +477,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         + "PRIMARY KEY (external_id, tenant)");
     }
 
-    private static SpannerDatabase indexedDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination indexedDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -490,7 +490,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 "CREATE INDEX records_by_name ON records (name) STORING (metadata)");
     }
 
-    private static SpannerDatabase namedSchemaDatabase(Dialect dialect, boolean quoted)
+    private static DatabaseDestination namedSchemaDatabase(Dialect dialect, boolean quoted)
             throws Exception {
         String schema = namedIdentifier(dialect, quoted, "analytics", "QuotedAnalytics");
         String table = namedIdentifier(dialect, quoted, "records", "QuotedRecords");
@@ -523,11 +523,12 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
         return dialect == Dialect.POSTGRESQL ? Value.pgJsonb(value) : Value.json(value);
     }
 
-    private static String tableDdl(SpannerDatabase database, Dialect dialect) {
+    private static String tableDdl(DatabaseDestination database, Dialect dialect) {
         return tableDdl(database, dialect, null);
     }
 
-    private static String tableDdl(SpannerDatabase database, Dialect dialect, String scanIndex) {
+    private static String tableDdl(
+            DatabaseDestination database, Dialect dialect, String scanIndex) {
         return "CREATE TABLE source (\n"
                 + "  id BIGINT,\n"
                 + "  name STRING,\n"
@@ -556,7 +557,8 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                 + ")";
     }
 
-    private static String lookupTableDdl(SpannerDatabase database, Dialect dialect, boolean async) {
+    private static String lookupTableDdl(
+            DatabaseDestination database, Dialect dialect, boolean async) {
         return "CREATE TABLE lookup_source (\n"
                 + "  id BIGINT,\n"
                 + "  tenant BIGINT,\n"
@@ -588,7 +590,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
 
     private static String namedSchemaTableDdl(
             String tableName,
-            SpannerDatabase database,
+            DatabaseDestination database,
             Dialect dialect,
             boolean async,
             boolean quoted) {
@@ -643,7 +645,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private static String uuidLookupTableDdl(
-            SpannerDatabase database, Dialect dialect, boolean async) {
+            DatabaseDestination database, Dialect dialect, boolean async) {
         return "CREATE TABLE uuid_lookup_source (\n"
                 + "  external_id STRING,\n"
                 + "  tenant BIGINT,\n"
@@ -675,7 +677,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private static String changeStreamTableDdl(
-            SpannerDatabase database,
+            DatabaseDestination database,
             Dialect dialect,
             String schema,
             String tableName,
@@ -719,7 +721,7 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private static String changeStreamMetadataTableDdl(
-            SpannerDatabase database,
+            DatabaseDestination database,
             Dialect dialect,
             String changelogMode,
             long startupTimestampMillis) {

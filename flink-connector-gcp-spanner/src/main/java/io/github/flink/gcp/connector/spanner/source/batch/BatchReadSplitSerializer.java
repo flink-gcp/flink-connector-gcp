@@ -34,7 +34,7 @@ import java.io.ObjectStreamClass;
 import java.io.Serializable;
 
 /**
- * Serializer for {@link PartitionSplit}.
+ * Serializer for {@link BatchReadSplit}.
  *
  * <p>The two values a split carries are written with Java serialization, behind this serializer's
  * own version byte and an explicit length prefix each. That is a deliberate exception to this
@@ -56,7 +56,7 @@ import java.io.Serializable;
  * TaskManager.
  */
 @Internal
-public final class PartitionSplitSerializer implements SimpleVersionedSerializer<PartitionSplit> {
+public final class BatchReadSplitSerializer implements SimpleVersionedSerializer<BatchReadSplit> {
 
     private static final int VERSION = 1;
 
@@ -69,14 +69,14 @@ public final class PartitionSplitSerializer implements SimpleVersionedSerializer
     }
 
     @Override
-    public byte[] serialize(PartitionSplit split) throws IOException {
+    public byte[] serialize(BatchReadSplit split) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         writeSplit(out, split);
         return out.getCopyOfBuffer();
     }
 
     @Override
-    public PartitionSplit deserialize(int version, byte[] serialized) throws IOException {
+    public BatchReadSplit deserialize(int version, byte[] serialized) throws IOException {
         if (version != VERSION) {
             throw new IOException(
                     "Unsupported Spanner partition split serialization version "
@@ -99,7 +99,7 @@ public final class PartitionSplitSerializer implements SimpleVersionedSerializer
      * @param split the split to write
      * @throws IOException if writing fails
      */
-    static void writeSplit(DataOutputSerializer out, PartitionSplit split) throws IOException {
+    static void writeSplit(DataOutputSerializer out, BatchReadSplit split) throws IOException {
         out.writeUTF(split.splitId());
         writeObject(out, split.getBatchTransactionId());
         writeObject(out, split.getPartition());
@@ -112,12 +112,12 @@ public final class PartitionSplitSerializer implements SimpleVersionedSerializer
      * @return the split
      * @throws IOException if reading fails
      */
-    static PartitionSplit readSplit(DataInputDeserializer in) throws IOException {
+    static BatchReadSplit readSplit(DataInputDeserializer in) throws IOException {
         String splitId = in.readUTF();
         BatchTransactionId batchTransactionId =
                 readObject(in, BatchTransactionId.class, "batch transaction id");
         Partition partition = readObject(in, Partition.class, "partition");
-        return new PartitionSplit(splitId, batchTransactionId, partition);
+        return new BatchReadSplit(splitId, batchTransactionId, partition);
     }
 
     private static void writeObject(DataOutputSerializer out, Serializable value)
@@ -184,7 +184,7 @@ public final class PartitionSplitSerializer implements SimpleVersionedSerializer
                 throws IOException, ClassNotFoundException {
             try {
                 return Class.forName(
-                        desc.getName(), false, PartitionSplitSerializer.class.getClassLoader());
+                        desc.getName(), false, BatchReadSplitSerializer.class.getClassLoader());
             } catch (ClassNotFoundException e) {
                 return super.resolveClass(desc);
             }

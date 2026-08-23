@@ -8,12 +8,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 ## Sink design (`docs/adr/0075`)
 
 - **The destination is a database, not a table.** The serializer's `Mutation` names its own table,
-  so one sink writes to as many tables as it produces. That is why `SpannerDatabase` is at the
+  so one sink writes to as many tables as it produces. That is why `DatabaseDestination` is at the
   module root, why the cell weights cover the whole database, and why there are no
   per-destination metrics — the cardinality would be the serializer's to choose. It is also why
   the siblings' `DestinationResolver`/`CreateDisposition` surface has no Spanner counterpart:
-  per-record routing already lives inside the mutation (`docs/adr/0138`; the object's *name* is
-  a separate matter — #1053 renames it `DatabaseDestination` under `docs/adr/0137`'s rule).
+  per-record routing already lives inside the mutation (`docs/adr/0138`).
 - **No admin seam, no auto-create** (`docs/adr/0138`): creating a relational Spanner table means
   deriving typed DDL from the Flink schema and running a long-running operation — a design of its
   own, not a `create()` behind a disposition flag. The sink writes to tables the user owns; an
@@ -115,7 +114,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Batch source (`docs/adr/0085`, `docs/adr/0083`)
 
-- **The assignment protocol is the base module's**: `SpannerPartitionSplitEnumerator` extends
+- **The bounded source's source, split and enumerator families use `BatchRead`.**
+  `SpannerBatchReadSource`, `BatchReadSplit`, its state and serializers, and
+  `SpannerBatchReadSplitEnumerator` describe one Flink path; `PartitionPlanner` and `PartitionPlan`
+  retain the vendor noun for the Spanner planning operation they model.
+- **The assignment protocol is the base module's**: `SpannerBatchReadSplitEnumerator` extends
   `PullAssignmentSplitEnumerator` and supplies only the planning step — `restore`, the partition
   call, the plan and its report, the counters, its own `snapshotState`. A change to assignment
   changes both sources and belongs in `flink-connector-gcp-base` (`docs/adr/0083`).
@@ -155,7 +158,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   resumes only at a whole-partition boundary, so any interrupted partition is replayed from its
   start regardless of how many outputs each row produced.
 - **`SpannerRpcPriority` is at the module root, with the enum-to-SDK mapping on it**, because both
-  directions take it — `SpannerDatabase`'s reasoning applied. The mapping is one written-out switch,
+  directions take it — `DatabaseDestination`'s reasoning applied. The mapping is one written-out switch,
   so a value added to either side fails to compile rather than silently changing what a job asked
   for; do not grow a second copy in a direction's own package.
 - **The two option families are assembled separately** in `BatchClientPartitionPlanner`:
@@ -279,8 +282,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   for at-least-once replay.
 - The enumerator owns `changeStreamPartitionsDiscovered` and the scheduled-partition lag; each
   reader owns query-open, active-query, queued-partition, queued-lag, missed-heartbeat,
-  last-non-heartbeat-wait, and output-filter counters. These are aggregate coordinator or
-  reader-subtask metrics: never put partition tokens in metric labels.
+  latest- and longest-non-heartbeat-wait, and output-filter counters.
+  The longest wait starts at zero per reader task attempt, updates only for non-heartbeats, and
+  never decreases.
+  These are aggregate coordinator or reader-subtask metrics: never put partition tokens in metric
+  labels.
 - `missedHeartbeatIntervals` excludes the initial null-token query and reports the maximum whole
   intervals across active token queries. Lag gauges use the oldest current position, clamp a future
   position to zero, saturate overflow, and read zero for an empty set.

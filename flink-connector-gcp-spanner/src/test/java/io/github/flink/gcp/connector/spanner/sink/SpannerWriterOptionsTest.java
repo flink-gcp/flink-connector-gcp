@@ -59,15 +59,15 @@ class SpannerWriterOptionsTest {
     }
 
     @Test
-    void retryKnobsBecomeAJitteredSchedule() {
+    void recoveryKnobsBecomeAJitteredSchedule() {
         SpannerWriterOptions options =
                 SpannerWriterOptions.builder()
-                        .retryInitialBackoff(Duration.ofMillis(20))
-                        .retryMaxBackoff(Duration.ofMillis(80))
-                        .retryMaxAttempts(4)
+                        .recoveryInitialBackoff(Duration.ofMillis(20))
+                        .recoveryMaxBackoff(Duration.ofMillis(80))
+                        .recoveryMaxAttempts(4)
                         .build();
 
-        RetrySchedule schedule = options.toRetrySchedule();
+        RetrySchedule schedule = options.toRecoverySchedule();
 
         assertThat(schedule.maxAttempts()).isEqualTo(4);
         assertThat(schedule.jitterRatio()).isEqualTo(RetrySchedule.DEFAULT_JITTER_RATIO);
@@ -243,15 +243,15 @@ class SpannerWriterOptionsTest {
         assertThatThrownBy(
                         () ->
                                 SpannerWriterOptions.builder()
-                                        .retryInitialBackoff(Duration.ofNanos(999_999)))
+                                        .recoveryInitialBackoff(Duration.ofNanos(999_999)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("retryInitialBackoff");
+                .hasMessageContaining("recoveryInitialBackoff");
         assertThatThrownBy(
                         () ->
                                 SpannerWriterOptions.builder()
-                                        .retryMaxBackoff(Duration.ofNanos(999_999)))
+                                        .recoveryMaxBackoff(Duration.ofNanos(999_999)))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("retryMaxBackoff");
+                .hasMessageContaining("recoveryMaxBackoff");
     }
 
     @Test
@@ -259,18 +259,18 @@ class SpannerWriterOptionsTest {
         assertThatThrownBy(
                         () ->
                                 SpannerWriterOptions.builder()
-                                        .retryInitialBackoff(Duration.ofSeconds(10))
-                                        .retryMaxBackoff(Duration.ofSeconds(1))
+                                        .recoveryInitialBackoff(Duration.ofSeconds(10))
+                                        .recoveryMaxBackoff(Duration.ofSeconds(1))
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("retryMaxBackoff");
+                .hasMessageContaining("recoveryMaxBackoff");
     }
 
     @Test
-    void rejectsNonPositiveRetryAttempts() {
-        assertThatThrownBy(() -> SpannerWriterOptions.builder().retryMaxAttempts(0))
+    void rejectsNonPositiveRecoveryAttempts() {
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().recoveryMaxAttempts(0))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("retryMaxAttempts");
+                .hasMessageContaining("recoveryMaxAttempts");
     }
 
     @Test
@@ -290,9 +290,9 @@ class SpannerWriterOptionsTest {
                         .maxBatchBytes(33)
                         .maxCommitDelay(Duration.ofMillis(44))
                         .rpcPriority(SpannerRpcPriority.LOW)
-                        .retryInitialBackoff(Duration.ofMillis(55))
-                        .retryMaxBackoff(Duration.ofMillis(66))
-                        .retryMaxAttempts(7)
+                        .recoveryInitialBackoff(Duration.ofMillis(55))
+                        .recoveryMaxBackoff(Duration.ofMillis(66))
+                        .recoveryMaxAttempts(7)
                         .build();
 
         assertThat(options).isNotEqualTo(SpannerWriterOptions.defaults());
@@ -302,8 +302,8 @@ class SpannerWriterOptionsTest {
                 .contains("maxBatchBytes=33")
                 .contains("maxCommitDelay=PT0.044S")
                 .contains("rpcPriority=LOW")
-                .contains("retryInitialBackoff=PT0.055S")
-                .contains("retryMaxBackoff=PT0.066S")
-                .contains("retryMaxAttempts=7");
+                .contains("recoveryInitialBackoff=PT0.055S")
+                .contains("recoveryMaxBackoff=PT0.066S")
+                .contains("recoveryMaxAttempts=7");
     }
 }

@@ -23,12 +23,13 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link SpannerDatabase}. */
-class SpannerDatabaseTest {
+/** Tests for {@link DatabaseDestination}. */
+class DatabaseDestinationTest {
 
     @Test
     void exposesItsComponentsAndRendersThemAsASpannerResourceName() {
-        SpannerDatabase database = SpannerDatabase.of("my-project", "my-instance", "orders-db");
+        DatabaseDestination database =
+                DatabaseDestination.of("my-project", "my-instance", "orders-db");
 
         assertThat(database.getProject()).isEqualTo("my-project");
         assertThat(database.getInstance()).isEqualTo("my-instance");
@@ -41,41 +42,41 @@ class SpannerDatabaseTest {
 
     @Test
     void isIdentifiedByProjectInstanceAndDatabase() {
-        SpannerDatabase database = SpannerDatabase.of("p", "i", "d");
+        DatabaseDestination database = DatabaseDestination.of("p", "i", "d");
 
         assertThat(database)
-                .isEqualTo(SpannerDatabase.of("p", "i", "d"))
-                .hasSameHashCodeAs(SpannerDatabase.of("p", "i", "d"))
+                .isEqualTo(DatabaseDestination.of("p", "i", "d"))
+                .hasSameHashCodeAs(DatabaseDestination.of("p", "i", "d"))
                 // A database id is unique within an instance only, so the instance is part of it.
-                .isNotEqualTo(SpannerDatabase.of("p", "other", "d"))
-                .isNotEqualTo(SpannerDatabase.of("other", "i", "d"))
-                .isNotEqualTo(SpannerDatabase.of("p", "i", "other"));
+                .isNotEqualTo(DatabaseDestination.of("p", "other", "d"))
+                .isNotEqualTo(DatabaseDestination.of("other", "i", "d"))
+                .isNotEqualTo(DatabaseDestination.of("p", "i", "other"));
     }
 
     @ParameterizedTest
     @ValueSource(strings = {"", "   ", " padded", "padded ", "with/slash"})
     void rejectsMalformedComponents(String value) {
-        assertThatThrownBy(() -> SpannerDatabase.of(value, "i", "d"))
+        assertThatThrownBy(() -> DatabaseDestination.of(value, "i", "d"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> SpannerDatabase.of("p", value, "d"))
+        assertThatThrownBy(() -> DatabaseDestination.of("p", value, "d"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> SpannerDatabase.of("p", "i", value))
+        assertThatThrownBy(() -> DatabaseDestination.of("p", "i", value))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void rejectsNullComponents() {
-        assertThatThrownBy(() -> SpannerDatabase.of(null, "i", "d"))
+        assertThatThrownBy(() -> DatabaseDestination.of(null, "i", "d"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> SpannerDatabase.of("p", null, "d"))
+        assertThatThrownBy(() -> DatabaseDestination.of("p", null, "d"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> SpannerDatabase.of("p", "i", null))
+        assertThatThrownBy(() -> DatabaseDestination.of("p", "i", null))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void namesTheOffendingComponent() {
-        assertThatThrownBy(() -> SpannerDatabase.of("p", "i", " padded"))
+        assertThatThrownBy(() -> DatabaseDestination.of("p", "i", " padded"))
                 .hasMessageContaining("database")
                 .hasMessageContaining("padded");
     }

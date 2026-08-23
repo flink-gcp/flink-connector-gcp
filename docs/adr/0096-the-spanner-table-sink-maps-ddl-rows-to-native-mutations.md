@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0096: The Spanner table connector maps DDL rows to native values
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-13
+- Date: 2026-08-11, revised 2026-08-13 and by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23
 - Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#527](https://github.com/laughingman7743/flink-connector-gcp/issues/527), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528), [#529](https://github.com/laughingman7743/flink-connector-gcp/issues/529), [#563](https://github.com/laughingman7743/flink-connector-gcp/issues/563) (under
-  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573), [#544](https://github.com/laughingman7743/flink-connector-gcp/issues/544)
+  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573), [#544](https://github.com/laughingman7743/flink-connector-gcp/issues/544), [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -50,7 +50,7 @@ A table without a primary key is insert-only because SQL cannot construct a Span
 `UPDATE_BEFORE` is rejected defensively; the planner does not send it to the advertised upsert sink.
 
 **The table options are a mapping onto the existing builders.**
-The destination fields assemble `SpannerDatabase`, the physical DDL supplies the serializer, and the eight `sink.*` options map one-for-one onto `SpannerWriterOptions`.
+The destination fields assemble `DatabaseDestination`, the physical DDL supplies the serializer, and the eight `sink.*` options map one-for-one onto `SpannerWriterOptions`.
 The table layer keeps the DataStream sink's fail-job constraint and failed-mutation policies because a DDL cannot carry a serializable failure-handler implementation.
 The shared `service-account-key-file` option maps to the bounded source and sink builders and to synchronous and asynchronous lookup clients.
 Only its path is serialized, and each JobManager or TaskManager component that owns a client reads the service-account JSON when that component opens.

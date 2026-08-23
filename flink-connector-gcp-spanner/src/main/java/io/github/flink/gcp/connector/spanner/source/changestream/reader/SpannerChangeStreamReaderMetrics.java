@@ -24,7 +24,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.SpannerMetricValues;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 
 import java.util.Collection;
 import java.util.Set;
@@ -47,6 +47,7 @@ final class SpannerChangeStreamReaderMetrics {
     private final AtomicInteger queuedPartitions = new AtomicInteger();
     private final AtomicLong oldestQueuedPositionMillis = new AtomicLong(NO_POSITION);
     private final AtomicLong lastRecordWaitMillis = new AtomicLong();
+    private final AtomicLong longestRecordWaitMillis = new AtomicLong();
     private final Set<QueryTiming> activeQueries = ConcurrentHashMap.newKeySet();
     private final LongSupplier currentTimeMillis;
 
@@ -82,9 +83,12 @@ final class SpannerChangeStreamReaderMetrics {
         group.gauge(
                 SpannerMetricNames.LAST_CHANGE_STREAM_RECORD_WAIT_MILLIS,
                 (Gauge<Long>) lastRecordWaitMillis::get);
+        group.gauge(
+                SpannerMetricNames.LONGEST_CHANGE_STREAM_RECORD_WAIT_MILLIS,
+                (Gauge<Long>) longestRecordWaitMillis::get);
     }
 
-    QueryTiming opening(SpannerChangeStreamPartitionSplit split) {
+    QueryTiming opening(ChangeStreamPartitionSplit split) {
         long now = currentTimeMillis.getAsLong();
         return new QueryTiming(split.getPartitionToken() != null, split.getHeartbeatMillis(), now);
     }
@@ -125,8 +129,10 @@ final class SpannerChangeStreamReaderMetrics {
             timing.lastRecordMillis.set(now);
         }
         if (!heartbeat) {
-            lastRecordWaitMillis.set(
-                    SpannerMetricValues.elapsedMillis(now, timing.waitStartedMillis.get()));
+            long waitMillis =
+                    SpannerMetricValues.elapsedMillis(now, timing.waitStartedMillis.get());
+            lastRecordWaitMillis.set(waitMillis);
+            longestRecordWaitMillis.accumulateAndGet(waitMillis, Math::max);
         }
     }
 
@@ -150,10 +156,10 @@ final class SpannerChangeStreamReaderMetrics {
         columnOccurrencesFiltered.inc(occurrences);
     }
 
-    void queued(Collection<SpannerChangeStreamPartitionSplit> splits) {
+    void queued(Collection<ChangeStreamPartitionSplit> splits) {
         queuedPartitions.set(splits.size());
         long oldest = NO_POSITION;
-        for (SpannerChangeStreamPartitionSplit split : splits) {
+        for (ChangeStreamPartitionSplit split : splits) {
             oldest = Math.min(oldest, split.getCurrentPosition().toEpochMilli());
         }
         oldestQueuedPositionMillis.set(oldest);

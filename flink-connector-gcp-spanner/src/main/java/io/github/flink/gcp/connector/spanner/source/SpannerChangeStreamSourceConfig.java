@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.spanner.source;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClientFactory;
@@ -38,7 +38,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final String changeStreamName;
     private final SpannerChangeStreamDeserializationSchema<T> deserializer;
     private final StartPosition startPosition;
@@ -54,7 +54,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
     private final SpannerChangeStreamQueryClientFactory queryClientFactory;
 
     SpannerChangeStreamSourceConfig(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String changeStreamName,
             SpannerChangeStreamDeserializationSchema<T> deserializer,
             StartPosition startPosition,
@@ -84,7 +84,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         this.queryClientFactory = queryClientFactory;
     }
 
-    public SpannerDatabase getDatabase() {
+    public DatabaseDestination getDatabase() {
         return database;
     }
 

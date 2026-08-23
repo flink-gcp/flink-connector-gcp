@@ -18,14 +18,13 @@ package io.github.flink.gcp.connector.spanner.source.changestream.reader;
 
 import org.apache.flink.annotation.Internal;
 
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 
 /** Opens asynchronous partition queries for one source subtask. */
 @Internal
 public interface SpannerChangeStreamQueryClient extends AutoCloseable {
 
-    QueryHandle open(
-            SpannerChangeStreamPartitionSplit split, SpannerChangeStreamQueryListener listener)
+    QueryHandle open(ChangeStreamPartitionSplit split, SpannerChangeStreamQueryListener listener)
             throws Exception;
 
     @Override

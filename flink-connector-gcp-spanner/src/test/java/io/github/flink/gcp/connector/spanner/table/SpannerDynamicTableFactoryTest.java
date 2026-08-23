@@ -40,7 +40,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
@@ -131,7 +131,7 @@ class SpannerDynamicTableFactoryTest {
 
         assertThat(dynamic).isInstanceOf(SpannerDynamicSink.class);
         assertThat(sink.getConfig().getDatabase())
-                .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
+                .isEqualTo(DatabaseDestination.of("my-project", "my-instance", "my-database"));
         assertThat(sink.getConfig().getWriterOptions().getMaxBatchCells()).isEqualTo(5_000);
     }
 
@@ -207,9 +207,9 @@ class SpannerDynamicTableFactoryTest {
         options.put("sink.buffer-flush.max-size", "2 mb");
         options.put("sink.buffer-flush.max-commit-delay", "25 ms");
         options.put("sink.rpc-priority", "low");
-        options.put("sink.retry.initial-backoff", "2 s");
-        options.put("sink.retry.max-backoff", "8 s");
-        options.put("sink.retry.max-attempts", "4");
+        options.put("sink.recovery.initial-backoff", "2 s");
+        options.put("sink.recovery.max-backoff", "8 s");
+        options.put("sink.recovery.max-attempts", "4");
         options.put("emulator-endpoint", "localhost:9010");
 
         SpannerMutationsSink<?> sink = built(withPrimaryKey(), options);
@@ -222,11 +222,11 @@ class SpannerDynamicTableFactoryTest {
                 .isEqualTo(Duration.ofMillis(25));
         assertThat(sink.getConfig().getWriterOptions().getRpcPriority())
                 .isEqualTo(SpannerRpcPriority.LOW);
-        assertThat(sink.getConfig().getWriterOptions().getRetryInitialBackoff())
+        assertThat(sink.getConfig().getWriterOptions().getRecoveryInitialBackoff())
                 .isEqualTo(Duration.ofSeconds(2));
-        assertThat(sink.getConfig().getWriterOptions().getRetryMaxBackoff())
+        assertThat(sink.getConfig().getWriterOptions().getRecoveryMaxBackoff())
                 .isEqualTo(Duration.ofSeconds(8));
-        assertThat(sink.getConfig().getWriterOptions().getRetryMaxAttempts()).isEqualTo(4);
+        assertThat(sink.getConfig().getWriterOptions().getRecoveryMaxAttempts()).isEqualTo(4);
         assertThat(sink.getConfig().getEmulatorEndpoint())
                 .isEqualTo(EmulatorEndpoint.parse("localhost:9010", "emulatorEndpoint"));
     }
@@ -400,7 +400,7 @@ class SpannerDynamicTableFactoryTest {
 
         // Accepted, and left on the read side: none of the above reaches the write path.
         assertThat(sink.getConfig().getDatabase())
-                .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
+                .isEqualTo(DatabaseDestination.of("my-project", "my-instance", "my-database"));
         assertThat(sink.getConfig().getWriterOptions().getMaxBatchCells()).isEqualTo(5_000);
     }
 
@@ -456,7 +456,7 @@ class SpannerDynamicTableFactoryTest {
 
         assertThat(dynamic).isInstanceOf(SpannerDynamicSource.class);
         assertThat(config.getDatabase())
-                .isEqualTo(SpannerDatabase.of("my-project", "my-instance", "my-database"));
+                .isEqualTo(DatabaseDestination.of("my-project", "my-instance", "my-database"));
         assertThat(config.getReadOperation().getColumns()).containsExactly("id", "name");
         assertThat(config.getTimestampBound().getMode().name()).isEqualTo("STRONG");
     }
@@ -606,7 +606,7 @@ class SpannerDynamicTableFactoryTest {
                 Map.ofEntries(
                         Map.entry("scan.index", "by_name"),
                         Map.entry("scan.partition.max-partitions", "12"),
-                        Map.entry("scan.partition.size", "2 mb"),
+                        Map.entry("scan.partition.size-bytes", "2 mb"),
                         Map.entry("scan.data-boost-enabled", "true"),
                         Map.entry("scan.timestamp-bound.read-timestamp", "2026-08-13T00:00:00Z"),
                         Map.entry("scan.timestamp-bound.exact-staleness", "15 s"),
@@ -656,7 +656,7 @@ class SpannerDynamicTableFactoryTest {
     void mapsEveryScanOptionAndSourceParallelism() {
         Map<String, String> options = options();
         options.put("scan.partition.max-partitions", "12");
-        options.put("scan.partition.size", "2 mb");
+        options.put("scan.partition.size-bytes", "2 mb");
         options.put("scan.data-boost-enabled", "true");
         options.put("scan.rpc-priority", "low");
         options.put("scan.timestamp-bound.exact-staleness", "15 s");
@@ -754,6 +754,12 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(SCHEMA, options))
                 .hasStackTraceContaining("Option 'sink.buffer-flush.max-cells' is invalid")
                 .hasStackTraceContaining("maxBatchCells must be positive");
+
+        Map<String, String> recovery = options();
+        recovery.put("sink.recovery.max-attempts", "0");
+        assertThatThrownBy(() -> sink(SCHEMA, recovery))
+                .hasStackTraceContaining("Option 'sink.recovery.max-attempts' is invalid")
+                .hasStackTraceContaining("recoveryMaxAttempts must be positive");
     }
 
     @Test
@@ -765,6 +771,13 @@ class SpannerDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.partition.max-partitions' is invalid")
                 .hasMessageContaining("maxPartitions must be positive");
+
+        Map<String, String> partitionSize = options();
+        partitionSize.put("scan.partition.size-bytes", "0 b");
+        assertThatThrownBy(() -> builtSource(SCHEMA, partitionSize))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.partition.size-bytes' is invalid")
+                .hasMessageContaining("partitionSizeBytes must be positive");
     }
 
     @Test

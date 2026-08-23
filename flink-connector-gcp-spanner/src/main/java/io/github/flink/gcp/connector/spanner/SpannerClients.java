@@ -48,7 +48,7 @@ public final class SpannerClients {
     /**
      * Builds the client settings for a database.
      *
-     * <p>Separate from {@link #open(SpannerDatabase, SpannerOptions)} so that the mapping is
+     * <p>Separate from {@link #open(DatabaseDestination, SpannerOptions)} so that the mapping is
      * testable without opening a channel.
      *
      * @param database the database the handle will reach
@@ -56,7 +56,7 @@ public final class SpannerClients {
      * @return the settings
      */
     public static SpannerOptions settings(
-            SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+            DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
         return settings(database, emulatorEndpoint, null);
     }
 
@@ -70,7 +70,7 @@ public final class SpannerClients {
      * @return the settings
      */
     public static SpannerOptions settings(
-            SpannerDatabase database,
+            DatabaseDestination database,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride) {
         Preconditions.checkArgument(
@@ -97,7 +97,7 @@ public final class SpannerClients {
      * @throws IOException if the handle cannot be created
      */
     public static Spanner open(
-            SpannerDatabase database,
+            DatabaseDestination database,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride)
             throws IOException {
@@ -112,7 +112,7 @@ public final class SpannerClients {
      * @return the handle, which the caller owns and must close
      * @throws IOException if the handle cannot be created
      */
-    public static Spanner open(SpannerDatabase database, SpannerOptions settings)
+    public static Spanner open(DatabaseDestination database, SpannerOptions settings)
             throws IOException {
         try {
             return settings.getService();

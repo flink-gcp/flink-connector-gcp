@@ -32,7 +32,7 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
@@ -57,7 +57,7 @@ import java.util.Objects;
 public final class SpannerChangeStreamDynamicSource
         implements ScanTableSource, SupportsReadingMetadata, SupportsSourceWatermark {
     private final SpannerTableSchemaConverter schema;
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerTableName table;
     private final String changeStreamName;
     private final ChangeStreamChangelogMode changelogMode;
@@ -81,7 +81,7 @@ public final class SpannerChangeStreamDynamicSource
             SpannerTableName table) {
         return new SpannerChangeStreamDynamicSource(
                 schema,
-                SpannerDatabase.of(
+                DatabaseDestination.of(
                         config.get(SpannerConnectorOptions.PROJECT),
                         config.get(SpannerConnectorOptions.INSTANCE),
                         config.get(SpannerConnectorOptions.DATABASE)),
@@ -103,7 +103,7 @@ public final class SpannerChangeStreamDynamicSource
 
     private SpannerChangeStreamDynamicSource(
             SpannerTableSchemaConverter schema,
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerTableName table,
             DataType producedDataType,
             List<String> metadataKeys,

@@ -25,8 +25,8 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplit;
-import io.github.flink.gcp.connector.spanner.source.batch.PartitionSplitState;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
+import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplitState;
 
 import java.util.Map;
 import java.util.function.Supplier;
@@ -40,7 +40,7 @@ import java.util.function.Supplier;
 @Internal
 public class SpannerSourceReader<T>
         extends SingleThreadMultiplexSourceReaderBase<
-                Struct, T, PartitionSplit, PartitionSplitState> {
+                Struct, T, BatchReadSplit, BatchReadSplitState> {
 
     private final StructStreamOpener opener;
 
@@ -54,8 +54,8 @@ public class SpannerSourceReader<T>
      * @param opener the read opener this reader owns and closes; the split readers share it
      */
     public SpannerSourceReader(
-            Supplier<SplitReader<Struct, PartitionSplit>> splitReaderSupplier,
-            RecordEmitter<Struct, T, PartitionSplitState> recordEmitter,
+            Supplier<SplitReader<Struct, BatchReadSplit>> splitReaderSupplier,
+            RecordEmitter<Struct, T, BatchReadSplitState> recordEmitter,
             Configuration config,
             SourceReaderContext context,
             StructStreamOpener opener) {
@@ -73,17 +73,17 @@ public class SpannerSourceReader<T>
     }
 
     @Override
-    protected PartitionSplitState initializedState(PartitionSplit split) {
-        return new PartitionSplitState(split);
+    protected BatchReadSplitState initializedState(BatchReadSplit split) {
+        return new BatchReadSplitState(split);
     }
 
     @Override
-    protected PartitionSplit toSplitType(String splitId, PartitionSplitState splitState) {
+    protected BatchReadSplit toSplitType(String splitId, BatchReadSplitState splitState) {
         return splitState.toSplit();
     }
 
     @Override
-    protected void onSplitFinished(Map<String, PartitionSplitState> finishedSplits) {
+    protected void onSplitFinished(Map<String, BatchReadSplitState> finishedSplits) {
         context.sendSplitRequest();
     }
 

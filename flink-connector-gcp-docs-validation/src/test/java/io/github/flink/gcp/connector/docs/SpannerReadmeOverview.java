@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.docs;
 import org.apache.flink.api.connector.sink2.Sink;
 
 import com.google.cloud.spanner.Mutation;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 
 final class SpannerReadmeOverview {
@@ -30,7 +30,7 @@ final class SpannerReadmeOverview {
         // tag::spanner-readme-overview[]
         Sink<OrderEvent> sink =
                 SpannerSink.<OrderEvent>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                         .serializer(
                                 (event, context) ->
                                         Mutation.newInsertOrUpdateBuilder("Orders")

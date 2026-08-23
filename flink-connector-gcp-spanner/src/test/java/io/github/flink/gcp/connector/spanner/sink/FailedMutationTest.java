@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.spanner.sink;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.protobuf.ByteString;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link FailedMutation}. */
 class FailedMutationTest {
 
-    private static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "d");
+    private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "d");
 
     @Test
     void carriesTheMutationTheServiceRefused() {

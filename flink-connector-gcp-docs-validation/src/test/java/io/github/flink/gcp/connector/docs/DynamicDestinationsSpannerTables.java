@@ -17,7 +17,7 @@
 package io.github.flink.gcp.connector.docs;
 
 import com.google.cloud.spanner.Mutation;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 
 final class DynamicDestinationsSpannerTables {
@@ -27,7 +27,7 @@ final class DynamicDestinationsSpannerTables {
     static void build() {
         // tag::spanner-tables[]
         SpannerSink.<Event>builder()
-                .database(SpannerDatabase.of("my-project", "my-instance", "events-db"))
+                .database(DatabaseDestination.of("my-project", "my-instance", "events-db"))
                 .serializer(
                         (event, context) ->
                                 Mutation.newInsertOrUpdateBuilder(

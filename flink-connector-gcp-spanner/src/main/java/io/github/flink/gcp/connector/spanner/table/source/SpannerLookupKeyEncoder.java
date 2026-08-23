@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.RowData;
 
 import com.google.cloud.spanner.Key;
@@ -24,6 +25,7 @@ import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import java.io.Serializable;
 
 /** Encodes a planner lookup-key row in declared Spanner primary-key order. */
+@Internal
 final class SpannerLookupKeyEncoder implements Serializable {
     private static final long serialVersionUID = 1L;
 

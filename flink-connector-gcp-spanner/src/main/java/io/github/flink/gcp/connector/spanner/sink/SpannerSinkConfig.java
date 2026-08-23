@@ -20,7 +20,7 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -38,7 +38,7 @@ public final class SpannerSinkConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerMutationSerializationSchema<? super T> serializer;
     private final SpannerWriterOptions writerOptions;
     private final FailureHandler<? super FailedMutation> failedMutationHandler;
@@ -51,7 +51,7 @@ public final class SpannerSinkConfig<T> implements Serializable {
      * already rejected a null for every one of these.
      */
     SpannerSinkConfig(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerMutationSerializationSchema<? super T> serializer,
             SpannerWriterOptions writerOptions,
             FailureHandler<? super FailedMutation> failedMutationHandler,
@@ -68,7 +68,7 @@ public final class SpannerSinkConfig<T> implements Serializable {
     }
 
     /** Returns the database to write to. */
-    public SpannerDatabase getDatabase() {
+    public DatabaseDestination getDatabase() {
         return database;
     }
 

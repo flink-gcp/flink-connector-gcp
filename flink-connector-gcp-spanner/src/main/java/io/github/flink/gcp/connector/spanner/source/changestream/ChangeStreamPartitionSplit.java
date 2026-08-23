@@ -55,7 +55,7 @@ import java.util.Objects;
  * blob nothing can look up, and printing it would push the assignment being logged off the line.
  */
 @Internal
-public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
+public final class ChangeStreamPartitionSplit implements SourceSplit {
 
     public static final String INITIAL_PARTITION_ID = "change-stream-initial";
 
@@ -68,7 +68,7 @@ public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
     private final PartitionLifecycleState lifecycleState;
     private final Instant watermark;
 
-    public SpannerChangeStreamPartitionSplit(
+    public ChangeStreamPartitionSplit(
             @Nullable String partitionToken,
             List<String> parentPartitionIds,
             Instant startTimestamp,
@@ -114,9 +114,9 @@ public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
         this.watermark = Preconditions.checkNotNull(watermark, "watermark must not be null");
     }
 
-    public static SpannerChangeStreamPartitionSplit initial(
+    public static ChangeStreamPartitionSplit initial(
             Instant startTimestamp, @Nullable Instant endTimestamp, long heartbeatMillis) {
-        return new SpannerChangeStreamPartitionSplit(
+        return new ChangeStreamPartitionSplit(
                 null,
                 Collections.emptyList(),
                 startTimestamp,
@@ -172,18 +172,17 @@ public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
         return watermark;
     }
 
-    public SpannerChangeStreamPartitionSplit withLifecycleState(PartitionLifecycleState state) {
+    public ChangeStreamPartitionSplit withLifecycleState(PartitionLifecycleState state) {
         return copy(currentPosition, state, watermark);
     }
 
-    public SpannerChangeStreamPartitionSplit withProgress(
-            Instant newPosition, Instant newWatermark) {
+    public ChangeStreamPartitionSplit withProgress(Instant newPosition, Instant newWatermark) {
         return copy(newPosition, lifecycleState, newWatermark);
     }
 
-    private SpannerChangeStreamPartitionSplit copy(
+    private ChangeStreamPartitionSplit copy(
             Instant position, PartitionLifecycleState state, Instant newWatermark) {
-        return new SpannerChangeStreamPartitionSplit(
+        return new ChangeStreamPartitionSplit(
                 partitionToken,
                 parentPartitionIds,
                 startTimestamp,
@@ -194,7 +193,7 @@ public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
                 newWatermark);
     }
 
-    public boolean samePartitionDefinition(SpannerChangeStreamPartitionSplit other) {
+    public boolean samePartitionDefinition(ChangeStreamPartitionSplit other) {
         return Objects.equals(partitionToken, other.partitionToken)
                 && parentPartitionIds.equals(other.parentPartitionIds)
                 && startTimestamp.equals(other.startTimestamp)
@@ -207,10 +206,10 @@ public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
         if (this == o) {
             return true;
         }
-        if (!(o instanceof SpannerChangeStreamPartitionSplit)) {
+        if (!(o instanceof ChangeStreamPartitionSplit)) {
             return false;
         }
-        SpannerChangeStreamPartitionSplit other = (SpannerChangeStreamPartitionSplit) o;
+        ChangeStreamPartitionSplit other = (ChangeStreamPartitionSplit) o;
         return heartbeatMillis == other.heartbeatMillis
                 && Objects.equals(partitionToken, other.partitionToken)
                 && parentPartitionIds.equals(other.parentPartitionIds)
@@ -236,7 +235,7 @@ public final class SpannerChangeStreamPartitionSplit implements SourceSplit {
 
     @Override
     public String toString() {
-        return "SpannerChangeStreamPartitionSplit{splitId='"
+        return "ChangeStreamPartitionSplit{splitId='"
                 + splitId()
                 + "', token="
                 + (partitionToken == null ? "<initial>" : "<present>")

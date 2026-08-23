@@ -29,8 +29,8 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 
 import javax.annotation.Nullable;
@@ -45,7 +45,7 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerWriterOptions writerOptions;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final Credentials credentialsOverride;
@@ -58,7 +58,7 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
      * @param emulatorEndpoint the emulator to write to, or {@code null} for the real service
      */
     public DefaultSpannerDatabaseAccessFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this(database, writerOptions, emulatorEndpoint, null);
@@ -66,7 +66,7 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
 
     /** Creates the factory with credentials loaded by the writer runtime. */
     public DefaultSpannerDatabaseAccessFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride) {

@@ -38,7 +38,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.gson.JsonParser;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -120,7 +120,7 @@ class SpannerChangeStreamSourceFailoverITCase extends AbstractSpannerEmulatorITC
     }
 
     private static Seeded seed(Dialect dialect) throws Exception {
-        SpannerDatabase database =
+        DatabaseDestination database =
                 createDatabase(
                         dialect,
                         dialect == Dialect.POSTGRESQL
@@ -228,11 +228,11 @@ class SpannerChangeStreamSourceFailoverITCase extends AbstractSpannerEmulatorITC
     }
 
     private static final class Seeded {
-        private final SpannerDatabase database;
+        private final DatabaseDestination database;
         private final Instant start;
         private final Instant end;
 
-        private Seeded(SpannerDatabase database, Instant start, Instant end) {
+        private Seeded(DatabaseDestination database, Instant start, Instant end) {
             this.database = database;
             this.start = start;
             this.end = end;

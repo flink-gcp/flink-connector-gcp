@@ -31,8 +31,8 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 
 import javax.annotation.Nullable;
 
@@ -54,7 +54,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
@@ -85,7 +85,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      *     for the real service
      */
     public BatchClientStructStreamOpener(
-            SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+            DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
     }

@@ -17,8 +17,8 @@
 package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
 import com.google.auth.oauth2.GoogleCredentials;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,7 +35,7 @@ class BatchClientPartitionPlannerCredentialsTest {
         GoogleCredentials loaded =
                 SpannerCredentials.load(ServiceAccountKeyFiles.create(tempDir).toString());
         BatchClientPartitionPlanner planner =
-                new BatchClientPartitionPlanner(SpannerDatabase.of("p", "i", "d"), null);
+                new BatchClientPartitionPlanner(DatabaseDestination.of("p", "i", "d"), null);
 
         planner.useCredentials(loaded);
 

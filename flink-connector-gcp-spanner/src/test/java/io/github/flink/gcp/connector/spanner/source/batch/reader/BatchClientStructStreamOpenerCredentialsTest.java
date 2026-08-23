@@ -17,8 +17,8 @@
 package io.github.flink.gcp.connector.spanner.source.batch.reader;
 
 import com.google.auth.oauth2.GoogleCredentials;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -35,7 +35,7 @@ class BatchClientStructStreamOpenerCredentialsTest {
         GoogleCredentials loaded =
                 SpannerCredentials.load(ServiceAccountKeyFiles.create(tempDir).toString());
         BatchClientStructStreamOpener opener =
-                new BatchClientStructStreamOpener(SpannerDatabase.of("p", "i", "d"), null);
+                new BatchClientStructStreamOpener(DatabaseDestination.of("p", "i", "d"), null);
 
         opener.useCredentials(loaded);
 

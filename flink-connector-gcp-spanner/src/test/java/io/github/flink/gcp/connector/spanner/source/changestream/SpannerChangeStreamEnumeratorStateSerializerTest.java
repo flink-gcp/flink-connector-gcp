@@ -32,11 +32,11 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
     @Test
     void roundTripsTheCompletePartitionLedger() throws Exception {
         Instant start = Instant.parse("2026-08-12T00:00:00Z");
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(start, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(start, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.FINISHED);
-        SpannerChangeStreamPartitionSplit child =
-                new SpannerChangeStreamPartitionSplit(
+        ChangeStreamPartitionSplit child =
+                new ChangeStreamPartitionSplit(
                         "child",
                         Collections.singletonList(initial.splitId()),
                         start.plusSeconds(1),
@@ -59,8 +59,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
     void rejectsUnknownVersionsEmptyLedgersAndDuplicateSplitIds() throws Exception {
         SpannerChangeStreamEnumeratorStateSerializer serializer =
                 new SpannerChangeStreamEnumeratorStateSerializer();
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 2_000);
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 2_000);
         byte[] bytes =
                 serializer.serialize(
                         new SpannerChangeStreamEnumeratorState(Collections.singletonList(initial)));
@@ -91,8 +91,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
 
         DataOutputSerializer corrupt = new DataOutputSerializer(256);
         corrupt.writeInt(2);
-        SpannerChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
-        SpannerChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
+        ChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
+        ChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
         corrupt.writeLong(Long.MIN_VALUE);
         assertThatThrownBy(
                         () ->
@@ -113,11 +113,11 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
 
     @Test
     void rejectsAChildWhoseParentIsMissingOrUnfinished() {
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.RUNNING);
-        SpannerChangeStreamPartitionSplit child =
-                new SpannerChangeStreamPartitionSplit(
+        ChangeStreamPartitionSplit child =
+                new ChangeStreamPartitionSplit(
                         "child",
                         Collections.singletonList(initial.splitId()),
                         Instant.EPOCH,
@@ -126,8 +126,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                         Instant.EPOCH,
                         PartitionLifecycleState.SCHEDULED,
                         Instant.EPOCH);
-        SpannerChangeStreamPartitionSplit orphan =
-                new SpannerChangeStreamPartitionSplit(
+        ChangeStreamPartitionSplit orphan =
+                new ChangeStreamPartitionSplit(
                         "orphan",
                         Collections.singletonList("missing-parent"),
                         Instant.EPOCH,
@@ -159,11 +159,11 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
     @Test
     void readsVersionOneStateWithTheCompleteLedgerMinimum() throws Exception {
         Instant start = Instant.parse("2026-08-12T00:00:00Z");
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(start, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(start, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.FINISHED);
-        SpannerChangeStreamPartitionSplit child =
-                new SpannerChangeStreamPartitionSplit(
+        ChangeStreamPartitionSplit child =
+                new ChangeStreamPartitionSplit(
                         "child",
                         Collections.singletonList(initial.splitId()),
                         start.plusSeconds(1),
@@ -174,8 +174,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                         start.plusSeconds(2));
         DataOutputSerializer versionOne = new DataOutputSerializer(512);
         versionOne.writeInt(2);
-        SpannerChangeStreamPartitionSplitSerializer.writeSplit(versionOne, initial);
-        SpannerChangeStreamPartitionSplitSerializer.writeSplit(versionOne, child);
+        ChangeStreamPartitionSplitSerializer.writeSplit(versionOne, initial);
+        ChangeStreamPartitionSplitSerializer.writeSplit(versionOne, child);
 
         SpannerChangeStreamEnumeratorState restored =
                 new SpannerChangeStreamEnumeratorStateSerializer()
@@ -188,11 +188,10 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
     @Test
     void rejectsACheckpointedWatermarkAheadOfAnUnfinishedPartition() throws Exception {
         Instant start = Instant.parse("2026-08-12T00:00:00Z");
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(start, null, 2_000);
+        ChangeStreamPartitionSplit initial = ChangeStreamPartitionSplit.initial(start, null, 2_000);
         DataOutputSerializer corrupt = new DataOutputSerializer(512);
         corrupt.writeInt(1);
-        SpannerChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
+        ChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
         corrupt.writeLong(start.toEpochMilli());
 
         assertThatThrownBy(
@@ -210,11 +209,11 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
 
     @Test
     void rejectsCreatedPartitionsWhoseParentsFormACycle() {
-        SpannerChangeStreamPartitionSplit initial =
-                SpannerChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 2_000)
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(Instant.EPOCH, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.FINISHED);
-        SpannerChangeStreamPartitionSplit left = created("left", "change-stream-token:right");
-        SpannerChangeStreamPartitionSplit right = created("right", left.splitId());
+        ChangeStreamPartitionSplit left = created("left", "change-stream-token:right");
+        ChangeStreamPartitionSplit right = created("right", left.splitId());
 
         assertThatThrownBy(
                         () ->
@@ -225,8 +224,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                 .hasMessageContaining("2 partition(s)");
     }
 
-    private static SpannerChangeStreamPartitionSplit created(String token, String parentId) {
-        return new SpannerChangeStreamPartitionSplit(
+    private static ChangeStreamPartitionSplit created(String token, String parentId) {
+        return new ChangeStreamPartitionSplit(
                 token,
                 Collections.singletonList(parentId),
                 Instant.EPOCH,

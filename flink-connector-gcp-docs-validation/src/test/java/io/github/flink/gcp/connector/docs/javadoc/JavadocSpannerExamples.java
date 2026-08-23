@@ -24,7 +24,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.OrderEvent;
 import io.github.flink.gcp.connector.docs.SpannerDocumentationTypes.Singer;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
@@ -40,7 +40,7 @@ final class JavadocSpannerExamples {
         // tag::sink[]
         Sink<OrderEvent> sink =
                 SpannerSink.<OrderEvent>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "orders-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "orders-db"))
                         .serializer(
                                 (event, context) ->
                                         Mutation.newInsertOrUpdateBuilder("Orders")
@@ -59,7 +59,7 @@ final class JavadocSpannerExamples {
         // tag::source[]
         Source<Singer, ?, ?> source =
                 SpannerSource.<Singer>builder()
-                        .database(SpannerDatabase.of("my-project", "my-instance", "my-db"))
+                        .database(DatabaseDestination.of("my-project", "my-instance", "my-db"))
                         .readOperation(
                                 SpannerReadOperation.query(
                                         Statement.of("SELECT id, name FROM singers")))

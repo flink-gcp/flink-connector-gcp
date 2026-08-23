@@ -20,7 +20,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.ScriptedSpannerChangeStreamQueryClientFactory;
@@ -37,7 +37,7 @@ public final class SpannerChangeStreamTestSourceFactory {
     public static SpannerChangeStreamSource<String> staleSource(
             Instant startTimestamp, int partitions) {
         return SpannerChangeStreamSource.<String>builder()
-                .database(SpannerDatabase.of("project", "instance", "database"))
+                .database(DatabaseDestination.of("project", "instance", "database"))
                 .changeStreamName("changes")
                 .deserializer(new SequenceDeserializer())
                 .startPosition(StartPosition.at(startTimestamp))

@@ -35,8 +35,8 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
@@ -77,7 +77,7 @@ import java.util.List;
 @Internal
 public final class BatchClientPartitionPlanner implements PartitionPlanner {
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
     /**
@@ -110,7 +110,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      *     for the real service
      */
     public BatchClientPartitionPlanner(
-            SpannerDatabase database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+            DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
     }

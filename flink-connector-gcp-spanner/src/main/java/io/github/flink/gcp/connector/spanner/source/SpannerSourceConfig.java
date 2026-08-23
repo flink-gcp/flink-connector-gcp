@@ -21,7 +21,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
@@ -46,7 +46,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final SpannerReadOperation readOperation;
     private final SpannerStructDeserializationSchema<T> deserializer;
     private final TimestampBound timestampBound;
@@ -59,7 +59,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
     private final int maxRecordsPerFetch;
 
     SpannerSourceConfig(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerReadOperation readOperation,
             SpannerStructDeserializationSchema<T> deserializer,
             TimestampBound timestampBound,
@@ -97,7 +97,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
      *
      * @return the database
      */
-    public SpannerDatabase getDatabase() {
+    public DatabaseDestination getDatabase() {
         return database;
     }
 

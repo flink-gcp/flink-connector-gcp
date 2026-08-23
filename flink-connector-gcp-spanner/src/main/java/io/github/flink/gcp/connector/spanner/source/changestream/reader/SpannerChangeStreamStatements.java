@@ -22,7 +22,7 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Value;
-import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 
 import java.time.Instant;
 
@@ -33,7 +33,7 @@ final class SpannerChangeStreamStatements {
     private SpannerChangeStreamStatements() {}
 
     static Statement forSplit(
-            Dialect dialect, String streamName, SpannerChangeStreamPartitionSplit split) {
+            Dialect dialect, String streamName, ChangeStreamPartitionSplit split) {
         switch (dialect) {
             case GOOGLE_STANDARD_SQL:
                 return googleSql(streamName, split);
@@ -45,7 +45,7 @@ final class SpannerChangeStreamStatements {
         }
     }
 
-    private static Statement googleSql(String streamName, SpannerChangeStreamPartitionSplit split) {
+    private static Statement googleSql(String streamName, ChangeStreamPartitionSplit split) {
         String function = "READ_" + streamName;
         String sql =
                 "SELECT ChangeRecord FROM `"
@@ -63,8 +63,7 @@ final class SpannerChangeStreamStatements {
                 "heartbeat_milliseconds");
     }
 
-    private static Statement postgreSql(
-            String streamName, SpannerChangeStreamPartitionSplit split) {
+    private static Statement postgreSql(String streamName, ChangeStreamPartitionSplit split) {
         String function = "read_json_" + streamName;
         String sql =
                 "SELECT * FROM \"spanner\".\""
@@ -75,7 +74,7 @@ final class SpannerChangeStreamStatements {
 
     private static Statement bind(
             Statement.Builder builder,
-            SpannerChangeStreamPartitionSplit split,
+            ChangeStreamPartitionSplit split,
             String start,
             String end,
             String token,

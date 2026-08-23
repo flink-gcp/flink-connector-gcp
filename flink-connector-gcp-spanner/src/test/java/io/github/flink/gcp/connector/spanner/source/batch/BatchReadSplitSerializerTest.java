@@ -32,20 +32,20 @@ import java.io.Serializable;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for {@link PartitionSplitSerializer}. */
-class PartitionSplitSerializerTest {
+/** Tests for {@link BatchReadSplitSerializer}. */
+class BatchReadSplitSerializerTest {
 
-    private final PartitionSplitSerializer serializer = new PartitionSplitSerializer();
+    private final BatchReadSplitSerializer serializer = new BatchReadSplitSerializer();
 
     @Test
     void aQueryPartitionSurvivesTheRoundTrip() throws Exception {
-        PartitionSplit split =
-                new PartitionSplit(
+        BatchReadSplit split =
+                new BatchReadSplit(
                         "3",
                         TestPartitions.batchTransactionId("sessions/s", "txn-1", 42L),
                         TestPartitions.queryPartition("token-3", "SELECT id FROM singers"));
 
-        PartitionSplit restored = roundTrip(split);
+        BatchReadSplit restored = roundTrip(split);
 
         assertThat(restored.splitId()).isEqualTo("3");
         assertThat(restored).isEqualTo(split);
@@ -60,8 +60,8 @@ class PartitionSplitSerializerTest {
     void aTableReadPartitionSurvivesTheRoundTrip() throws Exception {
         // The read shape carries a table, a key set and a column list where the query shape carries
         // a statement, so a serializer that happened to work for one could still lose the other.
-        PartitionSplit split =
-                new PartitionSplit(
+        BatchReadSplit split =
+                new BatchReadSplit(
                         "0",
                         TestPartitions.batchTransactionId(),
                         TestPartitions.readPartition("token-0", "singers", "id", "name"));
@@ -107,14 +107,14 @@ class PartitionSplitSerializerTest {
         assertThat(serializer.getVersion()).isEqualTo(1);
     }
 
-    private PartitionSplit roundTrip(PartitionSplit split) throws IOException {
+    private BatchReadSplit roundTrip(BatchReadSplit split) throws IOException {
         return serializer.deserialize(serializer.getVersion(), serializer.serialize(split));
     }
 
-    private static PartitionSplit split() {
+    private static BatchReadSplit split() {
         BatchTransactionId id = TestPartitions.batchTransactionId();
         Partition partition = TestPartitions.queryPartition("token", "SELECT 1");
-        return new PartitionSplit("0", id, partition);
+        return new BatchReadSplit("0", id, partition);
     }
 
     /**

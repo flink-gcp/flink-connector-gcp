@@ -27,7 +27,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.spanner.Dialect;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
 
@@ -59,7 +59,7 @@ class SpannerDynamicSourceTest {
         assertThat(source(config("dialect", "POSTGRESQL"))).isNotEqualTo(source);
         assertThat(source(config("scan.index", "by_name"))).isNotEqualTo(source);
         assertThat(source(config("scan.partition.max-partitions", "10"))).isNotEqualTo(source);
-        assertThat(source(config("scan.partition.size", "1 mb"))).isNotEqualTo(source);
+        assertThat(source(config("scan.partition.size-bytes", "1 mb"))).isNotEqualTo(source);
         assertThat(source(config("scan.data-boost-enabled", "true"))).isNotEqualTo(source);
         assertThat(source(config("scan.rpc-priority", "HIGH"))).isNotEqualTo(source);
         assertThat(source(config("scan.timestamp-bound.exact-staleness", "10s")))
@@ -78,7 +78,7 @@ class SpannerDynamicSourceTest {
         assertThat(
                         new SpannerDynamicSource(
                                 schema(new int[] {0}),
-                                SpannerDatabase.of("p", "i", "d"),
+                                DatabaseDestination.of("p", "i", "d"),
                                 "people",
                                 PHYSICAL,
                                 config()))
@@ -86,7 +86,7 @@ class SpannerDynamicSourceTest {
         assertThat(
                         new SpannerDynamicSource(
                                 SCHEMA,
-                                SpannerDatabase.of("p", "i", "other"),
+                                DatabaseDestination.of("p", "i", "other"),
                                 "people",
                                 PHYSICAL,
                                 config()))
@@ -94,7 +94,7 @@ class SpannerDynamicSourceTest {
         assertThat(
                         new SpannerDynamicSource(
                                 SCHEMA,
-                                SpannerDatabase.of("p", "i", "d"),
+                                DatabaseDestination.of("p", "i", "d"),
                                 "orders",
                                 PHYSICAL,
                                 config()))
@@ -102,7 +102,7 @@ class SpannerDynamicSourceTest {
         assertThat(
                         new SpannerDynamicSource(
                                 SCHEMA,
-                                SpannerDatabase.of("p", "i", "d"),
+                                DatabaseDestination.of("p", "i", "d"),
                                 "people",
                                 DataTypes.ROW(
                                         DataTypes.FIELD("region", DataTypes.STRING().notNull())),
@@ -153,7 +153,7 @@ class SpannerDynamicSourceTest {
 
     private static SpannerDynamicSource source(Configuration config) {
         return new SpannerDynamicSource(
-                SCHEMA, SpannerDatabase.of("p", "i", "d"), "people", PHYSICAL, config);
+                SCHEMA, DatabaseDestination.of("p", "i", "d"), "people", PHYSICAL, config);
     }
 
     private static SpannerTableSchemaConverter schema(int[] primaryKey) {

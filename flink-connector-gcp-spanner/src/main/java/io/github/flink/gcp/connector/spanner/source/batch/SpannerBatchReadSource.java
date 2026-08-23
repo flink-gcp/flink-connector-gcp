@@ -39,7 +39,7 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
-import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerPartitionSplitEnumerator;
+import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerBatchReadSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerRecordEmitter;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReader;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSourceReaderMetrics;
@@ -63,7 +63,8 @@ import java.util.function.Supplier;
  */
 @Internal
 public class SpannerBatchReadSource<T>
-        implements Source<T, PartitionSplit, SpannerBatchEnumeratorState>, ResultTypeQueryable<T> {
+        implements Source<T, BatchReadSplit, SpannerBatchReadEnumeratorState>,
+                ResultTypeQueryable<T> {
 
     private static final long serialVersionUID = 1L;
 
@@ -94,7 +95,7 @@ public class SpannerBatchReadSource<T>
     }
 
     @Override
-    public SourceReader<T, PartitionSplit> createReader(SourceReaderContext context)
+    public SourceReader<T, BatchReadSplit> createReader(SourceReaderContext context)
             throws Exception {
         StructStreamOpener opener = config.getOpener();
         opener.useCredentials(credentials());
@@ -102,7 +103,7 @@ public class SpannerBatchReadSource<T>
         deserializer.open(new ReaderInitializationContext(context));
 
         SpannerSourceReaderMetrics metrics = new SpannerSourceReaderMetrics(context.metricGroup());
-        Supplier<SplitReader<Struct, PartitionSplit>> splitReaderSupplier =
+        Supplier<SplitReader<Struct, BatchReadSplit>> splitReaderSupplier =
                 () ->
                         new SpannerSplitReader(
                                 config.getDatabase(),
@@ -118,14 +119,15 @@ public class SpannerBatchReadSource<T>
     }
 
     @Override
-    public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> createEnumerator(
-            SplitEnumeratorContext<PartitionSplit> context) throws Exception {
+    public SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> createEnumerator(
+            SplitEnumeratorContext<BatchReadSplit> context) throws Exception {
         return enumerator(context, null);
     }
 
     @Override
-    public SplitEnumerator<PartitionSplit, SpannerBatchEnumeratorState> restoreEnumerator(
-            SplitEnumeratorContext<PartitionSplit> context, SpannerBatchEnumeratorState checkpoint)
+    public SplitEnumerator<BatchReadSplit, SpannerBatchReadEnumeratorState> restoreEnumerator(
+            SplitEnumeratorContext<BatchReadSplit> context,
+            SpannerBatchReadEnumeratorState checkpoint)
             throws Exception {
         return enumerator(context, checkpoint);
     }
@@ -146,15 +148,15 @@ public class SpannerBatchReadSource<T>
      * @return the enumerator
      * @throws Exception if the credentials cannot be loaded or the planner cannot be created
      */
-    private SpannerPartitionSplitEnumerator enumerator(
-            SplitEnumeratorContext<PartitionSplit> context,
-            @Nullable SpannerBatchEnumeratorState checkpoint)
+    private SpannerBatchReadSplitEnumerator enumerator(
+            SplitEnumeratorContext<BatchReadSplit> context,
+            @Nullable SpannerBatchReadEnumeratorState checkpoint)
             throws Exception {
         GoogleCredentials credentials = credentials();
         PartitionPlanner planner = config.getPlannerFactory().create();
         try {
             planner.useCredentials(credentials);
-            return new SpannerPartitionSplitEnumerator(context, config, planner, checkpoint);
+            return new SpannerBatchReadSplitEnumerator(context, config, planner, checkpoint);
         } catch (Throwable e) {
             // The enumerator never took ownership, so nothing else will close what was just minted.
             Closers.closeAllSuppressing(e, planner);
@@ -179,14 +181,14 @@ public class SpannerBatchReadSource<T>
     }
 
     @Override
-    public SimpleVersionedSerializer<PartitionSplit> getSplitSerializer() {
-        return new PartitionSplitSerializer();
+    public SimpleVersionedSerializer<BatchReadSplit> getSplitSerializer() {
+        return new BatchReadSplitSerializer();
     }
 
     @Override
-    public SimpleVersionedSerializer<SpannerBatchEnumeratorState>
+    public SimpleVersionedSerializer<SpannerBatchReadEnumeratorState>
             getEnumeratorCheckpointSerializer() {
-        return new SpannerBatchEnumeratorStateSerializer();
+        return new SpannerBatchReadEnumeratorStateSerializer();
     }
 
     @Override

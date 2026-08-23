@@ -42,8 +42,8 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
     public byte[] serialize(SpannerChangeStreamEnumeratorState state) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         out.writeInt(state.getPartitions().size());
-        for (SpannerChangeStreamPartitionSplit partition : state.getPartitions()) {
-            SpannerChangeStreamPartitionSplitSerializer.writeSplit(out, partition);
+        for (ChangeStreamPartitionSplit partition : state.getPartitions()) {
+            ChangeStreamPartitionSplitSerializer.writeSplit(out, partition);
         }
         out.writeLong(state.getSourceWatermark());
         return out.getCopyOfBuffer();
@@ -61,10 +61,10 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
                             + ".");
         }
         DataInputDeserializer in = new DataInputDeserializer(serialized);
-        int count = SpannerChangeStreamPartitionSplitSerializer.readCount(in, "partition");
-        List<SpannerChangeStreamPartitionSplit> partitions = new ArrayList<>(Math.min(count, 1024));
+        int count = ChangeStreamPartitionSplitSerializer.readCount(in, "partition");
+        List<ChangeStreamPartitionSplit> partitions = new ArrayList<>(Math.min(count, 1024));
         for (int i = 0; i < count; i++) {
-            partitions.add(SpannerChangeStreamPartitionSplitSerializer.readSplit(in));
+            partitions.add(ChangeStreamPartitionSplitSerializer.readSplit(in));
         }
         try {
             return version == 1

@@ -51,12 +51,16 @@ public final class WriterOptionsMapper {
                 config, SpannerConnectorOptions.SINK_RPC_PRIORITY, builder::rpcPriority);
         OptionSetters.apply(
                 config,
-                SpannerConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
-                builder::retryInitialBackoff);
+                SpannerConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                builder::recoveryInitialBackoff);
         OptionSetters.apply(
-                config, SpannerConnectorOptions.SINK_RETRY_MAX_BACKOFF, builder::retryMaxBackoff);
+                config,
+                SpannerConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                builder::recoveryMaxBackoff);
         OptionSetters.apply(
-                config, SpannerConnectorOptions.SINK_RETRY_MAX_ATTEMPTS, builder::retryMaxAttempts);
+                config,
+                SpannerConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                builder::recoveryMaxAttempts);
         return builder.build();
     }
 }

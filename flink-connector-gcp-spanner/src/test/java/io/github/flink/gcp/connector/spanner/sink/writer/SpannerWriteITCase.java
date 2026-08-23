@@ -27,7 +27,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
@@ -75,7 +75,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void appliesEveryMutationOfABatch(Dialect dialect) throws Exception {
-        SpannerDatabase database = ordersDatabase(dialect);
+        DatabaseDestination database = ordersDatabase(dialect);
         SinkWriter<String> writer = writer(database, SpannerWriterOptions.defaults(), null);
 
         writer.write("a", TestContexts.NO_OP);
@@ -89,7 +89,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void sendsSeveralBatchesWhenTheLimitIsSmall(Dialect dialect) throws Exception {
-        SpannerDatabase database = ordersDatabase(dialect);
+        DatabaseDestination database = ordersDatabase(dialect);
         SinkWriter<String> writer =
                 writer(database, SpannerWriterOptions.builder().maxBatchMutations(2).build(), null);
 
@@ -104,7 +104,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void aReplayedInsertOrUpdateIsHarmless(Dialect dialect) throws Exception {
-        SpannerDatabase database = ordersDatabase(dialect);
+        DatabaseDestination database = ordersDatabase(dialect);
         SinkWriter<String> writer = writer(database, SpannerWriterOptions.defaults(), null);
 
         writer.write("a", TestContexts.NO_OP);
@@ -119,7 +119,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void routesTheOneMutationTheServiceRefusesAndKeepsTheRest(Dialect dialect) throws Exception {
-        SpannerDatabase database = ordersDatabase(dialect);
+        DatabaseDestination database = ordersDatabase(dialect);
         // Seed the row the insert below collides with.
         client(database).write(List.of(insert("b")));
         RecordingHandler handler = new RecordingHandler();
@@ -146,7 +146,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void deletesRowsToo(Dialect dialect) throws Exception {
-        SpannerDatabase database = ordersDatabase(dialect);
+        DatabaseDestination database = ordersDatabase(dialect);
         client(database).write(List.of(insert("a"), insert("b")));
         SinkWriter<String> writer =
                 writer(
@@ -164,7 +164,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     @ParameterizedTest
     @EnumSource(Dialect.class)
     void readsTheSecondaryIndexCoverageOutOfTheRealSchema(Dialect dialect) throws Exception {
-        SpannerDatabase database = ordersDatabase(dialect);
+        DatabaseDestination database = ordersDatabase(dialect);
 
         CellWeights weights;
         try (SpannerDatabaseAccess access =
@@ -184,7 +184,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
 
     // ---------------------------------------------------------------- helpers
 
-    private static SpannerDatabase ordersDatabase(Dialect dialect) throws Exception {
+    private static DatabaseDestination ordersDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
             return createDatabase(
                     dialect,
@@ -198,7 +198,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private SinkWriter<String> writer(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerWriterOptions options,
             @Nullable FailureHandler<? super FailedMutation> handler)
             throws Exception {
@@ -206,7 +206,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
     }
 
     private SinkWriter<String> writer(
-            SpannerDatabase database,
+            DatabaseDestination database,
             SpannerWriterOptions options,
             @Nullable FailureHandler<? super FailedMutation> handler,
             SpannerMutationSerializationSchema<String> serializer)
@@ -244,7 +244,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                 .build();
     }
 
-    private static List<String> names(SpannerDatabase database) {
+    private static List<String> names(DatabaseDestination database) {
         List<String> names = new ArrayList<>();
         for (Struct row : query(database, "SELECT name FROM orders ORDER BY id")) {
             names.add(row.getString(0));

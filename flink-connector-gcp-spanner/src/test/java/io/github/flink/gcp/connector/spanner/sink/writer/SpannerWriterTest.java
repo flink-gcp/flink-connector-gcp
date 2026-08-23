@@ -26,7 +26,7 @@ import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerExceptionFactory;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
@@ -53,7 +53,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Timeout(30)
 class SpannerWriterTest {
 
-    private static final SpannerDatabase DATABASE = SpannerDatabase.of("p", "i", "d");
+    private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "d");
 
     private final FakeSpannerDatabaseAccess access = new FakeSpannerDatabaseAccess();
     private final TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
@@ -408,7 +408,7 @@ class SpannerWriterTest {
                 failing(ErrorCode.UNAVAILABLE),
                 failing(ErrorCode.UNAVAILABLE),
                 failing(ErrorCode.UNAVAILABLE));
-        SinkWriter<String> writer = writer(fastRetries().retryMaxAttempts(3).build());
+        SinkWriter<String> writer = writer(fastRetries().recoveryMaxAttempts(3).build());
 
         assertThatThrownBy(
                         () -> {
@@ -417,7 +417,7 @@ class SpannerWriterTest {
                         })
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Giving up on 1 Spanner mutation(s) after 3 attempt(s)")
-                .hasMessageContaining("retryMaxAttempts");
+                .hasMessageContaining("recoveryMaxAttempts");
         assertThat(access.requests()).hasSize(3);
     }
 
@@ -565,8 +565,8 @@ class SpannerWriterTest {
 
     private static SpannerWriterOptions.Builder fastRetries() {
         return SpannerWriterOptions.builder()
-                .retryInitialBackoff(Duration.ofMillis(1))
-                .retryMaxBackoff(Duration.ofMillis(1));
+                .recoveryInitialBackoff(Duration.ofMillis(1))
+                .recoveryMaxBackoff(Duration.ofMillis(1));
     }
 
     private static SpannerMutationSerializationSchema<String> serializer() {

@@ -302,7 +302,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `scan.max-concurrent-queries-per-subtask` | `8` | Maximum Change Streams partition queries opened concurrently by one source subtask |
 | `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; one canonical quoted or unquoted component in the configured schema, validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
-| `scan.partition.size` | *unset* | Desired partition size passed to Spanner as a hint |
+| `scan.partition.size-bytes` | *unset* | Desired partition size passed to Spanner as a hint |
 | `scan.data-boost-enabled` | `false` | Whether scans use Data Boost compute |
 | `scan.rpc-priority` | *unset ⇒ bounded Spanner default; Change Streams `HIGH`* | Priority of scan or Change Streams partition-query RPCs |
 | `scan.timestamp-bound.read-timestamp` | *unset* | RFC 3339 snapshot timestamp; mutually exclusive with exact staleness |
@@ -320,9 +320,9 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |
 | `sink.buffer-flush.max-commit-delay` | *unset* | Maps to `maxCommitDelay` |
 | `sink.rpc-priority` | *unset ⇒ Spanner treats it as `HIGH`* | Maps to `rpcPriority` |
-| `sink.retry.initial-backoff` | `500 ms` | Maps to `retryInitialBackoff` |
-| `sink.retry.max-backoff` | `10 s` | Maps to `retryMaxBackoff` |
-| `sink.retry.max-attempts` | `10` | Maps to `retryMaxAttempts` |
+| `sink.recovery.initial-backoff` | `500 ms` | Maps to `recoveryInitialBackoff` |
+| `sink.recovery.max-backoff` | `10 s` | Maps to `recoveryMaxBackoff` |
+| `sink.recovery.max-attempts` | `10` | Maps to `recoveryMaxAttempts` |
 | `sink.parallelism` | *unset ⇒ operator parallelism* | Flink's standard sink parallelism override |
 
 The sink options map directly onto the DataStream writer options; their validation limits are listed in the [Spanner reference]({{< relref "docs/reference/spanner" >}}#spannerwriteroptions).

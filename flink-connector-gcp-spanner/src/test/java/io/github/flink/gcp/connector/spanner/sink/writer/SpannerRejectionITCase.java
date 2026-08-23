@@ -23,7 +23,7 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import org.junit.jupiter.api.Test;
@@ -57,7 +57,7 @@ class SpannerRejectionITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void measuresWhatEachRejectionAnswersWith() throws Exception {
-        SpannerDatabase database = rejectionDatabase();
+        DatabaseDestination database = rejectionDatabase();
         client(database).write(List.of(row("seeded", "unique-a", 1L)));
 
         Refusal duplicateKey = refusalFor(database, insert("seeded", "unique-b", 1L));
@@ -181,7 +181,7 @@ class SpannerRejectionITCase extends AbstractSpannerEmulatorITCase {
 
     @Test
     void aRefusalNamesTheGroupItIsAboutRatherThanFailingTheRequest() throws Exception {
-        SpannerDatabase database = rejectionDatabase();
+        DatabaseDestination database = rejectionDatabase();
         client(database).write(List.of(row("seeded", "unique-a", 1L)));
 
         Refusal refusal = refusalFor(database, insert("seeded", "unique-c", 1L));
@@ -196,7 +196,7 @@ class SpannerRejectionITCase extends AbstractSpannerEmulatorITCase {
 
     // ---------------------------------------------------------------- helpers
 
-    private static SpannerDatabase rejectionDatabase() throws Exception {
+    private static DatabaseDestination rejectionDatabase() throws Exception {
         return createDatabase(
                 Dialect.GOOGLE_STANDARD_SQL,
                 "CREATE TABLE orders (id STRING(64) NOT NULL, uniq STRING(64),"
@@ -208,7 +208,7 @@ class SpannerRejectionITCase extends AbstractSpannerEmulatorITCase {
                         + " PRIMARY KEY (line_id)");
     }
 
-    private Refusal refusalFor(SpannerDatabase database, Mutation mutation) throws Exception {
+    private Refusal refusalFor(DatabaseDestination database, Mutation mutation) throws Exception {
         try (SpannerDatabaseAccess access =
                 new DefaultSpannerDatabaseAccessFactory(
                                 database,

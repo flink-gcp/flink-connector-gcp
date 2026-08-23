@@ -25,9 +25,9 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Spanner;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.SpannerDatabase;
 
 import javax.annotation.Nullable;
 
@@ -41,21 +41,21 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
     private static final long serialVersionUID = 1L;
     private static final Duration DEFAULT_ABSENT_RETENTION_FALLBACK = Duration.ofDays(7);
 
-    private final SpannerDatabase database;
+    private final DatabaseDestination database;
     private final String changeStreamName;
     private final Duration absentRetentionFallback;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
 
     public DefaultSpannerChangeStreamCoordinatorClientFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String changeStreamName,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
         this(database, changeStreamName, DEFAULT_ABSENT_RETENTION_FALLBACK, emulatorEndpoint, null);
     }
 
     public DefaultSpannerChangeStreamCoordinatorClientFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String changeStreamName,
             Duration absentRetentionFallback,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
@@ -63,7 +63,7 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
     }
 
     public DefaultSpannerChangeStreamCoordinatorClientFactory(
-            SpannerDatabase database,
+            DatabaseDestination database,
             String changeStreamName,
             Duration absentRetentionFallback,
             @Nullable EmulatorEndpoint emulatorEndpoint,
