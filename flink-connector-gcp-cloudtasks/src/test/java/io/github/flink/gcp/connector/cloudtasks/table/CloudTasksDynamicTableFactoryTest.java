@@ -268,26 +268,26 @@ class CloudTasksDynamicTableFactoryTest {
     @Test
     void mapsEveryWriterOptionWithoutReplacingUnspecifiedDefaults() {
         Map<String, String> options = minimalOptions();
-        options.put("sink.max-in-flight-tasks", "17");
+        options.put("sink.in-flight.max-tasks", "17");
         options.put("sink.channel-pool-size", "4");
-        options.put("sink.retry.initial-backoff", "200 ms");
-        options.put("sink.retry.max-backoff", "4 s");
-        options.put("sink.retry.max-attempts", "5");
-        options.put("sink.not-found-retry.initial-backoff", "600 ms");
-        options.put("sink.not-found-retry.max-backoff", "3 s");
-        options.put("sink.not-found-retry.max-attempts", "4");
+        options.put("sink.recovery.initial-backoff", "200 ms");
+        options.put("sink.recovery.max-backoff", "4 s");
+        options.put("sink.recovery.max-attempts", "5");
+        options.put("sink.recovery.not-found.initial-backoff", "600 ms");
+        options.put("sink.recovery.not-found.max-backoff", "3 s");
+        options.put("sink.recovery.not-found.max-attempts", "4");
         options.put("sink.metrics.per-destination", "true");
 
         CloudTasksWriterOptions mapped = runtimeSink(options).getConfig().getWriterOptions();
 
         assertThat(mapped.getMaxInFlightTasks()).isEqualTo(17);
         assertThat(mapped.getChannelPoolSize()).isEqualTo(4);
-        assertThat(mapped.getRetryInitialBackoff()).isEqualTo(Duration.ofMillis(200));
-        assertThat(mapped.getRetryMaxBackoff()).isEqualTo(Duration.ofSeconds(4));
-        assertThat(mapped.getRetryMaxAttempts()).isEqualTo(5);
-        assertThat(mapped.getNotFoundInitialBackoff()).isEqualTo(Duration.ofMillis(600));
-        assertThat(mapped.getNotFoundMaxBackoff()).isEqualTo(Duration.ofSeconds(3));
-        assertThat(mapped.getNotFoundMaxAttempts()).isEqualTo(4);
+        assertThat(mapped.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(200));
+        assertThat(mapped.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(4));
+        assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(5);
+        assertThat(mapped.getNotFoundRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(600));
+        assertThat(mapped.getNotFoundRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(3));
+        assertThat(mapped.getNotFoundRecoveryMaxAttempts()).isEqualTo(4);
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
     }
 
@@ -658,14 +658,39 @@ class CloudTasksDynamicTableFactoryTest {
                 .hasStackTraceContaining("http.multipart.boundary");
     }
 
-    @Test
-    void namesTheOptionKeyWhenAWriterValueIsRejected() {
+    @ParameterizedTest
+    @CsvSource({
+        "sink.in-flight.max-tasks, maxInFlightTasks must be positive",
+        "sink.recovery.max-attempts, recoveryMaxAttempts must be positive",
+        "sink.recovery.not-found.max-attempts, notFoundRecoveryMaxAttempts must be positive"
+    })
+    void namesTheOptionKeyWhenAWriterValueIsRejected(String key, String detail) {
         Map<String, String> options = minimalOptions();
-        options.put("sink.max-in-flight-tasks", "0");
+        options.put(key, "0");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("Option 'sink.max-in-flight-tasks' is invalid")
-                .hasStackTraceContaining("maxInFlightTasks must be positive");
+                .hasStackTraceContaining(String.format("Option '%s' is invalid", key))
+                .hasStackTraceContaining(detail);
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "sink.max-in-flight-tasks",
+                "sink.retry.initial-backoff",
+                "sink.retry.max-backoff",
+                "sink.retry.max-attempts",
+                "sink.not-found-retry.initial-backoff",
+                "sink.not-found-retry.max-backoff",
+                "sink.not-found-retry.max-attempts"
+            })
+    void rejectsLegacyWriterOptionKeys(String key) {
+        Map<String, String> options = minimalOptions();
+        options.put(key, "1");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(key);
     }
 }

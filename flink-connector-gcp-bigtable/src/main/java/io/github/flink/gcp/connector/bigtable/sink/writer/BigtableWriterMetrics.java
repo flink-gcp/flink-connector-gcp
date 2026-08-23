@@ -41,8 +41,8 @@ import javax.annotation.Nullable;
  * counted. Retrying is otherwise the client's — a mutation this writer hands to the batcher is
  * retried inside the SDK and comes back once — and the same fact bounds what {@link #applyFailure}
  * can report: only failures the client gave up on are visible here, so the sum over the transient
- * codes is <em>not</em> this connector's retry volume, which is the one place a dashboard reading
- * every connector of this repository alike would be misled.
+ * codes is <em>not</em> this connector's retry volume. The client's own retry attempts are not
+ * exposed by these counters.
  *
  * <p>Per-destination counters exist since the sink gained per-record tables (#232), behind {@code
  * BigtableWriterOptions.perDestinationMetrics} and off by default — {@link DestinationMetrics}

@@ -548,9 +548,9 @@ class CloudTasksWriterFailureHandlerTest {
         return TestSinkConfigs.builder()
                 .writerOptions(
                         CloudTasksWriterOptions.builder()
-                                .retryMaxAttempts(maxAttempts)
-                                .retryInitialBackoff(Duration.ofMillis(1))
-                                .retryMaxBackoff(Duration.ofMillis(1))
+                                .recoveryMaxAttempts(maxAttempts)
+                                .recoveryInitialBackoff(Duration.ofMillis(1))
+                                .recoveryMaxBackoff(Duration.ofMillis(1))
                                 .build());
     }
 
@@ -559,9 +559,9 @@ class CloudTasksWriterFailureHandlerTest {
         return TestSinkConfigs.builder()
                 .writerOptions(
                         CloudTasksWriterOptions.builder()
-                                .notFoundMaxAttempts(maxAttempts)
-                                .notFoundInitialBackoff(Duration.ofMillis(1))
-                                .notFoundMaxBackoff(Duration.ofMillis(1))
+                                .notFoundRecoveryMaxAttempts(maxAttempts)
+                                .notFoundRecoveryInitialBackoff(Duration.ofMillis(1))
+                                .notFoundRecoveryMaxBackoff(Duration.ofMillis(1))
                                 .build());
     }
 }

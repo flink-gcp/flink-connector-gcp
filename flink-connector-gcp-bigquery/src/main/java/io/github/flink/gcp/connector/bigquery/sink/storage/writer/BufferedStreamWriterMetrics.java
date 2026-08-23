@@ -130,8 +130,8 @@ final class BufferedStreamWriterMetrics {
 
     /**
      * Counts one failed append under the status code that classifies it — every failure the writer
-     * classifies, first attempts and re-appends alike, so the sum over the transient codes is the
-     * retry volume the {@code appendRetries} counter measures from the other side.
+     * classifies, first attempts and re-appends alike. No status-filtered sum is exact retry
+     * volume; {@code appendRetries} counts the connector-issued re-appends directly.
      *
      * @param code the status code, or {@code null} for a failure carrying none
      */

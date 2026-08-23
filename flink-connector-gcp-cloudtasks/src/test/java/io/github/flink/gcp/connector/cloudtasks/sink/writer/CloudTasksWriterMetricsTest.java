@@ -61,9 +61,9 @@ class CloudTasksWriterMetricsTest {
         return TestSinkConfigs.builder()
                 .writerOptions(
                         CloudTasksWriterOptions.builder()
-                                .retryMaxAttempts(maxAttempts)
-                                .retryInitialBackoff(Duration.ofMillis(1))
-                                .retryMaxBackoff(Duration.ofMillis(1))
+                                .recoveryMaxAttempts(maxAttempts)
+                                .recoveryInitialBackoff(Duration.ofMillis(1))
+                                .recoveryMaxBackoff(Duration.ofMillis(1))
                                 .build());
     }
 
@@ -156,9 +156,9 @@ class CloudTasksWriterMetricsTest {
     }
 
     @Test
-    void countsEveryRetryableAttemptUnderItsStatusCode() throws Exception {
-        // Deliberately every attempt, retryable ones included: the sum over the retryable codes is
-        // what a separate retries counter would have reported, which is why there is not one.
+    void countsEveryTransientFailureUnderItsStatusCode() throws Exception {
+        // Deliberately every failed attempt, including the first: this is an attempt-classification
+        // signal rather than an exact retries counter.
         CloudTasksWriter<String> writer = writer(retrying(3));
         creator.enqueueFailures(2, StatusCode.Code.DEADLINE_EXCEEDED);
 
@@ -167,6 +167,34 @@ class CloudTasksWriterMetricsTest {
 
         assertThat(errors("DEADLINE_EXCEEDED")).isEqualTo(2);
         assertThat(counter("numRecordsSend")).isEqualTo(1);
+    }
+
+    @Test
+    void countsAFirstTransientFailureWhenNoRetryFollows() throws Exception {
+        CloudTasksWriter<String> writer = writer(retrying(1));
+        creator.enqueueFailure(StatusCode.Code.UNAVAILABLE);
+
+        writer.write("first", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false)).isInstanceOf(IOException.class);
+        assertThat(creator.requests).hasSize(1);
+        assertThat(errors("UNAVAILABLE")).isEqualTo(1);
+    }
+
+    @Test
+    void classifiesANestedTransientRetryByItsOutermostStatus() throws Exception {
+        CloudTasksWriter<String> writer = writer(retrying(2));
+        creator.enqueueFailure(
+                FakeTaskCreator.apiException(
+                        StatusCode.Code.INTERNAL,
+                        FakeTaskCreator.apiException(StatusCode.Code.UNAVAILABLE)));
+
+        writer.write("first", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(creator.requests).hasSize(2);
+        assertThat(errors("INTERNAL")).isEqualTo(1);
+        assertThat(metrics.hasMetric("errorClass", "UNAVAILABLE", "errors")).isFalse();
     }
 
     @Test

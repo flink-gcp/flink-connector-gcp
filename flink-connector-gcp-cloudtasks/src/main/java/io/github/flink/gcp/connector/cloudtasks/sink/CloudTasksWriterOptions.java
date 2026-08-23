@@ -61,23 +61,23 @@ public final class CloudTasksWriterOptions implements Serializable {
 
     private final int maxInFlightTasks;
     @Nullable private final Integer channelPoolSize;
-    private final Duration retryInitialBackoff;
-    private final Duration retryMaxBackoff;
-    private final int retryMaxAttempts;
-    private final Duration notFoundInitialBackoff;
-    private final Duration notFoundMaxBackoff;
-    private final int notFoundMaxAttempts;
+    private final Duration recoveryInitialBackoff;
+    private final Duration recoveryMaxBackoff;
+    private final int recoveryMaxAttempts;
+    private final Duration notFoundRecoveryInitialBackoff;
+    private final Duration notFoundRecoveryMaxBackoff;
+    private final int notFoundRecoveryMaxAttempts;
     private final boolean perDestinationMetrics;
 
     private CloudTasksWriterOptions(Builder builder) {
         this.maxInFlightTasks = builder.maxInFlightTasks;
         this.channelPoolSize = builder.channelPoolSize;
-        this.retryInitialBackoff = builder.retryInitialBackoff;
-        this.retryMaxBackoff = builder.retryMaxBackoff;
-        this.retryMaxAttempts = builder.retryMaxAttempts;
-        this.notFoundInitialBackoff = builder.notFoundInitialBackoff;
-        this.notFoundMaxBackoff = builder.notFoundMaxBackoff;
-        this.notFoundMaxAttempts = builder.notFoundMaxAttempts;
+        this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
+        this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
+        this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.notFoundRecoveryInitialBackoff = builder.notFoundRecoveryInitialBackoff;
+        this.notFoundRecoveryMaxBackoff = builder.notFoundRecoveryMaxBackoff;
+        this.notFoundRecoveryMaxAttempts = builder.notFoundRecoveryMaxAttempts;
         this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
@@ -116,33 +116,33 @@ public final class CloudTasksWriterOptions implements Serializable {
     }
 
     /** Returns the first backoff of the transient-failure retry. */
-    public Duration getRetryInitialBackoff() {
-        return retryInitialBackoff;
+    public Duration getRecoveryInitialBackoff() {
+        return recoveryInitialBackoff;
     }
 
     /** Returns the backoff cap of the transient-failure retry. */
-    public Duration getRetryMaxBackoff() {
-        return retryMaxBackoff;
+    public Duration getRecoveryMaxBackoff() {
+        return recoveryMaxBackoff;
     }
 
     /** Returns the maximum attempts of the transient-failure retry. */
-    public int getRetryMaxAttempts() {
-        return retryMaxAttempts;
+    public int getRecoveryMaxAttempts() {
+        return recoveryMaxAttempts;
     }
 
     /** Returns the first backoff of the {@code NOT_FOUND} retry. */
-    public Duration getNotFoundInitialBackoff() {
-        return notFoundInitialBackoff;
+    public Duration getNotFoundRecoveryInitialBackoff() {
+        return notFoundRecoveryInitialBackoff;
     }
 
     /** Returns the backoff cap of the {@code NOT_FOUND} retry. */
-    public Duration getNotFoundMaxBackoff() {
-        return notFoundMaxBackoff;
+    public Duration getNotFoundRecoveryMaxBackoff() {
+        return notFoundRecoveryMaxBackoff;
     }
 
     /** Returns the maximum attempts of the {@code NOT_FOUND} retry. */
-    public int getNotFoundMaxAttempts() {
-        return notFoundMaxAttempts;
+    public int getNotFoundRecoveryMaxAttempts() {
+        return notFoundRecoveryMaxAttempts;
     }
 
     /** Returns whether the writer registers per-queue send counters. */
@@ -155,11 +155,11 @@ public final class CloudTasksWriterOptions implements Serializable {
      * RESOURCE_EXHAUSTED} creations.
      */
     @Internal
-    public RetrySchedule toRetrySchedule() {
+    public RetrySchedule toRecoverySchedule() {
         return new RetrySchedule(
-                retryInitialBackoff.toMillis(),
-                retryMaxBackoff.toMillis(),
-                retryMaxAttempts,
+                recoveryInitialBackoff.toMillis(),
+                recoveryMaxBackoff.toMillis(),
+                recoveryMaxAttempts,
                 RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
@@ -170,11 +170,11 @@ public final class CloudTasksWriterOptions implements Serializable {
      * budget nothing in expectation.
      */
     @Internal
-    public RetrySchedule toNotFoundRetrySchedule() {
+    public RetrySchedule toNotFoundRecoverySchedule() {
         return new RetrySchedule(
-                notFoundInitialBackoff.toMillis(),
-                notFoundMaxBackoff.toMillis(),
-                notFoundMaxAttempts,
+                notFoundRecoveryInitialBackoff.toMillis(),
+                notFoundRecoveryMaxBackoff.toMillis(),
+                notFoundRecoveryMaxAttempts,
                 RetrySchedule.DEFAULT_JITTER_RATIO);
     }
 
@@ -190,12 +190,12 @@ public final class CloudTasksWriterOptions implements Serializable {
         return maxInFlightTasks == that.maxInFlightTasks
                 && Objects.equals(channelPoolSize, that.channelPoolSize)
                 && perDestinationMetrics == that.perDestinationMetrics
-                && retryMaxAttempts == that.retryMaxAttempts
-                && notFoundMaxAttempts == that.notFoundMaxAttempts
-                && retryInitialBackoff.equals(that.retryInitialBackoff)
-                && retryMaxBackoff.equals(that.retryMaxBackoff)
-                && notFoundInitialBackoff.equals(that.notFoundInitialBackoff)
-                && notFoundMaxBackoff.equals(that.notFoundMaxBackoff);
+                && recoveryMaxAttempts == that.recoveryMaxAttempts
+                && notFoundRecoveryMaxAttempts == that.notFoundRecoveryMaxAttempts
+                && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
+                && notFoundRecoveryInitialBackoff.equals(that.notFoundRecoveryInitialBackoff)
+                && notFoundRecoveryMaxBackoff.equals(that.notFoundRecoveryMaxBackoff);
     }
 
     @Override
@@ -203,12 +203,12 @@ public final class CloudTasksWriterOptions implements Serializable {
         return Objects.hash(
                 maxInFlightTasks,
                 channelPoolSize,
-                retryInitialBackoff,
-                retryMaxBackoff,
-                retryMaxAttempts,
-                notFoundInitialBackoff,
-                notFoundMaxBackoff,
-                notFoundMaxAttempts,
+                recoveryInitialBackoff,
+                recoveryMaxBackoff,
+                recoveryMaxAttempts,
+                notFoundRecoveryInitialBackoff,
+                notFoundRecoveryMaxBackoff,
+                notFoundRecoveryMaxAttempts,
                 perDestinationMetrics);
     }
 
@@ -218,18 +218,18 @@ public final class CloudTasksWriterOptions implements Serializable {
                 + maxInFlightTasks
                 + ", channelPoolSize="
                 + channelPoolSize
-                + ", retryInitialBackoff="
-                + retryInitialBackoff
-                + ", retryMaxBackoff="
-                + retryMaxBackoff
-                + ", retryMaxAttempts="
-                + retryMaxAttempts
-                + ", notFoundInitialBackoff="
-                + notFoundInitialBackoff
-                + ", notFoundMaxBackoff="
-                + notFoundMaxBackoff
-                + ", notFoundMaxAttempts="
-                + notFoundMaxAttempts
+                + ", recoveryInitialBackoff="
+                + recoveryInitialBackoff
+                + ", recoveryMaxBackoff="
+                + recoveryMaxBackoff
+                + ", recoveryMaxAttempts="
+                + recoveryMaxAttempts
+                + ", notFoundRecoveryInitialBackoff="
+                + notFoundRecoveryInitialBackoff
+                + ", notFoundRecoveryMaxBackoff="
+                + notFoundRecoveryMaxBackoff
+                + ", notFoundRecoveryMaxAttempts="
+                + notFoundRecoveryMaxAttempts
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + "}";
@@ -241,13 +241,13 @@ public final class CloudTasksWriterOptions implements Serializable {
 
         private int maxInFlightTasks = 1000;
         @Nullable private Integer channelPoolSize;
-        private Duration retryInitialBackoff = Duration.ofMillis(100);
-        private Duration retryMaxBackoff = Duration.ofSeconds(10);
-        private int retryMaxAttempts = 8;
+        private Duration recoveryInitialBackoff = Duration.ofMillis(100);
+        private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
+        private int recoveryMaxAttempts = 8;
         private boolean perDestinationMetrics;
-        private Duration notFoundInitialBackoff = Duration.ofMillis(500);
-        private Duration notFoundMaxBackoff = Duration.ofSeconds(2);
-        private int notFoundMaxAttempts = 3;
+        private Duration notFoundRecoveryInitialBackoff = Duration.ofMillis(500);
+        private Duration notFoundRecoveryMaxBackoff = Duration.ofSeconds(2);
+        private int notFoundRecoveryMaxAttempts = 3;
 
         private Builder() {}
 
@@ -290,24 +290,25 @@ public final class CloudTasksWriterOptions implements Serializable {
          * Sets the first backoff of the transient-failure retry ({@code UNAVAILABLE}, {@code
          * DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED}). Defaults to 100 ms.
          *
-         * @param retryInitialBackoff the first backoff, at least 1 ms
+         * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
-        public Builder retryInitialBackoff(Duration retryInitialBackoff) {
-            this.retryInitialBackoff =
-                    OptionChecks.checkAtLeastOneMilli(retryInitialBackoff, "retryInitialBackoff");
+        public Builder recoveryInitialBackoff(Duration recoveryInitialBackoff) {
+            this.recoveryInitialBackoff =
+                    OptionChecks.checkAtLeastOneMilli(
+                            recoveryInitialBackoff, "recoveryInitialBackoff");
             return this;
         }
 
         /**
          * Caps the backoff of the transient-failure retry. Defaults to 10 s.
          *
-         * @param retryMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
+         * @param recoveryMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
          * @return this builder
          */
-        public Builder retryMaxBackoff(Duration retryMaxBackoff) {
-            this.retryMaxBackoff =
-                    OptionChecks.checkAtLeastOneMilli(retryMaxBackoff, "retryMaxBackoff");
+        public Builder recoveryMaxBackoff(Duration recoveryMaxBackoff) {
+            this.recoveryMaxBackoff =
+                    OptionChecks.checkAtLeastOneMilli(recoveryMaxBackoff, "recoveryMaxBackoff");
             return this;
         }
 
@@ -315,37 +316,40 @@ public final class CloudTasksWriterOptions implements Serializable {
          * Caps the attempts of the transient-failure retry, the initial creation included. Defaults
          * to 8; exhausting the budget fails the job.
          *
-         * @param retryMaxAttempts the maximum attempts, positive
+         * @param recoveryMaxAttempts the maximum attempts, positive
          * @return this builder
          */
-        public Builder retryMaxAttempts(int retryMaxAttempts) {
-            Preconditions.checkArgument(retryMaxAttempts > 0, "retryMaxAttempts must be positive");
-            this.retryMaxAttempts = retryMaxAttempts;
+        public Builder recoveryMaxAttempts(int recoveryMaxAttempts) {
+            Preconditions.checkArgument(
+                    recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
+            this.recoveryMaxAttempts = recoveryMaxAttempts;
             return this;
         }
 
         /**
          * Sets the first backoff of the {@code NOT_FOUND} retry. Defaults to 500 ms.
          *
-         * @param notFoundInitialBackoff the first backoff, at least 1 ms
+         * @param notFoundRecoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
          */
-        public Builder notFoundInitialBackoff(Duration notFoundInitialBackoff) {
-            this.notFoundInitialBackoff =
+        public Builder notFoundRecoveryInitialBackoff(Duration notFoundRecoveryInitialBackoff) {
+            this.notFoundRecoveryInitialBackoff =
                     OptionChecks.checkAtLeastOneMilli(
-                            notFoundInitialBackoff, "notFoundInitialBackoff");
+                            notFoundRecoveryInitialBackoff, "notFoundRecoveryInitialBackoff");
             return this;
         }
 
         /**
          * Caps the backoff of the {@code NOT_FOUND} retry. Defaults to 2 s.
          *
-         * @param notFoundMaxBackoff the backoff cap, at least 1 ms and at least the initial backoff
+         * @param notFoundRecoveryMaxBackoff the backoff cap, at least 1 ms and at least the initial
+         *     backoff
          * @return this builder
          */
-        public Builder notFoundMaxBackoff(Duration notFoundMaxBackoff) {
-            this.notFoundMaxBackoff =
-                    OptionChecks.checkAtLeastOneMilli(notFoundMaxBackoff, "notFoundMaxBackoff");
+        public Builder notFoundRecoveryMaxBackoff(Duration notFoundRecoveryMaxBackoff) {
+            this.notFoundRecoveryMaxBackoff =
+                    OptionChecks.checkAtLeastOneMilli(
+                            notFoundRecoveryMaxBackoff, "notFoundRecoveryMaxBackoff");
             return this;
         }
 
@@ -356,13 +360,14 @@ public final class CloudTasksWriterOptions implements Serializable {
          * this budget on purpose — recovering from that is the job's restart strategy, not the
          * writer's.
          *
-         * @param notFoundMaxAttempts the maximum attempts, positive
+         * @param notFoundRecoveryMaxAttempts the maximum attempts, positive
          * @return this builder
          */
-        public Builder notFoundMaxAttempts(int notFoundMaxAttempts) {
+        public Builder notFoundRecoveryMaxAttempts(int notFoundRecoveryMaxAttempts) {
             Preconditions.checkArgument(
-                    notFoundMaxAttempts > 0, "notFoundMaxAttempts must be positive");
-            this.notFoundMaxAttempts = notFoundMaxAttempts;
+                    notFoundRecoveryMaxAttempts > 0,
+                    "notFoundRecoveryMaxAttempts must be positive");
+            this.notFoundRecoveryMaxAttempts = notFoundRecoveryMaxAttempts;
             return this;
         }
 
@@ -390,11 +395,11 @@ public final class CloudTasksWriterOptions implements Serializable {
          */
         public CloudTasksWriterOptions build() {
             Preconditions.checkState(
-                    retryMaxBackoff.compareTo(retryInitialBackoff) >= 0,
-                    "retryMaxBackoff must be at least retryInitialBackoff.");
+                    recoveryMaxBackoff.compareTo(recoveryInitialBackoff) >= 0,
+                    "recoveryMaxBackoff must be at least recoveryInitialBackoff.");
             Preconditions.checkState(
-                    notFoundMaxBackoff.compareTo(notFoundInitialBackoff) >= 0,
-                    "notFoundMaxBackoff must be at least notFoundInitialBackoff.");
+                    notFoundRecoveryMaxBackoff.compareTo(notFoundRecoveryInitialBackoff) >= 0,
+                    "notFoundRecoveryMaxBackoff must be at least notFoundRecoveryInitialBackoff.");
             return new CloudTasksWriterOptions(this);
         }
     }

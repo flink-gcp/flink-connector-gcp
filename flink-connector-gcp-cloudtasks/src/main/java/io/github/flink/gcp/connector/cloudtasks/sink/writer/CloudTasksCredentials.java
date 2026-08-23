@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
@@ -29,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 /** Loads credentials for Cloud Tasks clients. */
+@Internal
 final class CloudTasksCredentials {
 
     private CloudTasksCredentials() {}

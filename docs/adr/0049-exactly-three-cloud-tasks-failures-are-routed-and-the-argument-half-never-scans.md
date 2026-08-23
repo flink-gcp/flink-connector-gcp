@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0049: Exactly three Cloud Tasks failures are routed, and the `INVALID_ARGUMENT` half never scans
 
 - Status: Accepted
-- Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209])
-- Issues: [#207], [#209] (the [#37] series)
+- Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209]); revised by [#1051]
+  (2026-08-23)
+- Issues: [#207], [#209], [#1051] (the [#37] series)
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md` § Failed-task
   policy, § Metrics
@@ -64,9 +65,11 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
   [#242](https://github.com/laughingman7743/flink-connector-gcp/pull/242)'s second review round
   — was wrong for the mirror reason: a `TaskCreator` throwing synchronously registers no
   callback, so that record reached Cloud Tasks not at all.
-- **Error classes count every attempt, retryable ones included** — the deliberate asymmetry with
-  `numRecordsSend`: the sum over the transient codes *is* the retry volume, which is why a
-  separate retries counter was declined.
+- **Error classes count every failed attempt, retryable ones included** — the deliberate asymmetry
+  with `numRecordsSend`. They are not an exact retry counter: first failures count, and the metric
+  uses the outermost status while retry routing scans the whole exception chain, so a retry
+  selected by a nested transient status appears under the outer status instead. No separate exact
+  retries counter is registered.
 - **`ALREADY_EXISTS` on a named task is `tasksDeduplicated`, not an error** — the success naming
   exists to produce; `metrics.createFailure(code)` sits *after* that branch's early return for
   exactly that reason.
@@ -78,3 +81,4 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
 [#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
 [#207]: https://github.com/laughingman7743/flink-connector-gcp/issues/207
 [#209]: https://github.com/laughingman7743/flink-connector-gcp/issues/209
+[#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051

@@ -33,9 +33,9 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.AppEngineTargetSpec;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksDynamicSink;
-import io.github.flink.gcp.connector.cloudtasks.table.sink.CloudTasksWriterOptionsMapper;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.HttpTargetSpec;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.TargetSpec;
+import io.github.flink.gcp.connector.cloudtasks.table.sink.WriterOptionsMapper;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -84,14 +84,14 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         CloudTasksConnectorOptions.APP_ENGINE_INSTANCE,
                         CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         CloudTasksConnectorOptions.EMULATOR_ENDPOINT,
-                        CloudTasksConnectorOptions.SINK_MAX_IN_FLIGHT_TASKS,
+                        CloudTasksConnectorOptions.SINK_IN_FLIGHT_MAX_TASKS,
                         CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE,
-                        CloudTasksConnectorOptions.SINK_RETRY_INITIAL_BACKOFF,
-                        CloudTasksConnectorOptions.SINK_RETRY_MAX_BACKOFF,
-                        CloudTasksConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
-                        CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_INITIAL_BACKOFF,
-                        CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_BACKOFF,
-                        CloudTasksConnectorOptions.SINK_NOT_FOUND_RETRY_MAX_ATTEMPTS,
+                        CloudTasksConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
+                        CloudTasksConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
+                        CloudTasksConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                        CloudTasksConnectorOptions.SINK_RECOVERY_NOT_FOUND_INITIAL_BACKOFF,
+                        CloudTasksConnectorOptions.SINK_RECOVERY_NOT_FOUND_MAX_BACKOFF,
+                        CloudTasksConnectorOptions.SINK_RECOVERY_NOT_FOUND_MAX_ATTEMPTS,
                         CloudTasksConnectorOptions.SINK_METRICS_PER_DESTINATION,
                         FactoryUtil.SINK_PARALLELISM));
     }
@@ -132,7 +132,7 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         config.get(CloudTasksConnectorOptions.QUEUE)),
                 target,
                 hasNotNullAddressMetadata(context, targetType),
-                CloudTasksWriterOptionsMapper.map(config),
+                WriterOptionsMapper.map(config),
                 config.getOptional(CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                         .orElse(null),
                 config.getOptional(CloudTasksConnectorOptions.EMULATOR_ENDPOINT).orElse(null),

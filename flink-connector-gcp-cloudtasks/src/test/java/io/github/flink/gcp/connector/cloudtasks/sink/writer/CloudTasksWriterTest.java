@@ -196,9 +196,10 @@ class CloudTasksWriterTest {
                         TestSinkConfigs.builder()
                                 .writerOptions(
                                         CloudTasksWriterOptions.builder()
-                                                .retryMaxAttempts(20)
-                                                .notFoundMaxAttempts(2)
-                                                .notFoundInitialBackoff(Duration.ofMillis(500))
+                                                .recoveryMaxAttempts(20)
+                                                .notFoundRecoveryMaxAttempts(2)
+                                                .notFoundRecoveryInitialBackoff(
+                                                        Duration.ofMillis(500))
                                                 .build()));
         creator.enqueueFailures(2, StatusCode.Code.NOT_FOUND);
 
@@ -366,9 +367,9 @@ class CloudTasksWriterTest {
         return TestSinkConfigs.builder()
                 .writerOptions(
                         CloudTasksWriterOptions.builder()
-                                .retryMaxAttempts(maxAttempts)
-                                .retryInitialBackoff(backoff)
-                                .retryMaxBackoff(backoff)
+                                .recoveryMaxAttempts(maxAttempts)
+                                .recoveryInitialBackoff(backoff)
+                                .recoveryMaxBackoff(backoff)
                                 .build());
     }
 
@@ -378,7 +379,7 @@ class CloudTasksWriterTest {
                 .writerOptions(
                         CloudTasksWriterOptions.builder()
                                 .maxInFlightTasks(maxInFlightTasks)
-                                .retryInitialBackoff(Duration.ofMillis(100))
+                                .recoveryInitialBackoff(Duration.ofMillis(100))
                                 .build());
     }
 

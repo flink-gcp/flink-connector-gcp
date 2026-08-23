@@ -89,12 +89,12 @@ is under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning)
 |---|---|---|
 | `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap `write()` yields to the task mailbox |
 | `channelPoolSize` | *unset ⇒ the client's single channel* | Sizes the client's gRPC channel pool, which bounds how much of the in-flight cap the transport actually carries; the sizing rule and ramp caution are under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning). Rejected beside `emulatorEndpoint` |
-| `retryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
-| `retryMaxBackoff` | 10 s | Cap that backoff doubles up to, before ±25% jitter |
-| `retryMaxAttempts` | 8 | Total attempts, the first create included. Exhausting the budget fails the job |
-| `notFoundInitialBackoff` | 500 ms | First backoff of the separate `NOT_FOUND` budget |
-| `notFoundMaxBackoff` | 2 s | Cap of that backoff, before jitter |
-| `notFoundMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose, so a mistyped queue name fails quickly |
+| `recoveryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` |
+| `recoveryMaxBackoff` | 10 s | Cap that backoff doubles up to, before ±25% jitter |
+| `recoveryMaxAttempts` | 8 | Total attempts, the first create included. Exhausting the budget fails the job |
+| `notFoundRecoveryInitialBackoff` | 500 ms | First backoff of the separate `NOT_FOUND` budget |
+| `notFoundRecoveryMaxBackoff` | 2 s | Cap of that backoff, before jitter |
+| `notFoundRecoveryMaxAttempts` | 3 | `NOT_FOUND` attempts. Short on purpose, so a mistyped queue name fails quickly |
 | `perDestinationMetrics` | `false` | Registers per-queue `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with a per-record `destinationResolver` every queue the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/cloudtasks" >}}#metrics) |
 
 `NOT_FOUND` has its own short budget because a queue idle for 30 days takes a few minutes to

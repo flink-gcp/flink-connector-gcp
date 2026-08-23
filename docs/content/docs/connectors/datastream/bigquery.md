@@ -2260,11 +2260,12 @@ makes the number comparable across them. The consequence: `numBytesSend` on the 
 API paths is payload volume, not wire volume.
 
 **`errorClass` counts every failed append**, first attempts and re-appends alike — the deliberate
-asymmetry with `numRecordsSend`, and the reason there is no separate "retry attempts by status"
-metric: the sum over the transient codes *is* the retry volume, and `appendRetries` measures the
-same thing from the other side without the status breakdown. Two exclusions on the buffered-stream
-path: an `OFFSET_ALREADY_EXISTS` outside a replay is a *success* (the original append landed), and
-the appends stranded behind a rejected offset are not counted either — they fail because of that
+asymmetry with `numRecordsSend`. It is a failure classification, not retry volume: first and
+terminal failures count, and a repair for a missing table, schema mismatch or surviving rows can
+re-append under a non-transient status. `appendRetries` is the exact number of connector-issued
+re-appends, without a status breakdown. Two exclusions on the buffered-stream path: an
+`OFFSET_ALREADY_EXISTS` outside a replay is a *success* (the original append landed), and the
+appends stranded behind a rejected offset are not counted either — they fail because of that
 rejection, which is itself counted, and counting them would multiply one incident by the depth of
 the pipeline. A terminal failure that fails the job is counted once, under its own status, before
 the exception is thrown.

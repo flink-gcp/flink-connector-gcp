@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0034: BigQuery sink metrics are three writer classes and one committer counter
 
 - Status: Accepted
-- Date: 2026-08-03; copy hierarchy wording revised by [#598] (2026-08-13)
-- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77], [#598]
+- Date: 2026-08-03; copy hierarchy wording revised by [#598] (2026-08-13); retry-volume
+  wording corrected by [#1051] (2026-08-23)
+- Issues: [#210] (the [#37] series' last metrics sub-issue), [#76], [#77], [#598], [#1051]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Metrics, § Committer
   metrics
@@ -45,9 +46,12 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
 - **`errorClass.CODE.errors` counts every failed append the task thread classifies**, not just
   the first of a repair episode (widened with the user, 2026-08-03): `collectFailedSiblings`,
   the `retryBatches` failure branch, and the buffered path's drain/resend/replay/probe sites
-  count too, which makes the sum over the transient codes the retry volume — the same claim the
-  Cloud Tasks page makes, so one dashboard reads both. **Nothing is ever counted from a gRPC
-  callback thread** (the counters are plain), which is why the one failure a callback owns
+  count too. `appendRetries` counts connector-issued re-appends directly; no status-filtered error
+  sum is its substitute because the error classes also include first and terminal failures, and a
+  repair can start from a non-transient status. Cloud Tasks also reports failed attempts rather
+  than exact retry volume: first failures count, and its metric classifies the outer status while
+  retry routing scans the whole exception chain. **Nothing is ever counted from a gRPC callback
+  thread** (the counters are plain), which is why the one failure a callback owns
   outright — a terminal one, removed from `inFlight` by `park()` — is counted in
   `checkAsyncError()` instead, behind an `asyncErrorCounted` flag. Two failures are deliberately
   **uncounted**: `OFFSET_ALREADY_EXISTS` outside a replay is a success, and the appends stranded
@@ -85,3 +89,4 @@ FILE_LOADS makes no per-record request and therefore has no error-class dimensio
 [#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
 [#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77
 [#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598
+[#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
