@@ -227,7 +227,7 @@ class BigQueryDynamicTableFactoryTest {
     void usesAnIndependentParentProjectForStorageReadBilling() {
         Map<String, String> options = minimalOptions();
         options.put("project", "table-owner");
-        options.put("source.parent-project", "billing-project");
+        options.put("scan.parent-project", "billing-project");
 
         BigQuerySourceConfig<?> config = sourceConfig(options);
 
@@ -242,8 +242,8 @@ class BigQueryDynamicTableFactoryTest {
         options.remove("project");
         options.remove("dataset");
         options.remove("table");
-        options.put("source.query", "SELECT 1");
-        options.put("source.parent-project", "billing-project");
+        options.put("scan.query", "SELECT 1");
+        options.put("scan.parent-project", "billing-project");
 
         BigQuerySourceConfig<?> config = sourceConfig(options);
 
@@ -256,15 +256,15 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.remove("dataset");
         options.remove("table");
-        options.put("source.query", "SELECT id, amount FROM `p.d.t`");
-        options.put("source.query-location", "US");
-        options.put("source.query-result-dataset", "scratch");
-        options.put("source.reuse-query-result-within", "10 min");
-        options.put("source.row-restriction", "amount > 0");
-        options.put("source.max-stream-count", "7");
-        options.put("source.preferred-min-stream-count", "3");
-        options.put("source.max-records-per-fetch", "200");
-        options.put("source.retry-max-attempts", "9");
+        options.put("scan.query", "SELECT id, amount FROM `p.d.t`");
+        options.put("scan.query-location", "US");
+        options.put("scan.query-result-dataset", "scratch");
+        options.put("scan.reuse-query-result-within", "10 min");
+        options.put("scan.row-restriction", "amount > 0");
+        options.put("scan.max-stream-count", "7");
+        options.put("scan.preferred-min-stream-count", "3");
+        options.put("scan.max-records-per-fetch", "200");
+        options.put("scan.retry.max-attempts", "9");
 
         BigQuerySourceConfig<?> config = sourceConfig(options);
 
@@ -285,20 +285,20 @@ class BigQueryDynamicTableFactoryTest {
     @Test
     void mapsViewAndSnapshotSourceOptions() {
         Map<String, String> options = minimalOptions();
-        options.put("source.materialize-views", "true");
-        options.put("source.query-location", "asia-northeast1");
-        options.put("source.snapshot-time", "2026-08-01T00:00:00Z");
+        options.put("scan.materialize-views", "true");
+        options.put("scan.query-location", "asia-northeast1");
+        options.put("scan.snapshot-time", "2026-08-01T00:00:00Z");
 
         // snapshotTime and materializeViews are deliberately incompatible in the DataStream
         // builder, so pin each mapping independently.
         Map<String, String> view = new HashMap<>(options);
-        view.remove("source.snapshot-time");
+        view.remove("scan.snapshot-time");
         BigQuerySourceConfig<?> viewConfig = sourceConfig(view);
         assertThat(viewConfig.isMaterializeViewsEnabled()).isTrue();
         assertThat(viewConfig.getQueryLocation()).isEqualTo("asia-northeast1");
 
-        options.remove("source.materialize-views");
-        options.remove("source.query-location");
+        options.remove("scan.materialize-views");
+        options.remove("scan.query-location");
         assertThat(sourceConfig(options).getSnapshotTime()).hasToString("2026-08-01T00:00:00Z");
     }
 
@@ -313,9 +313,9 @@ class BigQueryDynamicTableFactoryTest {
     @Test
     void queryAndViewSourcesCarryTheRestEmulatorEndpoint() {
         Map<String, String> query = minimalOptions();
-        query.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        query.put("scan.query", "SELECT id, amount FROM `p.d.t`");
         Map<String, String> view = minimalOptions();
-        view.put("source.materialize-views", "true");
+        view.put("scan.materialize-views", "true");
 
         for (Map<String, String> options : Arrays.asList(query, view)) {
             options.put("emulator-endpoint", "localhost:9060");
@@ -351,9 +351,9 @@ class BigQueryDynamicTableFactoryTest {
         String missing = tempDir.resolve("missing-table-source-key.json").toString();
         Map<String, String> table = minimalOptions();
         Map<String, String> query = minimalOptions();
-        query.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        query.put("scan.query", "SELECT id, amount FROM `p.d.t`");
         Map<String, String> view = minimalOptions();
-        view.put("source.materialize-views", "true");
+        view.put("scan.materialize-views", "true");
 
         for (Map<String, String> options : Arrays.asList(table, query, view)) {
             options.put("service-account-key-file", missing);
@@ -399,13 +399,13 @@ class BigQueryDynamicTableFactoryTest {
     @Test
     void sourceCopyPreservesProjectionAndEveryOptionalFamily() {
         Map<String, String> table = minimalOptions();
-        table.put("source.row-restriction", "amount > 0");
-        table.put("source.parent-project", "billing-project");
-        table.put("source.snapshot-time", "2026-08-01T00:00:00Z");
-        table.put("source.max-stream-count", "7");
-        table.put("source.preferred-min-stream-count", "3");
-        table.put("source.max-records-per-fetch", "200");
-        table.put("source.retry-max-attempts", "9");
+        table.put("scan.row-restriction", "amount > 0");
+        table.put("scan.parent-project", "billing-project");
+        table.put("scan.snapshot-time", "2026-08-01T00:00:00Z");
+        table.put("scan.max-stream-count", "7");
+        table.put("scan.preferred-min-stream-count", "3");
+        table.put("scan.max-records-per-fetch", "200");
+        table.put("scan.retry.max-attempts", "9");
         table.put("emulator-endpoint", "localhost:9060");
         table.put("scan.parallelism", "4");
         BigQueryDynamicSource tableSource = (BigQueryDynamicSource) source(table);
@@ -414,17 +414,17 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(tableSource.copy()).isNotSameAs(tableSource).isEqualTo(tableSource);
 
         Map<String, String> query = minimalOptions();
-        query.put("source.query", "SELECT id, amount FROM `p.d.t`");
-        query.put("source.query-location", "US");
-        query.put("source.query-result-dataset", "scratch");
-        query.put("source.reuse-query-result-within", "10 min");
+        query.put("scan.query", "SELECT id, amount FROM `p.d.t`");
+        query.put("scan.query-location", "US");
+        query.put("scan.query-result-dataset", "scratch");
+        query.put("scan.reuse-query-result-within", "10 min");
         query.put("emulator-endpoint", "localhost:9060");
         query.put("emulator-rest-endpoint", "localhost:9050");
         BigQueryDynamicSource querySource = (BigQueryDynamicSource) source(query);
         assertThat(querySource.copy()).isNotSameAs(querySource).isEqualTo(querySource);
 
         Map<String, String> view = minimalOptions();
-        view.put("source.materialize-views", "true");
+        view.put("scan.materialize-views", "true");
         view.put("emulator-endpoint", "localhost:9060");
         view.put("emulator-rest-endpoint", "localhost:9050");
         BigQueryDynamicSource viewSource = (BigQueryDynamicSource) source(view);
@@ -453,30 +453,30 @@ class BigQueryDynamicTableFactoryTest {
         missingProject.remove("project");
         missingProject.remove("dataset");
         missingProject.remove("table");
-        missingProject.put("source.query", "SELECT 1");
+        missingProject.put("scan.query", "SELECT 1");
         assertThatThrownBy(() -> source(missingProject))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("option 'project' or 'source.parent-project'");
+                .hasStackTraceContaining("option 'project' or 'scan.parent-project'");
 
         Map<String, String> blankQuery = minimalOptions();
-        blankQuery.put("source.query", "  ");
+        blankQuery.put("scan.query", "  ");
         assertThatThrownBy(() -> source(blankQuery))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("source.query")
+                .hasStackTraceContaining("scan.query")
                 .hasStackTraceContaining("must not be blank");
 
         Map<String, String> queryAndView = minimalOptions();
-        queryAndView.put("source.query", "SELECT 1");
-        queryAndView.put("source.materialize-views", "true");
+        queryAndView.put("scan.query", "SELECT 1");
+        queryAndView.put("scan.materialize-views", "true");
         assertThatThrownBy(() -> source(queryAndView))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("cannot be combined");
 
         Map<String, String> malformedSnapshot = minimalOptions();
-        malformedSnapshot.put("source.snapshot-time", "yesterday");
+        malformedSnapshot.put("scan.snapshot-time", "yesterday");
         assertThatThrownBy(() -> source(malformedSnapshot))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("source.snapshot-time")
+                .hasStackTraceContaining("scan.snapshot-time")
                 .hasStackTraceContaining("ISO-8601 instant");
     }
 
@@ -548,6 +548,35 @@ class BigQueryDynamicTableFactoryTest {
                     .as("former key '%s'", key)
                     .isInstanceOf(ValidationException.class)
                     .hasStackTraceContaining(key);
+        }
+    }
+
+    @Test
+    void rejectsTheRemovedSourceOptionKeys() {
+        String[][] removedOptions = {
+            {"source.parent-project", "billing-project"},
+            {"source.query", "SELECT id, amount FROM orders"},
+            {"source.materialize-views", "true"},
+            {"source.query-location", "US"},
+            {"source.query-result-dataset", "query_results"},
+            {"source.reuse-query-result-within", "1 min"},
+            {"source.row-restriction", "amount > 0"},
+            {"source.snapshot-time", "2026-01-01T00:00:00Z"},
+            {"source.max-stream-count", "4"},
+            {"source.preferred-min-stream-count", "2"},
+            {"source.max-records-per-fetch", "100"},
+            {"source.retry-max-attempts", "3"}
+        };
+
+        for (String[] removedOption : removedOptions) {
+            Map<String, String> options = minimalOptions();
+            options.put(removedOption[0], removedOption[1]);
+
+            assertThatThrownBy(() -> source(options))
+                    .as("removed option '%s'", removedOption[0])
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("Unsupported options")
+                    .hasStackTraceContaining(removedOption[0]);
         }
     }
 
@@ -1110,7 +1139,7 @@ class BigQueryDynamicTableFactoryTest {
                         .hasMessage(message);
 
                 Map<String, String> querySource = minimalOptions();
-                querySource.put("source.query", "SELECT id, amount FROM `p.d.t`");
+                querySource.put("scan.query", "SELECT id, amount FROM `p.d.t`");
                 querySource.put(key, malformed);
                 assertThatThrownBy(() -> source(querySource))
                         .as("query source, '%s' = '%s'", key, malformed)
@@ -1162,8 +1191,8 @@ class BigQueryDynamicTableFactoryTest {
                 .hasMessageNotContaining("must be host:port");
 
         Map<String, String> queriedView = minimalOptions();
-        queriedView.put("source.query", "SELECT id, amount FROM `p.d.t`");
-        queriedView.put("source.materialize-views", "true");
+        queriedView.put("scan.query", "SELECT id, amount FROM `p.d.t`");
+        queriedView.put("scan.materialize-views", "true");
         queriedView.put("emulator-endpoint", "localhost");
         assertThatThrownBy(() -> source(queriedView))
                 .as("a query beside view materialization")
@@ -1184,7 +1213,7 @@ class BigQueryDynamicTableFactoryTest {
 
         Map<String, String> queryWithoutProject = minimalOptions();
         queryWithoutProject.remove("project");
-        queryWithoutProject.put("source.query", "SELECT id, amount FROM `p.d.t`");
+        queryWithoutProject.put("scan.query", "SELECT id, amount FROM `p.d.t`");
         queryWithoutProject.put("emulator-endpoint", "localhost");
         assertThatThrownBy(() -> source(queryWithoutProject))
                 .as("a query source with no billing project")
@@ -1264,11 +1293,11 @@ class BigQueryDynamicTableFactoryTest {
         // The source has no mapper: the factory hands raw values to the dynamic source, whose
         // builder setters run at getScanRuntimeProvider — the rename must reach that path too.
         Map<String, String> options = minimalOptions();
-        options.put("source.max-records-per-fetch", "0");
+        options.put("scan.max-records-per-fetch", "0");
 
         assertThatThrownBy(() -> builtSource(source(options)))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Option 'source.max-records-per-fetch' is invalid")
+                .hasMessageContaining("Option 'scan.max-records-per-fetch' is invalid")
                 .hasMessageContaining("maxRecordsPerFetch must be positive");
     }
 
@@ -1288,7 +1317,7 @@ class BigQueryDynamicTableFactoryTest {
      * the factory at the point that knows which key supplied it, not at the setter seam. Both arms
      * are driven because the fallback is the one the seam could never attribute: a caller who wrote
      * only {@code project} must be answered about {@code project}, not about the {@code
-     * source.parent-project} their DDL does not contain — which is exactly why the fallback ran.
+     * scan.parent-project} their DDL does not contain — which is exactly why the fallback ran.
      *
      * <p>Fires at the factory rather than at {@code getScanRuntimeProvider}, so {@code source} is
      * enough; the builder's own check remains behind it for the DataStream API.
@@ -1296,16 +1325,16 @@ class BigQueryDynamicTableFactoryTest {
     @Test
     void namesTheSupplyingOptionKeyWhenTheBillingProjectIsRejected() {
         Map<String, String> parent = minimalOptions();
-        parent.put("source.query", "SELECT 1");
-        parent.put("source.parent-project", "a/b");
+        parent.put("scan.query", "SELECT 1");
+        parent.put("scan.parent-project", "a/b");
         assertThatThrownBy(() -> source(parent))
-                .as("source.parent-project supplied it")
+                .as("scan.parent-project supplied it")
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("Option 'source.parent-project' is invalid")
+                .hasStackTraceContaining("Option 'scan.parent-project' is invalid")
                 .hasStackTraceContaining("parentProject must not contain '/': 'a/b'");
 
         Map<String, String> fallback = minimalOptions();
-        fallback.put("source.query", "SELECT 1");
+        fallback.put("scan.query", "SELECT 1");
         fallback.put("project", "a/b");
         assertThatThrownBy(() -> source(fallback))
                 .as("project supplied it, as the fallback")

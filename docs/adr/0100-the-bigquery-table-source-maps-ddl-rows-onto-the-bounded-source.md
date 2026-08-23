@@ -17,9 +17,11 @@ limitations under the License.
 # ADR-0100: The BigQuery table source maps DDL rows onto the bounded source
 
 - Status: Accepted
-- Date: 2026-08-12
+- Date: 2026-08-12; BigQuery read-side option keys migrated by
+  [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047) (2026-08-23)
 - Issues: [#542](https://github.com/laughingman7743/flink-connector-gcp/issues/542),
-  [#566](https://github.com/laughingman7743/flink-connector-gcp/issues/566)
+  [#566](https://github.com/laughingman7743/flink-connector-gcp/issues/566),
+  [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -37,10 +39,10 @@ without introducing a second implementation.
 **The existing `bigquery` factory serves both `DynamicTableSinkFactory` and
 `DynamicTableSourceFactory`.**
 A sink or direct table source requires `project`, `dataset`, and `table`.
-A source carrying `source.query` requires either `project` or `source.parent-project` as its billing
+A source carrying `scan.query` requires either `project` or `scan.parent-project` as its billing
 project and ignores no missing destination part because the query result determines the table that
 is read.
-`source.query` and `source.materialize-views` are mutually exclusive.
+`scan.query` and `scan.materialize-views` are mutually exclusive.
 
 **The table source is a bounded scan mapped directly onto `BigQuerySource.builder()`.**
 Every source runtime option maps onto the existing builder, including query placement and reuse,
@@ -89,7 +91,7 @@ The source rejects both Flink interval families when the job graph is built and 
 measured record if a DDL attempts to expose its components as a `ROW`.
 
 **SQL filters are not translated.**
-The connector exposes `source.row-restriction` as the existing BigQuery expression surface and
+The connector exposes `scan.row-restriction` as the existing BigQuery expression surface and
 does not implement `SupportsFilterPushDown` until a translation can preserve Flink SQL semantics.
 
 ## Evidence

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0139: An option description never restates a default
 
 - Status: Accepted
-- Date: 2026-08-23
-- Issues: [#1045] (carried from [#866] via the [#782] cross-module review)
+- Date: 2026-08-23; BigQuery key examples refreshed by [#1047] (2026-08-23)
+- Issues: [#1045] (carried from [#866] via the [#782] cross-module review), [#1047]
 - Modules: all connectors
 - Current behavior: a mapped option's default lives in the connector's
   `docs/content/docs/reference/<connector>.md` table; a table-owned option's default lives in its
@@ -87,9 +87,9 @@ candidate sites; the full sweep of the four unguarded modules found **26**:
   — zero documentation additions were needed. Each deletion removed a live second copy, not
   information.
 - The change's own review round found two more restatements of the same derived default from the
-  *supplying* side — `project`'s and `source.query`'s descriptions each said the billing project
-  falls back "unless source.parent-project overrides it", the fact just deleted from
-  `source.parent-project` itself — in a form no phrase covers. Both deleted; the word "unless"
+  *supplying* side — `project`'s and `scan.query`'s descriptions each said the billing project
+  falls back "unless scan.parent-project overrides it", the fact just deleted from
+  `scan.parent-project` itself — in a form no phrase covers. Both deleted; the word "unless"
   was not added as a phrase because the constraint class the rule exempts legitimately uses it.
 - Pub/Sub, the one module the guard already held, contained none of the twelve phrases before
   this change. Its two "Without it …" sentences (`sink.auto-create.message-retention`,
@@ -124,3 +124,4 @@ modules, and to all five guards at once.
 [#838]: https://github.com/flink-gcp/flink-connector-gcp/issues/838
 [#866]: https://github.com/flink-gcp/flink-connector-gcp/issues/866
 [#1045]: https://github.com/flink-gcp/flink-connector-gcp/issues/1045
+[#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047

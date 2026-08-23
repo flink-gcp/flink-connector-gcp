@@ -39,7 +39,7 @@ import java.util.List;
  *
  * <ol>
  *   <li><b>The DataStream APIs are the source of truth.</b> Runtime options map onto those
- *       builders; destination parts are assembled together, and {@code source.parent-project}
+ *       builders; destination parts are assembled together, and {@code scan.parent-project}
  *       overrides the {@code project} fallback passed to {@code
  *       BigQuerySourceBuilder.parentProject(...)}.
  *   <li><b>Every option is declared without a Flink default.</b> Direction-specific requirements
@@ -120,91 +120,91 @@ public final class BigQueryConnectorOptions {
                                     + " or Cloud Storage client.");
 
     // ------------------------------------------------------------------------
-    //  Source
+    //  Scan
     // ------------------------------------------------------------------------
 
-    public static final ConfigOption<String> SOURCE_PARENT_PROJECT =
-            ConfigOptions.key("source.parent-project")
+    public static final ConfigOption<String> SCAN_PARENT_PROJECT =
+            ConfigOptions.key("scan.parent-project")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
                             "The project that owns and is billed for the Storage Read session;"
                                     + " set it when reading a table owned by another project.");
 
-    public static final ConfigOption<String> SOURCE_QUERY =
-            ConfigOptions.key("source.query")
+    public static final ConfigOption<String> SCAN_QUERY =
+            ConfigOptions.key("scan.query")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
                             "A GoogleSQL query whose result is read instead of the configured"
                                     + " table. Dataset and table are not required.");
 
-    public static final ConfigOption<Boolean> SOURCE_MATERIALIZE_VIEWS =
-            ConfigOptions.key("source.materialize-views")
+    public static final ConfigOption<Boolean> SCAN_MATERIALIZE_VIEWS =
+            ConfigOptions.key("scan.materialize-views")
                     .booleanType()
                     .noDefaultValue()
                     .withDescription(
                             "Whether a configured table that is a logical or materialized view is"
                                     + " materialized through a query before it is read.");
 
-    public static final ConfigOption<String> SOURCE_QUERY_LOCATION =
-            ConfigOptions.key("source.query-location")
+    public static final ConfigOption<String> SCAN_QUERY_LOCATION =
+            ConfigOptions.key("scan.query-location")
                     .stringType()
                     .noDefaultValue()
                     .withDescription("The location in which a source query job runs.");
 
-    public static final ConfigOption<String> SOURCE_QUERY_RESULT_DATASET =
-            ConfigOptions.key("source.query-result-dataset")
+    public static final ConfigOption<String> SCAN_QUERY_RESULT_DATASET =
+            ConfigOptions.key("scan.query-result-dataset")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
                             "The dataset receiving a source query's temporary result table.");
 
-    public static final ConfigOption<Duration> SOURCE_REUSE_QUERY_RESULT_WITHIN =
-            ConfigOptions.key("source.reuse-query-result-within")
+    public static final ConfigOption<Duration> SCAN_REUSE_QUERY_RESULT_WITHIN =
+            ConfigOptions.key("scan.reuse-query-result-within")
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
                             "How long a re-planned source may reattach to the same query job."
-                                    + " Requires source.query-location.");
+                                    + " Requires scan.query-location.");
 
-    public static final ConfigOption<String> SOURCE_ROW_RESTRICTION =
-            ConfigOptions.key("source.row-restriction")
+    public static final ConfigOption<String> SCAN_ROW_RESTRICTION =
+            ConfigOptions.key("scan.row-restriction")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
                             "A BigQuery Storage Read row restriction, written as a WHERE clause"
                                     + " without the WHERE keyword.");
 
-    public static final ConfigOption<String> SOURCE_SNAPSHOT_TIME =
-            ConfigOptions.key("source.snapshot-time")
+    public static final ConfigOption<String> SCAN_SNAPSHOT_TIME =
+            ConfigOptions.key("scan.snapshot-time")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
                             "An ISO-8601 instant at which the configured table is read through"
                                     + " BigQuery time travel.");
 
-    public static final ConfigOption<Integer> SOURCE_MAX_STREAM_COUNT =
-            ConfigOptions.key("source.max-stream-count")
+    public static final ConfigOption<Integer> SCAN_MAX_STREAM_COUNT =
+            ConfigOptions.key("scan.max-stream-count")
                     .intType()
                     .noDefaultValue()
                     .withDescription("An upper bound on Storage Read streams.");
 
-    public static final ConfigOption<Integer> SOURCE_PREFERRED_MIN_STREAM_COUNT =
-            ConfigOptions.key("source.preferred-min-stream-count")
+    public static final ConfigOption<Integer> SCAN_PREFERRED_MIN_STREAM_COUNT =
+            ConfigOptions.key("scan.preferred-min-stream-count")
                     .intType()
                     .noDefaultValue()
                     .withDescription("The preferred minimum number of Storage Read streams.");
 
-    public static final ConfigOption<Integer> SOURCE_MAX_RECORDS_PER_FETCH =
-            ConfigOptions.key("source.max-records-per-fetch")
+    public static final ConfigOption<Integer> SCAN_MAX_RECORDS_PER_FETCH =
+            ConfigOptions.key("scan.max-records-per-fetch")
                     .intType()
                     .noDefaultValue()
                     .withDescription(
                             "The most decoded rows one source fetch hands to the task thread.");
 
-    public static final ConfigOption<Integer> SOURCE_RETRY_MAX_ATTEMPTS =
-            ConfigOptions.key("source.retry-max-attempts")
+    public static final ConfigOption<Integer> SCAN_RETRY_MAX_ATTEMPTS =
+            ConfigOptions.key("scan.retry.max-attempts")
                     .intType()
                     .noDefaultValue()
                     .withDescription(

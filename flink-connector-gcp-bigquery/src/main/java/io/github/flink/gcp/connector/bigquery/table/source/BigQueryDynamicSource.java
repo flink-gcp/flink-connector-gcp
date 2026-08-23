@@ -145,46 +145,45 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         if (table != null) {
             builder.table(table);
         } else {
-            OptionSetters.accept(
-                    BigQueryConnectorOptions.SOURCE_QUERY.key(), query, builder::query);
+            OptionSetters.accept(BigQueryConnectorOptions.SCAN_QUERY.key(), query, builder::query);
         }
         builder.parentProject(parentProject);
         if (materializeViews) {
             builder.materializeViews();
         }
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_QUERY_LOCATION.key(),
+                BigQueryConnectorOptions.SCAN_QUERY_LOCATION.key(),
                 queryLocation,
                 builder::queryLocation);
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_QUERY_RESULT_DATASET.key(),
+                BigQueryConnectorOptions.SCAN_QUERY_RESULT_DATASET.key(),
                 queryResultDataset,
                 builder::queryResultDataset);
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_REUSE_QUERY_RESULT_WITHIN.key(),
+                BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN.key(),
                 reuseQueryResultWithin,
                 builder::reuseQueryResultWithin);
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_ROW_RESTRICTION.key(),
+                BigQueryConnectorOptions.SCAN_ROW_RESTRICTION.key(),
                 rowRestriction,
                 builder::rowRestriction);
         if (snapshotTime != null) {
             builder.snapshotTime(snapshotTime);
         }
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_MAX_STREAM_COUNT.key(),
+                BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT.key(),
                 maxStreamCount,
                 builder::maxStreamCount);
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_PREFERRED_MIN_STREAM_COUNT.key(),
+                BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT.key(),
                 preferredMinStreamCount,
                 builder::preferredMinStreamCount);
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_MAX_RECORDS_PER_FETCH.key(),
+                BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH.key(),
                 maxRecordsPerFetch,
                 builder::maxRecordsPerFetch);
         OptionSetters.accept(
-                BigQueryConnectorOptions.SOURCE_RETRY_MAX_ATTEMPTS.key(),
+                BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS.key(),
                 retryMaxAttempts,
                 builder::retryMaxAttempts);
         if (serviceAccountKeyFile != null) {

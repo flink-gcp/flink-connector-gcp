@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0137: A cross-connector name diverges only to name a real difference
 
 - Status: Accepted
-- Date: 2026-08-23; revised by [#1051] (2026-08-23), [#1052] (2026-08-23), and [#1058]
-  (2026-08-23)
-- Issues: [#1043], [#782], [#1051], [#1052], [#1058]
+- Date: 2026-08-23; revised by [#1049], [#1051], [#1052] and [#1058] (2026-08-23); BigQuery
+  read-side option keys migrated by [#1047] (2026-08-23)
+- Issues: [#1043], [#782], [#1047], [#1049], [#1051], [#1052], [#1058]
 - Modules: all connectors
 - Current behavior: the rules in this record, with the judged divergence table appended below
   as evidence; the drift half is routed as sub-issues [#1047]–[#1053]
@@ -161,7 +161,7 @@ same `of(project, …)` shape in the same role, was the one outlier; it is renam
 
 **Absolute instants:** the Kafka-shaped startup pair spells epoch millis
 (`scan.startup.timestamp-millis`), and a point-in-time read consistency choice is an ISO-8601
-instant (`source.snapshot-time` — a different concept, not a divergent spelling of the same
+instant (`scan.snapshot-time` — a different concept, not a divergent spelling of the same
 one).
 
 ## Alternatives declined
@@ -240,7 +240,7 @@ Concept-to-name matrix (tier: P = `@Public`, PE = `@PublicEvolving`, I = `@Inter
 | Source impl | `BigQueryStorageReadSource` I | `PubSubStreamingPullSource` I | — | `BigtableScanSource` I | `SpannerBatchReadSource` I |
 | Enumerator | `BigQueryReadSplitEnumerator` I | `PubSubSplitEnumerator` I | — | `BigtableScanSplitEnumerator` I | **`SpannerPartitionSplitEnumerator`** I |
 | Enumerator state | `BigQueryReadEnumeratorState` I | `PubSubEnumeratorState` I | — | `BigtableScanEnumeratorState` I | `SpannerBatchEnumeratorState` I |
-| Split | **`BigQueryReadStreamSplit`** I | `SubscriptionSplit` I | — | `RowRangeSplit` I / `ChangeStreamPartitionSplit` I | `PartitionSplit` I / **`SpannerChangeStreamPartitionSplit`** I |
+| Split | `ReadStreamSplit` I | `SubscriptionSplit` I | — | `RowRangeSplit` I / `ChangeStreamPartitionSplit` I | `PartitionSplit` I / **`SpannerChangeStreamPartitionSplit`** I |
 | Table row SPI | **`RowDataSerializer`/`RowDataDeserializer`** I | `RowData{Ser,Deser}ializationSchema` I | `RowDataSerializationSchema` I | `RowData{Ser,Deser}ializationSchema` I | `RowData{Ser,Deser}ializationSchema` I |
 | Options mapper (writer) | family-named `*OptionsMapper` I | `PublisherOptionsMapper` I | **`CloudTasksWriterOptionsMapper`** I | `WriterOptionsMapper` I | `WriterOptionsMapper` I |
 | Credentials | `BigQueryCredentials` I, root | `PubSubCredentials` I, root | **`CloudTasksCredentials`** –, `sink.writer` | `BigtableCredentials` I, root | `SpannerCredentials` I, root |
@@ -278,12 +278,15 @@ The `source.readrows` package keeps the RPC-family word, which remains the SDK s
 name of the connector-owned source path.
 
 **C4. Split-name connector prefix.** `@Internal`, and ADR-0124 keeps splits below the frozen
-line explicitly. Majority convention is unprefixed (`SubscriptionSplit`, `RowRangeSplit`,
-`PartitionSplit`, `ChangeStreamPartitionSplit`); `BigQueryReadStreamSplit` and
-`SpannerChangeStreamPartitionSplit` carry the prefix. The sharpest instance: Bigtable's
+line explicitly. Majority convention is unprefixed (`ReadStreamSplit`, `SubscriptionSplit`,
+`RowRangeSplit`, `PartitionSplit`, `ChangeStreamPartitionSplit`).
+[#1049](https://github.com/flink-gcp/flink-connector-gcp/issues/1049) shortened
+`BigQueryReadStreamSplit` and its serializer to that form; `SpannerChangeStreamPartitionSplit`
+still carries the prefix. The sharpest remaining instance: Bigtable's
 `ChangeStreamPartitionSplit` and Spanner's `SpannerChangeStreamPartitionSplit` are the same
-concept, one prefixed. **Verdict: C — `ReadStreamSplit` → [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) sub-issue,
-`ChangeStreamPartitionSplit` → [#781](https://github.com/flink-gcp/flink-connector-gcp/issues/781) sub-issue, with their serializers.** [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) does not bind
+concept, one prefixed. **Verdict: C — BigQuery implemented by [#1049];
+`ChangeStreamPartitionSplit` → [#781](https://github.com/flink-gcp/flink-connector-gcp/issues/781)
+sub-issue, with its serializer.** [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) does not bind
 here: it re-examines the tier of CDC *surfaces*, and split types stay `@Internal` by ADR-0124
 regardless of its outcome.
 
@@ -376,7 +379,7 @@ divergence-bearing rows — identical-by-construction rows are summarized below)
 
 | Concept | BigQuery | Pub/Sub | Cloud Tasks | Bigtable | Spanner |
 |---|---|---|---|---|---|
-| read-side key prefix | **`source.*`** (12 keys) | `scan.*` | — | `scan.*` | `scan.*` |
+| read-side key prefix | `scan.*` (12 keys; migrated by [#1047]) | `scan.*` | — | `scan.*` | `scan.*` |
 | in-flight count | `sink.default-stream.max-inflight-requests` / `maxInflightRequests` | `sink.in-flight.max-messages` / `maxInFlightMessages` | `sink.max-in-flight-tasks` / `maxInFlightTasks` | `sink.in-flight.max-entries` / `maxInFlightEntries` | — |
 | in-flight bytes | `…max-inflight-bytes` / `maxInflightBytes` | `sink.in-flight.max-bytes` / `maxInFlightBytes` | — | `sink.in-flight.max-bytes` / `maxInFlightBytes` | — |
 | batch by count | — | `sink.batching.element-count-threshold` | — | `sink.batching.element-count-threshold` | `sink.buffer-flush.max-mutations`, `…max-cells` |
@@ -386,10 +389,10 @@ divergence-bearing rows — identical-by-construction rows are summarized below)
 | total SDK retry budget | `sink.*.retry.max-duration` / `maxRetryDuration` | `sink.retry.total-timeout` / `retryTotalTimeout` | — | — | — |
 | sink failure handler | **`failureHandler`** | `failedMessageHandler` | `failedTaskHandler` | `failedMutationHandler` | `failedMutationHandler` |
 | source deserializer setter | `deserializer` | **`deserializationSchema`** | — | `deserializer` | `deserializer` |
-| fixed sink destination setter | **`destination(…)`** | `topic(…)` | `queue(…)` | `table(…)` | `database(…)` |
-| per-destination metrics | `sink.{default-stream,file-loads}.per-destination-metrics` | `sink.metrics.per-destination` | `sink.metrics.per-destination` | `sink.metrics.per-destination` | — |
+| fixed sink destination setter | `table(…)` | `topic(…)` | `queue(…)` | `table(…)` | `database(…)` |
+| per-destination metrics | `sink.{default-stream,file-loads}.metrics.per-destination` | `sink.metrics.per-destination` | `sink.metrics.per-destination` | `sink.metrics.per-destination` | — |
 | creation settings prefix | `sink.table-create.*` | `sink.auto-create.*`, `scan.auto-create.*` | — | `sink.table-create.gc-rule.*` | — |
-| absolute instant | `source.snapshot-time` (ISO-8601 string) | `scan.startup.timestamp-millis` (long) | — | `scan.startup.timestamp-millis`, `scan.bounded.timestamp-millis` (long) | `scan.startup.timestamp-millis` (long) |
+| absolute instant | `scan.snapshot-time` (ISO-8601 string) | `scan.startup.timestamp-millis` (long) | — | `scan.startup.timestamp-millis`, `scan.bounded.timestamp-millis` (long) | `scan.startup.timestamp-millis` (long) |
 
 Identical by construction (no work): `project`, `emulator-endpoint`/`emulatorEndpoint`,
 `service-account-key-file`/`serviceAccountKeyFile`, `serializer`, `destinationResolver`,
@@ -410,12 +413,13 @@ the SDK's spelling (BigQuery). **Verdict: BigQuery — B, recorded in ADR-0137's
 Cloud Tasks' flat `sink.max-in-flight-tasks` (a connector-owned ledger) still regroups to
 `sink.in-flight.max-tasks` — D → [#1051](https://github.com/flink-gcp/flink-connector-gcp/issues/1051).**
 
-**O2. BigQuery's read side uses `source.*` where every sibling uses `scan.*` (12 keys).**
+**O2. BigQuery's read side used `source.*` where every sibling used `scan.*` (12 keys).**
 ADR-0014 records `scan.` as "not a choice — Flink's read-side prefix", and BigQuery's own table
-page already mixes prefixes (`scan.parallelism` from `FactoryUtil` beside `source.query`). No
-record explains the deviation. Also subsumes the one flat retry key
-(`source.retry-max-attempts` vs everyone's dotted `retry.max-attempts`). **Verdict: D — its own
-sub-issue of [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) (12-key user-facing rename; the largest single item on this surface).**
+page mixed prefixes (`scan.parallelism` from `FactoryUtil` beside `source.query`).
+No record explained the deviation.
+The migration also grouped the one flat retry key, `source.retry-max-attempts`, as
+`scan.retry.max-attempts` and renamed the public `SOURCE_*` constants to `SCAN_*`.
+**Verdict: D — implemented by [#1047] as a 12-key user-facing rename.**
 
 **O3. Batching: three key vocabularies.** Measured against the Flink ecosystem and the SDKs:
 JDBC/HBase use `sink.buffer-flush.max-rows`/`max-size`/`interval`; Elasticsearch uses its
@@ -434,10 +438,11 @@ own leaf vocabulary; a connector-owned buffer takes Flink's `sink.buffer-flush.*
 [#1052] applies the rule by renaming Bigtable's keys and the matching public methods to the full
 gax leaf vocabulary.
 
-**O4. Per-destination metrics key: `sink.metrics.per-destination` (three connectors) vs
-`sink.<family>.per-destination-metrics` (BigQuery).** Same setter (`perDestinationMetrics`)
-everywhere; pure word-order drift. **Verdict: D → [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) sub-issue (adopt
-`sink.<family>.metrics.per-destination`).**
+**O4. Per-destination metrics key used `sink.<family>.per-destination-metrics` in BigQuery
+instead of the fleet's `metrics.per-destination` leaf order.** Same setter
+(`perDestinationMetrics`) everywhere; pure word-order drift.
+**Verdict: D — [#1049](https://github.com/flink-gcp/flink-connector-gcp/issues/1049) adopted
+`sink.<family>.metrics.per-destination`.**
 
 **O5. Connector-owned retry budgets named `retry*` in Cloud Tasks and Spanner, `recovery*`
 elsewhere.** ADR-0028's rule: bare `retry*` is the SDK layer's vendor vocabulary, `recovery*`
@@ -475,11 +480,11 @@ creates on the *read* side, where "table-create" has no analogue). Setters alrea
 (`<resource>CreateOptions`). **Verdict: B — record; the prefixes name different things (a
 resource vs a behavior that spans directions) and each is coherent in place.**
 
-**O10. BigQuery's fixed-destination setter is `destination(TableDestination)`; every sibling
-names the resource (`topic`, `queue`, `table`, `database`) — and BigQuery's own *source* takes
-the same `TableDestination` through `table(…)`.** One type, two setter names inside one
-connector, and the source's name is the one that matches the fleet. **Verdict: D → [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777)
-sub-issue (sink adopts `table(…)`).**
+**O10. BigQuery's fixed-destination setter used `destination(TableDestination)` while every
+sibling named the resource (`topic`, `queue`, `table`, `database`) and BigQuery's own *source*
+already took the same type through `table(…)`.** One type had two setter names inside one
+connector. **Verdict: D — [#1049](https://github.com/flink-gcp/flink-connector-gcp/issues/1049)
+aligned the sink on `table(…)`.**
 
 **O11. `SpannerDatabase` is the only resource value object not named `*Destination`.**
 *(Corrected 2026-08-23 — twice: the first defense (resolver-bound) fails on the source-side
@@ -502,7 +507,7 @@ DLQ knob and the `outstandingDeadLetters` metric to the `inFlight` vocabulary; D
 `@Experimental`, so the rename is cheap).**
 
 **O13. Absolute instants: epoch-millis longs (`scan.startup.timestamp-millis` et al.) vs one
-ISO-8601 string (`source.snapshot-time`).** Different concepts (a startup position vs a
+ISO-8601 string (`scan.snapshot-time`).** Different concepts (a startup position vs a
 point-in-time read consistency choice), and the millis spelling is Kafka's own convention for
 the startup pair. **Verdict: B — record; no rename.**
 
@@ -613,9 +618,9 @@ verdict-B rules and the staleness fixes.
 
 | Route | Items |
 |---|---|
-| [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) sub-issue: `source.*` → `scan.*` migration | O2 (12 keys, includes the flat `source.retry-max-attempts`) |
+| [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047): `source.*` → `scan.*` migration | O2 (12 keys, including `source.retry-max-attempts` → `scan.retry.max-attempts`) |
 | [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) sub-issue: serialization SPI rename | C1 + C2 (superseding ADR for ADR-0055's declined alternative) |
-| [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777) sub-issue: naming alignment, small items | O4, O10, C4 (`ReadStreamSplit`) — O1's BigQuery half and O6 withdrawn (vendor names) |
+| [#1049](https://github.com/flink-gcp/flink-connector-gcp/issues/1049): BigQuery naming alignment | O4, O10, C4 (`ReadStreamSplit`) — O1's BigQuery half and O6 withdrawn (vendor names) |
 | [#778](https://github.com/flink-gcp/flink-connector-gcp/issues/778) sub-issue: naming alignment | C6, C13 (`PubSubStartPosition`), O8, O12/M4 (DLQ `outstanding` vocabulary) |
 | [#779](https://github.com/flink-gcp/flink-connector-gcp/issues/779) sub-issue: naming alignment | O5 (`retry*` → `recovery*`), C10, O1 (key grouping — the surviving half), C12 (`CloudTasksCredentials` gains `@Internal`) |
 | [#1052] sub-issue of [#780](https://github.com/flink-gcp/flink-connector-gcp/issues/780): Bigtable naming alignment | O3 (gax leaf names), O14 (`scan.bounded.*`), C3 (Scan/ReadRows mix), C12 |
@@ -628,6 +633,7 @@ verdict-B rules and the staleness fixes.
 [#1043]: https://github.com/flink-gcp/flink-connector-gcp/issues/1043
 [#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047
 [#1048]: https://github.com/flink-gcp/flink-connector-gcp/issues/1048
+[#1049]: https://github.com/flink-gcp/flink-connector-gcp/issues/1049
 [#1050]: https://github.com/flink-gcp/flink-connector-gcp/issues/1050
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
 [#1052]: https://github.com/flink-gcp/flink-connector-gcp/issues/1052
