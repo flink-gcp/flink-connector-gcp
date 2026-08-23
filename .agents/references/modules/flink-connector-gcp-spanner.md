@@ -100,16 +100,6 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   keyed by schema plus table. GoogleSQL names match case-insensitively; PostgreSQL catalog names
   preserve the distinction created by quoted identifiers. Reading it at creation is what makes an
   unreadable schema a job that never starts.
-- Table API schema-object options accept one unquoted or canonically quoted component.
-  The connector checks component and quote structure but does not copy Spanner's character,
-  length, or keyword rules; it decodes SQL quoting before assembling the native data-API name,
-  and `INFORMATION_SCHEMA` and the native data APIs remain authoritative.
-- No option description restates a default (`docs/adr/0139`). `SpannerConnectorOptionsTest`
-  records the defaulted exceptions — the table-owned selectors the factory reads with `get()`,
-  and the three change-stream knobs whose `defaultValue()` shares the builder's constant — and
-  guards the descriptions; the reference page or the table page's row is where a default is
-  written. "Unset fails the source" on `scan.resume-fallback.mode` is a contract, not a
-  default, and stays.
 - **A table the weights do not know is counted without index entries, never rejected.** The
   default's 16-fold headroom under the 80,000 ceiling is what absorbs that, so raising
   `maxBatchCells` toward it is a real trade and the docs say so.
@@ -299,6 +289,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Do not duplicate `numRecordsIn`, `currentEmitEventTimeLag`, `watermarkLag`, or `sourceIdleTime`.
   The Flink source runtime derives the metrics available in that Flink version from the commit
   timestamps and source-wide watermarks this reader emits.
+
+## Table API / SQL (schema objects `docs/adr/0096`; shared rules `docs/adr/0139`)
+
+- Table API schema-object options accept one unquoted or canonically quoted component.
+  The connector checks component and quote structure but does not copy Spanner's character,
+  length, or keyword rules; it decodes SQL quoting before assembling the native data-API name,
+  and `INFORMATION_SCHEMA` and the native data APIs remain authoritative.
+- No option description restates a default (`docs/adr/0139`). `SpannerConnectorOptionsTest`
+  records the defaulted exceptions — the table-owned selectors the factory reads with `get()`,
+  and the three change-stream knobs whose `defaultValue()` shares the builder's constant — and
+  guards the descriptions; the reference page or the table page's row is where a default is
+  written. "Unset fails the source" on `scan.resume-fallback.mode` is a contract, not a
+  default, and stays.
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 

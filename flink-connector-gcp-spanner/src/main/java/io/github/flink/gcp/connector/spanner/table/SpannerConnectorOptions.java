@@ -33,13 +33,13 @@ import java.util.Map;
  * The {@code WITH} options of the {@code spanner} table connector.
  *
  * <p>A mapped option is declared without a default — its default lives on the connector's own
- * builder and is applied by not calling the setter. The exceptions are recorded by {@code
- * SpannerConnectorOptionsTest}: table-owned selectors the factory reads with {@code get()}, and
- * three change-stream knobs whose {@code defaultValue()} references the builder's own constant. No
- * description restates a default — a builder's, an option's own {@code defaultValue()}, or the
- * value absence selects: the reference and table docs pages carry a default with its derivation,
- * and a test rejects the restatement phrases. A failure absence selects ("unset fails the source")
- * is a contract, not a default, and stays.
+ * builder and is applied by not calling the setter. A test records the exceptions: table-owned
+ * selectors the factory reads with {@code get()}, and three change-stream knobs whose {@code
+ * defaultValue()} references the builder's own constant. No description restates a default — a
+ * builder's, an option's own {@code defaultValue()}, or the value absence selects: the reference
+ * and table docs pages carry a default with its derivation, and a test rejects the restatement
+ * phrases. A failure absence selects ("unset fails the source") is a contract, not a default, and
+ * stays.
  */
 @PublicEvolving
 public final class SpannerConnectorOptions {
