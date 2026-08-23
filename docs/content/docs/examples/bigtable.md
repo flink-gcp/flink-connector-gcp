@@ -24,6 +24,179 @@ limitations under the License.
 
 Starting from the [Bigtable quickstart]({{< relref "docs/quickstart/bigtable" >}}) job.
 
+## Scanning a Bigtable table with SQL
+
+A bounded scan treats the row key as one column and every selected column family as a nested row.
+Only the families selected by the query leave Bigtable.
+The quickstart creates the instance but not this table, so create the physical table and its families first:
+
+```sh
+cbt -project my-project -instance my-instance createtable profiles families=profile,usage
+```
+
+```sql
+CREATE TABLE profiles (
+  rowkey STRING,
+  profile ROW<name STRING, email STRING>,
+  usage ROW<requests BIGINT, last_seen TIMESTAMP_LTZ(3)>,
+  PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles'
+);
+
+SELECT rowkey, profile.name, usage.last_seen
+FROM profiles
+WHERE rowkey >= 'customer#1000' AND rowkey < 'customer#2000';
+```
+
+The row-key bounds are pushed into the scan.
+The family projection is pushed down separately.
+Selecting any field from `profile` reads that whole family; the connector discards undeclared or unselected qualifiers after the row arrives.
+
+## Joining a Bigtable lookup table
+
+A processing-time temporal join turns each input row into a Bigtable point read.
+This example reuses the `profiles` table above and adds a generated facts table with a processing-time column:
+
+```sql
+CREATE TABLE events (
+  event_id STRING,
+  user_id STRING,
+  proc_time AS PROCTIME()
+) WITH (
+  'connector' = 'datagen',
+  'number-of-rows' = '100'
+);
+
+SELECT e.event_id, e.user_id, p.profile.name
+FROM events AS e
+LEFT JOIN profiles FOR SYSTEM_TIME AS OF e.proc_time AS p
+  ON e.user_id = p.rowkey;
+```
+
+The equality condition must cover the single Bigtable row-key column.
+Bigtable has one atomic row key, so the connector rejects composite lookup keys and nested family fields as lookup keys.
+Set `lookup.async = true` on `profiles` when asynchronous point reads are preferable; the default is synchronous.
+
+## Consuming Change Streams with SQL
+
+Envelope mode emits one insert row for every Bigtable mutation.
+The physical columns carry the row key and the ordered mutation entries, while virtual metadata columns expose the mutation identity and service timestamps.
+Before running the query, enable Change Streams on the physical `profiles` table and create the single-cluster routing application profile named `single-cluster-profile`.
+The SQL DDL registers a Flink table but does not provision either prerequisite.
+
+```sql
+CREATE TABLE profile_mutations (
+  row_key BYTES,
+  entries ARRAY<ROW<
+    entry_index INT,
+    kind STRING,
+    family STRING,
+    qualifier ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
+    `timestamp` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
+    `value` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
+    delete_range ROW<
+      start_bound STRING,
+      start_micros BIGINT,
+      end_bound STRING,
+      end_micros BIGINT
+    >
+  >>,
+  mutation_type STRING NOT NULL
+    METADATA FROM 'mutation-type' VIRTUAL,
+  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL
+    METADATA FROM 'commit-timestamp' VIRTUAL,
+  source_cluster_id STRING
+    METADATA FROM 'source-cluster-id' VIRTUAL
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.changelog-mode' = 'envelope',
+  'scan.app-profile-id' = 'single-cluster-profile'
+);
+
+SELECT
+  row_key,
+  mutation_type,
+  commit_timestamp,
+  entry_index,
+  kind,
+  family,
+  qualifier,
+  entry_timestamp,
+  entry_value,
+  delete_range
+FROM profile_mutations
+CROSS JOIN UNNEST(entries) AS entry_table(
+  entry_index,
+  kind,
+  family,
+  qualifier,
+  entry_timestamp,
+  entry_value,
+  delete_range
+);
+```
+
+The `entries` array preserves the service order, and `entry_index` preserves that position after `UNNEST`.
+The envelope is a mutation record rather than a reconstructed current row, so deletes also arrive as inserted envelope rows.
+
+## Writing a bounded aggregate as upserts
+
+Bigtable writes are row-key upserts by construction.
+Declaring `rowkey` as the primary key tells the planner that the query and destination use the same upsert key.
+For a bounded aggregation, the planner can emit one final total per key and the sink overwrites the cells for that row key.
+
+Create the destination table before submitting the statement:
+
+```sh
+cbt -project my-project -instance my-instance createtable profile-totals families=stats
+```
+
+```sql
+SET 'execution.runtime-mode' = 'batch';
+
+CREATE TABLE order_events (
+  user_id STRING,
+  amount BIGINT
+) WITH (
+  'connector' = 'datagen',
+  'number-of-rows' = '1000'
+);
+
+CREATE TABLE profile_totals (
+  rowkey STRING,
+  stats ROW<order_count BIGINT, total_amount BIGINT>,
+  PRIMARY KEY (rowkey) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profile-totals'
+);
+
+INSERT INTO profile_totals
+SELECT user_id, ROW(COUNT(*), SUM(amount))
+FROM order_events
+GROUP BY user_id;
+```
+
+The aggregate's upsert key is `user_id`, which maps directly to the sink's `rowkey`, so Flink 2.3 can plan this statement without an `ON CONFLICT` clause.
+Flink 2.3 requires an `ON CONFLICT DO DEDUPLICATE`, `DO ERROR`, or `DO NOTHING` strategy when the query key differs from the sink key or the planner cannot infer one.
+
+The default `sink.insert-only-input-mode = upsert` exposes those conflict strategies for an insert-only input too.
+This bounded aggregation emits one final insert per key, so setting the option to `insert-only` would narrow this statement to insert-only planner semantics and keep its DDL portable across supported Flink versions without the 2.3-only clause.
+That setting does not make destination writes insert-if-absent, and an updating input such as a streaming aggregation remains an upsert input.
+
+The writer does not order two entries for the same row key when they share a bulk-mutation batch, so a streaming aggregation that emits repeated updates for one key has no latest-input-value guarantee.
+Use this bounded form only when the aggregate emits at most one final mutation per key, or separate dependent writes so one completes before the next begins.
+
 ## Several cells, and a delete, per record
 
 One `RowMutationEntry` may carry any number of mutations, and they apply to the row atomically —
@@ -49,17 +222,9 @@ Read that section beside a resolver because one schema serves every table the si
 ## Skipping records instead of filtering upstream
 
 Returning `null` writes nothing and is not a failure, so a filter whose condition is only known
-while building the mutation belongs here:
+while building the mutation belongs in the serializer:
 
-The following lambda omits the enclosing `serializer(...)` setter and sink builder.
-
-```java
-(event, context) ->
-        event.isHeartbeat()
-                ? null
-                : RowMutationEntry.create("device#" + event.deviceId())
-                        .setCell("cf", "reading", event.timestampMicros(), event.value());
-```
+{{< java-snippet file="BigtableExamplesSkippingRecords.java" tag="bigtable-examples-skipping-records" >}}
 
 ## Dropping bad rows instead of failing the job
 
