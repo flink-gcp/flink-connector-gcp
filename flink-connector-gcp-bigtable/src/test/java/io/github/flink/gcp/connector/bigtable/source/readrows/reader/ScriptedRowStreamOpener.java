@@ -119,7 +119,9 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
 
     @Override
     public void close() {
-        state().closes.incrementAndGet();
+        State state = state();
+        state.lifecycleEvents.add("opener");
+        state.closes.incrementAndGet();
     }
 
     /** Returns the ranges this opener was asked for, rendered, in the order it was asked. */
@@ -145,6 +147,11 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
     /** Returns how many streams were closed, which is how a cancelled read is observed. */
     public int streamCloseCalls() {
         return state().streamCloses.get();
+    }
+
+    /** Returns stream and opener close events in the order they happened. */
+    public List<String> lifecycleEvents() {
+        return new ArrayList<>(state().lifecycleEvents);
     }
 
     /** Makes the next open throw. */
@@ -239,6 +246,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         private final AtomicInteger opens = new AtomicInteger();
         private final AtomicInteger closes = new AtomicInteger();
         private final AtomicInteger streamCloses = new AtomicInteger();
+        private final List<String> lifecycleEvents = new CopyOnWriteArrayList<>();
 
         private volatile int blockAfter = Integer.MAX_VALUE;
         private volatile int failReadAfter = Integer.MAX_VALUE;
@@ -317,6 +325,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         @Override
         public void close() {
             if (!closed) {
+                state.lifecycleEvents.add("stream");
                 state.streamCloses.incrementAndGet();
             }
             closed = true;

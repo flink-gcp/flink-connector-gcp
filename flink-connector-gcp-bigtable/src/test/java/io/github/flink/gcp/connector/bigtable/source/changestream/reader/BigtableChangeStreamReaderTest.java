@@ -442,6 +442,19 @@ class BigtableChangeStreamReaderTest {
     }
 
     @Test
+    void cancelsActiveReadsBeforeClosingTheirOpener() throws Exception {
+        opener.completeCancellation = false;
+        reader = reader(1);
+        reader.addSplits(Collections.singletonList(split("closing")));
+        reader.start();
+
+        reader.close();
+        reader = null;
+
+        assertThat(opener.lifecycleEvents).containsExactly("cancel", "close");
+    }
+
+    @Test
     void cancelsAControllerThatStartsAfterReaderClose() throws Exception {
         opener.delayStart = true;
         reader = reader(1);
@@ -539,6 +552,7 @@ class BigtableChangeStreamReaderTest {
         private final List<ChangeStreamPartitionSplit> opened = new ArrayList<>();
         private final List<ResponseObserver<ChangeStreamRecord>> observers = new ArrayList<>();
         private final List<ScriptedController> controllers = new ArrayList<>();
+        private final List<String> lifecycleEvents = new ArrayList<>();
         private boolean completeCancellation = true;
         private boolean throwAfterStart;
         private boolean delayStart;
@@ -603,6 +617,7 @@ class BigtableChangeStreamReaderTest {
 
         @Override
         public void close() {
+            lifecycleEvents.add("close");
             closeCalls++;
         }
     }
@@ -623,6 +638,7 @@ class BigtableChangeStreamReaderTest {
 
         @Override
         public void cancel() {
+            owner.lifecycleEvents.add("cancel");
             cancelCalls++;
             if (owner.completeCancellation) {
                 observer.onError(new CancellationException("scripted cancellation"));

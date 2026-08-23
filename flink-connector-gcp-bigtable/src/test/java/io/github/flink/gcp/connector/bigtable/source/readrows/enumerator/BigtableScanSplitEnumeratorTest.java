@@ -18,8 +18,10 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 
 import org.apache.flink.util.FlinkRuntimeException;
 
+import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
@@ -28,7 +30,16 @@ import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import javax.annotation.Nullable;
+
 import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -60,7 +71,7 @@ class BigtableScanSplitEnumeratorTest {
     }
 
     private BigtableScanSplitEnumerator enumerator(
-            FakeSplitEnumeratorContext<RowRangeSplit> context, ScriptedRowKeySampler sampler) {
+            FakeSplitEnumeratorContext<RowRangeSplit> context, RowKeySampler sampler) {
         return new BigtableScanSplitEnumerator(context, config(), sampler, null);
     }
 
@@ -192,6 +203,63 @@ class BigtableScanSplitEnumeratorTest {
     }
 
     @Test
+    void ignoresSamplingThatCompletesAfterClose() throws Exception {
+        FakeSplitEnumeratorContext<RowRangeSplit> context = new FakeSplitEnumeratorContext<>(1);
+        BlockingRowKeySampler sampler = new BlockingRowKeySampler();
+        BigtableScanSplitEnumerator enumerator = enumerator(context, sampler);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        try {
+            enumerator.start();
+            Future<?> planning = executor.submit(context::runAsyncCalls);
+            sampler.awaitStarted();
+
+            enumerator.close();
+            sampler.release();
+            planning.get(10, TimeUnit.SECONDS);
+
+            assertThat(sampler.closeCalls()).isEqualTo(1);
+            assertThat(context.events()).isEmpty();
+            assertThat(context.counter("rowKeySamplesTaken")).isZero();
+            assertThat(enumerator.snapshotState(1L).isPlanned()).isFalse();
+            assertThat(enumerator.snapshotState(1L).getPendingSplits()).isEmpty();
+        } finally {
+            sampler.release();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
+    void ignoresSamplingFailureThatCompletesAfterClose() throws Exception {
+        FakeSplitEnumeratorContext<RowRangeSplit> context = new FakeSplitEnumeratorContext<>(1);
+        BlockingRowKeySampler sampler =
+                new BlockingRowKeySampler(new IllegalStateException("permission denied"));
+        BigtableScanSplitEnumerator enumerator = enumerator(context, sampler);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        try {
+            enumerator.start();
+            Future<?> planning = executor.submit(context::runAsyncCalls);
+            sampler.awaitStarted();
+
+            enumerator.close();
+            sampler.release();
+            planning.get(10, TimeUnit.SECONDS);
+
+            assertThat(sampler.closeCalls()).isEqualTo(1);
+            assertThat(context.events()).isEmpty();
+            assertThat(context.counter("rowKeySamplesTaken")).isZero();
+            assertThat(enumerator.snapshotState(1L).isPlanned()).isFalse();
+            assertThat(enumerator.snapshotState(1L).getPendingSplits()).isEmpty();
+        } finally {
+            sampler.release();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
+    @Test
     void reportsWhatItAssignedReturnedAndSampled() throws Exception {
         FakeSplitEnumeratorContext<RowRangeSplit> context = new FakeSplitEnumeratorContext<>(1);
         BigtableScanSplitEnumerator enumerator =
@@ -229,5 +297,65 @@ class BigtableScanSplitEnumeratorTest {
         assertThat(state.isPlanned()).isTrue();
         assertThat(state.getPendingSplits()).hasSize(1);
         enumerator.close();
+    }
+
+    /** A sampling call that the test releases only after enumerator teardown. */
+    private static final class BlockingRowKeySampler implements RowKeySampler {
+
+        private final CountDownLatch started = new CountDownLatch(1);
+        private final CountDownLatch released = new CountDownLatch(1);
+        private final AtomicInteger closes = new AtomicInteger();
+        @Nullable private final RuntimeException failure;
+
+        private BlockingRowKeySampler() {
+            this(null);
+        }
+
+        private BlockingRowKeySampler(@Nullable RuntimeException failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public List<RowKeySample> sample(TableDestination table) {
+            started.countDown();
+            await(released);
+            if (failure != null) {
+                throw failure;
+            }
+            return Collections.singletonList(BigtableScanSplitEnumeratorTest.sample("m", 100));
+        }
+
+        /** Answers from a script rather than a client, so there is nothing to authenticate. */
+        @Override
+        public void useCredentials(@Nullable CredentialsProvider credentials) {}
+
+        @Override
+        public void close() {
+            closes.incrementAndGet();
+        }
+
+        private void awaitStarted() {
+            await(started);
+        }
+
+        private void release() {
+            released.countDown();
+        }
+
+        private int closeCalls() {
+            return closes.get();
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                if (!latch.await(10, TimeUnit.SECONDS)) {
+                    throw new AssertionError("Timed out while coordinating the sampling lifecycle");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(
+                        "Interrupted while coordinating the sampling lifecycle", e);
+            }
+        }
     }
 }
