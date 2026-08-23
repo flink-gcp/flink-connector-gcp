@@ -190,8 +190,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   "No default restated" covers the *description* as well as `defaultValue()`, and covers a
   derived default too — `reference/pubsub.md` carries the derivation and the resolved value.
   `PubSubConnectorOptionsTest` checks the `ConfigOption` half directly and guards the description
-  half through the restatement phrases; since #1045 the phrase list is shared by all five
-  connectors' guards (`docs/adr/0139`) and a new form extends them together. A failure there is
+  half through `OptionDescriptionAssertions`; that shared utility owns the phrases for all five
+  connectors (`docs/adr/0139`), and a new observed form extends its list once. A failure there is
   the rule speaking (#866). Correct the description, not the test.
 - No `properties.*` passthrough; metadata is not forwarded to formats;
   `applyReadableMetadata` is guarded on the format *declaring* metadata. When writable

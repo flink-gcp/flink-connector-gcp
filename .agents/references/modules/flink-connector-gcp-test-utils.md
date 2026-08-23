@@ -21,6 +21,13 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **The bar for a test in this module is narrow**: only behaviour a consumer *cannot* reach
   (`AwaitsTest`, `LogCaptureTest`). Anything covered incidentally by a consumer's ITs stays
   uncovered here.
+- `OptionDescriptionAssertions` owns ADR-0139's twelve recorded default-restatement phrases for
+  all five connector tests (#1073).
+  The callers keep option discovery, `HtmlFormatter`, non-vacuity and their documentation-home
+  message; the shared utility takes the formatted string, so this module gains no unannotated
+  Flink import.
+  Its direct test is justified by the narrow bar above because clean consumer descriptions cannot
+  reach the rejection path.
 - No compat source roots; a cross-major sink test-double belongs in the module that needs it.
 
 ## Harnesses (`docs/adr/0051`)

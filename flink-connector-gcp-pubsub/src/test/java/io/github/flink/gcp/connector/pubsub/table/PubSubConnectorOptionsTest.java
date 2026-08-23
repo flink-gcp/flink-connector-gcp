@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -118,18 +119,10 @@ class PubSubConnectorOptionsTest {
     @Test
     void noDescriptionRestatesADefault() {
         // The other half of the rule above, and the half a ConfigOption cannot express: a default
-        // written into prose is the same second copy, just out of reach of hasDefaultValue(). Three
-        // of these had accumulated by the time #778 read the file, all three deleted by #838, and
-        // every check stayed green throughout — which is how they arrived.
-        //
-        // The first two phrases are the ones those three used ("Off by default:", "Defaults to
-        // twice the effective flow-control message limit", "Defaults to twice the effective
-        // flow-control byte limit"). A later review found two descriptions that still stated the
-        // absent-value behaviour as "when unset" and "Unset means" while this test passed. The
-        // #1045 cross-module sweep then found the remaining eight forms in the sibling connectors'
-        // options classes; every module now rejects the same twelve. Match the forms, but not the
-        // bare word: "application-default" can name a credential kind without saying that it is
-        // the option's default.
+        // written into prose is the same second copy, just out of reach of hasDefaultValue(). The
+        // shared assertion owns the phrase history from the Pub/Sub fixes through #1045. It
+        // matches the recorded forms, not the bare word: "application-default" can name a
+        // credential kind without saying that it is the option's default.
         //
         // When this fires, the description is what changes. reference/pubsub.md is where a default
         // is written — a derived one included, carrying both its derivation and its resolved
@@ -141,23 +134,9 @@ class PubSubConnectorOptionsTest {
         assertThat(declaredOptions())
                 .allSatisfy(
                         option ->
-                                assertThat(formatter.format(option.description()))
-                                        .as(
-                                                "option '%s' restates a default;"
-                                                        + " reference/pubsub.md is where a default"
-                                                        + " is written",
-                                                option.key())
-                                        .doesNotContainIgnoringCase("by default")
-                                        .doesNotContainIgnoringCase("defaults to")
-                                        .doesNotContainIgnoringCase("when unset")
-                                        .doesNotContainIgnoringCase("unset means")
-                                        .doesNotContainIgnoringCase("when absent")
-                                        .doesNotContainIgnoringCase("absent uses")
-                                        .doesNotContainIgnoringCase("absent,")
-                                        .doesNotContainIgnoringCase("unset uses")
-                                        .doesNotContainIgnoringCase("unset keeps")
-                                        .doesNotContainIgnoringCase("unset leaves")
-                                        .doesNotContainIgnoringCase("is the default")
-                                        .doesNotContainIgnoringCase("and the default"));
+                                assertNoDefaultRestatement(
+                                        option.key(),
+                                        formatter.format(option.description()),
+                                        "reference/pubsub.md"));
     }
 }
