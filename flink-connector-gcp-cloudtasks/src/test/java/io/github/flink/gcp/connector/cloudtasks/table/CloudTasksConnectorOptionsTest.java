@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.cloudtasks.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.description.HtmlFormatter;
 
 import org.junit.jupiter.api.Test;
 
@@ -89,5 +90,44 @@ class CloudTasksConnectorOptionsTest {
                         CloudTasksConnectorOptions.TARGET_TYPE,
                         CloudTasksConnectorOptions.HTTP_METHOD,
                         CloudTasksConnectorOptions.APP_ENGINE_METHOD);
+    }
+
+    @Test
+    void noDescriptionRestatesADefault() {
+        // The half of the rule above a ConfigOption cannot express: a default written into prose —
+        // a mapped setter's, a table-owned option's own defaultValue(), or the value absence
+        // selects — is a second copy that nothing keeps in step. "The default HTTP method" naming
+        // a per-row-overridable option's role is not in that class and matches no phrase. The
+        // phrases are the restatement forms the #1045 cross-module sweep found, shared by every
+        // connector's guard; a regression guard over those forms, not a semantic parser for
+        // arbitrary prose.
+        //
+        // When this fires, the description is what changes. reference/cloudtasks.md is where a
+        // mapped option's default is written — a derived one included, carrying both its
+        // derivation and its resolved value — and the table page's option row is where a
+        // table-owned option's default is written.
+        HtmlFormatter formatter = new HtmlFormatter();
+        assertThat(declaredOptions()).isNotEmpty();
+        assertThat(declaredOptions())
+                .allSatisfy(
+                        option ->
+                                assertThat(formatter.format(option.description()))
+                                        .as(
+                                                "option '%s' restates a default; the cloudtasks"
+                                                        + " reference or table docs page is where"
+                                                        + " a default is written",
+                                                option.key())
+                                        .doesNotContainIgnoringCase("by default")
+                                        .doesNotContainIgnoringCase("defaults to")
+                                        .doesNotContainIgnoringCase("when unset")
+                                        .doesNotContainIgnoringCase("unset means")
+                                        .doesNotContainIgnoringCase("when absent")
+                                        .doesNotContainIgnoringCase("absent uses")
+                                        .doesNotContainIgnoringCase("absent,")
+                                        .doesNotContainIgnoringCase("unset uses")
+                                        .doesNotContainIgnoringCase("unset keeps")
+                                        .doesNotContainIgnoringCase("unset leaves")
+                                        .doesNotContainIgnoringCase("is the default")
+                                        .doesNotContainIgnoringCase("and the default"));
     }
 }

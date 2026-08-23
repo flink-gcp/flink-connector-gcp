@@ -20,10 +20,15 @@ limitations under the License.
 - Date: 2026-07-26/27 ([#135], [#136], [#137], settled under [#47]); sink creation settings
   2026-07-27 ([#153]); [#140] closed as not needed 2026-08-09; explicit service-account key
   file 2026-08-12 ([#139]); SQL ordering-key routing 2026-08-12 ([#143]); multi-subscription
-  auto-creation 2026-08-12 ([#152])
-- Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153]
+  auto-creation 2026-08-12 ([#152]); the no-restated-default rule generalized by [#1045]
+  (2026-08-23)
+- Issues: [#47] (split into [#135]–[#138]), [#139], [#140], [#143], [#152], [#153], [#1045]
 - Modules: pubsub (`table`, `table.sink`, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/pubsub.md`
+
+[ADR-0139](0139-an-option-description-never-restates-a-default.md) generalizes the
+no-restated-default rule below — including its description half — to every connector ([#1045]).
+Nothing here is reversed; this ADR remains the Pub/Sub record.
 
 ## Decision
 
@@ -192,3 +197,4 @@ with the real-GCP suite ([#82]).
 [#143]: https://github.com/laughingman7743/flink-connector-gcp/issues/143
 [#152]: https://github.com/laughingman7743/flink-connector-gcp/issues/152
 [#153]: https://github.com/laughingman7743/flink-connector-gcp/issues/153
+[#1045]: https://github.com/flink-gcp/flink-connector-gcp/issues/1045

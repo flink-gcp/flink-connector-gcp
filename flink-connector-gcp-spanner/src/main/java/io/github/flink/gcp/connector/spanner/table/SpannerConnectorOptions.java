@@ -29,7 +29,18 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
-/** The {@code WITH} options of the {@code spanner} table connector. */
+/**
+ * The {@code WITH} options of the {@code spanner} table connector.
+ *
+ * <p>A mapped option is declared without a default — its default lives on the connector's own
+ * builder and is applied by not calling the setter. The exceptions are recorded by {@code
+ * SpannerConnectorOptionsTest}: table-owned selectors the factory reads with {@code get()}, and
+ * three change-stream knobs whose {@code defaultValue()} references the builder's own constant. No
+ * description restates a default — a builder's, an option's own {@code defaultValue()}, or the
+ * value absence selects: the reference and table docs pages carry a default with its derivation,
+ * and a test rejects the restatement phrases. A failure absence selects ("unset fails the source")
+ * is a contract, not a default, and stays.
+ */
 @PublicEvolving
 public final class SpannerConnectorOptions {
 
@@ -57,8 +68,7 @@ public final class SpannerConnectorOptions {
             ConfigOptions.key("schema")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription(
-                            "The named schema containing the table; unset uses the dialect's default schema.");
+                    .withDescription("The named schema containing the table.");
     public static final ConfigOption<Dialect> DIALECT =
             ConfigOptions.key("dialect")
                     .enumType(Dialect.class)
@@ -68,14 +78,13 @@ public final class SpannerConnectorOptions {
             ConfigOptions.key("emulator-endpoint")
                     .stringType()
                     .noDefaultValue()
-                    .withDescription(
-                            "The host:port of a Spanner emulator; unset uses the service.");
+                    .withDescription("The host:port of a Spanner emulator.");
     public static final ConfigOption<String> SERVICE_ACCOUNT_KEY_FILE =
             ConfigOptions.key("service-account-key-file")
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "The service-account JSON key-file path available to each runtime process; unset uses Application Default Credentials for the real service.");
+                            "The service-account JSON key-file path available to each runtime process.");
 
     public static final ConfigOption<List<String>> SCHEMA_JSON_FIELD_PATHS =
             ConfigOptions.key("schema.json-field-paths")
@@ -195,7 +204,7 @@ public final class SpannerConnectorOptions {
             ConfigOptions.key("scan.timestamp-bound.exact-staleness")
                     .durationType()
                     .noDefaultValue()
-                    .withDescription("How stale the read snapshot must be; unset means strong.");
+                    .withDescription("How stale the read snapshot must be.");
 
     public static final ConfigOption<Boolean> LOOKUP_ASYNC =
             ConfigOptions.key("lookup.async")

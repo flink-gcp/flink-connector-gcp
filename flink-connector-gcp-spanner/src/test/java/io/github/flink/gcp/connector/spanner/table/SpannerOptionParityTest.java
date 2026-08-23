@@ -25,7 +25,6 @@ import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBui
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
@@ -230,19 +229,8 @@ class SpannerOptionParityTest {
     }
 
     private static Set<String> declaredKeys() {
-        return Arrays.stream(SpannerConnectorOptions.class.getDeclaredFields())
-                .filter(field -> Modifier.isStatic(field.getModifiers()))
-                .filter(field -> ConfigOption.class.isAssignableFrom(field.getType()))
-                .map(SpannerOptionParityTest::option)
+        return DeclaredOptions.all().stream()
                 .map(ConfigOption::key)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-    }
-
-    private static ConfigOption<?> option(Field field) {
-        try {
-            return (ConfigOption<?>) field.get(null);
-        } catch (IllegalAccessException e) {
-            throw new AssertionError(e);
-        }
     }
 }

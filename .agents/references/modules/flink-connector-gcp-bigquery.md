@@ -236,11 +236,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   carry their upstream fixes — per-deviation status and the canary trigger
   (`BigQueryEmulatorMissingTableDeviationITCase`) are in `docs/adr/0029`.
 
-## Table API / SQL (`docs/adr/0031`–`0033`, `0035`; shared rules `docs/adr/0014`)
+## Table API / SQL (`docs/adr/0031`–`0033`, `0035`; shared rules `docs/adr/0014`, `docs/adr/0139`)
 
 - A single option value a DataStream builder rejects is renamed to its option key through the
   module's `table.OptionSetters` (`docs/adr/0133`); a new mapper line goes through it, and
   cross-field checks keep the restate-in-DDL-keys judgment (`docs/adr/0007`).
+- No option carries a Flink default and no description restates one — a declared default, a
+  derived one, or the value absence selects (`docs/adr/0139`). `BigQueryConnectorOptionsTest`
+  holds both halves; `reference/bigquery.md` carries a default with its derivation, the
+  FILE_LOADS location derivation included. A guard failure edits the description, not the test.
 - The factory serves both directions.
   A sink and direct table source require `project`, `dataset`, and `table`; `source.query` requires
   either `project` or `source.parent-project` and is mutually exclusive with

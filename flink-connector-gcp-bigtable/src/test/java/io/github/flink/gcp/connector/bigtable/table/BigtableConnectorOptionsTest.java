@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.description.HtmlFormatter;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
 
 import org.junit.jupiter.api.Test;
@@ -122,12 +123,50 @@ class BigtableConnectorOptionsTest {
         // option this layer owns has no such original, so any Table API default belongs here.
         // scan.change-stream.changelog-mode is the required table-owned exception: users must
         // explicitly select one of the changelog modes.
+        assertThat(declaredOptions()).isNotEmpty();
         assertThat(declaredOptions())
                 .allSatisfy(
                         option ->
                                 assertThat(option.hasDefaultValue())
                                         .as("option '%s' carries a default", option.key())
                                         .isEqualTo(DEFAULTED_TABLE_OWNED.contains(option.key())));
+    }
+
+    @Test
+    void noDescriptionRestatesADefault() {
+        // The other half of the rule above, and the half a ConfigOption cannot express: a default
+        // written into prose — a builder's, a table-owned option's own defaultValue(), or the
+        // value absence selects — is a second copy that nothing keeps in step. The phrases are the
+        // restatement forms the #1045 cross-module sweep found, shared by every connector's guard;
+        // a regression guard over those forms, not a semantic parser for arbitrary prose.
+        //
+        // When this fires, the description is what changes. reference/bigtable.md is where a
+        // mapped option's default is written — a derived one included, carrying both its
+        // derivation and its resolved value — and the table page's option row is where a
+        // table-owned option's default is written.
+        HtmlFormatter formatter = new HtmlFormatter();
+        assertThat(declaredOptions()).isNotEmpty();
+        assertThat(declaredOptions())
+                .allSatisfy(
+                        option ->
+                                assertThat(formatter.format(option.description()))
+                                        .as(
+                                                "option '%s' restates a default; the bigtable"
+                                                        + " reference or table docs page is where"
+                                                        + " a default is written",
+                                                option.key())
+                                        .doesNotContainIgnoringCase("by default")
+                                        .doesNotContainIgnoringCase("defaults to")
+                                        .doesNotContainIgnoringCase("when unset")
+                                        .doesNotContainIgnoringCase("unset means")
+                                        .doesNotContainIgnoringCase("when absent")
+                                        .doesNotContainIgnoringCase("absent uses")
+                                        .doesNotContainIgnoringCase("absent,")
+                                        .doesNotContainIgnoringCase("unset uses")
+                                        .doesNotContainIgnoringCase("unset keeps")
+                                        .doesNotContainIgnoringCase("unset leaves")
+                                        .doesNotContainIgnoringCase("is the default")
+                                        .doesNotContainIgnoringCase("and the default"));
     }
 
     @Test

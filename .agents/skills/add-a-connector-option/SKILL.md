@@ -30,6 +30,11 @@ public static final ConfigOption<String> SINK_LOCATION =
 - **The key is the user's vocabulary**, dotted and kebab-cased: `sink.file-loads.temp-dataset`,
   `scan.startup.mode`. Match a sibling connector's spelling for the same concept — that consistency
   is what [#782](https://github.com/flink-gcp/flink-connector-gcp/issues/782) reviews.
+- **The description never restates a default** (ADR-0139) — not a declared one, not a derived one,
+  not the value absence selects ("uses ADC when unset"). Those belong in the reference row; the
+  module's `*ConnectorOptionsTest.noDescriptionRestatesADefault` rejects the known restatement
+  phrases, and a mapped option is `noDefaultValue()` unless that test's recorded exceptions say
+  otherwise.
 - **Register it** in the factory's `optionalOptions()` or `requiredOptions()`. An unregistered key
   makes `FactoryUtil` reject the whole `WITH` clause as unknown.
 - **A `Duration` that becomes nanoseconds is bounded** at `Duration.ofNanos(Long.MAX_VALUE)` through

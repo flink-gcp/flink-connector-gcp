@@ -42,7 +42,10 @@ import java.util.List;
  *       default to copy: some define a Table API default, while {@link
  *       #SCAN_CHANGE_STREAM_CHANGELOG_MODE} is deliberately required so selecting either Change
  *       Streams interpretation stays explicit. The parity test records that separate partition
- *       rather than treating any of its options as builder setters.
+ *       rather than treating any of its options as builder setters. No default is restated in a
+ *       description either — a builder's, a table-owned option's own {@code defaultValue()}, or the
+ *       value absence selects: the reference and table docs pages carry a default with its
+ *       derivation, and a test rejects the restatement phrases.
  *   <li><b>Byte-valued options are {@code MemorySize}</b>, converted to a {@code long} in the
  *       mapper that applies them, so the type never reaches the connector's public API.
  *   <li><b>A bounded row has no {@code format} option.</b> Its rowkey, family, and qualifier schema
@@ -101,8 +104,7 @@ public final class BigtableConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "A service-account JSON key-file path read by each Bigtable runtime"
-                                    + " component that opens a client. Uses application-default"
-                                    + " credentials when unset and cannot be combined with"
+                                    + " component that opens a client. Cannot be combined with"
                                     + " emulator-endpoint.");
 
     // ------------------------------------------------------------------------
@@ -129,8 +131,8 @@ public final class BigtableConnectorOptions {
                             "What a read does with a fixed-width cell or row key longer than the"
                                     + " declared type's layout — the integral, floating-point,"
                                     + " temporal and interval types. IGNORE decodes the declared"
-                                    + " width and discards the rest, which is HBase's rule and the"
-                                    + " default; REJECT fails the read instead, so a value written"
+                                    + " width and discards the rest, which is HBase's rule;"
+                                    + " REJECT fails the read instead, so a value written"
                                     + " under a different encoding cannot silently decode as its"
                                     + " prefix. A BOOLEAN value of any size but one byte fails"
                                     + " under either setting, which is also HBase's rule; a"
@@ -266,9 +268,7 @@ public final class BigtableConnectorOptions {
             ConfigOptions.key("scan.startup.mode")
                     .enumType(ChangeStreamStartMode.class)
                     .noDefaultValue()
-                    .withDescription(
-                            "Where a fresh Change Streams source starts. Unset leaves the"
-                                    + " DataStream builder's latest position unchanged.");
+                    .withDescription("Where a fresh Change Streams source starts.");
 
     public static final ConfigOption<Long> SCAN_STARTUP_TIMESTAMP_MILLIS =
             ConfigOptions.key("scan.startup.timestamp-millis")
@@ -298,8 +298,8 @@ public final class BigtableConnectorOptions {
                     .longType()
                     .noDefaultValue()
                     .withDescription(
-                            "Stop a Change Streams source after this epoch-millisecond instant."
-                                    + " Unset keeps the source continuous and unbounded.");
+                            "Stop a Change Streams source after this epoch-millisecond"
+                                    + " instant.");
 
     public static final ConfigOption<Integer> SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK =
             ConfigOptions.key("scan.max-concurrent-streams-per-subtask")
@@ -307,7 +307,7 @@ public final class BigtableConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The maximum open Change Streams partition reads in each source"
-                                    + " subtask. Unset keeps the DataStream builder default.");
+                                    + " subtask.");
 
     // ------------------------------------------------------------------------
     //  Lookup
@@ -352,7 +352,7 @@ public final class BigtableConnectorOptions {
                     .withDescription(
                             "What changelog mode the sink advertises when the requested input"
                                     + " contains inserts alone. 'upsert' exposes Flink conflict"
-                                    + " strategies and is the default. 'insert-only' keeps a plain"
+                                    + " strategies. 'insert-only' keeps a plain"
                                     + " INSERT portable when an ON CONFLICT clause is unavailable,"
                                     + " but disables that clause for the statement.");
 
@@ -362,10 +362,10 @@ public final class BigtableConnectorOptions {
                     .defaultValue(false)
                     .withDescription(
                             "Whether a writable 'timestamp' metadata value loses its"
-                                    + " sub-millisecond part before being sent. Disabled by"
-                                    + " default, so the connector never changes an explicit"
-                                    + " timestamp without an opt-in; Bigtable then rejects a"
-                                    + " value that does not match its millisecond granularity.");
+                                    + " sub-millisecond part before being sent. The connector"
+                                    + " never changes an explicit timestamp without an opt-in,"
+                                    + " and Bigtable rejects a value that does not match its"
+                                    + " millisecond granularity.");
 
     public static final ConfigOption<Integer> SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS =
             ConfigOptions.key("sink.table-create.gc-rule.max-versions")

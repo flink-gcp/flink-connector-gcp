@@ -177,7 +177,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The emulator never answers the keepalive ping — idle streams cycle ~every 20 s and the log
   line is routine, not a fault (`docs/adr/0013`).
 
-## Table API / SQL (`docs/adr/0014`)
+## Table API / SQL (`docs/adr/0014`; no-restated-default repo-wide since `docs/adr/0139`)
 
 - The `table` layer maps onto the DataStream builders, never re-implements: one `ConfigOption`
   per setter, applied through `OptionSetters` (`docs/adr/0133`), no default restated, enums carry their DDL
@@ -185,8 +185,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   "No default restated" covers the *description* as well as `defaultValue()`, and covers a
   derived default too — `reference/pubsub.md` carries the derivation and the resolved value.
   `PubSubConnectorOptionsTest` checks the `ConfigOption` half directly and guards the description
-  half through the default-restatement phrases found in this file. A failure there is the rule
-  speaking (#866). Correct the description, not the test.
+  half through the restatement phrases; since #1045 the phrase list is shared by all five
+  connectors' guards (`docs/adr/0139`) and a new form extends them together. A failure there is
+  the rule speaking (#866). Correct the description, not the test.
 - No `properties.*` passthrough; metadata is not forwarded to formats;
   `applyReadableMetadata` is guarded on the format *declaring* metadata. When writable
   `ordering-key` metadata is selected, the table sink inserts keyed routing before the writer;

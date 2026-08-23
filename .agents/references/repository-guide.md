@@ -806,6 +806,15 @@ connector gets its own module file rather than a section here.
   rather than being copied for symmetry. The gap-by-gap review table is the #1044 artifact
   posted on #782.
 
+- **An option description never restates a default** (#1045; `docs/adr/0139`): a mapped
+  `ConfigOption` carries no `defaultValue()` (each module's `*ConnectorOptionsTest` records its
+  exceptions), and no description states a declared default, a derived one, or the value absence
+  selects — the reference and table docs pages carry those. Every module's `noDescriptionRestatesADefault`
+  rejects the same phrase list; when it fires, the description is what changes, and a new
+  restatement form extends all five guards in one change. The three prose classes outside the
+  rule (absence-imposed constraint, per-row-overridable role naming, default provenance) are in
+  the ADR.
+
 - **A seam the enumerator closes is minted per enumerator; a seam with no teardown may stay on the
   configuration** (#990; `docs/adr/0128`): the JobManager holds one `Source` object for a job's
   whole life — `RecreateOnResetOperatorCoordinator` rebuilds the coordinator from the same

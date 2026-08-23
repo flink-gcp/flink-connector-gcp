@@ -106,8 +106,13 @@ class PubSubConnectorOptionsTest {
     void noOptionCarriesADefault() {
         // The connector's defaults live in PubSubPublisherOptions, and are applied by not calling a
         // setter. A default here would be a second copy that nothing keeps in step.
+        assertThat(declaredOptions()).isNotEmpty();
         assertThat(declaredOptions())
-                .allSatisfy(option -> assertThat(option.hasDefaultValue()).isFalse());
+                .allSatisfy(
+                        option ->
+                                assertThat(option.hasDefaultValue())
+                                        .as("option '%s' carries a default", option.key())
+                                        .isFalse());
     }
 
     @Test
@@ -120,9 +125,11 @@ class PubSubConnectorOptionsTest {
         // The first two phrases are the ones those three used ("Off by default:", "Defaults to
         // twice the effective flow-control message limit", "Defaults to twice the effective
         // flow-control byte limit"). A later review found two descriptions that still stated the
-        // absent-value behaviour as "when unset" and "Unset means" while this test passed. Match
-        // those forms too, but not the bare word: "application-default" can name a credential kind
-        // without saying that it is the option's default.
+        // absent-value behaviour as "when unset" and "Unset means" while this test passed. The
+        // #1045 cross-module sweep then found the remaining eight forms in the sibling connectors'
+        // options classes; every module now rejects the same twelve. Match the forms, but not the
+        // bare word: "application-default" can name a credential kind without saying that it is
+        // the option's default.
         //
         // When this fires, the description is what changes. reference/pubsub.md is where a default
         // is written — a derived one included, carrying both its derivation and its resolved
@@ -143,6 +150,14 @@ class PubSubConnectorOptionsTest {
                                         .doesNotContainIgnoringCase("by default")
                                         .doesNotContainIgnoringCase("defaults to")
                                         .doesNotContainIgnoringCase("when unset")
-                                        .doesNotContainIgnoringCase("unset means"));
+                                        .doesNotContainIgnoringCase("unset means")
+                                        .doesNotContainIgnoringCase("when absent")
+                                        .doesNotContainIgnoringCase("absent uses")
+                                        .doesNotContainIgnoringCase("absent,")
+                                        .doesNotContainIgnoringCase("unset uses")
+                                        .doesNotContainIgnoringCase("unset keeps")
+                                        .doesNotContainIgnoringCase("unset leaves")
+                                        .doesNotContainIgnoringCase("is the default")
+                                        .doesNotContainIgnoringCase("and the default"));
     }
 }
