@@ -41,9 +41,13 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
 - `just check-readme-examples`: check module README Java examples against compiled source.
-- `just check-doc-snippets`: check and compile source-backed Java examples rendered in the docs,
-  module READMEs, and public Javadoc.
+- `just check-doc-snippets`: build the production Hugo site, check and compile source-backed Java
+  examples rendered in the docs, module READMEs, and public Javadoc, and plan source-backed Flink
+  SQL examples.
+- `just check-doc-sql-snippets`: run `just check-doc-snippets`, then execute source-backed GoogleSQL
+  examples against the Spanner emulator.
 - `just test-java-snippet-shortcode`: test the Hugo shortcode against synthetic fixtures.
+- `just test-sql-snippet-shortcode`: test the SQL Hugo shortcode against synthetic fixtures.
 - `just lint`: lint scripts, workflows, rendered Markdown, and OpenTofu.
 - `just test-scripts`: run the Python checker test suite.
 - `just check-skill-frontmatter`: validate all repository skills and the Claude compatibility
@@ -71,6 +75,9 @@ green; use the clean-state procedures in that guide for such changes.
 - Before adding or changing a public Javadoc code block, or for a Javadoc-specific
   `just check-doc-snippets` failure, use `$maintain-javadoc-examples`. Runnable blocks map to exact
   compiled backing regions; abbreviated blocks are visibly classified and explain their omission.
+- Before adding or changing an SQL block in an examples or quickstart page, changing the
+  `sql-snippet` shortcode or a tagged SQL source, or responding to an SQL snippet validation
+  failure, use `$maintain-doc-sql-snippets`.
 - A Javadoc reference to a method carries its parameter list: `{@link Type#member(ParamType)}`.
   Without one it binds a same-named field first and renders no anchor, which the javadoc build does
   not report. Only a public or protected field is linkable at all; where the sentence means

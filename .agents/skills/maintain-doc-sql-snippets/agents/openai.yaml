@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintain SQL Doc Snippets"
+  short_description: "Maintain planned and emulator-tested SQL examples"
+  default_prompt: "Use $maintain-doc-sql-snippets to add or update an SQL example in the documentation."

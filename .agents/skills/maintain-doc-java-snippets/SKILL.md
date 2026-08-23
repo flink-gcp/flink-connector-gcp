@@ -69,7 +69,8 @@ outside the markers, where it is not published.
 
 The source-backed snippet contract is recorded in
 `docs/adr/0115-runnable-documentation-snippets-render-one-exact-region-from-compiled-java-sources.md`.
-Preserve these boundaries when changing `docs/layouts/_shortcodes/java-snippet.html`:
+Preserve these boundaries when changing `docs/layouts/_shortcodes/java-snippet.html` or the shared
+`docs/layouts/_partials/tagged-snippet.html`:
 
 - Require non-empty named `file` and `tag` arguments and resolve the source from Hugo assets.
 - Recognize marker-only lines by exact equality after trimming whitespace. Require exactly one
@@ -80,6 +81,9 @@ Preserve these boundaries when changing `docs/layouts/_shortcodes/java-snippet.h
   before highlighting. Preserve the lines' relative indentation and all other whitespace.
 - After argument validation, keep failures actionable by naming the fixture page position, source
   file and tag, plus the observed marker count when it distinguishes the failure.
+
+The shared partial also renders SQL snippets. Run both shortcode fixture suites after changing it
+so a Java repair cannot regress SQL rendering.
 
 Extend `docs/tests/fixtures/java-snippet/` when changing rendering or a validation branch. The
 fixture site must mount the repository shortcode rather than copy its parsing logic, and its pages
@@ -149,6 +153,7 @@ just format
 just check-readme-examples
 just check-doc-snippets
 just test-java-snippet-shortcode
+just test-sql-snippet-shortcode
 just docs
 ```
 

@@ -32,50 +32,13 @@ behaves as it does is on the
 A processing-time temporal join turns each facts row into a Spanner point read.
 Create and seed the physical table in the quickstart's `orders-db` database first:
 
-```sql
-CREATE TABLE accounts (
-  region STRING(16) NOT NULL,
-  account INT64 NOT NULL,
-  name STRING(128)
-) PRIMARY KEY (region, account);
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="accounts-table-and-row" >}}
 
-INSERT INTO accounts (region, account, name)
-VALUES ('us', 1, 'Ada');
-```
+The one-row data generator below derives the demo region `region-1` from account `1`, so it
+deterministically produces the seeded key. Real event tables normally carry both key columns as
+physical fields.
 
-The Flink facts table below deterministically produces that key:
-
-```sql
-CREATE TABLE account_events (
-  account BIGINT,
-  region AS 'us',
-  proc_time AS PROCTIME()
-) WITH (
-  'connector' = 'datagen',
-  'number-of-rows' = '1',
-  'fields.account.kind' = 'sequence',
-  'fields.account.start' = '1',
-  'fields.account.end' = '1'
-);
-
-CREATE TABLE accounts (
-  region STRING,
-  account BIGINT,
-  name STRING,
-  PRIMARY KEY (region, account) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'table' = 'accounts'
-);
-
-SELECT e.region, e.account, a.name
-FROM account_events AS e
-LEFT JOIN accounts FOR SYSTEM_TIME AS OF e.proc_time AS a
-  ON e.account = a.account AND e.region = a.region;
-```
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="lookup-join" >}}
 
 The equality condition must cover every declared primary-key column.
 The join predicates may appear in either order, but the connector encodes the lookup key in the `PRIMARY KEY (region, account)` declaration order.
@@ -88,46 +51,9 @@ This bounded aggregation emits one final row for each composite key:
 
 Create its physical destination in `orders-db` first:
 
-```sql
-CREATE TABLE account_status (
-  region STRING(16) NOT NULL,
-  account INT64 NOT NULL,
-  status STRING(64)
-) PRIMARY KEY (region, account);
-```
+{{< sql-snippet file="spanner/SpannerGoogleSqlExamples.sql" tag="account-status-table" >}}
 
-```sql
-SET 'execution.runtime-mode' = 'batch';
-
-CREATE TABLE status_events (
-  region STRING,
-  account BIGINT,
-  status STRING
-) WITH (
-  'connector' = 'datagen',
-  'number-of-rows' = '1000',
-  'fields.region.length' = '16',
-  'fields.status.length' = '64'
-);
-
-CREATE TABLE account_status (
-  region STRING,
-  account BIGINT,
-  status STRING,
-  PRIMARY KEY (region, account) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'table' = 'account_status'
-);
-
-INSERT INTO account_status
-SELECT region, account, MAX(status)
-FROM status_events
-GROUP BY region, account;
-```
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="batch-upsert" >}}
 
 Without the Flink `PRIMARY KEY` declaration, the connector accepts only insert-only input and uses Spanner `insert` instead.
 The declaration is a planner contract; it does not create or verify the physical key.
@@ -250,32 +176,7 @@ Collector calls must be synchronous, must emit non-null records, and must not co
 Readable metadata keeps Spanner's transaction and record identity beside the relational changelog row.
 The names match Debezium's Spanner source vocabulary where it exposes the same Spanner fields, which makes an existing Debezium pipeline's grouping model reusable.
 
-```sql
-CREATE TABLE order_changes (
-  order_id BIGINT,
-  status STRING,
-  commit_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
-  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
-  server_transaction_id STRING METADATA FROM 'server-transaction-id' VIRTUAL,
-  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
-  records_in_transaction BIGINT
-    METADATA FROM 'number-of-records-in-transaction' VIRTUAL,
-  PRIMARY KEY (order_id) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'table' = 'orders',
-  'scan.mode' = 'change-stream',
-  'scan.change-stream.name' = 'order_changes',
-  'scan.change-stream.changelog-mode' = 'upsert'
-);
-
-SELECT server_transaction_id, record_sequence, mod_number,
-       records_in_transaction, order_id, status
-FROM order_changes;
-```
+{{< sql-snippet file="flink/SpannerExamples.sql" tag="change-stream-source" >}}
 
 `mod_number` starts at zero for each original data-change record.
 In `full` mode, the before and after rows for one update deliberately carry the same value.

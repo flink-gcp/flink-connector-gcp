@@ -4,9 +4,10 @@ name: Docs
 # no filter at all — a broken site build reddens the required `CI passed`
 # gate there. The push-side paths filter below decides two things: whether a
 # push to main spends a run, and — since #93 — whether it republishes the
-# site. A site input missing from the filter therefore leaves the published
-# site stale rather than merely unverified, which is why every input the
-# build reads is listed, including the generated API reference's.
+# site. A site or source-backed-example input missing from the filter therefore
+# leaves the published site stale rather than merely unverified, which is why
+# each input that can change those outputs is listed, including the generated
+# API reference's.
 on:
   workflow_call:
   push:
@@ -23,6 +24,7 @@ on:
       # This helper runs the synthetic fixture site below; docs/** already
       # carries the fixtures and repository shortcode it exercises.
       - 'scripts/test-java-snippet-shortcode.sh'
+      - 'scripts/test-sql-snippet-shortcode.sh'
       - '.github/workflows/docs.yaml'
       # The site contains a generated API reference (#88), so the main sources
       # and the Maven build are inputs to it exactly as docs/ is — the same rule
@@ -38,6 +40,14 @@ on:
       # Source-backed Java examples live in an internal test-only module rather
       # than below docs/, so their push must run both compilation and rendering.
       - 'flink-connector-gcp-docs-validation/src/test/**'
+      # Spanner GoogleSQL examples are executed against the emulator from
+      # their source regions before Hugo renders them. These resources, the
+      # named test, and its emulator base define that documentation boundary.
+      # Other Spanner test sources are reactor compilation collateral rather
+      # than inputs that change the site or its source-backed examples.
+      - 'flink-connector-gcp-spanner/src/test/resources/sql-snippets/**'
+      - 'flink-connector-gcp-spanner/src/test/java/io/github/flink/gcp/connector/spanner/SpannerDocumentationSqlITCase.java'
+      - 'flink-connector-gcp-spanner/src/test/java/io/github/flink/gcp/connector/spanner/AbstractSpannerEmulatorITCase.java'
       # Module READMEs retain ordinary fences for GitHub, and the checker keeps
       # those copies synchronized with compiled sources.
       - 'flink-*/README.md'
@@ -141,23 +151,20 @@ jobs:
       - name: Generate API reference
         run: just docs-javadoc
 
-      # This also checks the exact source backing of runnable README and public
-      # Javadoc examples.
-      # See the maintain-doc-java-snippets and maintain-javadoc-examples skills.
-      - name: Check and compile Java snippets
-        run: just check-doc-snippets
+      # This also checks the exact source backing of runnable Java guidance and
+      # plans or executes every source-backed SQL example.
+      # See the maintain-doc-java-snippets, maintain-javadoc-examples and
+      # maintain-doc-sql-snippets skills.
+      - name: Check documentation snippets
+        run: just check-doc-sql-snippets
 
       # Exercise the repository shortcode against synthetic pages and Java
       # sources, including every validation failure branch.
       - name: Test Java snippet shortcode
         run: just test-java-snippet-shortcode
 
-      # --panicOnWarning turns deprecations, unresolved relrefs and missing
-      # shortcodes into build failures. On a pull request that is the whole
-      # point of this job; on a push to main the same output is what gets
-      # published.
-      - name: Build
-        run: just docs
+      - name: Test SQL snippet shortcode
+        run: just test-sql-snippet-shortcode
 
       # Uploaded from this job rather than rebuilt in `deploy` because
       # docs/public is only complete when `just docs-javadoc` ran first, in

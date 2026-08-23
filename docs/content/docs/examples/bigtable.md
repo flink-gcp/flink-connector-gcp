@@ -34,23 +34,7 @@ The quickstart creates the instance but not this table, so create the physical t
 cbt -project my-project -instance my-instance createtable profiles families=profile,usage
 ```
 
-```sql
-CREATE TABLE profiles (
-  rowkey STRING,
-  profile ROW<name STRING, email STRING>,
-  usage ROW<requests BIGINT, last_seen TIMESTAMP_LTZ(3)>,
-  PRIMARY KEY (rowkey) NOT ENFORCED
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profiles'
-);
-
-SELECT rowkey, profile.name, usage.last_seen
-FROM profiles
-WHERE rowkey >= 'customer#1000' AND rowkey < 'customer#2000';
-```
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="batch-source" >}}
 
 The row-key bounds are pushed into the scan.
 The family projection is pushed down separately.
@@ -61,21 +45,7 @@ Selecting any field from `profile` reads that whole family; the connector discar
 A processing-time temporal join turns each input row into a Bigtable point read.
 This example reuses the `profiles` table above and adds a generated facts table with a processing-time column:
 
-```sql
-CREATE TABLE events (
-  event_id STRING,
-  user_id STRING,
-  proc_time AS PROCTIME()
-) WITH (
-  'connector' = 'datagen',
-  'number-of-rows' = '100'
-);
-
-SELECT e.event_id, e.user_id, p.profile.name
-FROM events AS e
-LEFT JOIN profiles FOR SYSTEM_TIME AS OF e.proc_time AS p
-  ON e.user_id = p.rowkey;
-```
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="lookup-join" >}}
 
 The equality condition must cover the single Bigtable row-key column.
 Bigtable has one atomic row key, so the connector rejects composite lookup keys and nested family fields as lookup keys.
@@ -88,61 +58,7 @@ The physical columns carry the row key and the ordered mutation entries, while v
 Before running the query, enable Change Streams on the physical `profiles` table and create the single-cluster routing application profile named `single-cluster-profile`.
 The SQL DDL registers a Flink table but does not provision either prerequisite.
 
-```sql
-CREATE TABLE profile_mutations (
-  row_key BYTES,
-  entries ARRAY<ROW<
-    entry_index INT,
-    kind STRING,
-    family STRING,
-    qualifier ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
-    `timestamp` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
-    `value` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
-    delete_range ROW<
-      start_bound STRING,
-      start_micros BIGINT,
-      end_bound STRING,
-      end_micros BIGINT
-    >
-  >>,
-  mutation_type STRING NOT NULL
-    METADATA FROM 'mutation-type' VIRTUAL,
-  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL
-    METADATA FROM 'commit-timestamp' VIRTUAL,
-  source_cluster_id STRING
-    METADATA FROM 'source-cluster-id' VIRTUAL
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profiles',
-  'scan.mode' = 'change-stream',
-  'scan.change-stream.changelog-mode' = 'envelope',
-  'scan.app-profile-id' = 'single-cluster-profile'
-);
-
-SELECT
-  row_key,
-  mutation_type,
-  commit_timestamp,
-  entry_index,
-  kind,
-  family,
-  qualifier,
-  entry_timestamp,
-  entry_value,
-  delete_range
-FROM profile_mutations
-CROSS JOIN UNNEST(entries) AS entry_table(
-  entry_index,
-  kind,
-  family,
-  qualifier,
-  entry_timestamp,
-  entry_value,
-  delete_range
-);
-```
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="change-stream-envelope" >}}
 
 The `entries` array preserves the service order, and `entry_index` preserves that position after `UNNEST`.
 The envelope is a mutation record rather than a reconstructed current row, so deletes also arrive as inserted envelope rows.
@@ -159,33 +75,7 @@ Create the destination table before submitting the statement:
 cbt -project my-project -instance my-instance createtable profile-totals families=stats
 ```
 
-```sql
-SET 'execution.runtime-mode' = 'batch';
-
-CREATE TABLE order_events (
-  user_id STRING,
-  amount BIGINT
-) WITH (
-  'connector' = 'datagen',
-  'number-of-rows' = '1000'
-);
-
-CREATE TABLE profile_totals (
-  rowkey STRING,
-  stats ROW<order_count BIGINT, total_amount BIGINT>,
-  PRIMARY KEY (rowkey) NOT ENFORCED
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profile-totals'
-);
-
-INSERT INTO profile_totals
-SELECT user_id, ROW(COUNT(*), SUM(amount))
-FROM order_events
-GROUP BY user_id;
-```
+{{< sql-snippet file="flink/BigtableExamples.sql" tag="batch-upsert" >}}
 
 The aggregate's upsert key is `user_id`, which maps directly to the sink's `rowkey`, so Flink 2.3 can plan this statement without an `ON CONFLICT` clause.
 Flink 2.3 requires an `ON CONFLICT DO DEDUPLICATE`, `DO ERROR`, or `DO NOTHING` strategy when the query key differs from the sink key or the planner cannot infer one.

@@ -197,6 +197,9 @@ printf '%s\n' \
     '  [[module.mounts]]' \
     "    source = \"${repository_root}/docs/layouts/_shortcodes\"" \
     '    target = "layouts/_shortcodes"' \
+    '  [[module.mounts]]' \
+    "    source = \"${repository_root}/docs/layouts/_partials\"" \
+    '    target = "layouts/_partials"' \
     >"${blank_fixture_root}/hugo.toml"
 printf '%s\n' \
     '---' \

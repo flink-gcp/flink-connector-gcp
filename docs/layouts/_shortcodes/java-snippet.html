@@ -14,81 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */}}
 {{/*
-The source-backed Java snippet contract is ADR-0115 under docs/adr/. Before changing this template,
-follow .agents/skills/maintain-doc-java-snippets and run the synthetic fixture suite.
+The source-backed Java snippet contract is ADR-0115 under docs/adr/. Before changing this wrapper,
+follow .agents/skills/maintain-doc-java-snippets. A shared-partial change follows both snippet
+skills and runs both synthetic fixture suites.
 */}}
-{{- $file := .Get "file" -}}
-{{- $tag := .Get "tag" -}}
-{{- if or (not $file) (not $tag) -}}
-  {{- errorf "%s: java-snippet requires non-empty named file and tag arguments" .Position -}}
-{{- else -}}
-  {{- $resourcePath := printf "java-snippets/%s" $file -}}
-  {{- $resource := resources.Get $resourcePath -}}
-  {{- if not $resource -}}
-    {{- errorf "%s: java-snippet file %q for tag %q was not found" .Position $file $tag -}}
-  {{- else -}}
-    {{- $source := $resource.Content -}}
-    {{- $start := printf "// tag::%s[]" $tag -}}
-    {{- $end := printf "// end::%s[]" $tag -}}
-    {{- $lines := strings.Split $source "\n" -}}
-    {{- $startCount := 0 -}}
-    {{- $endCount := 0 -}}
-    {{- $startLine := -1 -}}
-    {{- $endLine := -1 -}}
-    {{- range $lineNumber, $line := $lines -}}
-      {{- $trimmedLine := strings.TrimSpace $line -}}
-      {{- if eq $trimmedLine $start -}}
-        {{- $startCount = add $startCount 1 -}}
-        {{- $startLine = $lineNumber -}}
-      {{- else if eq $trimmedLine $end -}}
-        {{- $endCount = add $endCount 1 -}}
-        {{- $endLine = $lineNumber -}}
-      {{- end -}}
-    {{- end -}}
-    {{- if ne $startCount 1 -}}
-      {{- errorf "%s: java-snippet file %q must contain exactly one start marker for tag %q; found %d" .Position $file $tag $startCount -}}
-    {{- else if ne $endCount 1 -}}
-      {{- errorf "%s: java-snippet file %q must contain exactly one end marker for tag %q; found %d" .Position $file $tag $endCount -}}
-    {{- else if le $endLine $startLine -}}
-      {{- errorf "%s: java-snippet file %q has the end marker before the start marker for tag %q" .Position $file $tag -}}
-    {{- else -}}
-      {{- $snippetLineCount := sub $endLine (add $startLine 1) -}}
-      {{- $snippetLines := collections.First $snippetLineCount (collections.After (add $startLine 1) $lines) -}}
-      {{- $hasContent := false -}}
-      {{- $commonIndent := "" -}}
-      {{- range $line := $snippetLines -}}
-        {{- if strings.TrimSpace $line -}}
-          {{- $lineIndent := replaceRE "^([[:blank:]]*).*" "$1" $line -}}
-          {{- if not $hasContent -}}
-            {{- $hasContent = true -}}
-            {{- $commonIndent = $lineIndent -}}
-          {{- else if $commonIndent -}}
-            {{- $matchedIndentLength := 0 -}}
-            {{- range $index, $_ := strings.Split $commonIndent "" -}}
-              {{- $candidateLength := add $index 1 -}}
-              {{- $candidate := substr $commonIndent 0 $candidateLength -}}
-              {{- if strings.HasPrefix $lineIndent $candidate -}}
-                {{- $matchedIndentLength = $candidateLength -}}
-              {{- end -}}
-            {{- end -}}
-            {{- $commonIndent = substr $commonIndent 0 $matchedIndentLength -}}
-          {{- end -}}
-        {{- end -}}
-      {{- end -}}
-      {{- if not $hasContent -}}
-        {{- errorf "%s: java-snippet file %q has an empty region for tag %q" .Position $file $tag -}}
-      {{- else -}}
-        {{- $normalizedLines := slice -}}
-        {{- range $line := $snippetLines -}}
-          {{- if strings.TrimSpace $line -}}
-            {{- $normalizedLines = $normalizedLines | append (strings.TrimPrefix $commonIndent $line) -}}
-          {{- else -}}
-            {{- $normalizedLines = $normalizedLines | append $line -}}
-          {{- end -}}
-        {{- end -}}
-        {{- $snippet := delimit $normalizedLines "\n" -}}
-        {{- transform.Highlight $snippet "java" -}}
-      {{- end -}}
-    {{- end -}}
-  {{- end -}}
-{{- end -}}
+{{- partial "tagged-snippet.html" (dict
+  "file" (.Get "file")
+  "kind" "java-snippet"
+  "lexer" "java"
+  "markerPrefix" "//"
+  "position" .Position
+  "resourceDirectory" "java-snippets"
+  "tag" (.Get "tag")) -}}

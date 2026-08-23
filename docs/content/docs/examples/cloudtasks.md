@@ -55,39 +55,7 @@ JSON derives its object shape from the physical table schema.
 This table includes a nested row, an array of rows, a map, a null value and text that requires JSON
 escaping.
 
-```sql
-CREATE TABLE json_tasks (
-  order_id STRING,
-  customer ROW<name STRING, city STRING>,
-  items ARRAY<ROW<sku STRING, quantity INT>>,
-  attributes MAP<STRING, STRING>,
-  note STRING,
-  request_headers MAP<STRING, STRING> METADATA FROM 'headers'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'orders',
-  'http.url' = 'https://api.example.com/orders',
-  'http.method' = 'POST',
-  'http.headers.Content-Type' = 'application/json',
-  'format' = 'json',
-  'json.encode.ignore-null-fields' = 'false'
-);
-
-INSERT INTO json_tasks
-VALUES (
-  'o-42',
-  CAST(ROW('Alice "A"', '東京') AS ROW<name STRING, city STRING>),
-  ARRAY[
-    CAST(ROW('book', 2) AS ROW<sku STRING, quantity INT>),
-    CAST(ROW('pen', 1) AS ROW<sku STRING, quantity INT>)
-  ],
-  MAP['priority', 'high'],
-  CAST(NULL AS STRING),
-  MAP['X-Trace-Id', 'trace-42']
-);
-```
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="nested-json" >}}
 
 The HTTP handler receives these UTF-8 bytes:
 
@@ -106,32 +74,7 @@ CSV derives one output record from the physical row.
 This table selects a pipe delimiter, the ordinary double-quote character and an explicit null
 literal.
 
-```sql
-CREATE TABLE csv_tasks (
-  order_id STRING,
-  note STRING,
-  missing_value STRING,
-  request_headers MAP<STRING, STRING> METADATA FROM 'headers'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'orders',
-  'http.url' = 'https://api.example.com/import',
-  'http.method' = 'POST',
-  'http.headers.Content-Type' = 'text/csv; charset=UTF-8',
-  'format' = 'csv',
-  'csv.field-delimiter' = '|',
-  'csv.quote-character' = '"',
-  'csv.null-literal' = 'NULL'
-);
-
-INSERT INTO csv_tasks
-SELECT '42',
-       U&'line 1 | "quoted"\000Aline 2',
-       CAST(NULL AS STRING),
-       MAP['X-Trace-Id', 'trace-42'];
-```
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="csv" >}}
 
 The body contains one line break inside the quoted second field and no line separator after
 `NULL`:
@@ -153,25 +96,7 @@ prepared by SQL or an upstream function.
 Writable metadata does not count toward the one-column boundary because the connector projects it
 out first.
 
-```sql
-CREATE TABLE raw_tasks (
-  body STRING,
-  request_headers MAP<STRING, STRING> METADATA FROM 'headers'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'orders',
-  'http.url' = 'https://api.example.com/text',
-  'http.method' = 'POST',
-  'http.headers.Content-Type' = 'text/plain; charset=UTF-16BE',
-  'format' = 'raw',
-  'raw.charset' = 'UTF-16BE'
-);
-
-INSERT INTO raw_tasks
-VALUES ('東京', MAP['X-Trace-Id', 'trace-42']);
-```
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="raw" >}}
 
 UTF-16BE encodes the body as four bytes:
 
@@ -189,27 +114,7 @@ connector policy.
 Avro derives its writer schema from the physical table schema and physical field order.
 Declare the fields `NOT NULL` when the receiving schema must not contain nullable unions.
 
-```sql
-CREATE TABLE avro_tasks (
-  order_id STRING NOT NULL,
-  quantity INT NOT NULL,
-  gift BOOLEAN NOT NULL,
-  request_headers MAP<STRING, STRING> METADATA FROM 'headers'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'orders',
-  'http.url' = 'https://api.example.com/avro-orders',
-  'http.method' = 'POST',
-  'http.headers.Content-Type' = 'application/octet-stream',
-  'format' = 'avro',
-  'avro.encoding' = 'binary'
-);
-
-INSERT INTO avro_tasks
-VALUES ('o-7', 3, TRUE, MAP['X-Trace-Id', 'trace-7']);
-```
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="avro" >}}
 
 Flink derives this writer schema from the three physical columns:
 
