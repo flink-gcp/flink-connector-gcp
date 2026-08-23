@@ -55,7 +55,7 @@ public class PubSubSourceBuilder<T> {
     private PubSubSubscriberOptions subscriberOptions = PubSubSubscriberOptions.defaults();
     private DeserializationFailurePolicy deserializationFailurePolicy =
             DeserializationFailurePolicy.FAIL;
-    private StartPosition startPosition = StartPosition.continueFromSubscription();
+    private PubSubStartPosition startPosition = PubSubStartPosition.continueFromSubscription();
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
 
@@ -127,16 +127,14 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
-     * Sets the record deserialization schema.
+     * Sets the record deserializer.
      *
-     * @param deserializationSchema the deserialization schema
+     * @param deserializer the deserialization schema
      * @return this builder
      */
-    public PubSubSourceBuilder<T> deserializationSchema(
-            PubSubDeserializationSchema<T> deserializationSchema) {
+    public PubSubSourceBuilder<T> deserializer(PubSubDeserializationSchema<T> deserializer) {
         this.deserializationSchema =
-                Preconditions.checkNotNull(
-                        deserializationSchema, "deserializationSchema must not be null");
+                Preconditions.checkNotNull(deserializer, "deserializer must not be null");
         return this;
     }
 
@@ -190,17 +188,17 @@ public class PubSubSourceBuilder<T> {
 
     /**
      * Sets where the source starts consuming. Defaults to {@link
-     * StartPosition#continueFromSubscription()}, which starts wherever the subscriptions already
-     * are.
+     * PubSubStartPosition#continueFromSubscription()}, which starts wherever the subscriptions
+     * already are.
      *
      * <p>Every other position seeks, which rewrites state shared by every consumer of the
      * subscription — including other jobs. The seek runs once, at the first start of a job, and
-     * never on a restore. See {@link StartPosition} for the full semantics.
+     * never on a restore. See {@link PubSubStartPosition} for the full semantics.
      *
      * @param startPosition where to start consuming
      * @return this builder
      */
-    public PubSubSourceBuilder<T> startPosition(StartPosition startPosition) {
+    public PubSubSourceBuilder<T> startPosition(PubSubStartPosition startPosition) {
         this.startPosition =
                 Preconditions.checkNotNull(startPosition, "startPosition must not be null");
         return this;
@@ -257,7 +255,8 @@ public class PubSubSourceBuilder<T> {
      */
     public Source<T, SubscriptionSplit, PubSubEnumeratorState> build() {
         Preconditions.checkState(
-                deserializationSchema != null, "A deserialization schema is required.");
+                deserializationSchema != null,
+                "A deserializer is required: set deserializer(...).");
         Preconditions.checkState(
                 !subscriptions.isEmpty(),
                 "At least one subscription is required: set subscription(...) or"

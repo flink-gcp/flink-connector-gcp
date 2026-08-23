@@ -250,8 +250,7 @@ class PubSubSourceWatermarkAlignmentITCase extends AbstractPubSubSourceEmulatorI
             SubscriptionDestination... subscriptions) {
         return PubSubSource.<String>builder()
                 .subscriptions(subscriptions)
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 // One record per split per fetch, so the ahead split cannot outrun the alignment
                 // machinery in a single drain of its whole buffer.
                 .subscriberOptions(PubSubSubscriberOptions.builder().maxRecordsPerFetch(1).build())

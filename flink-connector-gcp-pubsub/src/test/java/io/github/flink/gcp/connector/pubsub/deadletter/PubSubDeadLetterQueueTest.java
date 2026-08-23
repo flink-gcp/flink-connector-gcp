@@ -82,12 +82,12 @@ class PubSubDeadLetterQueueTest {
 
     /**
      * The group {@link #metrics} registers on, read back by the tests that drive {@code
-     * flushOutstanding} directly. Per test instance, so every count starts at zero.
+     * flushInFlight} directly. Per test instance, so every count starts at zero.
      */
     private final TestSinkWriterMetricGroup metricGroup = TestSinkWriterMetricGroup.create();
 
     /**
-     * What the static flush seam is handed. Its outstanding supplier is a constant zero: the tests
+     * What the static flush seam is handed. Its in-flight supplier is a constant zero: the tests
      * using it hold their own list, and the gauge over a queue's own list is asserted through a
      * queue that opened.
      */
@@ -256,7 +256,7 @@ class PubSubDeadLetterQueueTest {
         assertThatThrownBy(() -> builder.emulatorEndpoint("localhost8085"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulatorEndpoint must be host:port, was 'localhost8085'");
-        assertThatThrownBy(() -> builder.maxOutstandingMessages(-2))
+        assertThatThrownBy(() -> builder.maxInFlightMessages(-2))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("write through");
         assertThatThrownBy(() -> builder.shutdownTimeout(null))
@@ -311,17 +311,17 @@ class PubSubDeadLetterQueueTest {
     }
 
     @Test
-    void acceptsTheTwoSpecialOutstandingValues() {
+    void acceptsTheTwoSpecialInFlightValues() {
         assertThat(
                         PubSubDeadLetterQueue.builder()
                                 .topic(TOPIC)
-                                .maxOutstandingMessages(PubSubDeadLetterQueue.WRITE_THROUGH)
+                                .maxInFlightMessages(PubSubDeadLetterQueue.WRITE_THROUGH)
                                 .build())
                 .isNotNull();
         assertThat(
                         PubSubDeadLetterQueue.builder()
                                 .topic(TOPIC)
-                                .maxOutstandingMessages(PubSubDeadLetterQueue.UNBOUNDED)
+                                .maxInFlightMessages(PubSubDeadLetterQueue.UNBOUNDED)
                                 .build())
                 .isNotNull();
     }
@@ -332,7 +332,7 @@ class PubSubDeadLetterQueueTest {
                 PubSubDeadLetterQueue.builder()
                         .topic(TOPIC)
                         .emulatorEndpoint("localhost:8085")
-                        .maxOutstandingMessages(5)
+                        .maxInFlightMessages(5)
                         .build();
 
         PubSubDeadLetterQueue restored =
@@ -341,7 +341,7 @@ class PubSubDeadLetterQueueTest {
 
         // The publisher is created in open(), so the configured instance carries only values.
         assertThat(restored.toString()).isEqualTo(queue.toString());
-        assertThat(restored.getOutstandingMessages()).isZero();
+        assertThat(restored.getInFlightMessages()).isZero();
     }
 
     @Test
@@ -573,15 +573,15 @@ class PubSubDeadLetterQueueTest {
      */
     @Test
     void anExpiredFlushBudgetFailsRatherThanWaitingForTheSdk() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(SettableApiFuture.create());
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(SettableApiFuture.create());
         long startedAt = System.nanoTime();
 
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofMillis(200),
                                         metrics))
@@ -600,15 +600,15 @@ class PubSubDeadLetterQueueTest {
 
     /**
      * One deadline covers the whole list. A budget spent per future would be a thousandfold
-     * multiple of the number it claims to be at the default {@code maxOutstandingMessages} — and
-     * under that mutant all three of these fit their grant and nothing is thrown at all.
+     * multiple of the number it claims to be at the default {@code maxInFlightMessages} — and under
+     * that mutant all three of these fit their grant and nothing is thrown at all.
      */
     @Test
     void theBudgetCoversTheWholeListRatherThanEachPublish() {
         List<Duration> grants = new ArrayList<>();
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
-            outstanding.add(new RecordingFuture(Duration.ofMillis(400), grants));
+            inFlightPublishes.add(new RecordingFuture(Duration.ofMillis(400), grants));
         }
 
         // 400 ms of work each against a 1000 ms budget: two fit and the third does not, and the
@@ -616,9 +616,9 @@ class PubSubDeadLetterQueueTest {
         // for the reason it is about.
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofSeconds(1),
                                         metrics))
@@ -641,22 +641,22 @@ class PubSubDeadLetterQueueTest {
     }
 
     @Test
-    void theOutstandingListIsEmptiedEvenWhenTheBudgetExpired() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(SettableApiFuture.create());
+    void theInFlightListIsEmptiedEvenWhenTheBudgetExpired() {
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(SettableApiFuture.create());
 
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofMillis(50),
                                         metrics))
                 .isInstanceOf(IOException.class);
 
         // Re-awaiting a future that outlived one budget would only report the same thing again.
-        assertThat(outstanding).isEmpty();
+        assertThat(inFlightPublishes).isEmpty();
     }
 
     /**
@@ -666,19 +666,23 @@ class PubSubDeadLetterQueueTest {
      */
     @Test
     void resolvedPublishesReturnEvenWhenTheBudgetIsAlreadySpent() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
             SettableApiFuture<String> future = SettableApiFuture.create();
             future.set("message-" + i);
-            outstanding.add(future);
+            inFlightPublishes.add(future);
         }
 
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1), metrics))
+                                PubSubDeadLetterQueue.flushInFlight(
+                                        () -> {},
+                                        inFlightPublishes,
+                                        TOPIC,
+                                        Duration.ofNanos(1),
+                                        metrics))
                 .doesNotThrowAnyException();
-        assertThat(outstanding).isEmpty();
+        assertThat(inFlightPublishes).isEmpty();
     }
 
     /**
@@ -689,13 +693,17 @@ class PubSubDeadLetterQueueTest {
     @Test
     void theWaitIsNeverHandedANegativeBudget() {
         List<Duration> grants = new ArrayList<>();
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(new RecordingFuture(Duration.ZERO, grants));
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(new RecordingFuture(Duration.ZERO, grants));
 
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
-                                        () -> {}, outstanding, TOPIC, Duration.ofNanos(1), metrics))
+                                PubSubDeadLetterQueue.flushInFlight(
+                                        () -> {},
+                                        inFlightPublishes,
+                                        TOPIC,
+                                        Duration.ofNanos(1),
+                                        metrics))
                 .doesNotThrowAnyException();
 
         assertThat(grants).hasSize(1);
@@ -713,14 +721,14 @@ class PubSubDeadLetterQueueTest {
     @Test
     void theLargestExpressibleBudgetIsNotSpentTheInstantTheFlushStarts() {
         List<Duration> grants = new ArrayList<>();
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(new RecordingFuture(Duration.ZERO, grants));
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(new RecordingFuture(Duration.ZERO, grants));
 
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofNanos(Long.MAX_VALUE),
                                         metrics))
@@ -740,21 +748,21 @@ class PubSubDeadLetterQueueTest {
      */
     @Test
     void onlyConfirmedPublishesAreCounted() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
         for (int i = 0; i < 2; i++) {
             SettableApiFuture<String> resolved = SettableApiFuture.create();
             resolved.set("message-" + i);
-            outstanding.add(resolved);
+            inFlightPublishes.add(resolved);
         }
         SettableApiFuture<String> failed = SettableApiFuture.create();
         failed.setException(new IllegalStateException("the service rejected it"));
-        outstanding.add(failed);
+        inFlightPublishes.add(failed);
 
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofSeconds(30),
                                         metrics))
@@ -772,14 +780,14 @@ class PubSubDeadLetterQueueTest {
      */
     @Test
     void theFlushDurationIsRecordedWhetherTheWaitResolvedOrExpired() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(SettableApiFuture.create());
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(SettableApiFuture.create());
 
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofMillis(200),
                                         metrics))
@@ -799,7 +807,7 @@ class PubSubDeadLetterQueueTest {
         slow.add(new RecordingFuture(Duration.ofMillis(300), new ArrayList<>()));
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {}, slow, TOPIC, Duration.ofSeconds(30), metrics))
                 .doesNotThrowAnyException();
         assertThat(metricGroup.<Long>gaugeValue("deadLetterFlushMillis"))
@@ -811,7 +819,7 @@ class PubSubDeadLetterQueueTest {
         quick.add(immediate);
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {}, quick, TOPIC, Duration.ofSeconds(30), metrics))
                 .doesNotThrowAnyException();
 
@@ -830,7 +838,7 @@ class PubSubDeadLetterQueueTest {
         slow.add(new RecordingFuture(Duration.ofMillis(300), new ArrayList<>()));
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {}, slow, TOPIC, Duration.ofSeconds(30), metrics))
                 .doesNotThrowAnyException();
         long spike = metricGroup.<Long>gaugeValue("longestDeadLetterFlushMillis");
@@ -844,7 +852,7 @@ class PubSubDeadLetterQueueTest {
             quick.add(immediate);
             assertThatCode(
                             () ->
-                                    PubSubDeadLetterQueue.flushOutstanding(
+                                    PubSubDeadLetterQueue.flushInFlight(
                                             () -> {},
                                             quick,
                                             TOPIC,
@@ -892,7 +900,7 @@ class PubSubDeadLetterQueueTest {
         slow.add(new RecordingFuture(Duration.ofMillis(300), new ArrayList<>()));
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {}, slow, TOPIC, Duration.ofSeconds(30), metrics))
                 .doesNotThrowAnyException();
         long afterRealWait = metricGroup.<Long>gaugeValue("deadLetterFlushMillis");
@@ -900,7 +908,7 @@ class PubSubDeadLetterQueueTest {
 
         assertThatCode(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
                                         new ArrayList<>(),
                                         TOPIC,
@@ -917,7 +925,7 @@ class PubSubDeadLetterQueueTest {
      * reporter thread, which does not stop when the task's writer does.
      */
     @Test
-    void theOutstandingGaugeTracksTheBufferAndSurvivesTheClose() throws Exception {
+    void theInFlightGaugeTracksTheBufferAndSurvivesTheClose() throws Exception {
         StubWriterInitContext context = new StubWriterInitContext(0);
         TestSinkWriterMetricGroup group = context.getSinkWriterMetricGroup();
         PubSubDeadLetterQueue queue =
@@ -931,20 +939,20 @@ class PubSubDeadLetterQueueTest {
                         .build();
         queue.open(DefaultFailureHandlerContext.of(context));
         try {
-            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isZero();
+            assertThat(group.<Integer>gaugeValue("inFlightDeadLetters")).isZero();
             assertThat(group.counterValue("deadLettersPublished")).isZero();
 
             queue.offer(new StubElement(ByteString.copyFromUtf8("row bytes"), "Rejected."));
 
             // Handed to the client library and unresolved — the endpoint is unreachable on
             // purpose, so nothing can confirm it and the confirmation counter must stay at zero.
-            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isEqualTo(1);
+            assertThat(group.<Integer>gaugeValue("inFlightDeadLetters")).isEqualTo(1);
             assertThat(group.counterValue("deadLettersPublished")).isZero();
         } finally {
             queue.close();
         }
 
-        assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isZero();
+        assertThat(group.<Integer>gaugeValue("inFlightDeadLetters")).isZero();
     }
 
     /**
@@ -985,16 +993,16 @@ class PubSubDeadLetterQueueTest {
     void aFailedPublishStillReportsItsOwnCause() {
         SettableApiFuture<String> failed = SettableApiFuture.create();
         failed.setException(new IllegalStateException("the service rejected it"));
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(failed);
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(failed);
 
         // A real publish failure must not be reclassified as a budget expiry, which is what the
         // added catch could have swallowed.
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {},
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofSeconds(30),
                                         metrics))
@@ -1006,16 +1014,16 @@ class PubSubDeadLetterQueueTest {
 
     @Test
     void anInterruptedAwaitLeavesTheFlagSetForTheRestOfTheTeardown() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(SettableApiFuture.create());
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(SettableApiFuture.create());
         Thread.currentThread().interrupt();
         try {
             // A short budget so a broken interrupt path fails here rather than parking this fork.
             assertThatThrownBy(
                             () ->
-                                    PubSubDeadLetterQueue.flushOutstanding(
+                                    PubSubDeadLetterQueue.flushInFlight(
                                             () -> {},
-                                            outstanding,
+                                            inFlightPublishes,
                                             TOPIC,
                                             Duration.ofSeconds(2),
                                             metrics))
@@ -1037,23 +1045,23 @@ class PubSubDeadLetterQueueTest {
      */
     @Test
     void aPublishAllFailureNamesTheTopicAndEmptiesTheBuffer() {
-        List<ApiFuture<String>> outstanding = new ArrayList<>();
-        outstanding.add(SettableApiFuture.create());
+        List<ApiFuture<String>> inFlightPublishes = new ArrayList<>();
+        inFlightPublishes.add(SettableApiFuture.create());
 
         assertThatThrownBy(
                         () ->
-                                PubSubDeadLetterQueue.flushOutstanding(
+                                PubSubDeadLetterQueue.flushInFlight(
                                         () -> {
                                             throw new IllegalStateException("publisher blew up");
                                         },
-                                        outstanding,
+                                        inFlightPublishes,
                                         TOPIC,
                                         Duration.ofSeconds(30),
                                         metrics))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining(TOPIC.toString())
                 .hasCauseInstanceOf(IllegalStateException.class);
-        assertThat(outstanding).isEmpty();
+        assertThat(inFlightPublishes).isEmpty();
     }
 
     /**
@@ -1111,14 +1119,14 @@ class PubSubDeadLetterQueueTest {
         }
     }
 
-    /** The same for the other call site, which {@code maxOutstandingMessages} drives. */
+    /** The same for the other call site, which {@code maxInFlightMessages} drives. */
     @Test
-    void theConfiguredBudgetReachesTheOutstandingDrain() throws Exception {
+    void theConfiguredBudgetReachesTheInFlightDrain() throws Exception {
         PubSubDeadLetterQueue queue =
                 PubSubDeadLetterQueue.builder()
                         .topic(TOPIC)
                         .emulatorEndpoint("localhost:1")
-                        .maxOutstandingMessages(1)
+                        .maxInFlightMessages(1)
                         .flushTimeout(Duration.ofMillis(300))
                         .shutdownTimeout(Duration.ofSeconds(2))
                         .build();

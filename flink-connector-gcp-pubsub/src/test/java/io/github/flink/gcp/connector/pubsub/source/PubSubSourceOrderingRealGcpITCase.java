@@ -122,7 +122,7 @@ class PubSubSourceOrderingRealGcpITCase extends AbstractPubSubRealGcpITCase {
         return PubSubSource.<String>builder()
                 .subscription(subscription)
                 .orderingMode(OrderingMode.PER_KEY)
-                .deserializationSchema(new KeyTaggingSchema())
+                .deserializer(new KeyTaggingSchema())
                 .build();
     }
 

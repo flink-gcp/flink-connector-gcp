@@ -45,12 +45,12 @@ import java.util.Objects;
  * which {@link #of(Mode, Instant)} accepts directly. The static factories are the DataStream API.
  */
 @Public
-public final class StartPosition implements Serializable {
+public final class PubSubStartPosition implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
     /**
-     * Which starting point a {@link StartPosition} names.
+     * Which starting point a {@link PubSubStartPosition} names.
      *
      * <p>{@link #toString()} returns the hyphenated spelling rather than the constant name, because
      * that spelling is what a SQL {@code WITH} clause is written in: Flink resolves an enum {@code
@@ -108,31 +108,32 @@ public final class StartPosition implements Serializable {
         }
     }
 
-    private static final StartPosition CONTINUE =
-            new StartPosition(Mode.CONTINUE_FROM_SUBSCRIPTION, null);
-    private static final StartPosition EARLIEST = new StartPosition(Mode.EARLIEST_RETAINED, null);
-    private static final StartPosition LATEST = new StartPosition(Mode.LATEST, null);
+    private static final PubSubStartPosition CONTINUE =
+            new PubSubStartPosition(Mode.CONTINUE_FROM_SUBSCRIPTION, null);
+    private static final PubSubStartPosition EARLIEST =
+            new PubSubStartPosition(Mode.EARLIEST_RETAINED, null);
+    private static final PubSubStartPosition LATEST = new PubSubStartPosition(Mode.LATEST, null);
 
     private final Mode mode;
     @Nullable private final Instant timestamp;
 
-    private StartPosition(Mode mode, @Nullable Instant timestamp) {
+    private PubSubStartPosition(Mode mode, @Nullable Instant timestamp) {
         this.mode = mode;
         this.timestamp = timestamp;
     }
 
     /** Starts wherever the subscription already is, without seeking. The default. */
-    public static StartPosition continueFromSubscription() {
+    public static PubSubStartPosition continueFromSubscription() {
         return CONTINUE;
     }
 
     /** Starts from the oldest message the subscription still retains. */
-    public static StartPosition earliestRetained() {
+    public static PubSubStartPosition earliestRetained() {
         return EARLIEST;
     }
 
     /** Starts from messages published after the job starts, discarding the existing backlog. */
-    public static StartPosition latest() {
+    public static PubSubStartPosition latest() {
         return LATEST;
     }
 
@@ -142,9 +143,9 @@ public final class StartPosition implements Serializable {
      * @param timestamp the publish time to start from
      * @return the start position
      */
-    public static StartPosition fromTimestamp(Instant timestamp) {
+    public static PubSubStartPosition fromTimestamp(Instant timestamp) {
         Preconditions.checkNotNull(timestamp, "timestamp must not be null");
-        return new StartPosition(Mode.TIMESTAMP, timestamp);
+        return new PubSubStartPosition(Mode.TIMESTAMP, timestamp);
     }
 
     /**
@@ -156,7 +157,7 @@ public final class StartPosition implements Serializable {
      * @param timestamp the instant, required for {@link Mode#TIMESTAMP} and rejected for the others
      * @return the start position
      */
-    public static StartPosition of(Mode mode, @Nullable Instant timestamp) {
+    public static PubSubStartPosition of(Mode mode, @Nullable Instant timestamp) {
         Preconditions.checkNotNull(mode, "mode must not be null");
         if (mode == Mode.TIMESTAMP) {
             Preconditions.checkArgument(
@@ -208,7 +209,7 @@ public final class StartPosition implements Serializable {
         if (o == null || getClass() != o.getClass()) {
             return false;
         }
-        StartPosition that = (StartPosition) o;
+        PubSubStartPosition that = (PubSubStartPosition) o;
         return mode == that.mode && Objects.equals(timestamp, that.timestamp);
     }
 
@@ -220,7 +221,7 @@ public final class StartPosition implements Serializable {
     @Override
     public String toString() {
         return mode == Mode.TIMESTAMP
-                ? "StartPosition{mode=" + mode + ", timestamp=" + timestamp + "}"
-                : "StartPosition{mode=" + mode + "}";
+                ? "PubSubStartPosition{mode=" + mode + ", timestamp=" + timestamp + "}"
+                : "PubSubStartPosition{mode=" + mode + "}";
     }
 }

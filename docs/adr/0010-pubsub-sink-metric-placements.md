@@ -25,7 +25,7 @@ limitations under the License.
 
 ## Decision
 
-`PubSubSinkWriterMetrics` (`sink.writer`) on the `PubSubSourceReaderMetrics` model, but with
+`PubSubWriterMetrics` (`sink.writer`) on the `PubSubSourceReaderMetrics` model, but with
 **plain counters, not `ThreadSafeSimpleCounter`** — every increment happens on the task thread
 here, since completions arrive as mailbox mails, which is exactly what the source cannot say.
 

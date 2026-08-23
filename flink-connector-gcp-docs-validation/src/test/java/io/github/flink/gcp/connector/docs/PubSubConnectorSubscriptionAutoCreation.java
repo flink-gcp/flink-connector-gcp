@@ -42,8 +42,7 @@ final class PubSubConnectorSubscriptionAutoCreation {
                                 .build())
                 // No options: this one must already exist.
                 .subscription(SubscriptionDestination.of("my-project", "returns"))
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .build();
         // end::pubsub-connector-subscription-auto-creation[]
     }

@@ -186,7 +186,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final int maxConsecutiveRejections;
     private final boolean orderingEnabled;
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
-    private final PubSubSinkWriterMetrics metrics;
+    private final PubSubWriterMetrics metrics;
     private final TopicRepairer repairer;
 
     /** Lazily populated per-topic publisher state; touched only on the task thread. */
@@ -289,7 +289,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                         this::sendWhatIsStillBatched);
         this.orderingEnabled = options.isEnableMessageOrdering();
         this.failedMessageHandler = config.getFailedMessageHandler();
-        this.metrics = new PubSubSinkWriterMetrics(metricGroup, options.isPerDestinationMetrics());
+        this.metrics = new PubSubWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         this.metrics.bindWriterState(
                 (Gauge<Integer>) this::getInFlightMessages,
                 (Gauge<Long>) this::getInFlightBytes,

@@ -28,7 +28,7 @@ import org.apache.flink.util.FlinkRuntimeException;
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
@@ -165,7 +165,7 @@ public class PubSubSplitEnumerator
         }
 
         startPositionApplied = restoredState != null && restoredState.isStartPositionApplied();
-        StartPosition startPosition = config.getStartPosition();
+        PubSubStartPosition startPosition = config.getStartPosition();
         // Resolved here, on the coordinator thread, so LATEST is pinned before the check starts
         // rather than drifting with however long the admin calls take.
         Instant now = Instant.now();
@@ -179,7 +179,7 @@ public class PubSubSplitEnumerator
                             + " is applied again. No subtask held a split at that point, so nothing"
                             + " already emitted is affected{}",
                     startPosition,
-                    startPosition.getMode() == StartPosition.Mode.LATEST
+                    startPosition.getMode() == PubSubStartPosition.Mode.LATEST
                             // The only mode whose second application is not the first one repeated.
                             ? ", but LATEST resolves against the clock again, discarding whatever"
                                     + " was published in the meantime."
@@ -306,17 +306,17 @@ public class PubSubSplitEnumerator
     /**
      * Resolves the instant a start position seeks to.
      *
-     * <p>{@link StartPosition.Mode#EARLIEST_RETAINED} resolves to the epoch: Pub/Sub documents a
-     * seek target older than the retention window as marking every <em>retained</em> message
-     * unacknowledged, which is exactly "as far back as this subscription goes" without having to
-     * ask how far that is.
+     * <p>{@link PubSubStartPosition.Mode#EARLIEST_RETAINED} resolves to the epoch: Pub/Sub
+     * documents a seek target older than the retention window as marking every <em>retained</em>
+     * message unacknowledged, which is exactly "as far back as this subscription goes" without
+     * having to ask how far that is.
      *
      * @param startPosition a position that requires a seek
-     * @param now the moment the check started, which {@link StartPosition.Mode#LATEST} resolves
-     *     against
+     * @param now the moment the check started, which {@link PubSubStartPosition.Mode#LATEST}
+     *     resolves against
      */
     @VisibleForTesting
-    static Instant seekTimeFor(StartPosition startPosition, Instant now) {
+    static Instant seekTimeFor(PubSubStartPosition startPosition, Instant now) {
         switch (startPosition.getMode()) {
             case EARLIEST_RETAINED:
                 return Instant.EPOCH;

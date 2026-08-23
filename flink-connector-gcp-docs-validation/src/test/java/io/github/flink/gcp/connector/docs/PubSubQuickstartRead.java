@@ -43,8 +43,7 @@ final class PubSubQuickstartRead {
         Source<String, ?, ?> source =
                 PubSubSource.<String>builder()
                         .subscription(SubscriptionDestination.of("my-project", "orders-sub"))
-                        .deserializationSchema(
-                                PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                        .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                         .build();
 
         env.fromSource(source, WatermarkStrategy.noWatermarks(), "pubsub").print();

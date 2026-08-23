@@ -42,8 +42,8 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   `ConfigurationUtils.convertToEnum` matches on `toString()` case-insensitively and normalizes
   nothing — Flink's own `DeliveryGuarantee` has the same shape. Table-local `DescribedEnum`
   duplicates (Kafka's `ScanStartupMode`) were declined: four extra types and a conversion step
-  for no gain. The visible cost is `StartPosition.toString()` reading
-  `StartPosition{mode=latest}`.
+  for no gain. The visible cost is `PubSubStartPosition.toString()` reading
+  `PubSubStartPosition{mode=latest}`.
 - One factory class implements both directions, so `topic`/`subscription` are **not** in
   `requiredOptions()` — each is checked in the `create...` method that needs it, or a table used
   in only one direction would be forced to configure the other.
@@ -107,9 +107,9 @@ which is what keeps that true once the key names are grouped (`sink.batching.*`,
   `SubscriptionCreateOptionsMapper`, joining `SubscriberOptionsMapper`). Start position is
   `scan.startup.mode` + `scan.startup.timestamp-millis`, **Kafka's spelling rather than the
   connector's own** — settled on what a migrating SQL user types without reading anything; the
-  docs table's "Maps to" column carries the connection to `StartPosition`. It has no declared
+  docs table's "Maps to" column carries the connection to `PubSubStartPosition`. It has no declared
   default: `PubSubSourceBuilder` already initialises `continueFromSubscription()`, so absent
-  means default. `StartPosition.of(Mode, Instant)` raises both pairing errors, so the mapper
+  means default. `PubSubStartPosition.of(Mode, Instant)` raises both pairing errors, so the mapper
   delegates; the one rule it owns is a **timestamp with no mode**, where `of` is never reached
   and the option would otherwise be read by nothing. Same reasoning gives "a
   `scan.auto-create.*` knob without `scan.auto-create.topics` is rejected, not ignored".

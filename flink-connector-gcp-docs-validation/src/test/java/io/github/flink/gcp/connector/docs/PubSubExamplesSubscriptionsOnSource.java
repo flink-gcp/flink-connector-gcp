@@ -41,7 +41,7 @@ final class PubSubExamplesSubscriptionsOnSource {
                 // No options: this one must already exist, and the startup check says so if it
                 // does not.
                 .subscription(SubscriptionDestination.of("my-project", "returns-sub"))
-                .deserializationSchema(new OrderEventDeserializationSchema())
+                .deserializer(new OrderEventDeserializationSchema())
                 .build();
         // end::pubsub-examples-subscriptions-on-source[]
     }

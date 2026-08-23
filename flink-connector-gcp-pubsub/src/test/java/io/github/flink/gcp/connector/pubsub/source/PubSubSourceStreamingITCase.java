@@ -88,7 +88,7 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
                         PubSubSource.<String>builder()
                                 .subscription(subscription)
                                 .orderingMode(OrderingMode.PER_KEY)
-                                .deserializationSchema(
+                                .deserializer(
                                         PubSubDeserializationSchema.payload(
                                                 new SimpleStringSchema()))
                                 .emulatorEndpoint(emulatorEndpoint())
@@ -102,8 +102,7 @@ class PubSubSourceStreamingITCase extends AbstractPubSubSourceEmulatorITCase {
             SubscriptionDestination... subscriptions) {
         return PubSubSource.<String>builder()
                 .subscriptions(subscriptions)
-                .deserializationSchema(
-                        PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+                .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                 .emulatorEndpoint(emulatorEndpoint())
                 .build();
     }

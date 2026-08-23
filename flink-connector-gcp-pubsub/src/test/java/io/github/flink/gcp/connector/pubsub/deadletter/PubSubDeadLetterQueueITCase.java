@@ -127,11 +127,11 @@ class PubSubDeadLetterQueueITCase {
             fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(3)));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row one")));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row two")));
-            assertThat(fixture.queue.getOutstandingMessages()).isEqualTo(2);
+            assertThat(fixture.queue.getInFlightMessages()).isEqualTo(2);
             fixture.queue.flush();
             // Awaited and released: a flush that left them behind would await the same futures
             // again at the next checkpoint, and grow without bound.
-            assertThat(fixture.queue.getOutstandingMessages()).isZero();
+            assertThat(fixture.queue.getInFlightMessages()).isZero();
 
             List<PubsubMessage> pulled =
                     clients.pullMessagesUntil(fixture.subscriptionPath, 2, PULL_DEADLINE);
@@ -178,9 +178,9 @@ class PubSubDeadLetterQueueITCase {
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("durable already")));
 
             // The point of the mode: offer returned only once the publish was acknowledged, so
-            // nothing is outstanding and the message is already in the topic — and the confirmed
+            // nothing is in flight and the message is already in the topic — and the confirmed
             // count says so without a flush, which is what makes it a confirmation count.
-            assertThat(fixture.queue.getOutstandingMessages()).isZero();
+            assertThat(fixture.queue.getInFlightMessages()).isZero();
             assertThat(context.getSinkWriterMetricGroup().counterValue("deadLettersPublished"))
                     .isEqualTo(1);
             assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 1, PULL_DEADLINE))
@@ -204,13 +204,13 @@ class PubSubDeadLetterQueueITCase {
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row one")));
             fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("row two")));
 
-            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isEqualTo(2);
+            assertThat(group.<Integer>gaugeValue("inFlightDeadLetters")).isEqualTo(2);
             assertThat(group.counterValue("deadLettersPublished")).isZero();
 
             fixture.queue.flush();
 
             assertThat(group.counterValue("deadLettersPublished")).isEqualTo(2);
-            assertThat(group.<Integer>gaugeValue("outstandingDeadLetters")).isZero();
+            assertThat(group.<Integer>gaugeValue("inFlightDeadLetters")).isZero();
             assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 2, PULL_DEADLINE))
                     .hasSize(2);
         }
@@ -221,11 +221,11 @@ class PubSubDeadLetterQueueITCase {
         try (Fixture bounded = newFixture(2)) {
             bounded.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
             bounded.queue.offer(new StubElement(ByteString.copyFromUtf8("one")));
-            assertThat(bounded.queue.getOutstandingMessages()).isEqualTo(1);
+            assertThat(bounded.queue.getInFlightMessages()).isEqualTo(1);
 
             // The second offer reaches the bound and awaits both, so the buffer is empty again.
             bounded.queue.offer(new StubElement(ByteString.copyFromUtf8("two")));
-            assertThat(bounded.queue.getOutstandingMessages()).isZero();
+            assertThat(bounded.queue.getInFlightMessages()).isZero();
 
             bounded.queue.offer(new StubElement(ByteString.copyFromUtf8("three")));
             bounded.queue.flush();
@@ -244,7 +244,7 @@ class PubSubDeadLetterQueueITCase {
 
             // Nothing awaited before the flush, whatever the count: this is the one mode whose
             // memory this queue does not bound.
-            assertThat(fixture.queue.getOutstandingMessages()).isEqualTo(3);
+            assertThat(fixture.queue.getInFlightMessages()).isEqualTo(3);
             fixture.queue.flush();
             assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 3, PULL_DEADLINE))
                     .hasSize(3);
@@ -274,11 +274,11 @@ class PubSubDeadLetterQueueITCase {
     }
 
     private Fixture newFixture() {
-        return newFixture(PubSubDeadLetterQueue.DEFAULT_MAX_OUTSTANDING_MESSAGES);
+        return newFixture(PubSubDeadLetterQueue.DEFAULT_MAX_IN_FLIGHT_MESSAGES);
     }
 
     /** Creates a topic and a subscription of its own, plus a queue publishing to that topic. */
-    private Fixture newFixture(int maxOutstandingMessages) {
+    private Fixture newFixture(int maxInFlightMessages) {
         String name = "dlq-" + NAMES.incrementAndGet();
         TopicDestination topic = TopicDestination.of(PROJECT, name);
         clients.topicAdmin().createTopic(TopicName.of(PROJECT, name));
@@ -293,7 +293,7 @@ class PubSubDeadLetterQueueITCase {
                 PubSubDeadLetterQueue.builder()
                         .topic(topic)
                         .emulatorEndpoint(EMULATOR.getEmulatorEndpoint())
-                        .maxOutstandingMessages(maxOutstandingMessages)
+                        .maxInFlightMessages(maxInFlightMessages)
                         .build(),
                 subscriptionPath);
     }

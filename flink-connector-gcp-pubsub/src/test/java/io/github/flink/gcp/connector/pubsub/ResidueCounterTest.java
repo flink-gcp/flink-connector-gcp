@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Tests for the read-only counter view the two residues register through. Its own class since #329,
  * when the dead-letter queue became the second registrar — before that it was a private class
- * inside {@code PubSubSinkWriterMetrics} and only its registered behaviour was covered.
+ * inside {@code PubSubWriterMetrics} and only its registered behaviour was covered.
  */
 class ResidueCounterTest {
 

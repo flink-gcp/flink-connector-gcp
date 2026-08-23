@@ -24,7 +24,7 @@ import org.apache.flink.configuration.MemorySize;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 
 import java.time.Duration;
 import java.util.List;
@@ -234,9 +234,9 @@ public final class PubSubConnectorOptions {
     //  Source — start position
     // ------------------------------------------------------------------------
 
-    public static final ConfigOption<StartPosition.Mode> SCAN_STARTUP_MODE =
+    public static final ConfigOption<PubSubStartPosition.Mode> SCAN_STARTUP_MODE =
             ConfigOptions.key("scan.startup.mode")
-                    .enumType(StartPosition.Mode.class)
+                    .enumType(PubSubStartPosition.Mode.class)
                     .noDefaultValue()
                     .withDescription(
                             "Where the source starts consuming. Everything but"

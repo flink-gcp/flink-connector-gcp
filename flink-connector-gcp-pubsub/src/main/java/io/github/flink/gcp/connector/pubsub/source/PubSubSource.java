@@ -23,11 +23,12 @@ import org.apache.flink.annotation.Public;
  * <!-- javadoc-example file="JavadocPubSubExamples.java" tag="source" -->
  *
  * <pre>{@code
+ * PubSubDeserializationSchema<String> deserializer =
+ *         PubSubDeserializationSchema.payload(new SimpleStringSchema());
  * Source<String, ?, ?> source =
  *         PubSubSource.<String>builder()
  *                 .subscription(SubscriptionDestination.of("my-project", "my-subscription"))
- *                 .deserializationSchema(
- *                         PubSubDeserializationSchema.payload(new SimpleStringSchema()))
+ *                 .deserializer(deserializer)
  *                 .build();
  * }</pre>
  */

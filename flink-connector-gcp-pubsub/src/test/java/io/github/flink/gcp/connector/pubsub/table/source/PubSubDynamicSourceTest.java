@@ -38,8 +38,8 @@ import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.source.DeserializationFailurePolicy;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
+import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
-import io.github.flink.gcp.connector.pubsub.source.StartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
@@ -307,7 +307,7 @@ class PubSubDynamicSourceTest {
                                 TestDecodingFormat.plain(),
                                 SUBSCRIPTIONS,
                                 Collections.emptyMap(),
-                                StartPosition.latest(),
+                                PubSubStartPosition.latest(),
                                 null,
                                 null,
                                 defaults,
@@ -399,16 +399,18 @@ class PubSubDynamicSourceTest {
 
     @Test
     void twoStartPositionsOfTheSameModeButDifferentInstantsDiffer() {
-        // StartPosition's identity is (mode, timestamp), and only this pair reaches the timestamp
-        // half: every other assertion above varies the mode.
-        assertThat(sourceStartingAt(StartPosition.fromTimestamp(Instant.ofEpochMilli(1_000))))
+        // Its identity is (mode, timestamp), and only this pair reaches the timestamp half: every
+        // other assertion above varies the mode.
+        assertThat(sourceStartingAt(PubSubStartPosition.fromTimestamp(Instant.ofEpochMilli(1_000))))
                 .isNotEqualTo(
-                        sourceStartingAt(StartPosition.fromTimestamp(Instant.ofEpochMilli(2_000))))
+                        sourceStartingAt(
+                                PubSubStartPosition.fromTimestamp(Instant.ofEpochMilli(2_000))))
                 .isEqualTo(
-                        sourceStartingAt(StartPosition.fromTimestamp(Instant.ofEpochMilli(1_000))));
+                        sourceStartingAt(
+                                PubSubStartPosition.fromTimestamp(Instant.ofEpochMilli(1_000))));
     }
 
-    private static PubSubDynamicSource sourceStartingAt(StartPosition startPosition) {
+    private static PubSubDynamicSource sourceStartingAt(PubSubStartPosition startPosition) {
         return new PubSubDynamicSource(
                 PHYSICAL_DATA_TYPE,
                 TestDecodingFormat.plain(),
@@ -502,7 +504,7 @@ class PubSubDynamicSourceTest {
                         new DecodingTestFormat(),
                         SUBSCRIPTIONS,
                         CREATE_OPTIONS,
-                        StartPosition.earliestRetained(),
+                        PubSubStartPosition.earliestRetained(),
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),
@@ -516,7 +518,7 @@ class PubSubDynamicSourceTest {
                         .createSource();
 
         PubSubSourceConfig<?> config = ((PubSubStreamingPullSource<?>) built).getConfig();
-        assertThat(config.getStartPosition()).isEqualTo(StartPosition.earliestRetained());
+        assertThat(config.getStartPosition()).isEqualTo(PubSubStartPosition.earliestRetained());
         assertThat(config.getCreateOptions())
                 .containsExactly(entry(SUBSCRIPTIONS.get(0), CREATE_OPTION));
     }
@@ -584,7 +586,8 @@ class PubSubDynamicSourceTest {
 
         PubSubSourceConfig<?> config = ((PubSubStreamingPullSource<?>) built).getConfig();
         // The builder's own default, not one restated here.
-        assertThat(config.getStartPosition()).isEqualTo(StartPosition.continueFromSubscription());
+        assertThat(config.getStartPosition())
+                .isEqualTo(PubSubStartPosition.continueFromSubscription());
         assertThat(config.getCreateOptions()).isEmpty();
         assertThat(config.getSubscriptions()).isEqualTo(SUBSCRIPTIONS);
     }

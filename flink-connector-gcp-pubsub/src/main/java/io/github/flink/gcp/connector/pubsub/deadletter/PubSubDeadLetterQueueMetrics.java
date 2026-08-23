@@ -40,8 +40,8 @@ import java.util.function.IntSupplier;
  * was offered, on this very group. What nothing reported before is how much of it the service
  * confirmed, and how long the waits for those confirmations take — which is what these are.
  *
- * <p>Read as a triple: {@code numRecordsSendErrors} (offered) → {@code outstandingDeadLetters}
- * (handed over, unconfirmed) → {@code deadLettersPublished} (confirmed).
+ * <p>Read as a triple: {@code numRecordsSendErrors} (offered) → {@code inFlightDeadLetters} (handed
+ * over, unconfirmed) → {@code deadLettersPublished} (confirmed).
  *
  * <p><b>Task thread only for the writes</b>, like the sink's own metrics: every call here happens
  * inside {@code offer} or a flush. The reporter thread reads them, which is why the flush duration
@@ -80,14 +80,15 @@ final class PubSubDeadLetterQueueMetrics {
      * Registers the queue's metrics.
      *
      * @param metricGroup the host sink writer's metric group
-     * @param outstanding reads the publishes handed over and not yet resolved
+     * @param inFlightPublishes reads the publishes handed over and not yet resolved
      */
-    PubSubDeadLetterQueueMetrics(MetricGroup metricGroup, IntSupplier outstanding) {
+    PubSubDeadLetterQueueMetrics(MetricGroup metricGroup, IntSupplier inFlightPublishes) {
         Preconditions.checkNotNull(metricGroup, "metricGroup must not be null");
-        Preconditions.checkNotNull(outstanding, "outstanding must not be null");
+        Preconditions.checkNotNull(inFlightPublishes, "inFlightPublishes must not be null");
         this.deadLettersPublished = metricGroup.counter(PubSubMetricNames.DEAD_LETTERS_PUBLISHED);
         metricGroup.gauge(
-                PubSubMetricNames.OUTSTANDING_DEAD_LETTERS, (Gauge<Integer>) outstanding::getAsInt);
+                PubSubMetricNames.IN_FLIGHT_DEAD_LETTERS,
+                (Gauge<Integer>) inFlightPublishes::getAsInt);
         metricGroup.gauge(
                 PubSubMetricNames.DEAD_LETTER_FLUSH_MILLIS, (Gauge<Long>) () -> flushMillis);
         metricGroup.gauge(

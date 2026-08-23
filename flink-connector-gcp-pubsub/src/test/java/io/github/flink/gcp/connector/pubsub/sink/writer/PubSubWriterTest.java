@@ -134,7 +134,7 @@ class PubSubWriterTest {
      * test resolver here returns a destination, so deleting the guard left the whole module suite
      * passing. What a job would meet instead was measured rather than supposed: {@code Cannot
      * invoke TopicDestination.toTopicPath() because "destination" is null}, thrown three frames
-     * deeper in {@code PubSubSinkWriterMetrics.forTopic}, which names neither the resolver nor the
+     * deeper in {@code PubSubWriterMetrics.forTopic}, which names neither the resolver nor the
      * record.
      *
      * <p>Not routed to the failure handler: a resolver returning null is a configuration defect,

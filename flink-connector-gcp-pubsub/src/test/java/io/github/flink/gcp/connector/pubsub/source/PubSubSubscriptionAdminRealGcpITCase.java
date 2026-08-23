@@ -101,7 +101,7 @@ class PubSubSubscriptionAdminRealGcpITCase extends AbstractPubSubRealGcpITCase {
 
     /**
      * Seek-to-timestamp on an ordering-enabled subscription — the {@code
-     * StartPosition.fromTimestamp} path under {@code orderingMode(PER_KEY)}, with no coverage
+     * PubSubStartPosition.fromTimestamp} path under {@code orderingMode(PER_KEY)}, with no coverage
      * anywhere else: the emulator only seeks unordered subscriptions. The target timestamp comes
      * from the service's own publish times, not this machine's clock — backed off by one second,
      * because the boundary is exclusive: a message published exactly at the seek time counts as
