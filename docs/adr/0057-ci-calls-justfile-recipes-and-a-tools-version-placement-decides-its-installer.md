@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-26 ([#111], with the shim incident on PR
-  [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113))
+  [#113](https://github.com/flink-gcp/flink-connector-gcp/pull/113))
 - Issues: [#111], [#132]
 - Modules: all (build/CI)
 - Current behavior: root `AGENTS.md` § Build (the imperative rules), `justfile`
@@ -66,7 +66,7 @@ placement scheme:
 - **Inside a recipe, always name the tool: `mise x <tool> -- …`, never bare `mise x -- …`.**
   The bare form activates every tool in `mise.toml` and installs what is missing, silently
   undoing the `install_args` meant to limit a CI job. Caught in CI on PR
-  [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113): `mise x --
+  [#113](https://github.com/flink-gcp/flink-connector-gcp/pull/113): `mise x --
   shellcheck` in the lint job pulled a JDK, Maven, Hugo, Go and a second copy of `just`,
   shadowing the one `install-action` had already put on `PATH`. The bare form stays right for
   the *entrypoint* (`mise x -- just <recipe>`), which does want everything.
@@ -74,7 +74,7 @@ placement scheme:
   pins java and maven, and the action defaults **both** `add_shims_to_path` and `export_path`
   to `true`, so out of the box its shims and env paths land in front of the JDK the job just
   installed. That is a default to disarm, not a combination to forbid — the rule said "must
-  not run" until it was checked, extrapolated from the PR [#113](https://github.com/laughingman7743/flink-connector-gcp/pull/113) incident, which was a
+  not run" until it was checked, extrapolated from the PR [#113](https://github.com/flink-gcp/flink-connector-gcp/pull/113) incident, which was a
   *different* mechanism; the two have never actually run together in any workflow here. When
   a `setup-java` job does need a mise-pinned tool: set `add_shims_to_path: false`, scope
   `install_args` to that tool, and invoke it by explicit path — `just lint` hands actionlint
@@ -85,5 +85,5 @@ placement scheme:
   added code generation without touching CI. None of this changes why `just` comes from
   `taiki-e/install-action` in every workflow: one binary on `PATH` and no shims at all.
 
-[#111]: https://github.com/laughingman7743/flink-connector-gcp/issues/111
-[#132]: https://github.com/laughingman7743/flink-connector-gcp/issues/132
+[#111]: https://github.com/flink-gcp/flink-connector-gcp/issues/111
+[#132]: https://github.com/flink-gcp/flink-connector-gcp/issues/132

@@ -104,6 +104,6 @@ Evidence caught in self-review and worth not re-deriving:
   here precisely because the descriptor is always derived from the table schema this connector
   just produced.
 
-[#66]: https://github.com/laughingman7743/flink-connector-gcp/issues/66
+[#66]: https://github.com/flink-gcp/flink-connector-gcp/issues/66
 [#828]: https://github.com/flink-gcp/flink-connector-gcp/issues/828
 [#998]: https://github.com/flink-gcp/flink-connector-gcp/issues/998

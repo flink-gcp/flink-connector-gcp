@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-12; BigQuery read-side option keys migrated by
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047) (2026-08-23)
-- Issues: [#542](https://github.com/laughingman7743/flink-connector-gcp/issues/542),
-  [#566](https://github.com/laughingman7743/flink-connector-gcp/issues/566),
+- Issues: [#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542),
+  [#566](https://github.com/flink-gcp/flink-connector-gcp/issues/566),
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`

@@ -18,11 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#99](https://github.com/laughingman7743/flink-connector-gcp/issues/99),
-  [#605](https://github.com/laughingman7743/flink-connector-gcp/issues/605),
-  [#606](https://github.com/laughingman7743/flink-connector-gcp/issues/606),
-  [#608](https://github.com/laughingman7743/flink-connector-gcp/issues/608),
-  [#634](https://github.com/laughingman7743/flink-connector-gcp/issues/634)
+- Issues: [#99](https://github.com/flink-gcp/flink-connector-gcp/issues/99),
+  [#605](https://github.com/flink-gcp/flink-connector-gcp/issues/605),
+  [#606](https://github.com/flink-gcp/flink-connector-gcp/issues/606),
+  [#608](https://github.com/flink-gcp/flink-connector-gcp/issues/608),
+  [#634](https://github.com/flink-gcp/flink-connector-gcp/issues/634)
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/table/cloudtasks.md`
 

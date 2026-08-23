@@ -206,5 +206,5 @@ resolver the writer deliberately does not inspect.
   repair's hazards out of it. Declined as above.
 - **Refcounted client release.** Declined above.
 
-[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
-[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436
+[#232]: https://github.com/flink-gcp/flink-connector-gcp/issues/232
+[#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436

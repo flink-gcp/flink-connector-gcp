@@ -236,15 +236,15 @@ are the ones this record's decisions rest on:
   precedent, studied under [#69] to establish that streaming commits must run in the committer;
   the stamper and committer here are independent implementations over the public SinkV2 API.
 
-[#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
-[#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
-[#69]: https://github.com/laughingman7743/flink-connector-gcp/issues/69
-[#72]: https://github.com/laughingman7743/flink-connector-gcp/issues/72
-[#198]: https://github.com/laughingman7743/flink-connector-gcp/issues/198
-[#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
-[#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
-[#380]: https://github.com/laughingman7743/flink-connector-gcp/issues/380
-[#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491
-[#598]: https://github.com/laughingman7743/flink-connector-gcp/issues/598
-[#646]: https://github.com/laughingman7743/flink-connector-gcp/issues/646
+[#14]: https://github.com/flink-gcp/flink-connector-gcp/issues/14
+[#54]: https://github.com/flink-gcp/flink-connector-gcp/issues/54
+[#69]: https://github.com/flink-gcp/flink-connector-gcp/issues/69
+[#72]: https://github.com/flink-gcp/flink-connector-gcp/issues/72
+[#198]: https://github.com/flink-gcp/flink-connector-gcp/issues/198
+[#337]: https://github.com/flink-gcp/flink-connector-gcp/issues/337
+[#284]: https://github.com/flink-gcp/flink-connector-gcp/issues/284
+[#380]: https://github.com/flink-gcp/flink-connector-gcp/issues/380
+[#491]: https://github.com/flink-gcp/flink-connector-gcp/issues/491
+[#598]: https://github.com/flink-gcp/flink-connector-gcp/issues/598
+[#646]: https://github.com/flink-gcp/flink-connector-gcp/issues/646
 [#1096]: https://github.com/flink-gcp/flink-connector-gcp/issues/1096

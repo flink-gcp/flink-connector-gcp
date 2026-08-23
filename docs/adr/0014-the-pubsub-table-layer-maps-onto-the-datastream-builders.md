@@ -185,16 +185,16 @@ grep of a multi-line proto `toString` — but validates nothing and shows no eff
 assert the round trip and the *semantics* (real CMEK, residency, retention-driven replay) stay
 with the real-GCP suite ([#82]).
 
-[#20]: https://github.com/laughingman7743/flink-connector-gcp/issues/20
-[#47]: https://github.com/laughingman7743/flink-connector-gcp/issues/47
-[#82]: https://github.com/laughingman7743/flink-connector-gcp/issues/82
-[#135]: https://github.com/laughingman7743/flink-connector-gcp/issues/135
-[#136]: https://github.com/laughingman7743/flink-connector-gcp/issues/136
-[#137]: https://github.com/laughingman7743/flink-connector-gcp/issues/137
-[#138]: https://github.com/laughingman7743/flink-connector-gcp/issues/138
-[#139]: https://github.com/laughingman7743/flink-connector-gcp/issues/139
-[#140]: https://github.com/laughingman7743/flink-connector-gcp/issues/140
-[#143]: https://github.com/laughingman7743/flink-connector-gcp/issues/143
-[#152]: https://github.com/laughingman7743/flink-connector-gcp/issues/152
-[#153]: https://github.com/laughingman7743/flink-connector-gcp/issues/153
+[#20]: https://github.com/flink-gcp/flink-connector-gcp/issues/20
+[#47]: https://github.com/flink-gcp/flink-connector-gcp/issues/47
+[#82]: https://github.com/flink-gcp/flink-connector-gcp/issues/82
+[#135]: https://github.com/flink-gcp/flink-connector-gcp/issues/135
+[#136]: https://github.com/flink-gcp/flink-connector-gcp/issues/136
+[#137]: https://github.com/flink-gcp/flink-connector-gcp/issues/137
+[#138]: https://github.com/flink-gcp/flink-connector-gcp/issues/138
+[#139]: https://github.com/flink-gcp/flink-connector-gcp/issues/139
+[#140]: https://github.com/flink-gcp/flink-connector-gcp/issues/140
+[#143]: https://github.com/flink-gcp/flink-connector-gcp/issues/143
+[#152]: https://github.com/flink-gcp/flink-connector-gcp/issues/152
+[#153]: https://github.com/flink-gcp/flink-connector-gcp/issues/153
 [#1045]: https://github.com/flink-gcp/flink-connector-gcp/issues/1045

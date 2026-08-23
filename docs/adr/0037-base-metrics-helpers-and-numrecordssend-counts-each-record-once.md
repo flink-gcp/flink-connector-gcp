@@ -61,9 +61,9 @@ dashboard comparing them is honest. What is given up is stated on the docs pages
 `errorClass.CODE.errors` counters instead, which is per status code and strictly more
 informative than a re-counted send.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#208]: https://github.com/laughingman7743/flink-connector-gcp/issues/208
-[#209]: https://github.com/laughingman7743/flink-connector-gcp/issues/209
-[#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
+[#208]: https://github.com/flink-gcp/flink-connector-gcp/issues/208
+[#209]: https://github.com/flink-gcp/flink-connector-gcp/issues/209
+[#210]: https://github.com/flink-gcp/flink-connector-gcp/issues/210
 [#1056]: https://github.com/flink-gcp/flink-connector-gcp/issues/1056

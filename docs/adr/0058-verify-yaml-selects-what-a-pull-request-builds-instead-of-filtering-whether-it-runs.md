@@ -38,7 +38,7 @@ workflow-level filter. The pieces:
   base-into-head merge commit, fetched at depth 2, so `HEAD^1` is the current base tip and
   `--diff HEAD^1` is the pull request's net change. A third-party changed-files action was
   tried and removed on PR
-  [#247](https://github.com/laughingman7743/flink-connector-gcp/pull/247) as avoidable
+  [#247](https://github.com/flink-gcp/flink-connector-gcp/pull/247) as avoidable
   supply-chain surface.
 - **The decision is `scripts/ci-maven-args.py`, and its module mapping is derived from the
   poms, never configured** — `<modules>` for the set and reactor order, `io.github.flink-gcp`
@@ -150,10 +150,10 @@ workflow-level filter. The pieces:
   [#249]), whose synthetic-tree rule and real-repo exception are recorded with the Build rules
   in the root `AGENTS.md`.
 
-[#88]: https://github.com/laughingman7743/flink-connector-gcp/issues/88
-[#111]: https://github.com/laughingman7743/flink-connector-gcp/issues/111
-[#243]: https://github.com/laughingman7743/flink-connector-gcp/issues/243
-[#249]: https://github.com/laughingman7743/flink-connector-gcp/issues/249
-[#253]: https://github.com/laughingman7743/flink-connector-gcp/issues/253
+[#88]: https://github.com/flink-gcp/flink-connector-gcp/issues/88
+[#111]: https://github.com/flink-gcp/flink-connector-gcp/issues/111
+[#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
+[#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249
+[#253]: https://github.com/flink-gcp/flink-connector-gcp/issues/253
 
 [#453]: https://github.com/flink-gcp/flink-connector-gcp/issues/453

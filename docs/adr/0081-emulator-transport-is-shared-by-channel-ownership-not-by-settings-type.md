@@ -132,4 +132,4 @@ arrangement the four Pub/Sub sites have always used.
   three client-library types would put `google-cloud-pubsub` and `google-cloud-tasks` on `base`'s
   compile classpath, which is the dependency direction `base` exists to avoid.
 
-[#438]: https://github.com/laughingman7743/flink-connector-gcp/issues/438
+[#438]: https://github.com/flink-gcp/flink-connector-gcp/issues/438

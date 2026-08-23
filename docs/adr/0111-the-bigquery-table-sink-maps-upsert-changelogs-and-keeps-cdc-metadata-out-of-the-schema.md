@@ -20,11 +20,11 @@ limitations under the License.
 - Date: 2026-08-14; revised by [#629](https://github.com/flink-gcp/flink-connector-gcp/issues/629),
   [#631](https://github.com/flink-gcp/flink-connector-gcp/issues/631) and
   [#717](https://github.com/flink-gcp/flink-connector-gcp/issues/717) (2026-08-15)
-- Issues: [#65](https://github.com/laughingman7743/flink-connector-gcp/issues/65),
-  [#626](https://github.com/laughingman7743/flink-connector-gcp/issues/626),
-  [#629](https://github.com/laughingman7743/flink-connector-gcp/issues/629),
-  [#631](https://github.com/laughingman7743/flink-connector-gcp/issues/631),
-  [#717](https://github.com/laughingman7743/flink-connector-gcp/issues/717)
+- Issues: [#65](https://github.com/flink-gcp/flink-connector-gcp/issues/65),
+  [#626](https://github.com/flink-gcp/flink-connector-gcp/issues/626),
+  [#629](https://github.com/flink-gcp/flink-connector-gcp/issues/629),
+  [#631](https://github.com/flink-gcp/flink-connector-gcp/issues/631),
+  [#717](https://github.com/flink-gcp/flink-connector-gcp/issues/717)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md#change-data-capture`
 

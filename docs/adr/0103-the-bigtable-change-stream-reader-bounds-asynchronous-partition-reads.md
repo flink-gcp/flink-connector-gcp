@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13 (revised 2026-08-22)
-- Issues: [#553](https://github.com/laughingman7743/flink-connector-gcp/issues/553),
+- Issues: [#553](https://github.com/flink-gcp/flink-connector-gcp/issues/553),
   [#980](https://github.com/flink-gcp/flink-connector-gcp/issues/980)
 - Modules: bigtable (`source.changestream`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/bigtable.md#change-streams-source)

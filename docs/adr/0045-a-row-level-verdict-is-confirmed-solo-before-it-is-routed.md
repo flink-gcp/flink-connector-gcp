@@ -62,7 +62,7 @@ checkpoint interval, and it terminates because every submission inside it is sol
   pass's "solo" to mean solo across every batcher. Only the resume clause still stands.
 - **The cost is real and belongs in the documentation**: while isolating, the sink spends
   roughly one request per record; `parkedEntries` reports it. Measured on PR
-  [#360](https://github.com/laughingman7743/flink-connector-gcp/pull/360), and narrower than it
+  [#360](https://github.com/flink-gcp/flink-connector-gcp/pull/360), and narrower than it
   first reads: under the default `failJob()` the pass issues **one** solo request before the
   handler's throw becomes `asyncError` and the pass's own drain rethrows it, so the unbounded
   case is *only* a dropping policy. **What ends the pass there is `maxConsecutiveRejections`**
@@ -85,7 +85,7 @@ checkpoint interval, and it terminates because every submission inside it is sol
   which asserts the *outcome* rather than the rejection's granularity: the service answers per
   entry for some conditions, and the sink must behave the same either way.
 
-[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
-[#239]: https://github.com/laughingman7743/flink-connector-gcp/issues/239
-[#264]: https://github.com/laughingman7743/flink-connector-gcp/issues/264
-[#361]: https://github.com/laughingman7743/flink-connector-gcp/issues/361
+[#232]: https://github.com/flink-gcp/flink-connector-gcp/issues/232
+[#239]: https://github.com/flink-gcp/flink-connector-gcp/issues/239
+[#264]: https://github.com/flink-gcp/flink-connector-gcp/issues/264
+[#361]: https://github.com/flink-gcp/flink-connector-gcp/issues/361

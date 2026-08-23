@@ -78,7 +78,7 @@ never-checked "`final`" claims.)
   shutdown is where gax's own code runs), and it is the bound `Closers.closeAll`'s own javadoc
   names.
 
-[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
-[#276]: https://github.com/laughingman7743/flink-connector-gcp/issues/276
-[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
-[#324]: https://github.com/laughingman7743/flink-connector-gcp/issues/324
+[#232]: https://github.com/flink-gcp/flink-connector-gcp/issues/232
+[#276]: https://github.com/flink-gcp/flink-connector-gcp/issues/276
+[#321]: https://github.com/flink-gcp/flink-connector-gcp/issues/321
+[#324]: https://github.com/flink-gcp/flink-connector-gcp/issues/324

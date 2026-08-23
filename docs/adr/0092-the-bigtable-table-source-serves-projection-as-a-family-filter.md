@@ -18,9 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11
-- Issues: [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459),
-  [#518](https://github.com/laughingman7743/flink-connector-gcp/issues/518) (under
-  [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217); ADR-0086 holds the
+- Issues: [#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459),
+  [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
+  [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217); ADR-0086 holds the
   shared table layer, ADR-0080 the DataStream scan source it maps onto)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
@@ -59,7 +59,7 @@ every declared family. Three things become uniform. A row-key-only *DDL* table �
 refused for writing — is served by the same keys-only chain. Families the physical table has but
 the DDL does not declare never leave the server, projected or not. And the documented failure mode
 — a filter naming a column family the table lacks fails the read with `NOT_FOUND`, which the
-source deliberately does not pre-validate ([#481](https://github.com/laughingman7743/flink-connector-gcp/issues/481), ADR-0080) — arrives identically in both
+source deliberately does not pre-validate ([#481](https://github.com/flink-gcp/flink-connector-gcp/issues/481), ADR-0080) — arrives identically in both
 cases, instead of only appearing once a query happens to project.
 
 **The family filter decides row membership, not only row width, and that is accepted rather than
@@ -228,7 +228,7 @@ file):
   direction and the cross-direction overlap is pinned to exactly `table` and `emulator-endpoint`.
 - The scan is bounded and insert-only; `scan.parallelism` is Flink's own `SOURCE_PARALLELISM`,
   borrowed like `sink.parallelism`.
-- The lookup half of the Table API ([#460](https://github.com/laughingman7743/flink-connector-gcp/issues/460)) builds on this source: the projection's family
+- The lookup half of the Table API ([#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460)) builds on this source: the projection's family
   filter is what its point reads will carry.
 - A filtered bounded scan and the FULL-cache loader created from that source share the same exact
   range intersection and best-effort cell predicate, refined in ADR-0095.

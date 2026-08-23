@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11, revised 2026-08-13 and by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23
-- Issues: [#502](https://github.com/laughingman7743/flink-connector-gcp/issues/502), [#503](https://github.com/laughingman7743/flink-connector-gcp/issues/503), [#527](https://github.com/laughingman7743/flink-connector-gcp/issues/527), [#528](https://github.com/laughingman7743/flink-connector-gcp/issues/528), [#529](https://github.com/laughingman7743/flink-connector-gcp/issues/529), [#563](https://github.com/laughingman7743/flink-connector-gcp/issues/563) (under
-  [#223](https://github.com/laughingman7743/flink-connector-gcp/issues/223)), [#573](https://github.com/laughingman7743/flink-connector-gcp/issues/573), [#544](https://github.com/laughingman7743/flink-connector-gcp/issues/544), [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053)
+- Issues: [#502](https://github.com/flink-gcp/flink-connector-gcp/issues/502), [#503](https://github.com/flink-gcp/flink-connector-gcp/issues/503), [#527](https://github.com/flink-gcp/flink-connector-gcp/issues/527), [#528](https://github.com/flink-gcp/flink-connector-gcp/issues/528), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529), [#563](https://github.com/flink-gcp/flink-connector-gcp/issues/563) (under
+  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#544](https://github.com/flink-gcp/flink-connector-gcp/issues/544), [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053)
 - Modules: spanner
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -120,5 +120,5 @@ A primary key is optional, but it changes the accepted changelog and replay beha
 The DDL schema must match the destination's column names and native types; this slice does not read the live schema during planning.
 Changing a physical `STRING` column to `UUID` requires a coordinated database migration and DDL option update; the connector neither validates existing rows in advance nor changes the live schema.
 Because PostgreSQL DDL does not constrain a `numeric` column to the Flink declaration, a stored value outside that declaration fails the scan or lookup with the physical column name and declared decimal shape.
-The lookup source builds on the same type mapping in [#504](https://github.com/laughingman7743/flink-connector-gcp/issues/504).
+The lookup source builds on the same type mapping in [#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504).
 The table connector does not create schemas or qualify a table from a multipart `table` value when `schema` is set.

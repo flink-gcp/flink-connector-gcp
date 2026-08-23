@@ -63,8 +63,8 @@ Decisions not to re-litigate:
   adoption is [#206] (ADR-0005), Cloud Tasks' [#207].
 - `protobuf-java` (BOM-managed) is here for `ByteString` on `FailedElement`.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
-[#206]: https://github.com/laughingman7743/flink-connector-gcp/issues/206
-[#207]: https://github.com/laughingman7743/flink-connector-gcp/issues/207
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
+[#205]: https://github.com/flink-gcp/flink-connector-gcp/issues/205
+[#206]: https://github.com/flink-gcp/flink-connector-gcp/issues/206
+[#207]: https://github.com/flink-gcp/flink-connector-gcp/issues/207

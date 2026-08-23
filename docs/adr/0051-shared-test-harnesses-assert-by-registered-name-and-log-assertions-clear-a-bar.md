@@ -76,18 +76,18 @@ limitations under the License.
   (added by [#323]; without one log4j2 falls back to `ERROR`, the [#244] failure shape), and
   `theAmbientConfigurationIsWhatTheseTestsAssume` asserts that precondition.
 
-[#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
-[#206]: https://github.com/laughingman7743/flink-connector-gcp/issues/206
-[#208]: https://github.com/laughingman7743/flink-connector-gcp/issues/208
-[#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
-[#237]: https://github.com/laughingman7743/flink-connector-gcp/issues/237
-[#238]: https://github.com/laughingman7743/flink-connector-gcp/issues/238
-[#244]: https://github.com/laughingman7743/flink-connector-gcp/issues/244
-[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
-[#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
-[#312]: https://github.com/laughingman7743/flink-connector-gcp/issues/312
-[#323]: https://github.com/laughingman7743/flink-connector-gcp/issues/323
-[#333]: https://github.com/laughingman7743/flink-connector-gcp/issues/333
-[#336]: https://github.com/laughingman7743/flink-connector-gcp/issues/336
-[#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
+[#205]: https://github.com/flink-gcp/flink-connector-gcp/issues/205
+[#206]: https://github.com/flink-gcp/flink-connector-gcp/issues/206
+[#208]: https://github.com/flink-gcp/flink-connector-gcp/issues/208
+[#210]: https://github.com/flink-gcp/flink-connector-gcp/issues/210
+[#237]: https://github.com/flink-gcp/flink-connector-gcp/issues/237
+[#238]: https://github.com/flink-gcp/flink-connector-gcp/issues/238
+[#244]: https://github.com/flink-gcp/flink-connector-gcp/issues/244
+[#265]: https://github.com/flink-gcp/flink-connector-gcp/issues/265
+[#280]: https://github.com/flink-gcp/flink-connector-gcp/issues/280
+[#312]: https://github.com/flink-gcp/flink-connector-gcp/issues/312
+[#323]: https://github.com/flink-gcp/flink-connector-gcp/issues/323
+[#333]: https://github.com/flink-gcp/flink-connector-gcp/issues/333
+[#336]: https://github.com/flink-gcp/flink-connector-gcp/issues/336
+[#337]: https://github.com/flink-gcp/flink-connector-gcp/issues/337
 [#726]: https://github.com/flink-gcp/flink-connector-gcp/issues/726

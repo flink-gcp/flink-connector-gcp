@@ -85,8 +85,8 @@ Three changes, each with a reason not to re-litigate:
 - The one finding from that SDK reading that was not a writer decision — a `shutdown()` that
   never returns — is ADR-0007's subject ([#265]).
 
-[#78]: https://github.com/laughingman7743/flink-connector-gcp/issues/78
-[#206]: https://github.com/laughingman7743/flink-connector-gcp/issues/206
-[#215]: https://github.com/laughingman7743/flink-connector-gcp/issues/215
-[#265]: https://github.com/laughingman7743/flink-connector-gcp/issues/265
-[#277]: https://github.com/laughingman7743/flink-connector-gcp/issues/277
+[#78]: https://github.com/flink-gcp/flink-connector-gcp/issues/78
+[#206]: https://github.com/flink-gcp/flink-connector-gcp/issues/206
+[#215]: https://github.com/flink-gcp/flink-connector-gcp/issues/215
+[#265]: https://github.com/flink-gcp/flink-connector-gcp/issues/265
+[#277]: https://github.com/flink-gcp/flink-connector-gcp/issues/277

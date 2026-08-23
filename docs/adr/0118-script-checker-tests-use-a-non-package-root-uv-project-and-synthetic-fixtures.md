@@ -25,7 +25,7 @@ limitations under the License.
 
 ## Context
 
-[PR #247](https://github.com/laughingman7743/flink-connector-gcp/pull/247) introduced Python and shell tests for the CI module selector and aggregate gate.
+[PR #247](https://github.com/flink-gcp/flink-connector-gcp/pull/247) introduced Python and shell tests for the CI module selector and aggregate gate.
 Before that change, the Python checkers encoded non-trivial parsing rules but had no harness in which a deliberately malformed source tree could be exercised.
 
 The code under test is a collection of repository executables, not an importable Python package.
@@ -54,10 +54,10 @@ Each parsing or policy rule therefore needs a fixture that fails when the rule i
 
 ## Evidence
 
-[PR #247](https://github.com/laughingman7743/flink-connector-gcp/pull/247) chose uv over a mise `pipx:pytest` entry with the owner and moved the project from `scripts/` to the repository root after review found the stale path references.
+[PR #247](https://github.com/flink-gcp/flink-connector-gcp/pull/247) chose uv over a mise `pipx:pytest` entry with the owner and moved the project from `scripts/` to the repository root after review found the stale path references.
 The initial harness carried 35 tests for module classification, dependency closure and the CI gate.
 
-[PR #252](https://github.com/laughingman7743/flink-connector-gcp/pull/252) added 134 cases for the three pre-existing checkers, bringing the suite at that time to 169 tests.
+[PR #252](https://github.com/flink-gcp/flink-connector-gcp/pull/252) added 134 cases for the three pre-existing checkers, bringing the suite at that time to 169 tests.
 The fixtures constructed source jars, Maven-shaped repositories, TOML configuration and Markdown tables without network access or a live reactor.
 
 That pull request's final record contains 16 rule-level mutants.
@@ -79,5 +79,5 @@ No checker test reaches the network unless the test explicitly owns and controls
 
 The root uv project may grow test-only dependencies as the suite loads more scripts by path, but it remains non-packaged and does not become the runtime environment for those scripts.
 
-[#243]: https://github.com/laughingman7743/flink-connector-gcp/issues/243
-[#249]: https://github.com/laughingman7743/flink-connector-gcp/issues/249
+[#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
+[#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249

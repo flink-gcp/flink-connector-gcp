@@ -79,8 +79,8 @@ Four sub-decisions, the first two measured rather than assumed:
   paths include the checker and docs-validation sources. Checker behavior is covered with synthetic
   temporary trees rather than assertions against the live repository inventory.
 
-[#39]: https://github.com/laughingman7743/flink-connector-gcp/issues/39
-[#88]: https://github.com/laughingman7743/flink-connector-gcp/issues/88
-[#93]: https://github.com/laughingman7743/flink-connector-gcp/issues/93
-[#125]: https://github.com/laughingman7743/flink-connector-gcp/issues/125
-[#694]: https://github.com/laughingman7743/flink-connector-gcp/issues/694
+[#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
+[#88]: https://github.com/flink-gcp/flink-connector-gcp/issues/88
+[#93]: https://github.com/flink-gcp/flink-connector-gcp/issues/93
+[#125]: https://github.com/flink-gcp/flink-connector-gcp/issues/125
+[#694]: https://github.com/flink-gcp/flink-connector-gcp/issues/694

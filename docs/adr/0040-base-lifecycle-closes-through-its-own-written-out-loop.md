@@ -62,7 +62,7 @@ teardown fails the task into a restart loop instead. Ten lines over
   so the tree keeps one idiom — and [#276] added nine more. [#297] then made "one list, never a
   loop then a call" the rule at the reader teardown too (ADR-0012).
 
-[#211]: https://github.com/laughingman7743/flink-connector-gcp/issues/211
-[#229]: https://github.com/laughingman7743/flink-connector-gcp/issues/229
-[#276]: https://github.com/laughingman7743/flink-connector-gcp/issues/276
-[#297]: https://github.com/laughingman7743/flink-connector-gcp/issues/297
+[#211]: https://github.com/flink-gcp/flink-connector-gcp/issues/211
+[#229]: https://github.com/flink-gcp/flink-connector-gcp/issues/229
+[#276]: https://github.com/flink-gcp/flink-connector-gcp/issues/276
+[#297]: https://github.com/flink-gcp/flink-connector-gcp/issues/297

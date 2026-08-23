@@ -62,5 +62,5 @@ new.
   replaced by a named-argument holder plus a reflective check that every field of the sink is
   actually varied.
 
-[#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
-[#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
+[#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
+[#289]: https://github.com/flink-gcp/flink-connector-gcp/issues/289

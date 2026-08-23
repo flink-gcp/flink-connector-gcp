@@ -61,7 +61,7 @@ packages — which is also what lets package-private coupling stay package-priva
   ([#205], ADR-0036). The package's original purpose ("keep the extraction cheap") is
   discharged; it stays in place because moving `FailedRow` would churn about a dozen files
   (10 importers plus the class and its test, measured on PR
-  [#213](https://github.com/laughingman7743/flink-connector-gcp/pull/213)) for no behavioural
+  [#213](https://github.com/flink-gcp/flink-connector-gcp/pull/213)) for no behavioural
   gain. Later connectors put their failure type at the `sink` root instead — a one-class
   `sink.failure` fails the layer test below.
 - `source` / `table` — sources and Table API, same philosophy. The family rule applies here
@@ -111,7 +111,7 @@ implicit always-on stream, named throughout that package and the opposite of a b
 holding its facade, its `@Public` (since [ADR-0124]) options object and the `@Internal` types behind
 them — a public-API layer, not merely an internals split, mirroring how the family packages
 keep their options objects. The trigger was PR
-[#123](https://github.com/laughingman7743/flink-connector-gcp/pull/123) taking the flat
+[#123](https://github.com/flink-gcp/flink-connector-gcp/pull/123) taking the flat
 package to ten classes with
 the names already doing the package's job (`Proto*` ×4, `Avro*` ×4). It **passes** the [#119]
 rule rather than contradicting it: two formats existed while the issue that introduced the
@@ -139,17 +139,17 @@ share one FQCN on purpose.
   root, and renaming would touch the sink core, the writers and ~20 tests for no behavioural
   gain.
 - **Moving `FailedRow` out of BigQuery's discharged `sink.failure`** — the ~dozen-file churn
-  measured on PR [#213](https://github.com/laughingman7743/flink-connector-gcp/pull/213),
+  measured on PR [#213](https://github.com/flink-gcp/flink-connector-gcp/pull/213),
   above.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#61]: https://github.com/laughingman7743/flink-connector-gcp/issues/61
-[#63]: https://github.com/laughingman7743/flink-connector-gcp/issues/63
-[#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
-[#121]: https://github.com/laughingman7743/flink-connector-gcp/issues/121
-[#125]: https://github.com/laughingman7743/flink-connector-gcp/issues/125
-[#205]: https://github.com/laughingman7743/flink-connector-gcp/issues/205
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#61]: https://github.com/flink-gcp/flink-connector-gcp/issues/61
+[#63]: https://github.com/flink-gcp/flink-connector-gcp/issues/63
+[#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119
+[#121]: https://github.com/flink-gcp/flink-connector-gcp/issues/121
+[#125]: https://github.com/flink-gcp/flink-connector-gcp/issues/125
+[#205]: https://github.com/flink-gcp/flink-connector-gcp/issues/205
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#1048]: https://github.com/flink-gcp/flink-connector-gcp/issues/1048
-[#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
+[#280]: https://github.com/flink-gcp/flink-connector-gcp/issues/280
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md

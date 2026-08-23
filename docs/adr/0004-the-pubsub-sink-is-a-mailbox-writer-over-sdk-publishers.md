@@ -80,12 +80,12 @@ memory bounds, and a recovery story for missing topics and paused ordering keys.
 - The two writer test classes carry `@Timeout(30)`: the fake mailbox blocks like the real one,
   so a broken predicate hangs rather than fails.
 
-[#18]: https://github.com/laughingman7743/flink-connector-gcp/issues/18
-[#19]: https://github.com/laughingman7743/flink-connector-gcp/issues/19
-[#20]: https://github.com/laughingman7743/flink-connector-gcp/issues/20
-[#21]: https://github.com/laughingman7743/flink-connector-gcp/issues/21
-[#78]: https://github.com/laughingman7743/flink-connector-gcp/issues/78
-[#85]: https://github.com/laughingman7743/flink-connector-gcp/issues/85
-[#110]: https://github.com/laughingman7743/flink-connector-gcp/issues/110
-[#215]: https://github.com/laughingman7743/flink-connector-gcp/issues/215
+[#18]: https://github.com/flink-gcp/flink-connector-gcp/issues/18
+[#19]: https://github.com/flink-gcp/flink-connector-gcp/issues/19
+[#20]: https://github.com/flink-gcp/flink-connector-gcp/issues/20
+[#21]: https://github.com/flink-gcp/flink-connector-gcp/issues/21
+[#78]: https://github.com/flink-gcp/flink-connector-gcp/issues/78
+[#85]: https://github.com/flink-gcp/flink-connector-gcp/issues/85
+[#110]: https://github.com/flink-gcp/flink-connector-gcp/issues/110
+[#215]: https://github.com/flink-gcp/flink-connector-gcp/issues/215
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755

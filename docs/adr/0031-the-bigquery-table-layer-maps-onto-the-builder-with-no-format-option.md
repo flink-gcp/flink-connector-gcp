@@ -67,6 +67,6 @@ the Pub/Sub rules (ADR-0014) apply unchanged. What is this module's own:
   Blank paths and combinations with either credential-free emulator endpoint fail in the factory
   with DDL option names, while the builder keeps the equivalent DataStream checks.
 
-[#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
-[#287]: https://github.com/laughingman7743/flink-connector-gcp/issues/287
-[#542]: https://github.com/laughingman7743/flink-connector-gcp/issues/542
+[#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
+[#287]: https://github.com/flink-gcp/flink-connector-gcp/issues/287
+[#542]: https://github.com/flink-gcp/flink-connector-gcp/issues/542

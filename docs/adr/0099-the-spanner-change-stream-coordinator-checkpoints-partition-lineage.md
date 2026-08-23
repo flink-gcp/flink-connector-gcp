@@ -18,10 +18,10 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-12; revised 2026-08-13
-- Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
-  [#534](https://github.com/laughingman7743/flink-connector-gcp/issues/534),
-  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
-  [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635)
+- Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
+  [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
+  [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
+  [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 

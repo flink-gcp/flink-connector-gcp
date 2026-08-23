@@ -18,11 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11 (revised 2026-08-14, 2026-08-17)
-- Issues: [#35](https://github.com/laughingman7743/flink-connector-gcp/issues/35),
-  [#510](https://github.com/laughingman7743/flink-connector-gcp/issues/510),
-  [#532](https://github.com/laughingman7743/flink-connector-gcp/issues/532),
-  [#533](https://github.com/laughingman7743/flink-connector-gcp/issues/533),
-  [#586](https://github.com/laughingman7743/flink-connector-gcp/issues/586),
+- Issues: [#35](https://github.com/flink-gcp/flink-connector-gcp/issues/35),
+  [#510](https://github.com/flink-gcp/flink-connector-gcp/issues/510),
+  [#532](https://github.com/flink-gcp/flink-connector-gcp/issues/532),
+  [#533](https://github.com/flink-gcp/flink-connector-gcp/issues/533),
+  [#586](https://github.com/flink-gcp/flink-connector-gcp/issues/586),
   [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`

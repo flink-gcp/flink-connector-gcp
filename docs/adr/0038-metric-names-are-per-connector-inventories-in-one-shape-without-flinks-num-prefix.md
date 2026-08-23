@@ -66,5 +66,5 @@ limitations under the License.
   by `numRecordsSendErrors` both. `FileLoadsWriter` alone partitions, and only because it makes
   no per-record request.
 
-[#280]: https://github.com/laughingman7743/flink-connector-gcp/issues/280
-[#296]: https://github.com/laughingman7743/flink-connector-gcp/issues/296
+[#280]: https://github.com/flink-gcp/flink-connector-gcp/issues/280
+[#296]: https://github.com/flink-gcp/flink-connector-gcp/issues/296

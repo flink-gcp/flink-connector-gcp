@@ -106,6 +106,6 @@ one line `AvroRecordSerializationSchema` had carried all along.
   (`STRING` → `GEOGRAPHY`): `SchemaUnifier` only relaxes, so it rejects the union rather than
   corrupting rows, as it does for ADR-0027's `STRUCT` → scalar.
 
-[#49]: https://github.com/laughingman7743/flink-connector-gcp/issues/49
-[#50]: https://github.com/laughingman7743/flink-connector-gcp/issues/50
-[#126]: https://github.com/laughingman7743/flink-connector-gcp/issues/126
+[#49]: https://github.com/flink-gcp/flink-connector-gcp/issues/49
+[#50]: https://github.com/flink-gcp/flink-connector-gcp/issues/50
+[#126]: https://github.com/flink-gcp/flink-connector-gcp/issues/126

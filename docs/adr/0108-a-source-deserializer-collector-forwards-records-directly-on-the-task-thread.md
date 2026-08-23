@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#587](https://github.com/laughingman7743/flink-connector-gcp/issues/587)
+- Issues: [#587](https://github.com/flink-gcp/flink-connector-gcp/issues/587)
 - Modules: base, bigquery, pubsub, bigtable, spanner
 - Current behavior: each connector's DataStream source reference
 

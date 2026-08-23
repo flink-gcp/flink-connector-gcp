@@ -201,9 +201,9 @@ same way.
   description, not the phrase alone ([#948]): a fake that speaks a shape the service never sends
   leaves the only tier that can exercise this path — the gated suite — to find the defect.
 
-[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
-[#233]: https://github.com/laughingman7743/flink-connector-gcp/issues/233
-[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
-[#414]: https://github.com/laughingman7743/flink-connector-gcp/issues/414
-[#432]: https://github.com/laughingman7743/flink-connector-gcp/issues/432
+[#232]: https://github.com/flink-gcp/flink-connector-gcp/issues/232
+[#233]: https://github.com/flink-gcp/flink-connector-gcp/issues/233
+[#321]: https://github.com/flink-gcp/flink-connector-gcp/issues/321
+[#414]: https://github.com/flink-gcp/flink-connector-gcp/issues/414
+[#432]: https://github.com/flink-gcp/flink-connector-gcp/issues/432
 [#948]: https://github.com/flink-gcp/flink-connector-gcp/issues/948

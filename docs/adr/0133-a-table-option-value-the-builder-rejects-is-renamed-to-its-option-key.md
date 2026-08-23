@@ -124,7 +124,7 @@ method parameter rather than their setter — `absentRetentionFallback`, `heartb
 - A new mapper line goes through `OptionSetters`; a mapper-level rejection test per mapper is the
   guard that it does.
 
-[#235]: https://github.com/laughingman7743/flink-connector-gcp/issues/235
+[#235]: https://github.com/flink-gcp/flink-connector-gcp/issues/235
 [#895]: https://github.com/flink-gcp/flink-connector-gcp/issues/895
 [#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019
 [#1026]: https://github.com/flink-gcp/flink-connector-gcp/pull/1026

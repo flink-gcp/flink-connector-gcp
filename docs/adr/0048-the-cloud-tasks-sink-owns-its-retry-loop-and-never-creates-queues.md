@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-25 ([#23] design, [#24] implementation via PR
-  [#107](https://github.com/laughingman7743/flink-connector-gcp/pull/107)); revised 2026-08-12
+  [#107](https://github.com/flink-gcp/flink-connector-gcp/pull/107)); revised 2026-08-12
   ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
   updated 2026-08-22 ([#937], see ADR-0129)
 - Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937]
@@ -95,11 +95,11 @@ limitations under the License.
   credential forms outside the connector contract.
 - At-least-once, stateless writer, flush on checkpoint.
 
-[#23]: https://github.com/laughingman7743/flink-connector-gcp/issues/23
-[#24]: https://github.com/laughingman7743/flink-connector-gcp/issues/24
-[#25]: https://github.com/laughingman7743/flink-connector-gcp/issues/25
-[#545]: https://github.com/laughingman7743/flink-connector-gcp/issues/545
-[#608]: https://github.com/laughingman7743/flink-connector-gcp/issues/608
-[#628]: https://github.com/laughingman7743/flink-connector-gcp/issues/628
-[#632]: https://github.com/laughingman7743/flink-connector-gcp/issues/632
+[#23]: https://github.com/flink-gcp/flink-connector-gcp/issues/23
+[#24]: https://github.com/flink-gcp/flink-connector-gcp/issues/24
+[#25]: https://github.com/flink-gcp/flink-connector-gcp/issues/25
+[#545]: https://github.com/flink-gcp/flink-connector-gcp/issues/545
+[#608]: https://github.com/flink-gcp/flink-connector-gcp/issues/608
+[#628]: https://github.com/flink-gcp/flink-connector-gcp/issues/628
+[#632]: https://github.com/flink-gcp/flink-connector-gcp/issues/632
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937

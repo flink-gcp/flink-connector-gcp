@@ -71,8 +71,8 @@ Coverage is unit tests only: the emulator validates nothing here, and what real 
 `INVALID_ARGUMENT` to had to be measured before a gated IT could assert it — which [#303]
 (ADR-0008) later did.
 
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#119]: https://github.com/laughingman7743/flink-connector-gcp/issues/119
-[#206]: https://github.com/laughingman7743/flink-connector-gcp/issues/206
-[#208]: https://github.com/laughingman7743/flink-connector-gcp/issues/208
-[#303]: https://github.com/laughingman7743/flink-connector-gcp/issues/303
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#119]: https://github.com/flink-gcp/flink-connector-gcp/issues/119
+[#206]: https://github.com/flink-gcp/flink-connector-gcp/issues/206
+[#208]: https://github.com/flink-gcp/flink-connector-gcp/issues/208
+[#303]: https://github.com/flink-gcp/flink-connector-gcp/issues/303

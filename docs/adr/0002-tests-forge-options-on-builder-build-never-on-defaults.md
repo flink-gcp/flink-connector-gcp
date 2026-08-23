@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-06
-- Issues: [#316](https://github.com/laughingman7743/flink-connector-gcp/issues/316)
+- Issues: [#316](https://github.com/flink-gcp/flink-connector-gcp/issues/316)
 - Modules: all connector modules (test sources)
 
 ## Context
@@ -31,7 +31,7 @@ builder would reject, and `setAccessible(true)` **does** permit writing a non-st
 of a normal class — so forging on `defaults()` writes into that singleton for the rest of the
 surefire JVM, and nothing restores it.
 
-That is what [#316](https://github.com/laughingman7743/flink-connector-gcp/issues/316) was.
+That is what [#316](https://github.com/flink-gcp/flink-connector-gcp/issues/316) was.
 `BigtableMutateRowsSinkTest` forged on `BigtableWriterOptions.defaults()`, so every later
 `defaults()` in the same fork carried `maxInFlightEntries = 0`, and
 `BigtableWriterMetricsTest`'s 13 tests all died in the writer's precondition — on about one run

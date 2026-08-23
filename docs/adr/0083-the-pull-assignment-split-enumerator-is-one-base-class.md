@@ -144,9 +144,9 @@ data loss bug in reader split handling". Writing it a third time was the cost wo
   happens in production — so a split that shared the queue and duplicated the guard would have
   shared the easy half.
 
-[#35]: https://github.com/laughingman7743/flink-connector-gcp/issues/35
-[#216]: https://github.com/laughingman7743/flink-connector-gcp/issues/216
-[#221]: https://github.com/laughingman7743/flink-connector-gcp/issues/221
-[#390]: https://github.com/laughingman7743/flink-connector-gcp/issues/390
-[#437]: https://github.com/laughingman7743/flink-connector-gcp/issues/437
-[#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
+[#35]: https://github.com/flink-gcp/flink-connector-gcp/issues/35
+[#216]: https://github.com/flink-gcp/flink-connector-gcp/issues/216
+[#221]: https://github.com/flink-gcp/flink-connector-gcp/issues/221
+[#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
+[#437]: https://github.com/flink-gcp/flink-connector-gcp/issues/437
+[#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452

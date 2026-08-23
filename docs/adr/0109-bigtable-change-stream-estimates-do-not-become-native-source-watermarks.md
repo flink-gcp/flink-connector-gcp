@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-13
-- Issues: [#604](https://github.com/laughingman7743/flink-connector-gcp/issues/604)
+- Issues: [#604](https://github.com/flink-gcp/flink-connector-gcp/issues/604)
 - Modules: bigtable (`source.changestream`, `table.source`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/bigtable.md#change-streams-source)
 
@@ -52,7 +52,7 @@ The application chooses the delay, idleness and late-data policy, and no configu
 
 Spanner does not supply the same service contract.
 Its heartbeat states that the partition has returned every change at or before the heartbeat timestamp and that future records have greater commit timestamps.
-The connector still has to aggregate scheduled and queued Spanner partitions before claiming a stream-wide frontier; [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635) owns that separate protocol audit.
+The connector still has to aggregate scheduled and queued Spanner partitions before claiming a stream-wide frontier; [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635) owns that separate protocol audit.
 
 ## Evidence
 

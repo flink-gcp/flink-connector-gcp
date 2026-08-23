@@ -219,9 +219,9 @@ that moves one fails a test rather than a job.
   — that the ceilings are configurations the client accepts — moved to
   `DefaultMutationBatcherFactoryTest`, where it needs no container and no timing at all.
 
-[#85]: https://github.com/laughingman7743/flink-connector-gcp/issues/85
-[#218]: https://github.com/laughingman7743/flink-connector-gcp/issues/218
-[#435]: https://github.com/laughingman7743/flink-connector-gcp/issues/435
-[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436
+[#85]: https://github.com/flink-gcp/flink-connector-gcp/issues/85
+[#218]: https://github.com/flink-gcp/flink-connector-gcp/issues/218
+[#435]: https://github.com/flink-gcp/flink-connector-gcp/issues/435
+[#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436
 [#1052]: https://github.com/flink-gcp/flink-connector-gcp/issues/1052
 [quotas page]: https://cloud.google.com/bigtable/quotas

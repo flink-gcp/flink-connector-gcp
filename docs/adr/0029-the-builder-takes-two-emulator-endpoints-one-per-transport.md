@@ -78,9 +78,9 @@ exist never touches the REST client at all.
   of them would pass with the endpoints reaching no client at all. `gax-grpc` moved from test to
   compile scope with this.
 
-[#15]: https://github.com/laughingman7743/flink-connector-gcp/issues/15
-[#54]: https://github.com/laughingman7743/flink-connector-gcp/issues/54
-[#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
-[#287]: https://github.com/laughingman7743/flink-connector-gcp/issues/287
-[#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
-[#419]: https://github.com/laughingman7743/flink-connector-gcp/issues/419
+[#15]: https://github.com/flink-gcp/flink-connector-gcp/issues/15
+[#54]: https://github.com/flink-gcp/flink-connector-gcp/issues/54
+[#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
+[#287]: https://github.com/flink-gcp/flink-connector-gcp/issues/287
+[#326]: https://github.com/flink-gcp/flink-connector-gcp/issues/326
+[#419]: https://github.com/flink-gcp/flink-connector-gcp/issues/419

@@ -78,8 +78,8 @@ own:
 - This module discharged the [#26] trigger: the packaging/NOTICE/`ShadedJar` trio moved to
   `flink-connector-gcp-test-utils` instead of being copied.
 
-[#26]: https://github.com/laughingman7743/flink-connector-gcp/issues/26
-[#57]: https://github.com/laughingman7743/flink-connector-gcp/issues/57
-[#346]: https://github.com/laughingman7743/flink-connector-gcp/issues/346
-[#64]: https://github.com/laughingman7743/flink-connector-gcp/issues/64
-[#290]: https://github.com/laughingman7743/flink-connector-gcp/issues/290
+[#26]: https://github.com/flink-gcp/flink-connector-gcp/issues/26
+[#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
+[#346]: https://github.com/flink-gcp/flink-connector-gcp/issues/346
+[#64]: https://github.com/flink-gcp/flink-connector-gcp/issues/64
+[#290]: https://github.com/flink-gcp/flink-connector-gcp/issues/290

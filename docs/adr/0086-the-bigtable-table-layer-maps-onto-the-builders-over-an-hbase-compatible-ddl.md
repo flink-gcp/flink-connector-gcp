@@ -17,13 +17,13 @@ limitations under the License.
 # ADR-0086: The Bigtable table layer maps onto the builders over an HBase-compatible DDL
 
 - Status: Superseded by ADR-0102
-- Date: 2026-08-10; revised by [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473) (2026-08-11),
-  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543) (2026-08-12) and
+- Date: 2026-08-10; revised by [#473](https://github.com/flink-gcp/flink-connector-gcp/issues/473) (2026-08-11),
+  [#543](https://github.com/flink-gcp/flink-connector-gcp/issues/543) (2026-08-12) and
   [#1052](https://github.com/flink-gcp/flink-connector-gcp/issues/1052) (2026-08-23)
-- Issues: [#458](https://github.com/laughingman7743/flink-connector-gcp/issues/458) (under
-  [#217](https://github.com/laughingman7743/flink-connector-gcp/issues/217); ADR-0014 holds the
-  shared mapping rules), [#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473),
-  [#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543),
+- Issues: [#458](https://github.com/flink-gcp/flink-connector-gcp/issues/458) (under
+  [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217); ADR-0014 holds the
+  shared mapping rules), [#473](https://github.com/flink-gcp/flink-connector-gcp/issues/473),
+  [#543](https://github.com/flink-gcp/flink-connector-gcp/issues/543),
   [#1052](https://github.com/flink-gcp/flink-connector-gcp/issues/1052)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
@@ -43,7 +43,7 @@ Pub/Sub rules (ADR-0014) apply unchanged. What follows is this module's own.
 ## Decision
 
 **Explicit credentials remain a builder mapping, not a Table-only provider abstraction**
-([#543](https://github.com/laughingman7743/flink-connector-gcp/issues/543)).
+([#543](https://github.com/flink-gcp/flink-connector-gcp/issues/543)).
 ADC remains the default, including `GOOGLE_APPLICATION_CREDENTIALS`.
 The three DataStream builders accept one service-account JSON key-file path, and the Table layer
 maps the shared `service-account-key-file` option onto the same setter for the sink, bounded scan,
@@ -66,8 +66,8 @@ this connector's own code would pass while the interop the choice was made for w
 **`BigtableTableSchema` and `CellValueCodec` live at the `table` package root**, beside the options
 class and the factory, rather than in a `table.codec` subpackage. Both are shared by `table.sink`
 and `table.source`, and neither direction package may import the other. This is ADR-0055's
-module-root rule applied one level down; a `table.codec` layer would fail [#119](https://github.com/laughingman7743/flink-connector-gcp/issues/119)'s test, since the
-only sibling schema model in prospect was declined on [#34](https://github.com/laughingman7743/flink-connector-gcp/issues/34).
+module-root rule applied one level down; a `table.codec` layer would fail [#119](https://github.com/flink-gcp/flink-connector-gcp/issues/119)'s test, since the
+only sibling schema model in prospect was declined on [#34](https://github.com/flink-gcp/flink-connector-gcp/issues/34).
 
 **The changelog is an upsert for an updating query, and a `-D` deletes the whole row.** A Bigtable
 write is an upsert on the row key by construction, so there is no retract mode to offer instead.
@@ -75,7 +75,7 @@ The row key is the primary key, so a delete means the key is gone; removing only
 would leave a row behind made of whatever else was in it.
 
 **An insert-only query is answered with insert-only, and the answer is load-bearing on Flink 2.3**
-([#488](https://github.com/laughingman7743/flink-connector-gcp/issues/488), refining the
+([#488](https://github.com/flink-gcp/flink-connector-gcp/issues/488), refining the
 unconditional upsert answer this ADR first recorded). FLIP-558 changed the 2.3 planner's
 upsert-materialize analysis — measured against the 2.2.1 and 2.3.0 `flink-table-planner` sources:
 2.2 returned early when the *input* was insert-only, 2.3 dropped that early return and, with the
@@ -110,7 +110,7 @@ Accepted: the alternative broke every plain insert into a primary-keyed table, t
 first example among them, and an append query wanting first-wins can express it in the query.
 An *updating* query keeps the clause — measured, `DO DEDUPLICATE` plans — so the gap is confined
 to insert-only statements, and it is
-[#496](https://github.com/laughingman7743/flink-connector-gcp/issues/496), which prices the one
+[#496](https://github.com/flink-gcp/flink-connector-gcp/issues/496), which prices the one
 local mechanism (a DDL option forcing the upsert answer, inert on two of the three supported
 versions) against what `DO NOTHING` measurably is: a job-local, TTL-able materializer state, not
 a probe of the table, so it does not give the insert-if-absent semantics its name suggests. Nothing else moves — the pre-sink keyed shuffle reads the declared primary key and the
@@ -121,7 +121,7 @@ version, where the two answers otherwise plan identically and the ITCase cannot 
 difference.
 
 **Whether a delete may carry the upsert key alone is answered by the DDL's primary key**
-([#470](https://github.com/laughingman7743/flink-connector-gcp/issues/470)). Declaring one makes
+([#470](https://github.com/flink-gcp/flink-connector-gcp/issues/470)). Declaring one makes
 that key the row key, which the factory enforces, so the key alone is everything `deleteRow` reads.
 Declaring none is allowed — an HBase DDL has to move across unchanged — and the planner then keys
 its upserts on whatever the query is unique by, which need not be the row-key column, so the sink
@@ -129,7 +129,7 @@ asks for whole rows instead. Measured on Flink 2.2.1 against an upsert source ke
 column: with a key declared the plan already carries `ChangelogNormalize` and `upsertMaterialize`;
 with none, answering `false` is what puts `ChangelogNormalize` there and fills the row key in; and
 an insert-only query into the same table got neither operator — the observation
-[#488](https://github.com/laughingman7743/flink-connector-gcp/issues/488) later hardened into an
+[#488](https://github.com/flink-gcp/flink-connector-gcp/issues/488) later hardened into an
 explicit insert-only answer. Answering `true` unconditionally, as this layer did until #470,
 sends that delete to `RowDataSerializationSchema` with a null row key — measured end to end against
 the emulator, the job fails with "The row-key column 'rowkey' is null", loud rather than silent but
@@ -164,7 +164,7 @@ uniformly to every family. At least one is **required** under `create-if-needed`
 DataStream API does not require.
 
 **The table sink exposes nullable writable `timestamp` metadata as `TIMESTAMP_LTZ(6)`**
-([#473](https://github.com/laughingman7743/flink-connector-gcp/issues/473)).
+([#473](https://github.com/flink-gcp/flink-connector-gcp/issues/473)).
 A non-null value is converted to epoch microseconds and applied identically to every cell written
 by the row; a delete ignores it because `deleteRow` has no cell timestamp.
 An absent metadata column or a null value retains the three-argument `setCell` path and therefore
@@ -182,7 +182,7 @@ and `TableCreateOptions.Builder`, whose one setter is wholly exempt, the familie
 `ROW<...>` columns rather than a key. `BigtableSourceBuilder` waited for the `scan.*` surface —
 exempting every one of its setters first would have meant writing reasons scheduled to stop being
 true — and joined as the fourth surface when
-[#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459) landed (ADR-0092). Two further
+[#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459) landed (ADR-0092). Two further
 assertions ride along: no option feeds two setters, and the declared options equal the mapped ones
 in **both** directions, so an option with no home fails and so does a table entry naming a key that
 no longer exists.
@@ -199,7 +199,7 @@ Measured 2026-08-10 against the pom-pinned `flink.version` 2.2.1 sources jars,
   is `flink-table-common` at `provided`, and `flink-table-runtime` stays test scope. Nothing this
   layer imports needs a `scripts/config/flink-api-tiers.toml` entry.
 - **`Context.createTypeInformation(DataType)` returns exactly the `InternalTypeInfo` the planner
-  would have built**, through a `@PublicEvolving` interface — which is how the source side of [#459](https://github.com/laughingman7743/flink-connector-gcp/issues/459)
+  would have built**, through a `@PublicEvolving` interface — which is how the source side of [#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459)
   satisfies `ResultTypeQueryable` without that artifact.
 - **Two upstream references disagree about `DATE` and `TIME`, and only one is the interop target.**
   `HBaseSerde` — the `RowData` path, what a Flink SQL HBase job writes — encodes a `DATE` as a
@@ -215,7 +215,7 @@ Measured 2026-08-10 against the pom-pinned `flink.version` 2.2.1 sources jars,
 
 ## Alternatives declined
 
-- **Upstream google/flink-connector-gcp's `value.format` per family** — declined on [#34](https://github.com/laughingman7743/flink-connector-gcp/issues/34): it cannot
+- **Upstream google/flink-connector-gcp's `value.format` per family** — declined on [#34](https://github.com/flink-gcp/flink-connector-gcp/issues/34): it cannot
   give a single qualifier its own type, and it ties a family to a format.
 - **Depending on `hbase-common` for `Bytes`** — nine one-line encoders against a Hadoop dependency
   tree in a module headed for a SQL uber-jar.
@@ -243,7 +243,7 @@ Measured 2026-08-10 against the pom-pinned `flink.version` 2.2.1 sources jars,
 contract is that entries "may be applied in arbitrary order (even between entries for the same
 row)", and two writes sharing a millisecond also share a cell timestamp and so collapse to one
 version. That is a property of batching over this API rather than of this layer, and it is stated on
-the docs page instead of being papered over ([#471](https://github.com/laughingman7743/flink-connector-gcp/issues/471) asks whether the sink should enforce an
+the docs page instead of being papered over ([#471](https://github.com/flink-gcp/flink-connector-gcp/issues/471) asks whether the sink should enforce an
 order); a test asserting an in-batch winner would be asserting
 the emulator's submission order, which is why the integration tests that need an order use separate
 **jobs**.

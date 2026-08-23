@@ -108,7 +108,7 @@ resolves:
   package-private reach, but scripts the REST wire format by hand and pulls the SDK's HTTP layer
   into every assertion, for a new test dependency.
 
-[#321]: https://github.com/laughingman7743/flink-connector-gcp/issues/321
-[#337]: https://github.com/laughingman7743/flink-connector-gcp/issues/337
-[#477]: https://github.com/laughingman7743/flink-connector-gcp/issues/477
-[#485]: https://github.com/laughingman7743/flink-connector-gcp/issues/485
+[#321]: https://github.com/flink-gcp/flink-connector-gcp/issues/321
+[#337]: https://github.com/flink-gcp/flink-connector-gcp/issues/337
+[#477]: https://github.com/flink-gcp/flink-connector-gcp/issues/477
+[#485]: https://github.com/flink-gcp/flink-connector-gcp/issues/485

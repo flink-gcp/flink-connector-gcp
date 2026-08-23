@@ -244,9 +244,9 @@ cannot influence.
   a new issue naming this ADR, not a reopening of [#382] — the [#174] protocol. The four sites are
   named above so that issue can start from the list rather than rediscover it.
 
-[#174]: https://github.com/laughingman7743/flink-connector-gcp/issues/174
-[#289]: https://github.com/laughingman7743/flink-connector-gcp/issues/289
-[#326]: https://github.com/laughingman7743/flink-connector-gcp/issues/326
-[#318]: https://github.com/laughingman7743/flink-connector-gcp/issues/318
-[#382]: https://github.com/laughingman7743/flink-connector-gcp/issues/382
+[#174]: https://github.com/flink-gcp/flink-connector-gcp/issues/174
+[#289]: https://github.com/flink-gcp/flink-connector-gcp/issues/289
+[#326]: https://github.com/flink-gcp/flink-connector-gcp/issues/326
+[#318]: https://github.com/flink-gcp/flink-connector-gcp/issues/318
+[#382]: https://github.com/flink-gcp/flink-connector-gcp/issues/382
 [#827]: https://github.com/flink-gcp/flink-connector-gcp/issues/827

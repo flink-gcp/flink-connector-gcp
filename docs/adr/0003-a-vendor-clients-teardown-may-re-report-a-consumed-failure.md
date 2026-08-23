@@ -18,18 +18,18 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-07; `StagingStorage` re-measured into the set 2026-08-17
-  ([#820](https://github.com/laughingman7743/flink-connector-gcp/issues/820))
-- Issues: [#325](https://github.com/laughingman7743/flink-connector-gcp/issues/325),
-  [#238](https://github.com/laughingman7743/flink-connector-gcp/issues/238),
-  [#351](https://github.com/laughingman7743/flink-connector-gcp/issues/351),
-  [#820](https://github.com/laughingman7743/flink-connector-gcp/issues/820)
+  ([#820](https://github.com/flink-gcp/flink-connector-gcp/issues/820))
+- Issues: [#325](https://github.com/flink-gcp/flink-connector-gcp/issues/325),
+  [#238](https://github.com/flink-gcp/flink-connector-gcp/issues/238),
+  [#351](https://github.com/flink-gcp/flink-connector-gcp/issues/351),
+  [#820](https://github.com/flink-gcp/flink-connector-gcp/issues/820)
 - Modules: bigtable and pubsub carry the absorbs; the contract binds every client-wrapping SPI
 
 ## Context
 
-[#238](https://github.com/laughingman7743/flink-connector-gcp/issues/238) found that closing
+[#238](https://github.com/flink-gcp/flink-connector-gcp/issues/238) found that closing
 Bigtable's batcher rethrew entry failures the sink's `FailureHandler` had already handled, so a
-`logAndDrop` job failed at task close. [#325](https://github.com/laughingman7743/flink-connector-gcp/issues/325)
+`logAndDrop` job failed at task close. [#325](https://github.com/flink-gcp/flink-connector-gcp/issues/325)
 then asked whether that no-re-report problem is a property of wrapping a client at all, and
 measured every candidate SPI instead of assuming either way.
 
@@ -57,7 +57,7 @@ Two rules the implementations turn on:
   for testing")`), and `StreamWriter`'s and `BigQueryWriteClient`'s are likewise inaccessible —
   each forbidding a subclass just as effectively. **None of them is `final`**, which six places
   in this repository asserted before the correction sweeps
-  ([#324](https://github.com/laughingman7743/flink-connector-gcp/issues/324) corrected two,
+  ([#324](https://github.com/flink-gcp/flink-connector-gcp/issues/324) corrected two,
   #325 three more, and the sixth — the base module's `CLAUDE.md` — outlived both). Worth the
   tally, because the claim was copied rather than checked each time. There is no mocking library
   here, so injection is the only seam — #324 for the batcher adapter, #325 for the subscriber,
@@ -81,7 +81,7 @@ reader.
 re-read.** The 2026-08-06 run excluded it on a property of the type — it declared no `close()` at
 all, its teardown being the staged object's own `OutputStream`, so there was no moment at which
 it could report anything a second time. That exclusion was also the defect
-[#820](https://github.com/laughingman7743/flink-connector-gcp/issues/820) reports: `GcsStagingStorage`
+[#820](https://github.com/flink-gcp/flink-connector-gcp/issues/820) reports: `GcsStagingStorage`
 holds a `Storage` for the life of the task and no teardown path reached it. Giving the interface a
 `close()` removes the exclusion's whole basis, so the type was measured like the rest, below. The
 membership rule earns its keep here: what put this type in the set was a source change, not a
@@ -146,7 +146,7 @@ merely tidiness.
 
 **An absorb wide enough to catch the re-report catches more than the re-report, and what else
 falls in it has to be worked out per client**
-([#351](https://github.com/laughingman7743/flink-connector-gcp/issues/351), on the Pub/Sub
+([#351](https://github.com/flink-gcp/flink-connector-gcp/issues/351), on the Pub/Sub
 subscriber). There, the same `IllegalStateException` also carries a failure the SDK raises
 *during* our teardown — `doStop()` runs `runShutdown()` on a thread of its own under
 `catch (Exception e) { notifyFailed(e); }` — which nothing has consumed, because the reader has

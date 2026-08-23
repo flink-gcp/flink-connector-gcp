@@ -94,10 +94,10 @@ since [#237], superseded by test-utils' `TestSinkWriterMetricGroup`, which asser
 also failed because `change-stream-source` still had Change Streams enabled. Disabling the table
 made deletion succeed; that measured recovery sequence is now the order every cleanup path uses.
 
-[#218]: https://github.com/laughingman7743/flink-connector-gcp/issues/218
-[#237]: https://github.com/laughingman7743/flink-connector-gcp/issues/237
-[#243]: https://github.com/laughingman7743/flink-connector-gcp/issues/243
-[#245]: https://github.com/laughingman7743/flink-connector-gcp/issues/245
-[#246]: https://github.com/laughingman7743/flink-connector-gcp/issues/246
+[#218]: https://github.com/flink-gcp/flink-connector-gcp/issues/218
+[#237]: https://github.com/flink-gcp/flink-connector-gcp/issues/237
+[#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
+[#245]: https://github.com/flink-gcp/flink-connector-gcp/issues/245
+[#246]: https://github.com/flink-gcp/flink-connector-gcp/issues/246
 [#959]: https://github.com/flink-gcp/flink-connector-gcp/issues/959
-[#533]: https://github.com/laughingman7743/flink-connector-gcp/issues/533
+[#533]: https://github.com/flink-gcp/flink-connector-gcp/issues/533

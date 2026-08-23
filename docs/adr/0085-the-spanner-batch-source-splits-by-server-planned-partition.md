@@ -257,9 +257,9 @@ the reader hands it to `execute`. The helper reaches two package-private factori
 package-private constructor, its javadoc names them and the SDK version they were verified
 against, and an SDK release that moves any of them fails a test at compile time.
 
-[#36]: https://github.com/laughingman7743/flink-connector-gcp/issues/36
-[#221]: https://github.com/laughingman7743/flink-connector-gcp/issues/221
-[#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
-[#452]: https://github.com/laughingman7743/flink-connector-gcp/issues/452
-[#587]: https://github.com/laughingman7743/flink-connector-gcp/issues/587
+[#36]: https://github.com/flink-gcp/flink-connector-gcp/issues/36
+[#221]: https://github.com/flink-gcp/flink-connector-gcp/issues/221
+[#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
+[#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452
+[#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053

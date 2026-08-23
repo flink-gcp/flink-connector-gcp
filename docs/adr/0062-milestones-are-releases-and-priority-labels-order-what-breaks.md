@@ -62,13 +62,13 @@ open issues — which expresses neither an order nor a release.
   the one to work instead, so each keeps its own closure record ([#348], holding
   [#349]/[#350]/[#351]).
 
-[#36]: https://github.com/laughingman7743/flink-connector-gcp/issues/36
-[#248]: https://github.com/laughingman7743/flink-connector-gcp/issues/248
-[#220]: https://github.com/laughingman7743/flink-connector-gcp/issues/220
-[#225]: https://github.com/laughingman7743/flink-connector-gcp/issues/225
-[#348]: https://github.com/laughingman7743/flink-connector-gcp/issues/348
-[#349]: https://github.com/laughingman7743/flink-connector-gcp/issues/349
-[#350]: https://github.com/laughingman7743/flink-connector-gcp/issues/350
-[#351]: https://github.com/laughingman7743/flink-connector-gcp/issues/351
-[#567]: https://github.com/laughingman7743/flink-connector-gcp/issues/567
-[#577]: https://github.com/laughingman7743/flink-connector-gcp/issues/577
+[#36]: https://github.com/flink-gcp/flink-connector-gcp/issues/36
+[#248]: https://github.com/flink-gcp/flink-connector-gcp/issues/248
+[#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
+[#225]: https://github.com/flink-gcp/flink-connector-gcp/issues/225
+[#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348
+[#349]: https://github.com/flink-gcp/flink-connector-gcp/issues/349
+[#350]: https://github.com/flink-gcp/flink-connector-gcp/issues/350
+[#351]: https://github.com/flink-gcp/flink-connector-gcp/issues/351
+[#567]: https://github.com/flink-gcp/flink-connector-gcp/issues/567
+[#577]: https://github.com/flink-gcp/flink-connector-gcp/issues/577

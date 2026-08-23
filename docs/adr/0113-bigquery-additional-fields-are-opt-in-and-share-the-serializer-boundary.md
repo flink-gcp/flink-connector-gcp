@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-14
-- Issues: [#641](https://github.com/laughingman7743/flink-connector-gcp/issues/641)
+- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#additional-physical-fields`
 

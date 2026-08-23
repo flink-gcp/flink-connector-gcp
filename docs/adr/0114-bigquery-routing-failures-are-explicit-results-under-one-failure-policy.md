@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-14
-- Issues: [#657](https://github.com/laughingman7743/flink-connector-gcp/issues/657)
+- Issues: [#657](https://github.com/flink-gcp/flink-connector-gcp/issues/657)
 - Modules: bigquery, base
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#error-handling`
 

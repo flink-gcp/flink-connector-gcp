@@ -79,7 +79,7 @@ A billing budget detects costs that this resource-specific sweep cannot foresee,
 
 ## Evidence
 
-[PR #259](https://github.com/laughingman7743/flink-connector-gcp/pull/259) implemented the Bigtable sweep and priced one daily interval at about $15 using the same historical rate, compared with about $109 for the previous seven-day interval.
+[PR #259](https://github.com/flink-gcp/flink-connector-gcp/pull/259) implemented the Bigtable sweep and priced one daily interval at about $15 using the same historical rate, compared with about $109 for the previous seven-day interval.
 The existing WIF condition already admitted `schedule` and `workflow_dispatch` on `main`, so the workflow required no new OpenTofu grant.
 
 The 2026-08-18 change to three hours priced the whole range the same way.
@@ -112,7 +112,7 @@ Six mutation probes covered prefix, age, date parsing, listing failure, dry-run 
 When [#224] added Spanner, the script became service-parameterized and preserved independent attempts.
 That refactor found a second shell boundary: calling a function under `|| outcome=$?` suppresses errexit inside the function, so the resource listing remains explicitly checked rather than relying on shell mode.
 
-[PR #643](https://github.com/laughingman7743/flink-connector-gcp/pull/643) added the fixed App Engine fixture and reused the same lifecycle wrapper after OpenTofu apply, around gated acceptance and in the shared sweep.
+[PR #643](https://github.com/flink-gcp/flink-connector-gcp/pull/643) added the fixed App Engine fixture and reused the same lifecycle wrapper after OpenTofu apply, around gated acceptance and in the shared sweep.
 The verified idle state is `STOPPED` with zero instances, and runtime instance-count changes are the only part excluded from OpenTofu ownership.
 
 ## Alternatives declined
@@ -133,6 +133,6 @@ Its safe idle state, source of identifiers and failure behavior must be testable
 The scheduled job shortens the intended fallback interval for known fixture leaks but does not claim a hard time or spending bound, or general billing detection.
 Any proposal to manage those concerns must separately address billing-account permissions and identifier handling.
 
-[#224]: https://github.com/laughingman7743/flink-connector-gcp/issues/224
-[#246]: https://github.com/laughingman7743/flink-connector-gcp/issues/246
-[#630]: https://github.com/laughingman7743/flink-connector-gcp/issues/630
+[#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
+[#246]: https://github.com/flink-gcp/flink-connector-gcp/issues/246
+[#630]: https://github.com/flink-gcp/flink-connector-gcp/issues/630

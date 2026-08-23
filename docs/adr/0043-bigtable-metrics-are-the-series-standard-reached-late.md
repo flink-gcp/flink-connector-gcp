@@ -71,11 +71,11 @@ Five decisions:
   reports' place: a parked mutation has left the in-flight counters and has not reached the
   handler, so between the two nothing else reports it at all.
 
-[#33]: https://github.com/laughingman7743/flink-connector-gcp/issues/33
-[#37]: https://github.com/laughingman7743/flink-connector-gcp/issues/37
-[#210]: https://github.com/laughingman7743/flink-connector-gcp/issues/210
-[#232]: https://github.com/laughingman7743/flink-connector-gcp/issues/232
-[#234]: https://github.com/laughingman7743/flink-connector-gcp/issues/234
-[#237]: https://github.com/laughingman7743/flink-connector-gcp/issues/237
-[#239]: https://github.com/laughingman7743/flink-connector-gcp/issues/239
-[#436]: https://github.com/laughingman7743/flink-connector-gcp/issues/436
+[#33]: https://github.com/flink-gcp/flink-connector-gcp/issues/33
+[#37]: https://github.com/flink-gcp/flink-connector-gcp/issues/37
+[#210]: https://github.com/flink-gcp/flink-connector-gcp/issues/210
+[#232]: https://github.com/flink-gcp/flink-connector-gcp/issues/232
+[#234]: https://github.com/flink-gcp/flink-connector-gcp/issues/234
+[#237]: https://github.com/flink-gcp/flink-connector-gcp/issues/237
+[#239]: https://github.com/flink-gcp/flink-connector-gcp/issues/239
+[#436]: https://github.com/flink-gcp/flink-connector-gcp/issues/436

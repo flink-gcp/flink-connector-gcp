@@ -88,6 +88,6 @@ propagation latency.
 Connector-driven propagation has a separately gated manual probe because the default-stream path
 has previously shown a rare service-controlled tail near two hours.
 
-[#30]: https://github.com/laughingman7743/flink-connector-gcp/issues/30
-[#76]: https://github.com/laughingman7743/flink-connector-gcp/issues/76
-[#77]: https://github.com/laughingman7743/flink-connector-gcp/issues/77
+[#30]: https://github.com/flink-gcp/flink-connector-gcp/issues/30
+[#76]: https://github.com/flink-gcp/flink-connector-gcp/issues/76
+[#77]: https://github.com/flink-gcp/flink-connector-gcp/issues/77

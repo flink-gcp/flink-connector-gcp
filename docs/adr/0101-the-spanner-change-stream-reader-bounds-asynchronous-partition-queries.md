@@ -18,14 +18,14 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-12; revised 2026-08-14 and by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23
-- Issues: [#222](https://github.com/laughingman7743/flink-connector-gcp/issues/222),
-  [#536](https://github.com/laughingman7743/flink-connector-gcp/issues/536),
-  [#535](https://github.com/laughingman7743/flink-connector-gcp/issues/535),
-  [#551](https://github.com/laughingman7743/flink-connector-gcp/issues/551),
-  [#554](https://github.com/laughingman7743/flink-connector-gcp/issues/554),
-  [#581](https://github.com/laughingman7743/flink-connector-gcp/issues/581),
-  [#635](https://github.com/laughingman7743/flink-connector-gcp/issues/635),
-  [#647](https://github.com/laughingman7743/flink-connector-gcp/issues/647),
+- Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
+  [#536](https://github.com/flink-gcp/flink-connector-gcp/issues/536),
+  [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
+  [#551](https://github.com/flink-gcp/flink-connector-gcp/issues/551),
+  [#554](https://github.com/flink-gcp/flink-connector-gcp/issues/554),
+  [#581](https://github.com/flink-gcp/flink-connector-gcp/issues/581),
+  [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635),
+  [#647](https://github.com/flink-gcp/flink-connector-gcp/issues/647),
   [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)

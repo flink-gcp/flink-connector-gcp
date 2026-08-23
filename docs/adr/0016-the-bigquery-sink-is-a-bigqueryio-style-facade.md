@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-19 ([#13], [#14]); option scoping settled in [#14] (deferred on PR
-  [#46](https://github.com/laughingman7743/flink-connector-gcp/pull/46))
+  [#46](https://github.com/flink-gcp/flink-connector-gcp/pull/46))
 - Issues: [#13], [#14], [#10]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md`
@@ -41,11 +41,11 @@ limitations under the License.
   method and rejects it for others. (The default-stream object is the one deliberate deviation —
   ADR-0028.)
 - Deferred: `location()` granularity — recorded on PR
-  [#46](https://github.com/laughingman7743/flink-connector-gcp/pull/46), decided in [#10]. The
+  [#46](https://github.com/flink-gcp/flink-connector-gcp/pull/46), decided in [#10]. The
   load-job half is answered by ADR-0018's [#491] revision: per destination, derived from each
   job's destination dataset when `location()` is unset.
 
-[#10]: https://github.com/laughingman7743/flink-connector-gcp/issues/10
-[#13]: https://github.com/laughingman7743/flink-connector-gcp/issues/13
-[#14]: https://github.com/laughingman7743/flink-connector-gcp/issues/14
-[#491]: https://github.com/laughingman7743/flink-connector-gcp/issues/491
+[#10]: https://github.com/flink-gcp/flink-connector-gcp/issues/10
+[#13]: https://github.com/flink-gcp/flink-connector-gcp/issues/13
+[#14]: https://github.com/flink-gcp/flink-connector-gcp/issues/14
+[#491]: https://github.com/flink-gcp/flink-connector-gcp/issues/491

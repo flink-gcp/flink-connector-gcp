@@ -243,8 +243,8 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
   than a second bound — `bufferedMessages` and `bufferedBytes`, summed over the subtask's
   subscribers and read by the metric reporter's own thread, which a frozen fetch loop does not stop.
 
-[#348]: https://github.com/laughingman7743/flink-connector-gcp/issues/348
-[#356]: https://github.com/laughingman7743/flink-connector-gcp/issues/356
-[#357]: https://github.com/laughingman7743/flink-connector-gcp/issues/357
-[#377]: https://github.com/laughingman7743/flink-connector-gcp/issues/377
-[#440]: https://github.com/laughingman7743/flink-connector-gcp/issues/440
+[#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348
+[#356]: https://github.com/flink-gcp/flink-connector-gcp/issues/356
+[#357]: https://github.com/flink-gcp/flink-connector-gcp/issues/357
+[#377]: https://github.com/flink-gcp/flink-connector-gcp/issues/377
+[#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440

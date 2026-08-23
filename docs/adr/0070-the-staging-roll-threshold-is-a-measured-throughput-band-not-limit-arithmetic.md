@@ -90,6 +90,6 @@ changes this decision: BigQuery's Parquet loader has a step at 256 MiB of total 
 the earlier probe wrote Avro blocks and Parquet row groups of sizes the connector's own writers do
 not produce — the confound that made the first pass unusable ([#285]).
 
-[#281]: https://github.com/laughingman7743/flink-connector-gcp/issues/281
-[#284]: https://github.com/laughingman7743/flink-connector-gcp/issues/284
-[#285]: https://github.com/laughingman7743/flink-connector-gcp/issues/285
+[#281]: https://github.com/flink-gcp/flink-connector-gcp/issues/281
+[#284]: https://github.com/flink-gcp/flink-connector-gcp/issues/284
+[#285]: https://github.com/flink-gcp/flink-connector-gcp/issues/285
