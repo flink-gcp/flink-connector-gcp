@@ -30,14 +30,26 @@ import java.io.Serializable;
 /**
  * Turns one Spanner data-change record into zero or more user records.
  *
+ * <p>The producing type is declared by {@link #getProducedType()}, so a job needs no {@code
+ * returns(...)} call after the source.
+ *
  * <p>Returning successfully without collecting skips the data-change record and increments {@code
  * recordsSkipped} once. Collected records must be non-null. The collector is valid only for the
  * synchronous duration of the call; an implementation must not retain it.
+ *
+ * @param <T> the record type produced
  */
 @PublicEvolving
 public interface SpannerChangeStreamDeserializationSchema<T>
         extends Serializable, ResultTypeQueryable<T> {
 
+    /**
+     * Prepares this deserializer, once per reader, before any change record reaches it.
+     *
+     * @param context the initialization context, which carries the metric group and the user code
+     *     class loader
+     * @throws Exception if initialization fails, which fails the job
+     */
     default void open(DeserializationSchema.InitializationContext context) throws Exception {}
 
     /**
