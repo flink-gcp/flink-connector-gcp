@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 
 /** The value-capture policy that was active when a data change was recorded. */
-@Public
+@PublicEvolving
 public enum ValueCaptureType {
     OLD_AND_NEW_VALUES,
     NEW_VALUES,

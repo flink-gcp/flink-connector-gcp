@@ -156,4 +156,4 @@ page = "docs/content/docs/connectors/table/spanner.md"
 # the guard would demote a type users receive, which is a stability decision and
 # not a documentation one.
 [value_builders]
-"flink-connector-gcp-spanner/src/main/java/io/github/flink/gcp/connector/spanner/source/changestream/DataChangeRecord.java" = "A @Public Change Streams record. Its builder sets the thirteen fields Spanner reports for one data change; none of them is a job option, and the record is what a deserializer receives rather than something a job configures."
+"flink-connector-gcp-spanner/src/main/java/io/github/flink/gcp/connector/spanner/source/changestream/DataChangeRecord.java" = "A @PublicEvolving Change Streams record. Its builder sets the thirteen fields Spanner reports for one data change; none of them is a job option, and the record is what a deserializer receives rather than something a job configures."

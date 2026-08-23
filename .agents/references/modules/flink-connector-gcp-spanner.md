@@ -199,6 +199,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Change Streams coordinator (`docs/adr/0099`, `docs/adr/0094`)
 
+- **The change-stream public surface is `@PublicEvolving`, not `@Public`** (`docs/adr/0141`,
+  `docs/adr/0124`'s revision): `SpannerChangeStreamSource(+Builder)`, the deserialization
+  schema, and `DataChangeRecord`/`Mod`/`ModType`/`ValueCaptureType` moved down whole-group
+  before the `1.0.0` tag — held one tier below the freeze until the surface has survived a
+  release under real use; the path itself calls no vendor change-stream API (plain SQL over the
+  TVF).
 - The enumerator state is the only partition-lifecycle recovery record; do not add Beam's external
   metadata table. It checkpoints scheduled and running entries and the finished parents that
   establish child dependencies.
@@ -302,6 +308,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   guards the descriptions; the reference page or the table page's row is where a default is
   written. "Unset fails the source" on `scan.resume-fallback.mode` is a contract, not a
   default, and stays.
+- The value converters ride two class-level `@BetaApi` core types, `com.google.cloud.ByteArray`
+  and `com.google.cloud.Date` — internal calls, tier-irrelevant under `docs/adr/0141`; reread
+  them on a BOM bump.
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 

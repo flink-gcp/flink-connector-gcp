@@ -87,7 +87,7 @@ The [Java API reference]({{< param ApiDocsURL >}}) is generated from the source 
 goes live with the rest of the site ([#93]({{< param BookRepo >}}/issues/93)).
 
 Flink's API stability annotations mark what is safe to depend on, and this project applies them to
-its own types. `@Public` marks the frozen surface — the entry classes, builders, and the
+its own types. `@Public` marks the frozen surface — entry classes, builders, and the
 interfaces user code implements — which does not change incompatibly within a major version; the
 build holds that promise by comparing each connector jar against the latest published release
 (japicmp).
@@ -100,6 +100,14 @@ type's tier is visible at the point where someone is deciding whether to depend 
 It is generated from `main`, so it describes the current source rather than any release. References
 per released version arrive with artifact publishing
 ([#39]({{< param BookRepo >}}/issues/39)).
+
+The youngest surfaces sit below the frozen tier, each for a recorded reason
+([ADR-0141]({{< param BookRepo >}}/blob/main/docs/adr/0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)):
+the Bigtable and Spanner Change Streams sources are `@PublicEvolving` — Bigtable's record model
+mirrors a vendor model that is still growing, and neither source has yet survived a release under
+real use — and the BigQuery CDC surface is `@Experimental` while the open upstream question in
+[#706]({{< param BookRepo >}}/issues/706) can still reshape what its sequence-number providers
+receive.
 
 ## Disclaimer
 

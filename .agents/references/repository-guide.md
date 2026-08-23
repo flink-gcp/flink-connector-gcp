@@ -543,6 +543,12 @@ facts); the rules a session needs:
   the reactor itself and japicmp reads the old compile classpath as old API). Until `1.0.0`
   exists on Central the check passes with a logged resolution warning; the firing evidence is
   the staged-1.0.0 rehearsal on ADR-0124
+- **Which tier a surface gets is a rule, not taste** (ADR-0141, issue #783): a new or
+  re-examined surface's tier is decided by ADR-0141's clauses — what can reshape its inputs or
+  outputs within 1.x — at introduction time, in the adopting ADR. A vendor
+  `@BetaApi`/`@InternalApi` called only internally never sets the tier; it is recorded in
+  ADR-0141's inventory and the module reference instead. The current per-surface outcomes and
+  the closure stops are ADR-0124's revision
 - **`flink-connector-gcp-docs-validation` is never published.** It remains outside the ordinary
   module list behind the `docs-snippets` profile and configures its module-local deploy plugin to
   skip deployment; it is build-time documentation validation, not one of the connector artifacts

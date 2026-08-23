@@ -27,7 +27,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `channelPoolSize` resizes the production channel pool; unset leaves the client's default single
   channel, it is never derived from `maxInFlightTasks`, and beside `emulatorEndpoint` it is
   rejected — the emulator arm keeps its caller-owned single channel (`docs/adr/0081`). gax retry
-  and batching policy stay untouched.
+  and batching policy stay untouched. `ChannelPoolSettings` is class-level `@BetaApi` in the
+  pinned gax — an internal call, tier-irrelevant under `docs/adr/0141`; reread it on a BOM bump.
 - Task naming: unnamed by default; `taskIdExtractor(...)` on the **sink builder**, key hashed
   SHA-256, `ALREADY_EXISTS` = success; design against the 1 h dedup window (Google's own
   sources contradict each other). `httpTarget(url)` uses the existing two-stage immutable schema

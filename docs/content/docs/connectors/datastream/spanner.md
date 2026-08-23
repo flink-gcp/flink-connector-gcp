@@ -427,6 +427,8 @@ one direction that is easy to get backwards. Measured against `emulator:1.5.56` 
 ## Change Streams source
 
 The Change Streams source continuously reads data-change records from the generated Spanner read function.
+The change-stream API is `@PublicEvolving` rather than frozen: it may change at a minor release,
+announced in the release notes.
 It uses the checkpointed partition lineage described in [ADR-0099]({{< param BookRepo >}}/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) and the bounded asynchronous reader in [ADR-0101]({{< param BookRepo >}}/blob/main/docs/adr/0101-the-spanner-change-stream-reader-bounds-asynchronous-partition-queries.md).
 
 {{< java-snippet file="SpannerConnectorChangeStreamSource.java" tag="spanner-connector-change-stream-source" >}}

@@ -137,6 +137,8 @@ than a knob, and promoting it would need a measurement.
 
 ## `SpannerChangeStreamSource.builder()`
 
+`@PublicEvolving`: the change-stream API may change at a minor release, announced in the release
+notes.
 The unbounded Change Streams source.
 Its partition lifecycle, checkpoint recovery, and delivery semantics are under [Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
 

@@ -233,6 +233,11 @@ advertised; use `scan.row-restriction` when a BigQuery-native server-side predic
 
 ### Change data capture
 
+Experimental ([#706]({{< param BookRepo >}}/issues/706)), with the DataStream CDC surface it maps
+onto: the feature's shape may still move with the upstream question, and a `sink.cdc.*` option
+moves with it at a minor release with a release-notes entry — the promise the options class
+carries.
+
 Set `sink.cdc.enabled` to `true` to consume a Flink upsert changelog and write BigQuery `UPSERT`
 and `DELETE` mutations through the Storage Write API default stream.
 The option defaults to `false`, is rejected with `storage-api-exactly-once` or `file-loads`, and

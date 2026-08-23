@@ -123,7 +123,10 @@ fields and share only `startOrRelease`.
   that way and not as "there is no unbounded wait"**, because there is one and `BoundedShutdown`
   could not take it either: `Subscriber.doStop()` spawns a bare `new Thread(...)` running
   `runShutdown()` under `SubscriberShutdownSettings.getTimeout()`, whose default is
-  `Duration.ofSeconds(-1)`, no timeout (measured on 1.152.0, [#325]). A bare `new Thread`
+  `Duration.ofSeconds(-1)`, no timeout (measured on 1.152.0, [#325]; the
+  `setSubscriberShutdownSettings` setter that installs it is `@BetaApi` —
+  [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)'s
+  inventory records it). A bare `new Thread`
   **inherits** its creator's daemon flag, so on Flink's task thread it is non-daemon — a
   property of who calls it, not of the SDK setting one. That thread is the SDK's own, so all a
   bounded wait could do is what `awaitTerminated` already does: give up and warn.

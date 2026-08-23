@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.typeinfo.TypeInfo;
 import org.apache.flink.util.Preconditions;
 
@@ -52,7 +52,7 @@ import java.util.Optional;
  * toString} prints user data is one accidental log line away from putting that data where it does
  * not belong.
  */
-@Public
+@PublicEvolving
 @TypeInfo(DataChangeRecordTypeInfoFactory.class)
 public final class DataChangeRecord implements Serializable {
 
@@ -221,7 +221,7 @@ public final class DataChangeRecord implements Serializable {
      * Builder for {@link DataChangeRecord}. Every value is required; {@link #build()} names the
      * ones that are missing.
      */
-    @Public
+    @PublicEvolving
     public static final class Builder {
 
         @Nullable private Instant commitTimestamp;
@@ -454,7 +454,7 @@ public final class DataChangeRecord implements Serializable {
     }
 
     /** Per-record description of one watched column. */
-    @Public
+    @PublicEvolving
     public static final class ColumnType implements Serializable {
 
         private static final long serialVersionUID = 1L;

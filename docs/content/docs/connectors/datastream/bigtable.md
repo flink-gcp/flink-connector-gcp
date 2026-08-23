@@ -656,6 +656,9 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 
 `BigtableChangeStreamSource` is a separate FLIP-27 source because `ReadChangeStream` has a moving
 partition topology and continuation-token checkpoints rather than the bounded scan's row ranges.
+The change-stream API is `@PublicEvolving` rather than frozen: the record model mirrors a client
+surface the vendor still evolves, so it may change at a minor release, announced in the release
+notes.
 
 {{< java-snippet file="BigtableConnectorChangeStreamSource.java" tag="bigtable-connector-change-stream-source" >}}
 

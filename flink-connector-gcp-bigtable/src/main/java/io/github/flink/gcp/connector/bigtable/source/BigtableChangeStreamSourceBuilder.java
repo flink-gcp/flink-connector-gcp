@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /** Builds a {@link BigtableChangeStreamSource}. */
-@Public
+@PublicEvolving
 public final class BigtableChangeStreamSourceBuilder<T> {
 
     /** Default maximum number of open partition streams in one source subtask. */

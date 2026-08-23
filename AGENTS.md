@@ -88,8 +88,10 @@ green; use the clean-state procedures in that guide for such changes.
 ## Code and tests
 
 - Production packages use `io.github.flink.gcp.connector.<product>`; each main-tree class carries
-  the appropriate Flink API annotation. `@Public` types are frozen by the japicmp gate — breaking
-  or demoting one is a deliberate act with an exclusion and a release-notes entry (ADR-0124).
+  the appropriate Flink API annotation. `@Public` types are frozen by the japicmp gate once
+  `1.0.0` is published — breaking or demoting one is then a deliberate act with an exclusion and
+  a release-notes entry (ADR-0124). Before the tag, a tier re-examination may still move a type
+  down without either artifact, under ADR-0141's clauses, recorded in ADR-0124's revision.
 - Do not introduce Guava, Mockito, PowerMock, Lombok, or AutoValue. Use Flink preconditions,
   `javax.annotation`, and hand-written `Fake*` test doubles.
 - A **sink** serialization schema returning `null` means skip, not failure; a wrapped Flink

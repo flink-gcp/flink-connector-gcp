@@ -17,10 +17,12 @@ limitations under the License.
 # ADR-0124: The stability boundary at 1.0.0 is a promoted @Public entry surface checked by japicmp
 
 - Status: Accepted
-- Date: 2026-08-16 (measured 2026-08-16)
+- Date: 2026-08-16 (measured 2026-08-16); revised by
+  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) (2026-08-23)
 - Issues: [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728),
   [#39](https://github.com/flink-gcp/flink-connector-gcp/issues/39),
-  [#29](https://github.com/flink-gcp/flink-connector-gcp/issues/29)
+  [#29](https://github.com/flink-gcp/flink-connector-gcp/issues/29),
+  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783)
 - Modules: all
 - Current behavior: `docs/content/_index.md` § API reference
 
@@ -65,6 +67,41 @@ One stop sits inside a frozen signature: `FailureHandler.sendToDeadLetterQueue` 
 `@Experimental` `DeadLetterQueue`, so renaming that type would trip japicmp through the frozen
 method even though its own tier promises nothing — its experimental latitude is narrower in
 practice than the annotation reads.
+
+**Revision ([#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783), 2026-08-23,
+before the tag).** The pre-tag re-examination this ADR routed to
+[#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) demoted the youngest
+promoted surfaces, under the tier rule recorded in [ADR-0141](0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md):
+
+- The BigQuery CDC surface — `CdcOptions`, `CdcChangeType`, `CdcChangeTypeProvider`,
+  `CdcSequenceNumberProvider` and its four provider implementations, `SpannerCdcSequenceNumber`,
+  `CdcTableOptions`, `CdcTableOptionsProvider`, `CdcTableReconciliationPolicy` (12 top-level
+  types; nested builders move with them) — is
+  `@Experimental` while [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706)
+  stays open. The four CDC setters on the still-frozen `BigQuerySinkBuilder` (`cdcOptions`,
+  `cdcTableOptions`, `cdcTableOptionsProvider`, `cdcTableReconciliationPolicy`) become closure
+  stops of the same shape as the `sendToDeadLetterQueue` stop: renaming a CDC type still trips
+  japicmp through the frozen setter, so its experimental latitude is narrower in practice than
+  the annotation reads. The `@PublicEvolving` `BigQueryConnectorOptions` also carries a
+  `ConfigOption<CdcTableReconciliationPolicy>` field typed over the `@Experimental` enum. That
+  demotion opens a gap no japicmp profile covers: `-Pjapicmp-patch` compares the field but
+  excludes the `@Experimental` enum itself, so renaming a constant — which renames the SQL value
+  a `WITH` clause may carry — would trip nothing. The DDL vocabulary is therefore pinned by
+  `ConnectorEnumOptionSpellingTest` instead, and the option keys stay held by
+  `check-option-docs`.
+- The Bigtable and Spanner change-stream surfaces — the two `*ChangeStreamSource` entry classes
+  with their builders, the two change-stream deserialization-schema interfaces plus the shipped
+  Bigtable implementation, and the record models (`BigtableChangeStreamMutation` with its nested
+  types; `DataChangeRecord`, `Mod`, `ModType`, `ValueCaptureType`) — are `@PublicEvolving` as
+  whole groups. That is a demotion the closure permits without a stop: no `@Public` signature
+  outside either group names any of these types, so the invariant that a frozen signature only
+  names frozen types (or a recorded `@Experimental` stop) still holds.
+
+After the revision 93 main-tree files carry `@Public`
+(base 4, bigquery 34, pubsub 18, cloudtasks 12, bigtable 13, spanner 12); the demoted 24 files
+are 12 `@PublicEvolving` (change streams) and 12 `@Experimental` (CDC). The closure was
+re-verified over the compiled classes after the flips, by the same `javap` procedure as the
+census.
 
 **The tiers now promise:** `@Public` does not break within a major version; `@PublicEvolving` may
 break at a minor release with a release-notes entry, and must not break at a patch release;
@@ -140,6 +177,12 @@ Verification against the real Maven Central 1.0.0 remains open on
 ## Consequences
 
 - 116 main-tree files swap `@PublicEvolving` for `@Public`; the remaining 15 keep their tier.
+  The [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) revision moves 24 of
+  the 117 `@Public` files the main trees carried by then — measured at the revision, one more
+  than the adopting diff's 116 swaps — back down before the tag (12 `@PublicEvolving`,
+  12 `@Experimental`; the Decision's revision paragraph carries the lists), leaving 93 frozen. The demoted types leave the ordinary
+  `@Public`-only gate; the `@PublicEvolving` ones remain patch-checked through
+  `-Pjapicmp-patch`, and the `@Experimental` ones leave japicmp's view entirely.
 - The root pom gains `japicmp.referenceVersion` (1.0.0), the plugin declaration with the
   `oldVersion` groupId override (the parent hardcodes `org.apache.flink`, the same class of
   workaround as the `directory-maven-plugin` `rootDir` override), and the `japicmp-patch`

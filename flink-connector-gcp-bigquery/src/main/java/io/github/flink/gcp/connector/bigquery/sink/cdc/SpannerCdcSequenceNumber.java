@@ -16,7 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.cdc;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.Experimental;
 
 import java.time.Instant;
 
@@ -62,7 +62,7 @@ import java.time.Instant;
  * @see <a href="https://cloud.google.com/bigquery/docs/change-data-capture">BigQuery change data
  *     capture ordering</a>
  */
-@Public
+@Experimental
 public final class SpannerCdcSequenceNumber {
 
     private SpannerCdcSequenceNumber() {}

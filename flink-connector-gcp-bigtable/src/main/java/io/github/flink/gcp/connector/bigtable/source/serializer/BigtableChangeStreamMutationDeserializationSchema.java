@@ -16,14 +16,14 @@
 
 package io.github.flink.gcp.connector.bigtable.source.serializer;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.util.Collector;
 
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 
 /** Emits the connector-owned {@link BigtableChangeStreamMutation} unchanged. */
-@Public
+@PublicEvolving
 public final class BigtableChangeStreamMutationDeserializationSchema
         implements BigtableChangeStreamDeserializationSchema<BigtableChangeStreamMutation> {
 

@@ -16,10 +16,10 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream;
 
-import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 
 /** The operation represented by one Spanner change-stream modification. */
-@Public
+@PublicEvolving
 public enum ModType {
     INSERT,
     UPDATE,

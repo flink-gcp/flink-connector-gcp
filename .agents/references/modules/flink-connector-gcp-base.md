@@ -131,7 +131,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
   inbound message limit, and losing it fails only on an emulator and only past 4 MiB.
   `NoCredentialsProvider` stays at each call site — the three builder types share no supertype —
   and `PubSubTestClients` cannot use any of this, since `base` depends on test-utils and not the
-  reverse.
+  reverse. `plaintextProvider` reaches the channel through the `@BetaApi`
+  `setChannelConfigurator`, so its five client-owned emulator sites ride that Beta surface — the
+  three caller-owned `openPlaintextChannel`/`fixedProvider` sites do not. An internal call,
+  tier-irrelevant under `docs/adr/0141`; reread the annotation on a gax bump.
 
 ## `base.options` (`docs/adr/0068`)
 

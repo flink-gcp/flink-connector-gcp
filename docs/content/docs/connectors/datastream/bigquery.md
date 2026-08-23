@@ -278,6 +278,11 @@ descriptor without becoming physical columns; arbitrary additional fields never 
 
 ## Change data capture
 
+Experimental ([#706]({{< param BookRepo >}}/issues/706)).
+The CDC API is still taking shape: the open upstream question of how Debezium Avro source metadata
+reaches the providers can reshape what they receive, so this surface may change in any release
+until it settles.
+
 The default-stream write method can apply **change data capture (CDC)** mutations to a table that
 has a BigQuery primary key.
 The sink adds BigQuery's `_CHANGE_TYPE` pseudocolumn and, when configured, the

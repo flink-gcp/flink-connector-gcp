@@ -350,7 +350,7 @@ def unmapped_public_builders(
     surface at all; see TOP_LEVEL_TYPE for what is read to decide it. A
     `[value_builders]` entry says the opposite — it *is* public, and it builds a
     value rather than a configuration, so no reference row could exist for it.
-    `DataChangeRecord` is the case that forced the distinction: a `@Public`
+    `DataChangeRecord` is the case that forced the distinction: a `@PublicEvolving`
     record a deserializer receives, whose builder sets thirteen record fields
     and not one option. Marking it `@Internal` to quieten this would have
     demoted a published type to satisfy a check.
