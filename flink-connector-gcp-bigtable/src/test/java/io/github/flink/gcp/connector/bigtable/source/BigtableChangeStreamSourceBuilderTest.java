@@ -78,16 +78,23 @@ class BigtableChangeStreamSourceBuilderTest {
     }
 
     @Test
-    void endTimeMakesOnlyThatSourceBounded() {
+    void boundedTimestampMakesOnlyThatSourceBounded() {
         BigtableChangeStreamSource<BigtableChangeStreamMutation> continuous = minimal().build();
         BigtableChangeStreamSource<BigtableChangeStreamMutation> bounded =
-                minimal().endTime(Instant.parse("2026-08-11T00:00:00Z")).build();
+                minimal().boundedTimestamp(Instant.parse("2026-08-11T00:00:00Z")).build();
 
         assertThat(continuous.getBoundedness()).isEqualTo(Boundedness.CONTINUOUS_UNBOUNDED);
         assertThat(bounded.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
         assertThat(bounded.getProducedType())
                 .isEqualTo(
                         new BigtableChangeStreamMutationDeserializationSchema().getProducedType());
+    }
+
+    @Test
+    void rejectsANullBoundedTimestamp() {
+        assertThatThrownBy(() -> minimal().boundedTimestamp(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("boundedTimestamp must not be null");
     }
 
     @Test
@@ -388,7 +395,7 @@ class BigtableChangeStreamSourceBuilderTest {
         public void open(
                 TableDestination table,
                 ChangeStreamPartitionSplit split,
-                Instant endTime,
+                Instant boundedTimestamp,
                 ResponseObserver<ChangeStreamRecord> observer) {
             this.observer = observer;
             observer.onStart(new TestStreamController());
@@ -422,7 +429,7 @@ class BigtableChangeStreamSourceBuilderTest {
         public void open(
                 TableDestination table,
                 ChangeStreamPartitionSplit split,
-                Instant endTime,
+                Instant boundedTimestamp,
                 ResponseObserver<ChangeStreamRecord> observer) {}
 
         /** Opens nothing, so there is nothing to authenticate. */

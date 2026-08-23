@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.sink;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
@@ -65,6 +66,7 @@ import java.util.List;
  *       {@code INSERT} is the ordinary way to reach it.
  * </ul>
  */
+@Internal
 final class RowDataSerializationSchema implements BigtableSerializationSchema<RowData> {
 
     private static final long serialVersionUID = 1L;

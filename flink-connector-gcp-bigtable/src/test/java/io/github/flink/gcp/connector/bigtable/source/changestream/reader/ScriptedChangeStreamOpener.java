@@ -59,7 +59,7 @@ public final class ScriptedChangeStreamOpener implements ChangeStreamOpener {
     public void open(
             TableDestination table,
             ChangeStreamPartitionSplit split,
-            @Nullable Instant endTime,
+            @Nullable Instant boundedTimestamp,
             ResponseObserver<ChangeStreamRecord> observer) {
         ScheduledExecutorService executor = callbacks();
         int reader = readerNumber();

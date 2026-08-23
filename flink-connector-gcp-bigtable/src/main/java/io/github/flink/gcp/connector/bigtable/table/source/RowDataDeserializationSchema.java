@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.Collector;
@@ -33,6 +34,7 @@ import java.io.IOException;
  * PublicEvolving} interface, which is what keeps {@code flink-table-runtime} off this module's
  * dependencies.
  */
+@Internal
 final class RowDataDeserializationSchema implements BigtableRowDeserializationSchema<RowData> {
 
     private static final long serialVersionUID = 1L;

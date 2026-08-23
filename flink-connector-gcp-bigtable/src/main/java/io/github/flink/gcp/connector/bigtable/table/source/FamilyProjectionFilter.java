@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.annotation.Internal;
+
 import com.google.cloud.bigtable.data.v2.models.Filters;
 
 import java.util.List;
@@ -31,6 +33,7 @@ import static com.google.cloud.bigtable.data.v2.models.Filters.FILTERS;
  * rather than strip every row to its key. The keys-only chain below is the service's idiom for that
  * read: one cell per row, its value stripped, so each row arrives as its key and nothing else.
  */
+@Internal
 final class FamilyProjectionFilter {
 
     private FamilyProjectionFilter() {}

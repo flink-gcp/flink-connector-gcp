@@ -73,7 +73,7 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final StartPosition startPosition;
     @Nullable private final StartPosition resumeFallback;
-    @Nullable private final Instant endTime;
+    @Nullable private final Instant boundedTimestamp;
     @Nullable private final Integer maxConcurrentStreamsPerSubtask;
     @Nullable private final Integer parallelism;
     private final DataType physicalDataType;
@@ -99,7 +99,7 @@ public final class BigtableChangeStreamDynamicSource
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.startPosition = builder.startPosition;
         this.resumeFallback = builder.resumeFallback;
-        this.endTime = builder.endTime;
+        this.boundedTimestamp = builder.boundedTimestamp;
         this.maxConcurrentStreamsPerSubtask = builder.maxConcurrentStreamsPerSubtask;
         this.parallelism = builder.parallelism;
         this.changelogMode =
@@ -237,8 +237,8 @@ public final class BigtableChangeStreamDynamicSource
         if (resumeFallback != null) {
             builder.resumeFallback(resumeFallback);
         }
-        if (endTime != null) {
-            builder.endTime(endTime);
+        if (boundedTimestamp != null) {
+            builder.boundedTimestamp(boundedTimestamp);
         }
         OptionSetters.accept(
                 BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK.key(),
@@ -256,7 +256,7 @@ public final class BigtableChangeStreamDynamicSource
                         .serviceAccountKeyFile(serviceAccountKeyFile)
                         .startPosition(startPosition)
                         .resumeFallback(resumeFallback)
-                        .endTime(endTime)
+                        .boundedTimestamp(boundedTimestamp)
                         .maxConcurrentStreamsPerSubtask(maxConcurrentStreamsPerSubtask)
                         .parallelism(parallelism);
         // One branch, over the two fields that decide the mode rather than over two argument
@@ -296,7 +296,7 @@ public final class BigtableChangeStreamDynamicSource
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(startPosition, that.startPosition)
                 && Objects.equals(resumeFallback, that.resumeFallback)
-                && Objects.equals(endTime, that.endTime)
+                && Objects.equals(boundedTimestamp, that.boundedTimestamp)
                 && Objects.equals(
                         maxConcurrentStreamsPerSubtask, that.maxConcurrentStreamsPerSubtask)
                 && Objects.equals(parallelism, that.parallelism)
@@ -320,7 +320,7 @@ public final class BigtableChangeStreamDynamicSource
                 serviceAccountKeyFile,
                 startPosition,
                 resumeFallback,
-                endTime,
+                boundedTimestamp,
                 maxConcurrentStreamsPerSubtask,
                 parallelism,
                 physicalDataType,
@@ -349,7 +349,7 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private String serviceAccountKeyFile;
         @Nullable private StartPosition startPosition;
         @Nullable private StartPosition resumeFallback;
-        @Nullable private Instant endTime;
+        @Nullable private Instant boundedTimestamp;
         @Nullable private Integer maxConcurrentStreamsPerSubtask;
         @Nullable private Integer parallelism;
         @Nullable private DataType physicalDataType;
@@ -419,13 +419,13 @@ public final class BigtableChangeStreamDynamicSource
         }
 
         /**
-         * Sets the end timestamp that bounds the run, or {@code null} for an unbounded one.
+         * Sets the timestamp that bounds the run, or {@code null} for an unbounded one.
          *
-         * @param endTime the end timestamp
+         * @param boundedTimestamp the bounded timestamp
          * @return this builder
          */
-        public Builder endTime(@Nullable Instant endTime) {
-            this.endTime = endTime;
+        public Builder boundedTimestamp(@Nullable Instant boundedTimestamp) {
+            this.boundedTimestamp = boundedTimestamp;
             return this;
         }
 

@@ -48,15 +48,16 @@ import java.util.Objects;
  * no more than 100,000 in a batch. The two numbers are not compared by this connector, and need not
  * be by a job either, because <b>the client enforces the mutation limit itself and
  * unconditionally</b>: its batch resource flushes as soon as one more entry would carry the
- * accumulated batch past 100,000 mutations, whatever {@link Builder#batchElementCount(long)} says,
- * and no single entry can carry more than that on its own. So no setting of these knobs produces an
- * over-limit request (read from google-cloud-bigtable 2.80.0 on 2026-08-10, and pinned by {@code
- * BigtableClientMutationLimitTest} so that a client upgrade moving either fact fails a test rather
- * than a job — {@code docs/adr/0082}).
+ * accumulated batch past 100,000 mutations, whatever {@link
+ * Builder#batchElementCountThreshold(long)} says, and no single entry can carry more than that on
+ * its own. So no setting of these knobs produces an over-limit request (read from
+ * google-cloud-bigtable 2.80.0 on 2026-08-10, and pinned by {@code BigtableClientMutationLimitTest}
+ * so that a client upgrade moving either fact fails a test rather than a job — {@code
+ * docs/adr/0082}).
  *
  * <p>A batch is therefore sent on whichever of five conditions arrives first: {@link
- * Builder#batchElementCount(long)}, {@link Builder#batchByteSize(long)}, the client's one-second
- * timer, the client's 100,000-mutation guard, and the writer's own {@link
+ * Builder#batchElementCountThreshold(long)}, {@link Builder#batchRequestByteThreshold(long)}, the
+ * client's one-second timer, the client's 100,000-mutation guard, and the writer's own {@link
  * Builder#maxInFlightEntries(int)} — which sends every batcher when the writer fills. Any claim of
  * the form "setting X large makes batches of X" has to name the condition that <em>binds</em>, or
  * it is false.
@@ -131,21 +132,22 @@ public final class BigtableWriterOptions implements Serializable {
     private static final long CLIENT_MAX_OUTSTANDING_BYTES = 100L * 1024 * 1024;
 
     /**
-     * The largest {@link Builder#batchElementCount(long)} this connector accepts: one under {@code
-     * CLIENT_MAX_OUTSTANDING_ENTRIES}. Written as the subtraction rather than as 19,999 so that a
-     * client release moving its budget moves this with it, instead of leaving a ceiling that admits
-     * a value the client then refuses.
+     * The largest {@link Builder#batchElementCountThreshold(long)} this connector accepts: one
+     * under {@code CLIENT_MAX_OUTSTANDING_ENTRIES}. Written as the subtraction rather than as
+     * 19,999 so that a client release moving its budget moves this with it, instead of leaving a
+     * ceiling that admits a value the client then refuses.
      *
      * <p>Package-private, and the setter's {@code @param} names the number rather than this symbol:
      * nothing outside this package has asked for it, and a public compile-time constant is inlined
      * into whatever refers to it, which would leave a caller pinned to a value a later release
      * changed. Widen it when something asks, not before.
      */
-    static final long MAX_BATCH_ELEMENT_COUNT_LIMIT = CLIENT_MAX_OUTSTANDING_ENTRIES - 1;
+    static final long MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT = CLIENT_MAX_OUTSTANDING_ENTRIES - 1;
 
     /**
-     * The largest {@link Builder#batchByteSize(long)} this connector accepts: one byte under {@code
-     * CLIENT_MAX_OUTSTANDING_BYTES}, for the reason {@code MAX_BATCH_ELEMENT_COUNT_LIMIT} gives.
+     * The largest {@link Builder#batchRequestByteThreshold(long)} this connector accepts: one byte
+     * under {@code CLIENT_MAX_OUTSTANDING_BYTES}, for the reason {@code
+     * MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT} gives.
      *
      * <p><b>No service figure stands behind this one</b>, and none exists to: Bigtable's quotas
      * page states no size limit for a {@code MutateRows} request at all — its size rows bound a
@@ -153,12 +155,12 @@ public final class BigtableWriterOptions implements Serializable {
      * bounded here is what the client will let a job configure, which is a stricter and
      * better-defined thing to bound at.
      */
-    static final long MAX_BATCH_BYTE_SIZE_LIMIT = CLIENT_MAX_OUTSTANDING_BYTES - 1;
+    static final long MAX_BATCH_REQUEST_BYTE_THRESHOLD_LIMIT = CLIENT_MAX_OUTSTANDING_BYTES - 1;
 
     private static final BigtableWriterOptions DEFAULTS = builder().build();
 
-    @Nullable private final Long batchElementCount;
-    @Nullable private final Long batchByteSize;
+    @Nullable private final Long batchElementCountThreshold;
+    @Nullable private final Long batchRequestByteThreshold;
     private final int maxInFlightEntries;
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
@@ -169,8 +171,8 @@ public final class BigtableWriterOptions implements Serializable {
     private final boolean perDestinationMetrics;
 
     private BigtableWriterOptions(Builder builder) {
-        this.batchElementCount = builder.batchElementCount;
-        this.batchByteSize = builder.batchByteSize;
+        this.batchElementCountThreshold = builder.batchElementCountThreshold;
+        this.batchRequestByteThreshold = builder.batchRequestByteThreshold;
         this.maxInFlightEntries = builder.maxInFlightEntries;
         this.maxInFlightBytes = builder.maxInFlightBytes;
         this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
@@ -206,14 +208,14 @@ public final class BigtableWriterOptions implements Serializable {
 
     /** Returns the batch element-count threshold, or {@code null} to use the client's default. */
     @Nullable
-    public Long getBatchElementCount() {
-        return batchElementCount;
+    public Long getBatchElementCountThreshold() {
+        return batchElementCountThreshold;
     }
 
-    /** Returns the batch byte threshold, or {@code null} to use the client's default. */
+    /** Returns the batch request-byte threshold, or {@code null} to use the client's default. */
     @Nullable
-    public Long getBatchByteSize() {
-        return batchByteSize;
+    public Long getBatchRequestByteThreshold() {
+        return batchRequestByteThreshold;
     }
 
     /** Returns the writer's cap on unacknowledged entries. */
@@ -287,8 +289,8 @@ public final class BigtableWriterOptions implements Serializable {
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && perDestinationMetrics == that.perDestinationMetrics
-                && Objects.equals(batchElementCount, that.batchElementCount)
-                && Objects.equals(batchByteSize, that.batchByteSize)
+                && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
+                && Objects.equals(batchRequestByteThreshold, that.batchRequestByteThreshold)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
                 && destinationIdleTimeout.equals(that.destinationIdleTimeout);
@@ -297,8 +299,8 @@ public final class BigtableWriterOptions implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(
-                batchElementCount,
-                batchByteSize,
+                batchElementCountThreshold,
+                batchRequestByteThreshold,
                 maxInFlightEntries,
                 maxInFlightBytes,
                 maxConsecutiveRejections,
@@ -311,10 +313,10 @@ public final class BigtableWriterOptions implements Serializable {
 
     @Override
     public String toString() {
-        return "BigtableWriterOptions{batchElementCount="
-                + batchElementCount
-                + ", batchByteSize="
-                + batchByteSize
+        return "BigtableWriterOptions{batchElementCountThreshold="
+                + batchElementCountThreshold
+                + ", batchRequestByteThreshold="
+                + batchRequestByteThreshold
                 + ", maxInFlightEntries="
                 + maxInFlightEntries
                 + ", maxInFlightBytes="
@@ -338,8 +340,8 @@ public final class BigtableWriterOptions implements Serializable {
     @Public
     public static final class Builder {
 
-        @Nullable private Long batchElementCount;
-        @Nullable private Long batchByteSize;
+        @Nullable private Long batchElementCountThreshold;
+        @Nullable private Long batchRequestByteThreshold;
         private int maxInFlightEntries = 1000;
         private long maxInFlightBytes = 64L * 1024 * 1024;
         private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
@@ -360,22 +362,22 @@ public final class BigtableWriterOptions implements Serializable {
          * whichever condition arrives first, and its own 100,000-mutation guard is one of them. See
          * the class documentation for the other three.
          *
-         * @param batchElementCount the element-count threshold, positive and at most 19,999 — one
-         *     under the 20,000 entries the client's flow controller admits, which its own settings
-         *     builder requires this threshold to stay strictly below
+         * @param batchElementCountThreshold the element-count threshold, positive and at most
+         *     19,999 — one under the 20,000 entries the client's flow controller admits, which its
+         *     own settings builder requires this threshold to stay strictly below
          * @return this builder
          */
-        public Builder batchElementCount(long batchElementCount) {
+        public Builder batchElementCountThreshold(long batchElementCountThreshold) {
             Preconditions.checkArgument(
-                    batchElementCount > 0, "batchElementCount must be positive");
+                    batchElementCountThreshold > 0, "batchElementCountThreshold must be positive");
             Preconditions.checkArgument(
-                    batchElementCount <= MAX_BATCH_ELEMENT_COUNT_LIMIT,
-                    "batchElementCount must be at most %s: the client's settings builder requires"
+                    batchElementCountThreshold <= MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT,
+                    "batchElementCountThreshold must be at most %s: the client's settings builder requires"
                             + " it to stay strictly below the %s entries its flow controller"
                             + " admits, and refuses to build a client otherwise.",
-                    MAX_BATCH_ELEMENT_COUNT_LIMIT,
+                    MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT,
                     CLIENT_MAX_OUTSTANDING_ENTRIES);
-            this.batchElementCount = batchElementCount;
+            this.batchElementCountThreshold = batchElementCountThreshold;
             return this;
         }
 
@@ -385,21 +387,22 @@ public final class BigtableWriterOptions implements Serializable {
          * entry may be megabytes, since Bigtable's own size limits are per mutation (200 MB), per
          * cell value (100 MB) and per row (256 MB).
          *
-         * @param batchByteSize the byte threshold, positive and at most one byte under the 100 MiB
-         *     the client's flow controller admits in flight, which its own settings builder
-         *     requires this threshold to stay strictly below
+         * @param batchRequestByteThreshold the byte threshold, positive and at most one byte under
+         *     the 100 MiB the client's flow controller admits in flight, which its own settings
+         *     builder requires this threshold to stay strictly below
          * @return this builder
          */
-        public Builder batchByteSize(long batchByteSize) {
-            Preconditions.checkArgument(batchByteSize > 0, "batchByteSize must be positive");
+        public Builder batchRequestByteThreshold(long batchRequestByteThreshold) {
             Preconditions.checkArgument(
-                    batchByteSize <= MAX_BATCH_BYTE_SIZE_LIMIT,
-                    "batchByteSize must be at most %s bytes: the client's settings builder requires"
+                    batchRequestByteThreshold > 0, "batchRequestByteThreshold must be positive");
+            Preconditions.checkArgument(
+                    batchRequestByteThreshold <= MAX_BATCH_REQUEST_BYTE_THRESHOLD_LIMIT,
+                    "batchRequestByteThreshold must be at most %s bytes: the client's settings builder requires"
                             + " it to stay strictly below the %s bytes (100 MiB) its flow"
                             + " controller admits, and refuses to build a client otherwise.",
-                    MAX_BATCH_BYTE_SIZE_LIMIT,
+                    MAX_BATCH_REQUEST_BYTE_THRESHOLD_LIMIT,
                     CLIENT_MAX_OUTSTANDING_BYTES);
-            this.batchByteSize = batchByteSize;
+            this.batchRequestByteThreshold = batchRequestByteThreshold;
             return this;
         }
 

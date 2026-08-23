@@ -41,21 +41,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>These tests therefore do the one thing nothing else does: two enumerators over <em>one</em>
  * source object, with a teardown between them.
  */
-class BigtableReadRowsSourceSamplerLifecycleTest {
+class BigtableScanSourceSamplerLifecycleTest {
 
     private static ScriptedRowKeySampler.Factory samplers() {
         return ScriptedRowKeySampler.Factory.answering(
                 RowKeySample.of(ByteString.copyFromUtf8("m"), 100L));
     }
 
-    private static BigtableReadRowsSource<String> source(ScriptedRowKeySampler.Factory samplers) {
+    private static BigtableScanSource<String> source(ScriptedRowKeySampler.Factory samplers) {
         return TestSources.source(builder -> TestSources.withSamplerFactory(builder, samplers));
     }
 
     @Test
     void aSecondEnumeratorSamplesThroughItsOwnSampler() throws Exception {
         ScriptedRowKeySampler.Factory samplers = samplers();
-        BigtableReadRowsSource<String> source = source(samplers);
+        BigtableScanSource<String> source = source(samplers);
 
         FakeSplitEnumeratorContext<RowRangeSplit> firstContext =
                 new FakeSplitEnumeratorContext<>(1);
@@ -83,7 +83,7 @@ class BigtableReadRowsSourceSamplerLifecycleTest {
     @Test
     void eachEnumeratorGetsItsOwnSampler() throws Exception {
         ScriptedRowKeySampler.Factory samplers = samplers();
-        BigtableReadRowsSource<String> source = source(samplers);
+        BigtableScanSource<String> source = source(samplers);
 
         source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
         SplitEnumerator<RowRangeSplit, BigtableScanEnumeratorState> second =
@@ -110,7 +110,7 @@ class BigtableReadRowsSourceSamplerLifecycleTest {
         // checkpoint would make restoreEnumerator behave exactly like createEnumerator, so it
         // would assert nothing the test above does not.
         ScriptedRowKeySampler.Factory samplers = samplers();
-        BigtableReadRowsSource<String> source = source(samplers);
+        BigtableScanSource<String> source = source(samplers);
 
         FakeSplitEnumeratorContext<RowRangeSplit> firstContext =
                 new FakeSplitEnumeratorContext<>(1);
@@ -150,7 +150,7 @@ class BigtableReadRowsSourceSamplerLifecycleTest {
     @Test
     void theSourceClosesASamplerItCouldNotHandOver() {
         ScriptedRowKeySampler.Factory samplers = samplers();
-        BigtableReadRowsSource<String> source = source(samplers);
+        BigtableScanSource<String> source = source(samplers);
 
         assertThatThrownBy(() -> source.createEnumerator(null))
                 .isInstanceOf(NullPointerException.class);

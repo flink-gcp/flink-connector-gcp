@@ -67,7 +67,9 @@ public final class BigtableChangeStreamSource<T>
 
     @Override
     public Boundedness getBoundedness() {
-        return config.getEndTime() == null ? Boundedness.CONTINUOUS_UNBOUNDED : Boundedness.BOUNDED;
+        return config.getBoundedTimestamp() == null
+                ? Boundedness.CONTINUOUS_UNBOUNDED
+                : Boundedness.BOUNDED;
     }
 
     @Override
@@ -125,7 +127,7 @@ public final class BigtableChangeStreamSource<T>
                     config.getStartPosition(),
                     config.getResumeFallback(),
                     restored,
-                    config.getEndTime() != null);
+                    config.getBoundedTimestamp() != null);
         } catch (Throwable e) {
             // The enumerator never took ownership, so nothing else will close what was just minted.
             Closers.closeAllSuppressing(e, client);

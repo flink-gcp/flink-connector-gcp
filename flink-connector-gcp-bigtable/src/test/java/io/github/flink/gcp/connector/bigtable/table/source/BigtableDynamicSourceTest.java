@@ -47,7 +47,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
-import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
@@ -66,7 +66,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * What the source hands the DataStream builder, read back through {@code
- * BigtableReadRowsSource.getConfig()}.
+ * BigtableScanSource.getConfig()}.
  */
 class BigtableDynamicSourceTest {
 
@@ -176,7 +176,7 @@ class BigtableDynamicSourceTest {
     private static BigtableSourceConfig<?> configOf(BigtableDynamicSource source) {
         SourceProvider provider =
                 (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
-        return ((BigtableReadRowsSource<?>) provider.createSource()).getConfig();
+        return ((BigtableScanSource<?>) provider.createSource()).getConfig();
     }
 
     private static List<String> rangesOf(BigtableSourceConfig<?> config) {

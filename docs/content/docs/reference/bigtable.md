@@ -75,8 +75,8 @@ setting options at all.
 
 | Option | Default | What it does |
 |---|---|---|
-| `batchElementCount` | *unset ⇒ 100* (the client's threshold) | How many **entries** — one per record written, whatever each carries — the client accumulates before sending a batch. **At most `19999`** |
-| `batchByteSize` | *unset ⇒ 20 MiB* (the client's threshold) | How many bytes of mutations it accumulates before sending a batch. **At most `104857599`** — one byte under 100 MiB |
+| `batchElementCountThreshold` | *unset ⇒ 100* (the client's threshold) | How many **entries** — one per record written, whatever each carries — the client accumulates before sending a batch. **At most `19999`** |
+| `batchRequestByteThreshold` | *unset ⇒ 20 MiB* (the client's threshold) | How many bytes of mutations it accumulates before sending a batch. **At most `104857599`** — one byte under 100 MiB |
 | `maxInFlightEntries` | 1000 | Caps unacknowledged entries. At the cap `write()` yields to the task mailbox. Above `20000` the sink logs a `WARN` — see below |
 | `maxInFlightBytes` | 64 MiB | Caps their serialized size, which is the bound that actually bounds memory. Above 100 MiB the sink logs a `WARN` — see below |
 | `maxConsecutiveRejections` | 100 | Fails the job once this many confirmed rejections arrive in a row with no applied mutation between them — the guardrail on a dropping policy's [isolation cost]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). Any success resets the count; `-1` removes the bound |
@@ -90,8 +90,8 @@ setting options at all.
 one record the serializer returned — and it carries as many mutations as the serializer put
 `setCell` calls in it. Bigtable's own documented limit is on *mutations*: no more than 100,000 in a
 batch. The two numbers never have to be reconciled by a job, because the client holds a batch to
-that limit itself, whatever `batchElementCount` says; the measurement and what it retires are under
-[Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).
+that limit itself, whatever `batchElementCountThreshold` says; the measurement and what it retires
+are under [Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).
 
 **Raising `maxInFlightEntries` far above its default does not raise the effective bound; it moves
 it.** The client has a flow controller of its own — 20,000 outstanding entries and 100 MiB, and it
@@ -114,8 +114,9 @@ a resolver spreading records over several instances draws on several budgets, an
 writer-global bound above one of them can be what that job means.
 
 The two batch thresholds are left unset by default rather than restated here, so a client upgrade
-that retunes them is inherited. Lowering `batchElementCount` shortens the delay before a mutation
-reaches the service at low volume; the client also sends a batch after one second regardless.
+that retunes them is inherited. Lowering `batchElementCountThreshold` shortens the delay before a
+mutation reaches the service at low volume; the client also sends a batch after one second
+regardless.
 
 ## `TableCreateOptions`
 
@@ -176,7 +177,7 @@ surface, and its projection pushdown is what supplies `filter(...)` there.
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's coordinator or a TaskManager's reader starts. Each component shares the provider among the data, table-admin and instance-admin clients that it owns, and every eligible process must see the same path. See the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `startPosition` | `StartPosition.latest()` | The position used only for a fresh job: latest, earliest, an absolute instant, or a duration ago |
 | `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position, discarding any stale token it held. Without it, an expired restore fails |
-| `endTime` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
+| `boundedTimestamp` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
 | `maxConcurrentStreamsPerSubtask` | `2` | Bounds open `ReadChangeStream` RPCs in each source subtask. Source parallelism multiplied by this value is configured job-wide read capacity, not a Bigtable quota |
 | `familyIncludeList` | empty | Retains mutation entries whose family name fully matches at least one Java regular expression. Mutually exclusive with `familyExcludeList` |
 | `familyExcludeList` | empty | Removes mutation entries whose family name fully matches any Java regular expression. Mutually exclusive with `familyIncludeList` |

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.data.GenericRowData;
 
 import com.google.cloud.bigtable.data.v2.models.Row;
@@ -59,6 +60,7 @@ import java.util.Map;
  *       {@code null-string-literal} is, and the empty cell is an empty string.
  * </ul>
  */
+@Internal
 final class RowToRowDataConverter implements Serializable {
 
     private static final long serialVersionUID = 1L;

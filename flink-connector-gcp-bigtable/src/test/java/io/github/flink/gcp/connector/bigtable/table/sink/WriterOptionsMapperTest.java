@@ -51,8 +51,8 @@ class WriterOptionsMapperTest {
         BigtableWriterOptions options =
                 WriterOptionsMapper.map(
                         configuration(
-                                "sink.batching.element-count", "500",
-                                "sink.batching.byte-size", "4mb",
+                                "sink.batching.element-count-threshold", "500",
+                                "sink.batching.request-byte-threshold", "4mb",
                                 "sink.in-flight.max-entries", "2000",
                                 "sink.in-flight.max-bytes", "32mb",
                                 "sink.max-consecutive-rejections", "7",
@@ -62,8 +62,8 @@ class WriterOptionsMapperTest {
                                 "sink.destination-idle-timeout", "30min",
                                 "sink.metrics.per-destination", "true"));
 
-        assertThat(options.getBatchElementCount()).isEqualTo(500L);
-        assertThat(options.getBatchByteSize()).isEqualTo(4L * 1024 * 1024);
+        assertThat(options.getBatchElementCountThreshold()).isEqualTo(500L);
+        assertThat(options.getBatchRequestByteThreshold()).isEqualTo(4L * 1024 * 1024);
         assertThat(options.getMaxInFlightEntries()).isEqualTo(2000);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(32L * 1024 * 1024);
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(7);
@@ -80,14 +80,33 @@ class WriterOptionsMapperTest {
         // them null so the client's own thresholds apply, and a mapper that defaulted them would
         // silently move that decision here.
         BigtableWriterOptions options =
-                WriterOptionsMapper.map(configuration("sink.batching.element-count", "500"));
+                WriterOptionsMapper.map(
+                        configuration("sink.batching.element-count-threshold", "500"));
 
-        assertThat(options.getBatchElementCount()).isEqualTo(500L);
-        assertThat(options.getBatchByteSize()).isNull();
+        assertThat(options.getBatchElementCountThreshold()).isEqualTo(500L);
+        assertThat(options.getBatchRequestByteThreshold()).isNull();
     }
 
     @Test
     void namesTheOptionKeyWhenAValueIsRejected() {
+        assertThatThrownBy(
+                        () ->
+                                WriterOptionsMapper.map(
+                                        configuration(
+                                                "sink.batching.element-count-threshold", "0")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.batching.element-count-threshold' is invalid")
+                .hasMessageContaining("batchElementCountThreshold must be positive");
+
+        assertThatThrownBy(
+                        () ->
+                                WriterOptionsMapper.map(
+                                        configuration(
+                                                "sink.batching.request-byte-threshold", "0b")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.batching.request-byte-threshold' is invalid")
+                .hasMessageContaining("batchRequestByteThreshold must be positive");
+
         assertThatThrownBy(
                         () ->
                                 WriterOptionsMapper.map(

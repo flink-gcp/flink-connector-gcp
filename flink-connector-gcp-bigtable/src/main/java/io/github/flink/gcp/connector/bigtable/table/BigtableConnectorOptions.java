@@ -293,13 +293,14 @@ public final class BigtableConnectorOptions {
                             "The epoch-millisecond instant used by scan.resume-fallback.mode ="
                                     + " timestamp.");
 
-    public static final ConfigOption<Long> SCAN_END_TIMESTAMP_MILLIS =
-            ConfigOptions.key("scan.end-timestamp-millis")
+    public static final ConfigOption<Long> SCAN_BOUNDED_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.bounded.timestamp-millis")
                     .longType()
                     .noDefaultValue()
                     .withDescription(
-                            "Stop a Change Streams source after this epoch-millisecond"
-                                    + " instant.");
+                            "Stop a Change Streams source after this epoch-millisecond instant."
+                                    + " Requires scan.mode = change-stream; scan.mode = bounded"
+                                    + " instead selects a finite scan of the current table.");
 
     public static final ConfigOption<Integer> SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK =
             ConfigOptions.key("scan.max-concurrent-streams-per-subtask")
@@ -391,8 +392,8 @@ public final class BigtableConnectorOptions {
                                     + " 'sink.table-create.gc-rule.max-versions' as a union when"
                                     + " both are set.");
 
-    public static final ConfigOption<Long> SINK_BATCHING_ELEMENT_COUNT =
-            ConfigOptions.key("sink.batching.element-count")
+    public static final ConfigOption<Long> SINK_BATCHING_ELEMENT_COUNT_THRESHOLD =
+            ConfigOptions.key("sink.batching.element-count-threshold")
                     .longType()
                     .noDefaultValue()
                     .withDescription(
@@ -400,8 +401,8 @@ public final class BigtableConnectorOptions {
                                     + " request. One entry is one row's mutations, not one"
                                     + " mutation.");
 
-    public static final ConfigOption<MemorySize> SINK_BATCHING_BYTE_SIZE =
-            ConfigOptions.key("sink.batching.byte-size")
+    public static final ConfigOption<MemorySize> SINK_BATCHING_REQUEST_BYTE_THRESHOLD =
+            ConfigOptions.key("sink.batching.request-byte-threshold")
                     .memoryType()
                     .noDefaultValue()
                     .withDescription(

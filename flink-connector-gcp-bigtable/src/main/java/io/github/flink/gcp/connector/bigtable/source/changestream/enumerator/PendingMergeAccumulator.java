@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
@@ -32,6 +33,7 @@ import java.util.NavigableSet;
 import java.util.TreeSet;
 
 /** Mutable coordinator-thread accumulator for one pending merge target. */
+@Internal
 final class PendingMergeAccumulator {
 
     private static final Comparator<TokenEntry> TOKEN_ORDER =

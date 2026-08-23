@@ -68,8 +68,12 @@ class BigtableOptionParityTest {
 
     private static Map<String, ConfigOption<?>> writerOptions() {
         Map<String, ConfigOption<?>> map = new LinkedHashMap<>();
-        map.put("batchElementCount", BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT);
-        map.put("batchByteSize", BigtableConnectorOptions.SINK_BATCHING_BYTE_SIZE);
+        map.put(
+                "batchElementCountThreshold",
+                BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD);
+        map.put(
+                "batchRequestByteThreshold",
+                BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD);
         map.put("maxInFlightEntries", BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES);
         map.put("maxInFlightBytes", BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES);
         map.put(
@@ -164,7 +168,7 @@ class BigtableOptionParityTest {
         map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         map.put("startPosition", BigtableConnectorOptions.SCAN_STARTUP_MODE);
         map.put("resumeFallback", BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE);
-        map.put("endTime", BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS);
+        map.put("boundedTimestamp", BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS);
         map.put(
                 "maxConcurrentStreamsPerSubtask",
                 BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK);

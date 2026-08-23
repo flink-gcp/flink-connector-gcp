@@ -129,7 +129,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
-                        BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK,
                         FactoryUtil.SOURCE_PARALLELISM,
                         BigtableConnectorOptions.LOOKUP_ASYNC,
@@ -150,8 +150,8 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_VERSIONS,
                         BigtableConnectorOptions.SINK_TABLE_CREATE_GC_RULE_MAX_AGE,
-                        BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT,
-                        BigtableConnectorOptions.SINK_BATCHING_BYTE_SIZE,
+                        BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
+                        BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
                         BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_ENTRIES,
                         BigtableConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
                         BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
@@ -281,8 +281,8 @@ public class BigtableDynamicTableFactory
                         config,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS);
-        Instant endTime =
-                config.getOptional(BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS)
+        Instant boundedTimestamp =
+                config.getOptional(BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS)
                         .map(millis -> Instant.ofEpochMilli(millis.longValue()))
                         .orElse(null);
         Integer parallelism = config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null);
@@ -301,7 +301,7 @@ public class BigtableDynamicTableFactory
                     .serviceAccountKeyFile(serviceAccountKeyFile)
                     .startPosition(startPosition)
                     .resumeFallback(resumeFallback)
-                    .endTime(endTime)
+                    .boundedTimestamp(boundedTimestamp)
                     .maxConcurrentStreamsPerSubtask(maxConcurrentStreams)
                     .parallelism(parallelism)
                     .physicalDataType(physicalDataType)
@@ -336,7 +336,7 @@ public class BigtableDynamicTableFactory
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .startPosition(startPosition)
                 .resumeFallback(resumeFallback)
-                .endTime(endTime)
+                .boundedTimestamp(boundedTimestamp)
                 .maxConcurrentStreamsPerSubtask(maxConcurrentStreams)
                 .parallelism(parallelism)
                 .selectedCellSchema(schema)
@@ -526,6 +526,25 @@ public class BigtableDynamicTableFactory
                         : changeStreamSourceOptions();
         List<String> present = presentOptionKeys(context, incompatible);
         if (!present.isEmpty()) {
+            if (scanMode == ScanMode.BOUNDED
+                    && context.getCatalogTable()
+                            .getOptions()
+                            .containsKey(
+                                    BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS.key())) {
+                throw new ValidationException(
+                        String.format(
+                                "Options %s configure Change Streams and are not valid when '%s'"
+                                        + " = '%s', which selects a finite scan of the current"
+                                        + " table. The 'bounded' segment in '%s' names its Change"
+                                        + " Streams stop position, not the scan mode. Remove the"
+                                        + " options or set '%s' = '%s'.",
+                                String.join(", ", present),
+                                BigtableConnectorOptions.SCAN_MODE.key(),
+                                scanMode,
+                                BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS.key(),
+                                BigtableConnectorOptions.SCAN_MODE.key(),
+                                ScanMode.CHANGE_STREAM));
+            }
             throw new ValidationException(
                     String.format(
                             "Options %s are not valid when '%s' = '%s'. Remove them or select the"
@@ -546,7 +565,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
-                        BigtableConnectorOptions.SCAN_END_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK));
         return options;
     }

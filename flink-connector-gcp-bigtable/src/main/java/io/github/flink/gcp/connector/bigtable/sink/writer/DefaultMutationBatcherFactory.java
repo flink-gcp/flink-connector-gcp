@@ -217,19 +217,19 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      * one left unset — so a client upgrade that retunes it is inherited rather than overridden.
      */
     private void applyBatchThresholds(BigtableDataSettings.Builder settings) {
-        Long elementCount = writerOptions.getBatchElementCount();
-        Long byteSize = writerOptions.getBatchByteSize();
-        if (elementCount == null && byteSize == null) {
+        Long elementCountThreshold = writerOptions.getBatchElementCountThreshold();
+        Long requestByteThreshold = writerOptions.getBatchRequestByteThreshold();
+        if (elementCountThreshold == null && requestByteThreshold == null) {
             return;
         }
         BigtableBatchingCallSettings.Builder bulkMutateRows =
                 settings.stubSettings().bulkMutateRowsSettings();
         BatchingSettings.Builder batching = bulkMutateRows.getBatchingSettings().toBuilder();
-        if (elementCount != null) {
-            batching.setElementCountThreshold(elementCount);
+        if (elementCountThreshold != null) {
+            batching.setElementCountThreshold(elementCountThreshold);
         }
-        if (byteSize != null) {
-            batching.setRequestByteThreshold(byteSize);
+        if (requestByteThreshold != null) {
+            batching.setRequestByteThreshold(requestByteThreshold);
         }
         bulkMutateRows.setBatchingSettings(batching.build());
     }

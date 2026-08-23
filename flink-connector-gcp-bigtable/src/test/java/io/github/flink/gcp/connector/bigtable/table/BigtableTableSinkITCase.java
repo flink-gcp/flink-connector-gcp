@@ -361,10 +361,10 @@ class BigtableTableSinkITCase extends BigtableTableTestBase {
         // So the final state of 'gone' is deliberately NOT asserted: one job means one batcher,
         // its two entries for that key share a MutateRows request, and the service applies the
         // entries of one request in arbitrary order even for the same row. Forcing one entry per
-        // request with 'sink.batching.element-count' = '1' does not fix that — measured, it makes
-        // the delete stop taking effect on the 1.20 build, because separate requests from one job
-        // are concurrent rather than sequential. Only separate *jobs* are sequential, and this
-        // test cannot use two.
+        // request with 'sink.batching.element-count-threshold' = '1' does not fix that —
+        // measured, it makes the delete stop taking effect on the 1.20 build, because requests from
+        // one job are concurrent rather than sequential. Only separate *jobs* are sequential, and
+        // this test cannot use two.
         //
         // What #470 is about survives all of that: before it, this job did not finish at all. The
         // delete reached the writer with a null row-key column and .await() threw. So the

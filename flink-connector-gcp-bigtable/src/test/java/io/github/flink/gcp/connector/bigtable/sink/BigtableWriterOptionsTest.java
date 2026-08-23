@@ -36,8 +36,8 @@ class BigtableWriterOptionsTest {
 
         // Null rather than a restatement of the client's 100 / 20 MiB: an unset threshold has to
         // stay unset all the way to the settings builder, or a client retune would be overridden.
-        assertThat(options.getBatchElementCount()).isNull();
-        assertThat(options.getBatchByteSize()).isNull();
+        assertThat(options.getBatchElementCountThreshold()).isNull();
+        assertThat(options.getBatchRequestByteThreshold()).isNull();
         assertThat(options.getMaxInFlightEntries()).isEqualTo(1000);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(100);
@@ -51,21 +51,21 @@ class BigtableWriterOptionsTest {
     void carriesEveryConfiguredValue() {
         BigtableWriterOptions options =
                 BigtableWriterOptions.builder()
-                        .batchElementCount(50)
-                        .batchByteSize(1024)
+                        .batchElementCountThreshold(50)
+                        .batchRequestByteThreshold(1024)
                         .maxInFlightEntries(7)
                         .maxInFlightBytes(4096)
                         .maxConsecutiveRejections(5)
                         .build();
 
-        assertThat(options.getBatchElementCount()).isEqualTo(50L);
-        assertThat(options.getBatchByteSize()).isEqualTo(1024L);
+        assertThat(options.getBatchElementCountThreshold()).isEqualTo(50L);
+        assertThat(options.getBatchRequestByteThreshold()).isEqualTo(1024L);
         assertThat(options.getMaxInFlightEntries()).isEqualTo(7);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(4096L);
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(5);
         assertThat(options.toString())
                 .contains(
-                        "batchElementCount=50",
+                        "batchElementCountThreshold=50",
                         "maxInFlightEntries=7",
                         "maxConsecutiveRejections=5");
     }
@@ -119,7 +119,7 @@ class BigtableWriterOptionsTest {
                 .isNotEqualTo(
                         BigtableWriterOptions.builder()
                                 .maxInFlightEntries(7)
-                                .batchElementCount(50)
+                                .batchElementCountThreshold(50)
                                 .build());
     }
 
@@ -127,9 +127,9 @@ class BigtableWriterOptionsTest {
     void rejectsNonPositiveValues() {
         BigtableWriterOptions.Builder builder = BigtableWriterOptions.builder();
 
-        assertThatThrownBy(() -> builder.batchElementCount(0))
+        assertThatThrownBy(() -> builder.batchElementCountThreshold(0))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> builder.batchByteSize(0))
+        assertThatThrownBy(() -> builder.batchRequestByteThreshold(0))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder.maxInFlightEntries(0))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -150,20 +150,22 @@ class BigtableWriterOptionsTest {
         assertThatThrownBy(
                         () ->
                                 BigtableWriterOptions.builder()
-                                        .batchElementCount(
-                                                BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_LIMIT
+                                        .batchElementCountThreshold(
+                                                BigtableWriterOptions
+                                                                .MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT
                                                         + 1))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("batchElementCount must be at most 19999")
+                .hasMessageContaining("batchElementCountThreshold must be at most 19999")
                 .hasMessageContaining("20000 entries");
         assertThatThrownBy(
                         () ->
                                 BigtableWriterOptions.builder()
-                                        .batchByteSize(
-                                                BigtableWriterOptions.MAX_BATCH_BYTE_SIZE_LIMIT
+                                        .batchRequestByteThreshold(
+                                                BigtableWriterOptions
+                                                                .MAX_BATCH_REQUEST_BYTE_THRESHOLD_LIMIT
                                                         + 1))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("batchByteSize must be at most 104857599")
+                .hasMessageContaining("batchRequestByteThreshold must be at most 104857599")
                 .hasMessageContaining("104857600 bytes (100 MiB)");
     }
 
@@ -176,12 +178,14 @@ class BigtableWriterOptionsTest {
         // a threshold at exactly these values.
         BigtableWriterOptions options =
                 BigtableWriterOptions.builder()
-                        .batchElementCount(BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_LIMIT)
-                        .batchByteSize(BigtableWriterOptions.MAX_BATCH_BYTE_SIZE_LIMIT)
+                        .batchElementCountThreshold(
+                                BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT)
+                        .batchRequestByteThreshold(
+                                BigtableWriterOptions.MAX_BATCH_REQUEST_BYTE_THRESHOLD_LIMIT)
                         .build();
 
-        assertThat(options.getBatchElementCount()).isEqualTo(19_999L);
-        assertThat(options.getBatchByteSize()).isEqualTo(100L * 1024 * 1024 - 1);
+        assertThat(options.getBatchElementCountThreshold()).isEqualTo(19_999L);
+        assertThat(options.getBatchRequestByteThreshold()).isEqualTo(100L * 1024 * 1024 - 1);
     }
 
     @Test
@@ -201,9 +205,9 @@ class BigtableWriterOptionsTest {
                         .getBatchingSettings()
                         .getFlowControlSettings();
 
-        assertThat(BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_LIMIT)
+        assertThat(BigtableWriterOptions.MAX_BATCH_ELEMENT_COUNT_THRESHOLD_LIMIT)
                 .isEqualTo(flowControl.getMaxOutstandingElementCount() - 1);
-        assertThat(BigtableWriterOptions.MAX_BATCH_BYTE_SIZE_LIMIT)
+        assertThat(BigtableWriterOptions.MAX_BATCH_REQUEST_BYTE_THRESHOLD_LIMIT)
                 .isEqualTo(flowControl.getMaxOutstandingRequestBytes() - 1);
     }
 

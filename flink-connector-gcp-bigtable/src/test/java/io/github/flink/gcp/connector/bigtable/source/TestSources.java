@@ -22,7 +22,7 @@ import org.apache.flink.util.Collector;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
-import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
+import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
@@ -64,7 +64,7 @@ public final class TestSources {
      * @param customizer applies the knobs a test needs
      * @return the source
      */
-    public static BigtableReadRowsSource<String> source(
+    public static BigtableScanSource<String> source(
             UnaryOperator<BigtableSourceBuilder<String>> customizer) {
         BigtableSourceBuilder<String> builder =
                 BigtableSource.<String>builder()
@@ -74,7 +74,7 @@ public final class TestSources {
                         // application-default credentials on a machine that has them and fail in CI
                         // on one that does not. The endpoint is never connected to.
                         .emulatorEndpoint("localhost:1");
-        return (BigtableReadRowsSource<String>) customizer.apply(builder).build();
+        return (BigtableScanSource<String>) customizer.apply(builder).build();
     }
 
     /**

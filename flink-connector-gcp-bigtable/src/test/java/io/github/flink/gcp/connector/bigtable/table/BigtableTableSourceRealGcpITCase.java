@@ -348,7 +348,7 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                 + "  'scan.startup.timestamp-millis' = '"
                 + start.toEpochMilli()
                 + "',\n"
-                + "  'scan.end-timestamp-millis' = '"
+                + "  'scan.bounded.timestamp-millis' = '"
                 + end.toEpochMilli()
                 + "'\n"
                 + ")";

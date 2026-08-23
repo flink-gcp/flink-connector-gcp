@@ -73,7 +73,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
             new ConcurrentHashMap<>();
 
     @Test
-    void readsMutationsAndCompletesAtEndTime() throws Exception {
+    void readsMutationsAndCompletesAtBoundedTimestamp() throws Exception {
         CHECKPOINTED_AFTER_RECORDS.set(false);
         FAILED_ONCE.set(false);
         SEEN.set(0);
@@ -128,7 +128,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                         .appProfileId(APP_PROFILE)
                         .deserializer(deserializer)
                         .startPosition(StartPosition.at(start))
-                        .endTime(end)
+                        .boundedTimestamp(end)
                         .build();
         Configuration configuration = new Configuration();
         ActiveChangeStreamReadsReporter.reset();

@@ -61,7 +61,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     @Nullable private final String serviceAccountKeyFile;
     private final StartPosition startPosition;
     @Nullable private final StartPosition resumeFallback;
-    @Nullable private final Instant endTime;
+    @Nullable private final Instant boundedTimestamp;
     private final int maxConcurrentStreamsPerSubtask;
     private final BigtableChangeStreamMutationFilter mutationFilter;
     private final ChangeStreamOpener opener;
@@ -75,7 +75,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             @Nullable String serviceAccountKeyFile,
             StartPosition startPosition,
             @Nullable StartPosition resumeFallback,
-            @Nullable Instant endTime,
+            @Nullable Instant boundedTimestamp,
             int maxConcurrentStreamsPerSubtask,
             BigtableChangeStreamMutationFilter mutationFilter,
             ChangeStreamOpener opener,
@@ -90,7 +90,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.startPosition =
                 Preconditions.checkNotNull(startPosition, "startPosition must not be null");
         this.resumeFallback = resumeFallback;
-        this.endTime = endTime;
+        this.boundedTimestamp = boundedTimestamp;
         Preconditions.checkArgument(
                 maxConcurrentStreamsPerSubtask > 0,
                 "maxConcurrentStreamsPerSubtask must be positive: %s",
@@ -142,10 +142,10 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         return resumeFallback;
     }
 
-    /** Returns the instant the read stops at, or {@code null} for an unbounded read. */
+    /** Returns the timestamp that bounds the read, or {@code null} for an unbounded read. */
     @Nullable
-    public Instant getEndTime() {
-        return endTime;
+    public Instant getBoundedTimestamp() {
+        return boundedTimestamp;
     }
 
     /** Returns the most partition streams one source subtask keeps open at a time. */

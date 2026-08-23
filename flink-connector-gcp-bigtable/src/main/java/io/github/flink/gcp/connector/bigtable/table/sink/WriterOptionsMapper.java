@@ -54,12 +54,12 @@ public final class WriterOptionsMapper {
 
         OptionSetters.apply(
                 config,
-                BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT,
-                builder::batchElementCount);
+                BigtableConnectorOptions.SINK_BATCHING_ELEMENT_COUNT_THRESHOLD,
+                builder::batchElementCountThreshold);
         OptionSetters.apply(
                 config,
-                BigtableConnectorOptions.SINK_BATCHING_BYTE_SIZE,
-                size -> builder.batchByteSize(size.getBytes()));
+                BigtableConnectorOptions.SINK_BATCHING_REQUEST_BYTE_THRESHOLD,
+                size -> builder.batchRequestByteThreshold(size.getBytes()));
 
         OptionSetters.apply(
                 config,

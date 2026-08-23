@@ -73,14 +73,16 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     public void open(
             TableDestination table,
             ChangeStreamPartitionSplit split,
-            @Nullable Instant endTime,
+            @Nullable Instant boundedTimestamp,
             ResponseObserver<ChangeStreamRecord> observer)
             throws IOException {
-        client.get(table).readChangeStreamAsync(query(table, split, endTime), observer);
+        client.get(table).readChangeStreamAsync(query(table, split, boundedTimestamp), observer);
     }
 
     static ReadChangeStreamQuery query(
-            TableDestination table, ChangeStreamPartitionSplit split, @Nullable Instant endTime) {
+            TableDestination table,
+            ChangeStreamPartitionSplit split,
+            @Nullable Instant boundedTimestamp) {
         ReadChangeStreamQuery query =
                 ReadChangeStreamQuery.create(table.getTable())
                         .streamPartition(ChangeStreamPartitions.sdkRange(split.getPartition()))
@@ -90,8 +92,8 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
         } else {
             query.continuationTokens(split.getContinuationTokens());
         }
-        if (endTime != null) {
-            query.endTime(endTime);
+        if (boundedTimestamp != null) {
+            query.endTime(boundedTimestamp);
         }
         return query;
     }

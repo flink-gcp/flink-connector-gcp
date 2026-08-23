@@ -216,9 +216,9 @@ public final class BigtableChangeStreamSplitEnumerator
         }
 
         List<ChangeStreamPartitionSplit> restoredUnassigned =
-                resolveRestored(resolver, restoredState.getUnassignedSplits());
+                restartExpiredSplits(resolver, restoredState.getUnassignedSplits());
         List<ChangeStreamPartitionSplit> restoredAssigned =
-                resolveRestored(resolver, restoredState.getAssignedSplits());
+                restartExpiredSplits(resolver, restoredState.getAssignedSplits());
         List<PendingMerge> restoredMerges = new ArrayList<>();
         long restoredNextSplitId = restoredState.getNextSplitId();
         for (PendingMerge merge : restoredState.getPendingMerges()) {
@@ -260,7 +260,7 @@ public final class BigtableChangeStreamSplitEnumerator
                 restoredState.getCompletedPartitions());
     }
 
-    private List<ChangeStreamPartitionSplit> resolveRestored(
+    private List<ChangeStreamPartitionSplit> restartExpiredSplits(
             StartPositionResolver resolver, List<ChangeStreamPartitionSplit> splits)
             throws Exception {
         List<ChangeStreamPartitionSplit> resolved = new ArrayList<>(splits.size());
