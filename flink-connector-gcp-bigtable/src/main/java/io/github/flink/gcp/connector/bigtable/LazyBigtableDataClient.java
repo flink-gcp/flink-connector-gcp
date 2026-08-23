@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
@@ -98,6 +99,17 @@ public final class LazyBigtableDataClient implements Serializable {
 
     /** Returns the client, building it on first use. */
     public BigtableDataClient get(TableDestination table) throws IOException {
+        return get(table, BigtableDataClient::create);
+    }
+
+    /**
+     * Returns the client through an injected creator that is neither retained nor serialized.
+     *
+     * <p>This seam lets the lifecycle test hold construction inside this object's monitor while a
+     * concurrent close tries to acquire it.
+     */
+    @VisibleForTesting
+    BigtableDataClient get(TableDestination table, DataClientCreator creator) throws IOException {
         BigtableDataClient existing = client;
         if (existing != null) {
             return existing;
@@ -113,7 +125,7 @@ public final class LazyBigtableDataClient implements Serializable {
                                 + " used.");
             }
             if (client == null) {
-                client = BigtableDataClient.create(settings(table));
+                client = creator.create(settings(table));
             }
             return client;
         }
@@ -145,5 +157,12 @@ public final class LazyBigtableDataClient implements Serializable {
         if (toClose != null) {
             toClose.close();
         }
+    }
+
+    /** Creates a data client from settings prepared by this holder. */
+    @FunctionalInterface
+    interface DataClientCreator {
+
+        BigtableDataClient create(BigtableDataSettings settings) throws IOException;
     }
 }
