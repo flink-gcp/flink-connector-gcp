@@ -51,7 +51,8 @@ public final class BigQuerySource {
     private BigQuerySource() {}
 
     /**
-     * Returns a builder for a source producing records of the given type.
+     * Returns a builder. A deserializer and a destination — either a table or a query, not both —
+     * are required.
      *
      * @param <T> type of the records produced by the source
      * @return the builder

@@ -63,12 +63,15 @@ public final class DatabaseDestination implements Serializable {
     }
 
     /**
-     * Creates a {@link DatabaseDestination}.
+     * Creates a {@link DatabaseDestination} from bare ids, not resource paths.
      *
      * @param project the Google Cloud project id
      * @param instance the Spanner instance id
      * @param database the Spanner database id
      * @return the database reference
+     * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
+     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
+     *     address a different resource
      */
     public static DatabaseDestination of(String project, String instance, String database) {
         ResourceNames.checkComponent(project, "project");
@@ -77,17 +80,17 @@ public final class DatabaseDestination implements Serializable {
         return new DatabaseDestination(project, instance, database);
     }
 
-    /** Returns the Google Cloud project id. */
+    /** Returns the Google Cloud project id, given as a bare id rather than a resource path. */
     public String getProject() {
         return project;
     }
 
-    /** Returns the Spanner instance id. */
+    /** Returns the Spanner instance id, given as a bare id rather than a resource path. */
     public String getInstance() {
         return instance;
     }
 
-    /** Returns the Spanner database id. */
+    /** Returns the Spanner database id, given as a bare id rather than a resource path. */
     public String getDatabase() {
         return database;
     }

@@ -38,7 +38,7 @@ public final class PubSubSource {
     private PubSubSource() {}
 
     /**
-     * Returns a new builder.
+     * Returns a new builder. A deserializer and at least one subscription are required.
      *
      * @param <T> type of the records produced by the source
      * @return the builder

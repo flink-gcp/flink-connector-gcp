@@ -142,6 +142,7 @@ public final class TableCreateOptions implements Serializable {
          * Builds the options.
          *
          * @return the options
+         * @throws IllegalStateException if no column family was declared
          */
         public TableCreateOptions build() {
             Preconditions.checkState(

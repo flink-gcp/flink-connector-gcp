@@ -59,12 +59,15 @@ public final class QueueDestination implements Serializable {
     }
 
     /**
-     * Creates a {@link QueueDestination}.
+     * Creates a {@link QueueDestination} from bare ids, not resource paths.
      *
      * @param project the Google Cloud project id
      * @param location the queue's location (for example {@code asia-northeast1})
      * @param queue the queue id
      * @return the destination
+     * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
+     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
+     *     address a different resource
      */
     public static QueueDestination of(String project, String location, String queue) {
         ResourceNames.checkComponent(project, "project");
@@ -73,17 +76,20 @@ public final class QueueDestination implements Serializable {
         return new QueueDestination(project, location, queue);
     }
 
-    /** Returns the Google Cloud project id. */
+    /** Returns the Google Cloud project id, given as a bare id rather than a resource path. */
     public String getProject() {
         return project;
     }
 
-    /** Returns the queue's location. */
+    /**
+     * Returns the queue's location — the Google Cloud region, such as {@code asia-northeast1}, that
+     * holds the queue.
+     */
     public String getLocation() {
         return location;
     }
 
-    /** Returns the queue id. */
+    /** Returns the queue id, given as a bare id rather than a resource path. */
     public String getQueue() {
         return queue;
     }

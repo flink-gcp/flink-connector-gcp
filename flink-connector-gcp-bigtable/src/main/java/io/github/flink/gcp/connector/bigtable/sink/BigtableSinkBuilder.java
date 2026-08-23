@@ -94,7 +94,8 @@ public class BigtableSinkBuilder<T> {
     }
 
     /**
-     * Sets the record serialization schema.
+     * Sets the record serialization schema. Required; a schema returning {@code null} skips the
+     * record rather than failing it.
      *
      * @param serializer the serialization schema
      * @return this builder
@@ -230,6 +231,9 @@ public class BigtableSinkBuilder<T> {
      * Builds the sink.
      *
      * @return the sink
+     * @throws IllegalStateException if a required option was not set, if the create disposition and
+     *     the table-creation options disagree, or if a service-account key file was combined with
+     *     an emulator endpoint
      */
     public Sink<T> build() {
         Preconditions.checkState(

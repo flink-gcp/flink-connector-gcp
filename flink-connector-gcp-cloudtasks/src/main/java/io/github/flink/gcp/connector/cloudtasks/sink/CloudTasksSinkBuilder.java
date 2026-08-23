@@ -82,7 +82,8 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
-     * Sets the record serialization schema.
+     * Sets the record serialization schema. Required; a schema returning {@code null} skips the
+     * record rather than failing it.
      *
      * @param serializer the serialization schema
      * @return this builder

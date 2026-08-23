@@ -57,12 +57,15 @@ public final class TableDestination implements Serializable {
     }
 
     /**
-     * Creates a {@link TableDestination}.
+     * Creates a {@link TableDestination} from bare ids, not resource paths.
      *
      * @param project the Google Cloud project id
      * @param instance the Bigtable instance id
      * @param table the Bigtable table id
      * @return the destination
+     * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
+     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
+     *     address a different resource
      */
     public static TableDestination of(String project, String instance, String table) {
         ResourceNames.checkComponent(project, "project");
@@ -71,17 +74,17 @@ public final class TableDestination implements Serializable {
         return new TableDestination(project, instance, table);
     }
 
-    /** Returns the Google Cloud project id. */
+    /** Returns the Google Cloud project id, given as a bare id rather than a resource path. */
     public String getProject() {
         return project;
     }
 
-    /** Returns the Bigtable instance id. */
+    /** Returns the Bigtable instance id, given as a bare id rather than a resource path. */
     public String getInstance() {
         return instance;
     }
 
-    /** Returns the Bigtable table id. */
+    /** Returns the Bigtable table id, given as a bare id rather than a resource path. */
     public String getTable() {
         return table;
     }

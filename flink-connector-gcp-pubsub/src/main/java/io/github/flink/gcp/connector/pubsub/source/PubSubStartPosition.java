@@ -183,7 +183,10 @@ public final class PubSubStartPosition implements Serializable {
         }
     }
 
-    /** Returns the mode. */
+    /**
+     * Returns which starting point this position names — the mode half of the mode-plus-timestamp
+     * pair {@link #of(Mode, Instant)} accepts.
+     */
     public Mode getMode() {
         return mode;
     }

@@ -59,12 +59,15 @@ public final class TableDestination extends DestinationResolution implements Ser
     }
 
     /**
-     * Creates a {@link TableDestination}.
+     * Creates a {@link TableDestination} from bare ids, not resource paths.
      *
      * @param project the Google Cloud project id
      * @param dataset the BigQuery dataset id
      * @param table the BigQuery table id
      * @return the destination
+     * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
+     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
+     *     address a different resource
      */
     public static TableDestination of(String project, String dataset, String table) {
         ResourceNames.checkComponent(project, "project");
@@ -82,17 +85,17 @@ public final class TableDestination extends DestinationResolution implements Ser
         visitor.visit(this, element, context);
     }
 
-    /** Returns the Google Cloud project id. */
+    /** Returns the Google Cloud project id, given as a bare id rather than a resource path. */
     public String getProject() {
         return project;
     }
 
-    /** Returns the BigQuery dataset id. */
+    /** Returns the BigQuery dataset id, given as a bare id rather than a resource path. */
     public String getDataset() {
         return dataset;
     }
 
-    /** Returns the BigQuery table id. */
+    /** Returns the BigQuery table id, given as a bare id rather than a resource path. */
     public String getTable() {
         return table;
     }

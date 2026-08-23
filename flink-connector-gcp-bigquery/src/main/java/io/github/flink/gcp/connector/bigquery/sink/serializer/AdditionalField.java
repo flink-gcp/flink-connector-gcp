@@ -55,17 +55,24 @@ public final class AdditionalField<T> implements Serializable {
         return new AdditionalField<>(name, type, nullPolicy, valueProvider);
     }
 
-    /** Returns the BigQuery column name. */
+    /**
+     * Returns the BigQuery column name, checked at creation to be a protobuf-compatible identifier
+     * because it also names, lowercased, the appended protobuf field.
+     */
     public String getName() {
         return name;
     }
 
-    /** Returns the logical BigQuery type. */
+    /**
+     * Returns the logical BigQuery type, which fixes the Java type the value provider must return.
+     */
     public AdditionalFieldType getType() {
         return type;
     }
 
-    /** Returns the field's null policy. */
+    /**
+     * Returns the policy deciding the column's mode and what a {@code null} provider value does.
+     */
     public AdditionalFieldNullPolicy getNullPolicy() {
         return nullPolicy;
     }

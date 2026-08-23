@@ -61,11 +61,14 @@ public final class SubscriptionDestination implements Serializable {
     }
 
     /**
-     * Creates a {@link SubscriptionDestination}.
+     * Creates a {@link SubscriptionDestination} from bare ids, not resource paths.
      *
      * @param project the Google Cloud project id
      * @param subscription the Pub/Sub subscription id
      * @return the destination
+     * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
+     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
+     *     address a different resource
      */
     public static SubscriptionDestination of(String project, String subscription) {
         ResourceNames.checkComponent(project, "project");
@@ -73,12 +76,12 @@ public final class SubscriptionDestination implements Serializable {
         return new SubscriptionDestination(project, subscription);
     }
 
-    /** Returns the Google Cloud project id. */
+    /** Returns the Google Cloud project id, given as a bare id rather than a resource path. */
     public String getProject() {
         return project;
     }
 
-    /** Returns the Pub/Sub subscription id. */
+    /** Returns the Pub/Sub subscription id, given as a bare id rather than a resource path. */
     public String getSubscription() {
         return subscription;
     }
