@@ -688,6 +688,38 @@ flush cursor — so the exactly-once guarantee is not observable there, which is
 exactly-once integration tests run against a real dataset. A sandbox project with a short default
 table expiration keeps that cheap.
 
+## Reading a BigQuery table with SQL
+
+Create the physical table used by the quickstart's read example and add one row:
+
+```sh
+bq query --use_legacy_sql=false \
+  'CREATE TABLE IF NOT EXISTS `my-project.my_dataset.people` (id INT64, name STRING)'
+bq query --use_legacy_sql=false \
+  'INSERT `my-project.my_dataset.people` (id, name) VALUES (1001, "Ada")'
+```
+
+Register it as a bounded Flink table source:
+
+```sql
+CREATE TABLE people (
+  id BIGINT,
+  name STRING
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'my_dataset',
+  'table' = 'people'
+);
+
+SELECT name
+FROM people;
+```
+
+The source finishes after reading one BigQuery snapshot, so the table works in a batch job or as the bounded side of a streaming job.
+Top-level projection is pushed into the Storage Read session, so the query above requests only `name`.
+Flink predicates are evaluated after the source because the connector does not translate them into BigQuery filters; set `scan.row-restriction` in the DDL when a BigQuery-native server-side predicate is required.
+
 ## Reading one column of a large table
 
 The two push-down knobs are applied by BigQuery when the read session is created, so what they
