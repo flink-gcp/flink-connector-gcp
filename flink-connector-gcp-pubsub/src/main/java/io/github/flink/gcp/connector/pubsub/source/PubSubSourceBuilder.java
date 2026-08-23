@@ -127,7 +127,9 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
-     * Sets the record deserializer.
+     * Sets the record deserializer. Required; one message may produce any number of records,
+     * including none, which drops the message while still acknowledging it with the checkpoint that
+     * covers it.
      *
      * @param deserializer the deserialization schema
      * @return this builder

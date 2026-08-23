@@ -237,7 +237,8 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     }
 
     /**
-     * Returns a builder.
+     * Returns a builder. The dead-letter topic is required; every other knob is optional, though a
+     * service-account key file cannot be combined with an emulator endpoint.
      *
      * @return the builder
      */

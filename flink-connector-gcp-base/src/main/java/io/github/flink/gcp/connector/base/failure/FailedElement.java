@@ -61,7 +61,11 @@ public interface FailedElement {
     @Nullable
     ByteString getPayloadBytes();
 
-    /** Returns the failure description. */
+    /**
+     * Returns the failure description. It is always present, even when {@link #getCause()} is
+     * {@code null}, and it is the detail that {@link FailureHandler#failJob()} raises and {@link
+     * FailureHandler#logAndDrop()} logs.
+     */
     String getErrorMessage();
 
     /** Returns the underlying failure, or {@code null} when none is available. */

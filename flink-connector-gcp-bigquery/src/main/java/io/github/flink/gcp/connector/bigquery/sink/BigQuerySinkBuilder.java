@@ -117,7 +117,8 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
-     * Sets the record serializer.
+     * Sets the record serializer. Required. Besides the row bytes, it supplies each destination's
+     * table schema, and returning {@code null} from it skips a record rather than failing it.
      *
      * @param serializer the serializer
      * @return this builder

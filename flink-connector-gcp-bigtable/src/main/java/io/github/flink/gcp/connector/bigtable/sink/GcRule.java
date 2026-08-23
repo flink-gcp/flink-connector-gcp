@@ -136,7 +136,7 @@ public final class GcRule implements Serializable {
         return composite(Kind.INTERSECTION, rules);
     }
 
-    /** Returns the rule's shape. */
+    /** Returns the rule's shape, deciding which of the other accessors is non-{@code null}. */
     public Kind getKind() {
         return kind;
     }

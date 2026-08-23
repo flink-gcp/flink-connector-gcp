@@ -322,7 +322,7 @@ public class BigQuerySourceBuilder<T> {
     }
 
     /**
-     * Sets the columns to read.
+     * Sets the columns to read, rejecting a blank or repeated column name.
      *
      * @param fields the column names
      * @return this builder

@@ -54,11 +54,14 @@ public final class TopicDestination implements Serializable {
     }
 
     /**
-     * Creates a {@link TopicDestination}.
+     * Creates a {@link TopicDestination} from bare ids, not resource paths.
      *
      * @param project the Google Cloud project id
      * @param topic the Pub/Sub topic id
      * @return the destination
+     * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
+     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
+     *     address a different resource
      */
     public static TopicDestination of(String project, String topic) {
         ResourceNames.checkComponent(project, "project");
@@ -66,12 +69,12 @@ public final class TopicDestination implements Serializable {
         return new TopicDestination(project, topic);
     }
 
-    /** Returns the Google Cloud project id. */
+    /** Returns the Google Cloud project id, given as a bare id rather than a resource path. */
     public String getProject() {
         return project;
     }
 
-    /** Returns the Pub/Sub topic id. */
+    /** Returns the Pub/Sub topic id, given as a bare id rather than a resource path. */
     public String getTopic() {
         return topic;
     }
