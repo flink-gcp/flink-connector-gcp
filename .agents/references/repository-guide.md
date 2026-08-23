@@ -792,6 +792,13 @@ connector gets its own module file rather than a section here.
 
 ## Cross-connector contracts (rules here; full records in `docs/adr/`)
 
+- **A name meaning the same thing in another connector is spelled the way that connector spells
+  it, and a divergence must name a real difference** — the vendor's word at an SDK-owned seam, a
+  unit the connector actually counts, a genuinely different concept (#1043; `docs/adr/0137`).
+  The rules — SDK-seam vocabulary, sink-implementation, options-object and metric vocabulary —
+  are in the ADR; the divergence-by-divergence review table is the #1043 artifact posted on
+  #782, and a divergence covered by neither is judged fresh against the ADR's rules.
+
 - **A seam the enumerator closes is minted per enumerator; a seam with no teardown may stay on the
   configuration** (#990; `docs/adr/0128`): the JobManager holds one `Source` object for a job's
   whole life — `RecreateOnResetOperatorCoordinator` rebuilds the coordinator from the same

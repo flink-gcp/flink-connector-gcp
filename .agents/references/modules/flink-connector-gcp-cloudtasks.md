@@ -17,6 +17,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Retries are the sink's one owned loop in the writer**, never gax `createTaskSettings`;
   `NOT_FOUND` keeps its separate short budget. A failed create parks with a due time; parked
   creates count against `maxInFlightTasks` and drop on close.
+- Keep `CloudTasksCredentials` package-private in `sink.writer`; do not lift it to the module
+  root to match its four siblings. They are `@Internal`-public only because sub-packages must
+  import them (`docs/adr/0055`'s scope reading), and this module's one consumer
+  (`DefaultTaskCreatorFactory`) shares its package — the
+  [#1043](https://github.com/flink-gcp/flink-connector-gcp/issues/1043) review judged the
+  divergence deliberate.
 - **Transport sizing is the one gax setting the sink configures** (`docs/adr/0134`): an explicit
   `channelPoolSize` resizes the production channel pool; unset leaves the client's default single
   channel, it is never derived from `maxInFlightTasks`, and beside `emulatorEndpoint` it is
