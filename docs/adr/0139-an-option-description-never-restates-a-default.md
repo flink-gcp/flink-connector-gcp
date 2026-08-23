@@ -17,9 +17,10 @@ limitations under the License.
 # ADR-0139: An option description never restates a default
 
 - Status: Accepted
-- Date: 2026-08-23; BigQuery key examples refreshed by [#1047] (2026-08-23)
-- Issues: [#1045] (carried from [#866] via the [#782] cross-module review), [#1047]
-- Modules: all connectors
+- Date: 2026-08-23; BigQuery key examples refreshed by [#1047] (2026-08-23); shared enforcement
+  centralized by [#1073] (2026-08-23)
+- Issues: [#1045] (carried from [#866] via the [#782] cross-module review), [#1047], [#1073]
+- Modules: all connectors, test-utils
 - Current behavior: a mapped option's default lives in the connector's
   `docs/content/docs/reference/<connector>.md` table; a table-owned option's default lives in its
   `docs/content/docs/connectors/table/<connector>.md` row
@@ -62,14 +63,23 @@ deliberately outside the rule, because none of them states a value a default own
 
 **How it is held.** Every module carries the same pair of guards in its
 `*ConnectorOptionsTest`: the `hasDefaultValue()` assertion, and
-`noDescriptionRestatesADefault`, which formats each description through `HtmlFormatter` and
-rejects twelve case-insensitive phrases. The phrase list is a regression guard over the forms the
-repository has actually produced, not a semantic parser; a new restatement form extends all five
-lists in the same change. The guard formats the *joined* description rather than grepping source
-because two of the violations it exists for span Java string-literal concatenation and are
-invisible to a line-based scan.
+`noDescriptionRestatesADefault`, which formats each description through `HtmlFormatter` and calls
+the shared `OptionDescriptionAssertions` test utility.
+That utility owns the twelve case-insensitive phrases, so the five connector guards cannot drift
+onto different lists.
+The phrase list is a regression guard over the forms the repository has actually produced, not a
+semantic parser; a new restatement form extends the shared list once.
+Each connector keeps its own reflection and formatting because their option-discovery rules differ.
+The guard formats the *joined* description rather than grepping source because two of the
+violations it exists for span Java string-literal concatenation and are invisible to a line-based
+scan.
 
 ## Evidence
+
+Pub/Sub supplied the first two phrases before the cross-module sweep.
+By [#778], `Off by default:` and two `Defaults to twice the effective flow-control ... limit`
+descriptions had accumulated while every existing check stayed green; [#838] removed all three.
+[#1001] later added `when unset` and `unset means` after both forms bypassed that earlier instrument.
 
 Measured 2026-08-23 at `4be8cb7b`. The four-phrase instrument [#1045] carried named five
 candidate sites; the full sweep of the four unguarded modules found **26**:
@@ -106,6 +116,14 @@ candidate sites; the full sweep of the four unguarded modules found **26**:
   reuse each module's existing reflective `declaredOptions()` helper and cost about one test
   each, where a checker owes synthetic tests, a `curate-*` skill, a recipe and CI wiring — more
   machinery than the convention it holds.
+- **Adding unobserved near-miss phrases proactively.** [#1073] reconsidered `If unset, ...`,
+  `Absent the ...` and `The default is ...`; none occurs in an option description.
+  The first can also introduce an exempt absence-imposed failure, and the third differs by one
+  word from Cloud Tasks' exempt role naming.
+  Adding those fragments without a real site would turn the evidence-backed regression guard into
+  a speculative English grammar with no measured false-positive boundary.
+  A new form joins the shared list when an actual restatement supplies the case the guard must
+  reject and the five modules prove that the phrase matches no exempt prose.
 - **Narrowing the rule to declared defaults, exempting absent-value behaviour statements.**
   Declined for Pub/Sub in [#778]/[#838] because the exemption set starts empty; measured here,
   every "behaviour" site (the FILE_LOADS location derivation included) was already stated in the
@@ -117,11 +135,13 @@ A new option's default goes to its docs row only — the reference page for a ma
 table page's option row for a table-owned one. A guard failure edits the description,
 never the test. The three exempt prose classes above are the judgment a reviewer applies before
 extending the phrase list; a phrase is added only with zero false positives across all five
-modules, and to all five guards at once.
+modules, and to the shared guard once.
 
 [#778]: https://github.com/flink-gcp/flink-connector-gcp/issues/778
 [#782]: https://github.com/flink-gcp/flink-connector-gcp/issues/782
 [#838]: https://github.com/flink-gcp/flink-connector-gcp/issues/838
 [#866]: https://github.com/flink-gcp/flink-connector-gcp/issues/866
+[#1001]: https://github.com/flink-gcp/flink-connector-gcp/pull/1001
 [#1045]: https://github.com/flink-gcp/flink-connector-gcp/issues/1045
 [#1047]: https://github.com/flink-gcp/flink-connector-gcp/issues/1047
+[#1073]: https://github.com/flink-gcp/flink-connector-gcp/issues/1073

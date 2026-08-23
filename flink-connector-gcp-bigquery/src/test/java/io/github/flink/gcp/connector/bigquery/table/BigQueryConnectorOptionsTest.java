@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -148,9 +149,8 @@ class BigQueryConnectorOptionsTest {
     void noDescriptionRestatesADefault() {
         // The other half of the rule above, and the half a ConfigOption cannot express: a default
         // written into prose — a declared one, a derived one, or the value absence selects — is
-        // the same second copy, just out of reach of hasDefaultValue(). The phrases are the
-        // restatement forms the #1045 cross-module sweep found, shared by every connector's guard;
-        // a regression guard over those forms, not a semantic parser for arbitrary prose.
+        // the same second copy, just out of reach of hasDefaultValue(). The shared assertion owns
+        // the #1045 cross-module sweep's recorded phrases.
         //
         // When this fires, the description is what changes. reference/bigquery.md is where a
         // default is written — a derived one included, carrying both its derivation and its
@@ -160,24 +160,10 @@ class BigQueryConnectorOptionsTest {
         assertThat(declaredOptions())
                 .allSatisfy(
                         option ->
-                                assertThat(formatter.format(option.description()))
-                                        .as(
-                                                "option '%s' restates a default;"
-                                                        + " reference/bigquery.md is where a"
-                                                        + " default is written",
-                                                option.key())
-                                        .doesNotContainIgnoringCase("by default")
-                                        .doesNotContainIgnoringCase("defaults to")
-                                        .doesNotContainIgnoringCase("when unset")
-                                        .doesNotContainIgnoringCase("unset means")
-                                        .doesNotContainIgnoringCase("when absent")
-                                        .doesNotContainIgnoringCase("absent uses")
-                                        .doesNotContainIgnoringCase("absent,")
-                                        .doesNotContainIgnoringCase("unset uses")
-                                        .doesNotContainIgnoringCase("unset keeps")
-                                        .doesNotContainIgnoringCase("unset leaves")
-                                        .doesNotContainIgnoringCase("is the default")
-                                        .doesNotContainIgnoringCase("and the default"));
+                                assertNoDefaultRestatement(
+                                        option.key(),
+                                        formatter.format(option.description()),
+                                        "reference/bigquery.md"));
     }
 
     @Test

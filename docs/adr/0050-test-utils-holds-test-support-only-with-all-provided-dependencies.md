@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-01 ([#27]); `testutils.sql` 2026-08-07 ([#290]); the source-reader outputs
   2026-08-09 and the pull-assignment context fakes 2026-08-10 ([#437]); the Cloud Tasks
-  emulator fixture 2026-08-17 ([#776]); revised by [#1057] (2026-08-23)
-- Issues: [#27], [#290], [#26], [#181], [#437], [#776], [#1057]
+  emulator fixture 2026-08-17 ([#776]); revised by [#1057] and [#1073] (2026-08-23)
+- Issues: [#27], [#290], [#26], [#181], [#437], [#776], [#1057], [#1073]
 - Modules: test-utils
 - Current behavior: (Claude-facing module; nothing user-rendered)
 
@@ -33,6 +33,15 @@ limitations under the License.
   exercise, and `provided` is non-transitive, so depending on this module adds no new resolution
   path to any artifact — which is what keeps the SQL uber-jars' shade-scope mediation
   undisturbed (ADR-0015's test-scope demotion trap).
+- **The option-description assertion shares only the contract the five consumers agree on.**
+  `OptionDescriptionAssertions` owns ADR-0139's twelve recorded phrases and their history, which
+  removes sixty identical phrase assertions and prevents the five lists from drifting.
+  Its callers still own reflection, `HtmlFormatter`, non-vacuity and the module-specific
+  documentation home because their option-discovery rules and messages differ.
+  The utility accepts the already-formatted string, which keeps Flink's unannotated
+  `HtmlFormatter` out of this module's API-tier-audited main sources.
+  Its direct test clears this module's narrow bar because every clean consumer exercises only the
+  passing path and therefore cannot prove that each recorded phrase still fires.
 - **No forced unification of emulator container fixtures.** The goccy BigQuery and aertje Cloud
   Tasks fixtures were hand-rolled and single-consumer when this was decided, structurally unlike
   the testcontainers `PubSubEmulatorContainer`; a fixture stays in its module until a second
@@ -137,3 +146,4 @@ limitations under the License.
 [#776]: https://github.com/flink-gcp/flink-connector-gcp/issues/776
 [#1044]: https://github.com/flink-gcp/flink-connector-gcp/issues/1044
 [#1057]: https://github.com/flink-gcp/flink-connector-gcp/issues/1057
+[#1073]: https://github.com/flink-gcp/flink-connector-gcp/issues/1073

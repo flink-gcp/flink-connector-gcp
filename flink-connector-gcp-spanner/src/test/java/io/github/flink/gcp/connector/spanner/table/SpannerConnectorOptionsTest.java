@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static io.github.flink.gcp.connector.testutils.OptionDescriptionAssertions.assertNoDefaultRestatement;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -64,9 +65,8 @@ class SpannerConnectorOptionsTest {
         // The half of the rule above a ConfigOption cannot express: a default written into prose —
         // a builder's, an option's own defaultValue(), or the value absence selects — is a second
         // copy that nothing keeps in step. "Unset fails the source instead" is not in that class:
-        // absence selecting a failure is the option's contract, not a default. The phrases are the
-        // restatement forms the #1045 cross-module sweep found, shared by every connector's guard;
-        // a regression guard over those forms, not a semantic parser for arbitrary prose.
+        // absence selecting a failure is the option's contract, not a default. The shared
+        // assertion owns the #1045 cross-module sweep's recorded phrases.
         //
         // When this fires, the description is what changes. reference/spanner.md is where a
         // mapped option's default is written — a derived one included, carrying both its
@@ -77,23 +77,9 @@ class SpannerConnectorOptionsTest {
         assertThat(declaredOptions())
                 .allSatisfy(
                         option ->
-                                assertThat(formatter.format(option.description()))
-                                        .as(
-                                                "option '%s' restates a default; the spanner"
-                                                        + " reference or table docs page is where"
-                                                        + " a default is written",
-                                                option.key())
-                                        .doesNotContainIgnoringCase("by default")
-                                        .doesNotContainIgnoringCase("defaults to")
-                                        .doesNotContainIgnoringCase("when unset")
-                                        .doesNotContainIgnoringCase("unset means")
-                                        .doesNotContainIgnoringCase("when absent")
-                                        .doesNotContainIgnoringCase("absent uses")
-                                        .doesNotContainIgnoringCase("absent,")
-                                        .doesNotContainIgnoringCase("unset uses")
-                                        .doesNotContainIgnoringCase("unset keeps")
-                                        .doesNotContainIgnoringCase("unset leaves")
-                                        .doesNotContainIgnoringCase("is the default")
-                                        .doesNotContainIgnoringCase("and the default"));
+                                assertNoDefaultRestatement(
+                                        option.key(),
+                                        formatter.format(option.description()),
+                                        "the spanner reference or table docs page"));
     }
 }
