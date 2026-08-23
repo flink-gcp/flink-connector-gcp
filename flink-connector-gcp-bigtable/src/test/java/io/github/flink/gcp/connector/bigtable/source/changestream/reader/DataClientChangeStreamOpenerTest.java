@@ -28,6 +28,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -82,6 +83,20 @@ class DataClientChangeStreamOpenerTest {
                         InstantiationUtil.serializeObject(opener), getClass().getClassLoader());
 
         assertThat(back.settings(TABLE).getAppProfileId()).isEqualTo("single-cluster");
+    }
+
+    @Test
+    void theBuilderWiresTheApplicationProfileIntoThisSeam() throws Exception {
+        // The change-stream half of the gap the scan seams pin: the builder constructs the
+        // default opener, so a profile that never reached it would stream through the instance's
+        // default compute while the tests above stay green.
+        DataClientChangeStreamOpener opener =
+                (DataClientChangeStreamOpener)
+                        TestSources.changeStreamConfig(
+                                        builder -> builder.appProfileId("boost-profile"))
+                                .getOpener();
+
+        assertThat(opener.settings(TestSources.TABLE).getAppProfileId()).isEqualTo("boost-profile");
     }
 
     @Test

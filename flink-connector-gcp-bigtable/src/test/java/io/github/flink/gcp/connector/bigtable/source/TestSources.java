@@ -21,16 +21,19 @@ import org.apache.flink.util.Collector;
 
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableReadRowsSource;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
+import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamMutationDeserializationSchema;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
 
 import java.util.function.UnaryOperator;
 
 /**
- * Builds source configurations for tests in the source's subpackages, which cannot reach the
- * configuration's package-private constructor.
+ * Builds source configurations for tests in the sources' subpackages, which cannot reach the
+ * builders' test-only setters or the Change Streams source's package-private configuration
+ * accessor.
  */
 public final class TestSources {
 
@@ -72,6 +75,26 @@ public final class TestSources {
                         // on one that does not. The endpoint is never connected to.
                         .emulatorEndpoint("localhost:1");
         return (BigtableReadRowsSource<String>) customizer.apply(builder).build();
+    }
+
+    /**
+     * Returns the configuration of a Change Streams source built with the given knobs applied on
+     * top of the fixture's table, a single-cluster application profile and the mutation
+     * deserializer. No client is created and nothing connects: the builder only assembles the
+     * configuration this returns.
+     *
+     * @param customizer applies the knobs a test needs
+     * @return the configuration
+     */
+    public static BigtableChangeStreamSourceConfig<BigtableChangeStreamMutation> changeStreamConfig(
+            UnaryOperator<BigtableChangeStreamSourceBuilder<BigtableChangeStreamMutation>>
+                    customizer) {
+        BigtableChangeStreamSourceBuilder<BigtableChangeStreamMutation> builder =
+                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
+                        .table(TABLE)
+                        .appProfileId("single-cluster")
+                        .deserializer(new BigtableChangeStreamMutationDeserializationSchema());
+        return customizer.apply(builder).build().getConfig();
     }
 
     /**
