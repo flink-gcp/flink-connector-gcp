@@ -799,6 +799,13 @@ connector gets its own module file rather than a section here.
   are in the ADR; the divergence-by-divergence review table is the #1043 artifact posted on
   #782, and a divergence covered by neither is judged fresh against the ADR's rules.
 
+- **A class that exists in one connector with no counterpart in the others names a structural
+  difference, or it is routed** (#1044; `docs/adr/0138`): Spanner's missing destination-routing,
+  admin and writable-metadata surfaces are recorded structural, the change-stream
+  same-simple-name pairs stay per-module types, and a gap with no reason goes to a module audit
+  rather than being copied for symmetry. The gap-by-gap review table is the #1044 artifact
+  posted on #782.
+
 - **A seam the enumerator closes is minted per enumerator; a seam with no teardown may stay on the
   configuration** (#990; `docs/adr/0128`): the JobManager holds one `Source` object for a job's
   whole life — `RecreateOnResetOperatorCoordinator` rebuilds the coordinator from the same

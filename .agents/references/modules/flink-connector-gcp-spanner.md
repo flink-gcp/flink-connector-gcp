@@ -10,7 +10,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The destination is a database, not a table.** The serializer's `Mutation` names its own table,
   so one sink writes to as many tables as it produces. That is why `SpannerDatabase` is at the
   module root, why the cell weights cover the whole database, and why there are no
-  per-destination metrics — the cardinality would be the serializer's to choose.
+  per-destination metrics — the cardinality would be the serializer's to choose. It is also why
+  the siblings' `DestinationResolver`/`CreateDisposition` surface has no Spanner counterpart:
+  per-record routing already lives inside the mutation (`docs/adr/0138`; the object's *name* is
+  a separate matter — #1053 renames it `DatabaseDestination` under `docs/adr/0137`'s rule).
+- **No admin seam, no auto-create** (`docs/adr/0138`): creating a relational Spanner table means
+  deriving typed DDL from the Flink schema and running a long-running operation — a design of its
+  own, not a `create()` behind a disposition flag. The sink writes to tables the user owns; an
+  auto-create proposal is a feature with its own issue, not a gap repair.
+- **The table sink writes no metadata** (`docs/adr/0138`): a mutation carries only declared
+  column values, so there is no out-of-band per-record field for a `WritableMetadata` column to
+  write, and `SpannerDynamicSink` stays a plain `DynamicTableSink`.
 - **One mutation per `MutationGroup`.** The group is the unit `BatchWriteResponse` reports a
   status for; anything else gives up per-record failure routing, which is the whole reason this
   sink uses `batchWriteAtLeastOnce` rather than a commit. Measured, not assumed: every rejection

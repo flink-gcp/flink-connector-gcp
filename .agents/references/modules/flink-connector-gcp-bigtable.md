@@ -279,6 +279,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   multi-cluster policy; missing permission to read profile metadata does not add a new requirement,
   and the reader translates the service rejection instead. Start-position and restore-expiry
   behavior is ADR-0094's shared contract.
+- **`ChangeStreamRestoreResolver` wraps the base restore seam because this module also resolves
+  splits at the reader** (`docs/adr/0138`): the enumerator calls the base API directly, and the
+  wrapper adds only what the reader-side path needs — serializability, the reader's one
+  credentials load, a split-shaped signature; the policy stays the base
+  `StartPositionResolver`'s. Spanner resolves at the enumerator alone and uses the base API
+  bare; do not read the wrapper as a second restore policy or port it there.
 - **The service partition always goes onto the wire as `[closed start, open end)`, even when an
   endpoint is empty.** The SDK uses an empty key for an infinite endpoint but the service still
   requires the protobuf boundary oneof to be set. `RowRanges.copyOf` intentionally normalizes the
