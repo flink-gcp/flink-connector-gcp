@@ -117,6 +117,14 @@ Add the row to the module's reference or connector page. `just check-option-docs
 do, and `$curate-option-docs` is the procedure for where the row goes and what its Default column
 may say. If the option registers a metric, `$curate-metric-docs` is its counterpart.
 
+A `ConfigOption` constant also carries a Javadoc **equal to its `withDescription` text** —
+`just check-javadoc-links` fails until the two match (ADR-0143), so write the description once and
+copy it into the comment verbatim; the description never restates a default (ADR-0139), so neither
+does the Javadoc. The equality rule fires when the description is built from string literals; an
+option described through a `Description` object is skipped by that rule and carries Javadoc when
+its declaring type is on the tier-annotated presence surface. A public builder setter needs
+Javadoc too, under that same presence rule.
+
 ## 5. Write the test that holds obligation 3
 
 No checker holds this one — that was measured on [#1028] and recorded in ADR-0127. A unit test does,

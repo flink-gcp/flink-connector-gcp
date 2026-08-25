@@ -21,6 +21,11 @@ source growing a new reference changes the real check rather than this suite.
 Several cases here are the shapes that fooled the hand scan this checker
 replaced: a call site read as a declaration, a method of the same name on a
 nested type, and a reference wrapped across two Javadoc lines.
+
+The presence rules of issue #1093 — Javadoc on the tier-annotated surface, and
+ConfigOption Javadoc equal to the withDescription text — are covered at the
+bottom, one discriminating fixture per rule: each fails when its rule is
+removed, not merely executes it.
 """
 
 from pathlib import Path
@@ -70,9 +75,13 @@ import org.apache.flink.annotation.Public;
 public class Builder {
     private Handler handler;
 
+    /** Sets the handler. */
     public Builder handler(Handler handler) {
         return this;
     }
+
+    /** Creates a builder. */
+    public Builder() {}
 }
 """,
     )
@@ -105,9 +114,13 @@ import org.apache.flink.annotation.Public;
 public class Builder {
     private Handler handler;
 
+    /** Sets the handler. */
     public Builder handler(Handler handler) {
         return this;
     }
+
+    /** Creates a builder. */
+    public Builder() {}
 }
 """,
     )
@@ -662,3 +675,1345 @@ public final class Message {
 def test_no_sources_is_an_infrastructure_failure(tree, check_javadoc_links):
     with pytest.raises(FileNotFoundError):
         check_javadoc_links.check()
+
+
+def test_an_undocumented_public_method_of_a_tier_annotated_type_fails(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "FooSource.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/** A source. */
+@PublicEvolving
+public class FooSource {
+    public FooSource builder() {
+        return this;
+    }
+
+    /** Creates a source. */
+    public FooSource() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "FooSource.java:8" in problems[0]
+    assert (
+        "public method 'builder()' of @PublicEvolving type 'FooSource'" in problems[0]
+    )
+    assert "has no Javadoc; add one" in problems[0]
+
+
+def test_an_undocumented_public_field_is_reported_like_a_method(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "Bounds.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Limits. */
+@Public
+public final class Bounds {
+    public static final long LIMIT = 10L;
+
+    private long used;
+
+    /** Creates bounds. */
+    public Bounds() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public field 'LIMIT' of @Public type 'Bounds'" in problems[0]
+
+
+def test_an_override_member_inherits_its_docs_and_is_exempt(tree, check_javadoc_links):
+    write(
+        tree / "Sink.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A sink. */
+@Public
+public class Sink implements AutoCloseable {
+    /** Builds a sink. */
+    public Sink() {}
+
+    @Override
+    public void close() {}
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # The type and the constructor were counted, so the fixture was indexed:
+    # an empty tree would also report no problems.
+    assert counts.documented == 2
+
+
+def test_an_internal_nested_type_is_off_the_documented_surface(
+    tree, check_javadoc_links
+):
+    """Its own tier annotation answers for its members, and @Internal says no.
+
+    Neither the nested declaration nor its bare public method is a finding:
+    the generated API reference does not show @Internal types.
+    """
+    write(
+        tree / "Source.java",
+        """package demo;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.Public;
+
+/** Entry point. */
+@Public
+public class Source {
+    @Internal
+    public static class Plumbing {
+        public void run() {}
+    }
+
+    /** Creates a source. */
+    public Source() {}
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # Only the enclosing type and its constructor were counted; the fixture
+    # was indexed and the nested type really was excluded rather than unseen.
+    assert counts.documented == 2
+
+
+def test_an_unannotated_nested_type_inherits_the_enclosing_tier(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "Source.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Entry point. */
+@Public
+public class Source {
+    /** Configures a source. */
+    public static final class Builder {
+        public Source build() {
+            return null;
+        }
+
+        /** Creates a builder. */
+        public Builder() {}
+    }
+
+    /** Creates a source. */
+    public Source() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public method 'build()' of @Public type 'Builder'" in problems[0]
+
+
+def test_an_enum_constant_of_an_in_scope_enum_needs_its_own_javadoc(
+    tree, check_javadoc_links
+):
+    """A comma-separated constant list is one declaration to the scan.
+
+    Each constant is documented on its own all the same, so the comment above
+    the first cannot stand in for the second.
+    """
+    write(
+        tree / "TargetType.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/** Where the task goes. */
+@PublicEvolving
+public enum TargetType {
+    /** Delivered over HTTP. */
+    HTTP("http"),
+    APP_ENGINE("app-engine");
+
+    private final String value;
+
+    TargetType(String value) {
+        this.value = value;
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "TargetType.java:10" in problems[0]
+    assert (
+        "enum constant 'APP_ENGINE' of @PublicEvolving type 'TargetType'" in problems[0]
+    )
+
+
+def test_a_bare_constant_before_an_argument_bearing_one_stays_in_the_list(
+    tree, check_javadoc_links
+):
+    """The first top-level `(` need not belong to the first enum constant."""
+    write(
+        tree / "Mode.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Selection modes. */
+@Public
+public enum Mode {
+    /** Uses defaults. */
+    DEFAULT,
+    CUSTOM(1);
+
+    private final int value;
+
+    Mode() {
+        this(0);
+    }
+
+    Mode(int value) {
+        this.value = value;
+    }
+
+    /** Returns the encoded value. */
+    public int value() {
+        return value;
+    }
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert len(problems) == 1
+    assert "enum constant 'CUSTOM' of @Public type 'Mode'" in problems[0]
+    assert counts.documented == 3
+
+
+def test_a_bare_constant_list_without_a_semicolon_is_still_read(
+    tree, check_javadoc_links
+):
+    """The `;` after the constants is optional when the enum has no members."""
+    write(
+        tree / "Kind.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Rule kinds. */
+@Public
+public enum Kind {
+    /** A union. */
+    UNION,
+    INTERSECTION
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "enum constant 'INTERSECTION'" in problems[0]
+
+
+def test_an_implicitly_public_interface_member_needs_javadoc(tree, check_javadoc_links):
+    write(
+        tree / "Listener.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Callbacks. */
+@Public
+public interface Listener {
+    default void onOpen() {}
+
+    /** Called once closed. */
+    void onClose();
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public method 'onOpen()' of @Public type 'Listener'" in problems[0]
+
+
+def test_a_tier_annotated_type_needs_type_level_javadoc(tree, check_javadoc_links):
+    write(
+        tree / "Probe.java",
+        """package demo;
+
+import org.apache.flink.annotation.Experimental;
+
+@Experimental
+public class Probe {
+    /** Runs the probe. */
+    public void run() {}
+
+    /** Creates a probe. */
+    public Probe() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "@Experimental class 'Probe' has no Javadoc" in problems[0]
+    assert "type-level comment above its annotations" in problems[0]
+
+
+def test_annotations_between_the_javadoc_and_the_declaration_still_count(
+    tree, check_javadoc_links
+):
+    """Javadoc sits above the annotations, exactly as Javadoc itself reads it.
+
+    Measuring presence from the post-annotation declaration instead would put
+    `@Deprecated` inside the gap and report a documented member as bare.
+    """
+    write(
+        tree / "FooSource.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/** A source. */
+@PublicEvolving
+public class FooSource {
+    /** Builds a source. */
+    @Deprecated
+    public FooSource builder() {
+        return this;
+    }
+
+    /** Creates a source. */
+    public FooSource() {}
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.documented == 3
+
+
+def test_a_config_option_javadoc_differing_from_its_description_fails(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The host to call. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The endpoint to call.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert (
+        "make the Javadoc of 'ENDPOINT' equal to its withDescription text"
+        in problems[0]
+    )
+    assert "The host to call." in problems[0]
+    assert "The endpoint to call." in problems[0]
+
+
+def test_multiple_config_options_in_one_declaration_must_be_split(
+    tree, check_javadoc_links
+):
+    """One shared comment cannot hold two different runtime descriptions."""
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The first option. */
+    public static final ConfigOption<String> FIRST =
+                    ConfigOptions.key("first")
+                            .stringType()
+                            .noDefaultValue()
+                            .withDescription("The first option."),
+            SECOND =
+                    ConfigOptions.key("second")
+                            .stringType()
+                            .noDefaultValue()
+                            .withDescription("The second option.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "ConfigOption declaration starting at 'FIRST'" in problems[0]
+    assert "split each constant into its own declaration" in problems[0]
+
+
+def test_the_last_with_description_call_is_the_runtime_description(
+    tree, check_javadoc_links
+):
+    """A later ConfigOption copy replaces the earlier description."""
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The first description. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The first description.")
+                    .withDescription("The runtime description.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "The runtime description." in problems[0]
+
+
+def test_a_type_annotated_config_option_still_has_its_description_checked(
+    tree, check_javadoc_links
+):
+    """A legal type-use annotation does not take the constant off the rule."""
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Target;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+@Target(ElementType.TYPE_USE)
+@interface TypeUse {
+    String value();
+}
+
+public final class DemoOptions {
+    /** The stale description. */
+    public static final @TypeUse("checked") ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The runtime description.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "The runtime description." in problems[0]
+
+
+def test_a_config_option_javadoc_equal_to_its_concatenated_description_passes(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The endpoint to call. Given as host and port. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The endpoint to call."
+                                    + " Given as host and port.");
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.options == 1
+
+
+def test_a_parenthesized_literal_description_is_still_compared(
+    tree, check_javadoc_links
+):
+    """Parentheses do not turn a literal-only expression into a Description object."""
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The old endpoint contract. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription((("The new endpoint" + (" contract."))));
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "make the Javadoc of 'ENDPOINT' equal" in problems[0]
+    assert "The new endpoint contract." in problems[0]
+
+
+def test_a_content_leading_star_in_a_config_option_javadoc_is_not_margin(
+    tree, check_javadoc_links
+):
+    """Only the comment margin comes off: a `*` the prose owns stays.
+
+    Two shapes, because they fail differently: a wrapped line starting with
+    `*.googleapis.com` sits behind a margin star, and a one-line comment
+    starting with it has no margin at all. Stripping stars greedily mangles
+    either into `.googleapis.com` and reports an equal pair as drifted.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /**
+     * Accepts
+     * *.googleapis.com endpoints.
+     */
+    public static final ConfigOption<String> HOSTS =
+            ConfigOptions.key("hosts")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("Accepts *.googleapis.com endpoints.");
+
+    /** *.googleapis.com endpoints are trusted. */
+    public static final ConfigOption<String> TRUSTED =
+            ConfigOptions.key("trusted")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("*.googleapis.com endpoints are trusted.");
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.options == 2
+
+
+def test_a_description_containing_a_semicolon_is_read_to_its_end(
+    tree, check_javadoc_links
+):
+    """A `;` inside the description is text, not the statement's end.
+
+    Statement ends are found with a string-aware scan, and the fixture makes
+    that load-bearing twice over: the `OPEN` literal's unbalanced `(` would
+    keep a raw scan's depth positive past the real `;`, so `OPEN`'s statement
+    would run on into the `MODE` declaration and `MODE` would never be
+    indexed; and the description's lone `)` before its `;` would end a raw
+    scan inside the literal. The escaped quotes are unescaped the way Java
+    reads them, and the constants below only count if each statement ended
+    where it should.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    private static final String OPEN = "(";
+
+    /** A "strict" mode: ')' ends a range; the rest is rejected. */
+    public static final ConfigOption<String> MODE =
+            ConfigOptions.key("mode")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A \\"strict\\" mode: ')' ends a range; the rest is rejected.");
+
+    /** The endpoint to call. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The endpoint to call.");
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # counts.options == 2 is the load-bearing assertion: a scan that ends a
+    # statement early loses a constant without ever reporting a problem.
+    assert counts.options == 2
+
+
+def test_a_config_option_without_a_string_description_is_not_compared(
+    tree, check_javadoc_links
+):
+    """A Description object has no one flat text to hold the Javadoc to.
+
+    The literals inside it are not the description; comparing against them
+    would report this documented constant as drifted.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+import org.apache.flink.configuration.description.Description;
+
+public final class DemoOptions {
+    /** Something the description renders with markup. */
+    public static final ConfigOption<String> FANCY =
+            ConfigOptions.key("fancy")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(Description.builder().text("Not this.").build());
+
+    /** The endpoint to call. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The endpoint to call.");
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # Exactly the literal-described sibling counts: the fixture was indexed,
+    # and FANCY was skipped rather than the whole file never seen.
+    assert counts.options == 1
+
+
+def test_an_undocumented_config_option_off_the_surface_is_still_asked_for_javadoc(
+    tree, check_javadoc_links
+):
+    """@Internal takes the presence rule away, not the ConfigOption rule."""
+    write(
+        tree / "HiddenOptions.java",
+        """package demo;
+
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+/** Plumbing options. */
+@Internal
+public final class HiddenOptions {
+    public static final ConfigOption<String> KEY =
+            ConfigOptions.key("key")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The key.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "ConfigOption 'KEY' has no Javadoc" in problems[0]
+    assert "The key." in problems[0]
+
+
+def test_an_undocumented_config_option_on_the_surface_is_reported_once(
+    tree, check_javadoc_links
+):
+    """One member, one message: the presence rule owns the missing comment."""
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+/** The options. */
+@PublicEvolving
+public final class DemoOptions {
+    public static final ConfigOption<String> KEY =
+            ConfigOptions.key("key")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The key.");
+
+    /** Creates options. */
+    public DemoOptions() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public field 'KEY' of @PublicEvolving type 'DemoOptions'" in problems[0]
+    assert 'add one equal to its withDescription text "The key."' in problems[0]
+
+
+def test_an_empty_javadoc_does_not_count_as_present(tree, check_javadoc_links):
+    """A comment with nothing in it is not documentation.
+
+    Two empty shapes, because they fail differently: `/** */` has a blank raw
+    body, while the conventional multiline one carries a `*` margin line and
+    nothing else, so emptiness has to be judged on the rendered text — on the
+    type-level comment as much as on a member's. The message differs from the
+    missing-comment one only in what the repair asks for: the comment exists
+    and is empty.
+    """
+    write(
+        tree / "BarSource.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/**
+ *
+ */
+@PublicEvolving
+public class BarSource {
+    /** Builds a source. */
+    public BarSource builder() {
+        return this;
+    }
+
+    /** Creates a source. */
+    public BarSource() {}
+}
+""",
+    )
+    write(
+        tree / "FooSource.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/** A source. */
+@PublicEvolving
+public class FooSource {
+    /** */
+    public FooSource builder() {
+        return this;
+    }
+
+    /**
+     *
+     */
+    public FooSource other() {
+        return this;
+    }
+
+    /** Creates a source. */
+    public FooSource() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 3
+    assert (
+        "@PublicEvolving class 'BarSource' has an empty Javadoc; write" in problems[0]
+    )
+    assert (
+        "public method 'builder()' of @PublicEvolving type 'FooSource'" in problems[1]
+    )
+    assert "has an empty Javadoc; write one" in problems[1]
+    assert "public method 'other()' of @PublicEvolving type 'FooSource'" in problems[2]
+    assert "has an empty Javadoc; write one" in problems[2]
+
+
+def test_an_annotation_type_is_on_the_surface_like_any_other(tree, check_javadoc_links):
+    """`@interface` opens a declaration, not an annotation use.
+
+    The discriminating shape is a nested annotation type with no modifier —
+    implicitly public in an interface — where nothing shields `@interface`
+    from the annotation walk: read as an annotation use, the whole type
+    vanishes from the index and its undocumented element with it. A top-level
+    `public @interface` never shows this, because the modifier stops the walk
+    first.
+    """
+    write(
+        tree / "Listener.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Callbacks. */
+@Public
+public interface Listener {
+    @interface Handler {
+        String value();
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 2
+    assert "@Public @interface 'Handler' has no Javadoc" in problems[0]
+    assert "public method 'value()' of @Public type 'Handler'" in problems[1]
+
+
+def test_a_malformed_unicode_escape_is_kept_literally(tree, check_javadoc_links):
+    """An escape the checker cannot decode is not a crash.
+
+    `\\uZZZZ` would not compile, but the checker also reads trees that do not
+    compile yet; the sequence is kept as written, so the equal pair below
+    still passes instead of tracebacking out of the run.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** A raw \\uZZZZ sequence. */
+    public static final ConfigOption<String> RAW =
+            ConfigOptions.key("raw")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("A raw \\uZZZZ sequence.");
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.options == 1
+
+
+def test_a_generic_comma_does_not_mint_a_phantom_member(tree, check_javadoc_links):
+    """The comma in `ConfigOption<Map<String, String>>` separates type args.
+
+    A comma-naive declarator split would record a second public member named
+    'String' sharing the constant's Javadoc position — documented by accident,
+    compared by accident, and counted twice.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+import java.util.Map;
+
+/** The options. */
+@PublicEvolving
+public final class DemoOptions {
+    /** The headers to send. */
+    public static final ConfigOption<Map<String, String>> HEADERS =
+            ConfigOptions.key("headers")
+                    .mapType()
+                    .noDefaultValue()
+                    .withDescription("The headers to send.");
+
+    /** Creates options. */
+    public DemoOptions() {}
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # The type, constructor, and exactly one option field were counted, and
+    # exactly one option compared: a phantom 'String' member raises both counts.
+    assert counts.documented == 3
+    assert counts.options == 1
+
+
+def test_a_difference_past_the_clip_is_still_shown(tree, check_javadoc_links):
+    """The mismatch message windows around the first differing character.
+
+    Clipping both strings from the head would show two identical-looking
+    prefixes here, telling the reader nothing about what to change.
+    """
+    prefix = (
+        "The endpoint to call for every request the sink issues, given as a"
+        " host and port pair without a scheme, resolved once at startup."
+    )
+    write(
+        tree / "DemoOptions.java",
+        f"""package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {{
+    /** {prefix} Cached forever. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("{prefix} Re-resolved on failure.");
+}}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "Cached forever." in problems[0]
+    assert "Re-resolved on failure." in problems[0]
+
+
+def test_the_first_enum_constants_own_annotation_does_not_hide_its_javadoc(
+    tree, check_javadoc_links
+):
+    """The declaration scan consumes the first constant's annotations.
+
+    Its Javadoc position is therefore the declaration's own; measuring from
+    the constant list instead would put `@Deprecated` inside the gap and
+    report a documented constant as bare.
+    """
+    write(
+        tree / "Mode.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/** The modes. */
+@PublicEvolving
+public enum Mode {
+    /** The old spelling. */
+    @Deprecated
+    LEGACY("l"),
+    /** The current spelling. */
+    CURRENT("c");
+
+    private final String value;
+
+    Mode(String value) {
+        this.value = value;
+    }
+}
+""",
+    )
+
+    assert audit(check_javadoc_links) == []
+
+
+def test_a_protected_member_is_on_the_surface(tree, check_javadoc_links):
+    write(
+        tree / "Base.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A base type. */
+@Public
+public abstract class Base {
+    protected abstract void flush();
+
+    /** Creates a base instance. */
+    protected Base() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "protected method 'flush()' of @Public type 'Base'" in problems[0]
+
+
+def test_a_type_behind_a_package_private_enclosure_is_not_on_the_surface(
+    tree, check_javadoc_links
+):
+    """A tier reaches a nested type only along a chain the reader can see.
+
+    `Inner` inherits @Public through `Plumbing`, but the generated reference
+    never shows a package-private type or anything inside it.
+    """
+    write(
+        tree / "Outer.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** Entry point. */
+@Public
+public class Outer {
+    static final class Plumbing {
+        public static final class Inner {
+            public void run() {}
+        }
+    }
+
+    /** Creates an outer instance. */
+    public Outer() {}
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.documented == 2
+
+
+def test_a_body_opening_enum_constant_is_still_a_constant(tree, check_javadoc_links):
+    """A strategy-pattern constant opens a class body and stays a constant.
+
+    The declaration scan stops at the body's `{`; treating that brace as the
+    list's end would drop every constant, and an undocumented one would pass
+    silently — ADR-0143 says every enum constant.
+    """
+    write(
+        tree / "Rounding.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** How values round. */
+@Public
+public enum Rounding {
+    /** Rounds up. */
+    UP("u") {
+        @Override
+        int apply(int value) {
+            return value + 1;
+        }
+    },
+    DOWN("d") {
+        @Override
+        int apply(int value) {
+            return value - 1;
+        }
+    };
+
+    private final String label;
+
+    Rounding(String label) {
+        this.label = label;
+    }
+
+    abstract int apply(int value);
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "enum constant 'DOWN' of @Public type 'Rounding'" in problems[0]
+
+
+def test_a_constant_body_does_not_leak_members_onto_the_enum(tree, check_javadoc_links):
+    """What a constant's body declares belongs to its anonymous class.
+
+    The public method and the nested type inside the body are not the enum's
+    members, so a documented constant list passes with nothing else counted or
+    reported.
+    """
+    write(
+        tree / "Strategy.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+
+/** The strategies. */
+@PublicEvolving
+public enum Strategy {
+    /** The only strategy. */
+    DIRECT {
+        /** Helper of the body, not of the enum. */
+        class Helper {
+            public void run() {}
+        }
+
+        public int extra() {
+            return 1;
+        }
+    };
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # The enum and its one constant, nothing from inside the body.
+    assert counts.documented == 2
+
+
+def test_a_container_of_options_is_not_compared_by_family_2(tree, check_javadoc_links):
+    """A `List<ConfigOption<?>>` field is not itself a ConfigOption.
+
+    The withDescription in its initializer belongs to the nested option;
+    comparing the field's own Javadoc against it would fail CI on a correct
+    source. The field is still on the presence surface like any public field.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+import java.util.List;
+
+/** The options. */
+@PublicEvolving
+public final class DemoOptions {
+    /** Every option this connector takes. */
+    public static final List<ConfigOption<?>> ALL =
+            List.of(
+                    ConfigOptions.key("endpoint")
+                            .stringType()
+                            .noDefaultValue()
+                            .withDescription("The endpoint to call."));
+
+    /** Creates options. */
+    public DemoOptions() {}
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    # Family 1 counted the type, constructor, and field; family 2 compared nothing.
+    assert counts.documented == 3
+    assert counts.options == 0
+
+
+def test_a_compact_record_constructor_is_a_constructor(tree, check_javadoc_links):
+    """`public Endpoint {` inside a record is the canonical constructor.
+
+    No main source declares a record today, but ADR-0143 says every public
+    constructor, and the compact shape — no parameter list, header ending at
+    the brace — must not slip past the presence rule the way an initializer
+    block does.
+    """
+    write(
+        tree / "Endpoint.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** An endpoint. */
+@Public
+public record Endpoint(String host, int port) {
+    public Endpoint {
+        host = host.trim();
+    }
+}
+""",
+    )
+    write(
+        tree / "Range.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A range. */
+@Public
+public record Range(int low, int high) {
+    /** Swaps the bounds when reversed. */
+    public Range {
+        low = Math.min(low, high);
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public constructor 'Endpoint()' of @Public type 'Endpoint'" in problems[0]
+
+
+def test_an_implicit_constructor_must_be_declared_and_documented(
+    tree, check_javadoc_links
+):
+    """A public class or record otherwise exposes an undocumented constructor."""
+    write(
+        tree / "Factories.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A factory. */
+@Public
+public class Factories {}
+""",
+    )
+    write(
+        tree / "Endpoint.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** An endpoint. */
+@Public
+public record Endpoint(String host) {}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 2
+    assert all("exposes an implicit constructor" in problem for problem in problems)
+    assert "class 'Factories'" in problems[1]
+    assert "record 'Endpoint'" in problems[0]
+
+
+def test_an_auxiliary_record_constructor_does_not_document_the_canonical_one(
+    tree, check_javadoc_links
+):
+    """A same-arity overload leaves the record's canonical constructor implicit."""
+    write(
+        tree / "Range.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A range. */
+@Public
+public record Range(int low, int high) {
+    /** Creates a range from wider inputs. */
+    public Range(long low, long high) {
+        this((int) low, (int) high);
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "record 'Range' exposes an implicit constructor" in problems[0]
+
+
+def test_a_fully_qualified_config_option_is_still_compared(tree, check_javadoc_links):
+    """The fully qualified spelling declares the same type.
+
+    `org.apache.flink.configuration.ConfigOption<String>` is legal Java for
+    the same constant; letting it bypass the equality rule would make the
+    import style decide whether the copy is held.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+public final class DemoOptions {
+    /** The host to call. */
+    public static final org.apache.flink.configuration.ConfigOption<String> ENDPOINT =
+            org.apache.flink.configuration.ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The endpoint to call.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert (
+        "make the Javadoc of 'ENDPOINT' equal to its withDescription text"
+        in problems[0]
+    )
+
+
+def test_a_type_merely_containing_the_name_is_not_an_option(tree, check_javadoc_links):
+    """`MyConfigOptionHolder` contains the name and is not the type.
+
+    Its initializer's withDescription belongs to whatever it wraps; comparing
+    the holder's Javadoc against it would be a false failure.
+    """
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** A holder, not an option. */
+    public static final MyConfigOptionHolder HOLDER =
+            MyConfigOptionHolder.of(
+                    ConfigOptions.key("endpoint")
+                            .stringType()
+                            .noDefaultValue()
+                            .withDescription("Not compared."));
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.options == 0

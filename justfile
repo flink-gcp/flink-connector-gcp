@@ -485,11 +485,30 @@ check-metric-docs:
 # curate-* skill. It judges only types this repository declares, and members
 # those types declare themselves, so an inherited or vendor member is left alone,
 # and a reference that already carries a parameter list is not matched against
-# the declared signature. Offline and stdlib-only, but a verify.yaml job rather
-# than part of `just lint`, for check-option-docs's reason: its inputs are every
-# Java main source.
+# the declared signature.
 #
-# Does every Javadoc member reference resolve to the member it names?
+# Also holds the tier-annotated surface to Javadoc *presence* (issue #1093): a
+# type whose nearest annotated enclosing declaration carries @Public,
+# @PublicEvolving or @Experimental needs type-level Javadoc, and so does every
+# public or protected member it declares — methods, constructors, fields,
+# nested types, implicitly-public interface members and enum constants. The
+# sole exemption is an @Override member, whose docs inherit; an @Internal
+# nested type is off the surface, an unannotated nested type inherits the
+# enclosing tier, and a type package-private anywhere in its enclosing chain
+# is off the surface even with an inherited tier — the published reference
+# cannot reach it. And a ConfigOption constant — `public static final`, or an
+# interface field, which is implicitly both — built from .withDescription
+# string literals must carry Javadoc equal to that description, so the API
+# reference cannot drift from the option's runtime description.
+# These failures carry their repairs too — add Javadoc to the named member,
+# make the constant's Javadoc equal its withDescription text — so there is
+# still no allowlist and no curate-* skill. Offline and stdlib-only, but a
+# verify.yaml job rather than part of `just lint`, for check-option-docs's
+# reason: its inputs are every Java main source.
+#
+# Does every Javadoc member reference resolve to the member it names, does the
+# tier-annotated surface carry Javadoc, and does every ConfigOption's Javadoc
+# equal its withDescription text?
 check-javadoc-links:
     scripts/check-javadoc-links.py
 

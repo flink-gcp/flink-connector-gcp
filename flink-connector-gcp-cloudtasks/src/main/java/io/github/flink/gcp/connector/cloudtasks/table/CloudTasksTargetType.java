@@ -21,7 +21,11 @@ import org.apache.flink.annotation.PublicEvolving;
 /** The request target represented by a {@code cloud-tasks} table. */
 @PublicEvolving
 public enum CloudTasksTargetType {
+
+    /** The table's tasks target an arbitrary HTTP endpoint. */
     HTTP("http", "url", "app-engine."),
+
+    /** The table's tasks target an App Engine service of the queue's project. */
     APP_ENGINE("app-engine", "relative-uri", "http.");
 
     private final String optionValue;

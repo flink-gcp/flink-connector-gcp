@@ -36,7 +36,7 @@ it is cheaper to run the relevant checker locally than to discover it on the pul
 | `just check-option-docs` | Every connector option is documented, and every documented option is real |
 | `just check-metric-docs` | Every connector metric is documented, and every documented metric is real |
 | `just check-flink-api-tiers` | Main sources depend only on allowlisted Flink API stability tiers |
-| `just check-javadoc-links` | Javadoc member references resolve to the members they name (in-project targets; the checker states its own limits) |
+| `just check-javadoc-links` | Javadoc member references resolve to the members they name, every public or protected member of a tier-annotated type carries Javadoc, and a `ConfigOption` constant's Javadoc equals its runtime description (in-project targets; the checker states its own limits) |
 | `just check-readme-examples` / `just check-doc-snippets` | Source-backed Java examples stay synchronized with their tagged source regions and those regions compile against the working tree — the first covers the module READMEs, the second runs it plus the docs-page and Javadoc halves and the compile; a deliberately abbreviated example carries its classification marker and says so in prose |
 | `just check-notice <module>` / `just check-notice-sources` | A shaded jar's generated `NOTICE` matches what it bundles, and the pinned licence texts still match what is served |
 | `just check-gated-tags` | Every credential-gated test carries both its environment gate and the tag that keeps it out of ordinary builds |

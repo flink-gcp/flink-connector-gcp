@@ -31,6 +31,9 @@ public final class BigtableChangeStreamMutationDeserializationSchema
     private static final TypeInformation<BigtableChangeStreamMutation> TYPE_INFORMATION =
             TypeInformation.of(BigtableChangeStreamMutation.class);
 
+    /** Creates a deserialization schema that emits each mutation unchanged. */
+    public BigtableChangeStreamMutationDeserializationSchema() {}
+
     @Override
     public void deserialize(
             BigtableChangeStreamMutation mutation, Collector<BigtableChangeStreamMutation> out) {

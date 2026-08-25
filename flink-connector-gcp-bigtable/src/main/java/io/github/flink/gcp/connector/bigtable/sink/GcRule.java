@@ -58,9 +58,25 @@ public final class GcRule implements Serializable {
     /** The rule shapes Bigtable's admin API takes. */
     @Public
     public enum Kind {
+
+        /**
+         * Collects the versions of a cell beyond a kept count; see {@link GcRule#maxVersions(int)}.
+         */
         MAX_VERSIONS,
+
+        /** Collects cells older than an age; see {@link GcRule#maxAge(Duration)}. */
         MAX_AGE,
+
+        /**
+         * Collects cells any of the nested rules would collect; see {@link
+         * GcRule#union(GcRule...)}.
+         */
         UNION,
+
+        /**
+         * Collects cells only when every nested rule would collect them; see {@link
+         * GcRule#intersection(GcRule...)}.
+         */
         INTERSECTION
     }
 
