@@ -58,41 +58,13 @@ Pub/Sub, BigQuery and Bigtable have table connectors; Cloud Tasks' is tracked on
 add it in the SQL client — and `flink-sql-connector-gcp-bigquery` beside it if the job also writes
 to BigQuery, since the jars are built to share a classpath:
 
-```sql
-ADD JAR '/path/to/flink-sql-connector-gcp-pubsub-0.1.0-SNAPSHOT.jar';
-
-CREATE TABLE orders (
-  order_id STRING,
-  amount   INT
-) WITH (
-  'connector' = 'pubsub',
-  'project'   = 'my-project',
-  'topic'     = 'orders',
-  'format'    = 'json'
-);
-
-INSERT INTO orders VALUES ('a-1', 10), ('a-2', 20);
-```
+{{< sql-snippet file="flink/PubSubQuickstart.sql" tag="sink" >}}
 
 Reading is the same table definition with `subscription` in place of `topic`, and the parts of a
 message that are not the payload — attributes, ordering key, message id, publish time — arrive as
 metadata columns:
 
-```sql
-CREATE TABLE incoming_orders (
-  order_id     STRING,
-  amount       INT,
-  publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
-  WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
-) WITH (
-  'connector'    = 'pubsub',
-  'project'      = 'my-project',
-  'subscription' = 'orders-sub',
-  'format'       = 'json'
-);
-
-SELECT * FROM incoming_orders;
-```
+{{< sql-snippet file="flink/PubSubQuickstart.sql" tag="source" >}}
 
 Checkpointing is a cluster setting here rather than a line of code — set
 `execution.checkpointing.interval` in `flink-conf.yaml` or with `SET` in the SQL client. It matters

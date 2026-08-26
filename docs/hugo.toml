@@ -40,11 +40,21 @@ title = "GCP Connectors for Apache Flink"
   [[module.mounts]]
     source = "../flink-connector-gcp-docs-validation/src/test/java/io/github/flink/gcp/connector/docs"
     target = "assets/java-snippets"
+  [[module.mounts]]
+    source = "../flink-connector-gcp-docs-validation/src/test/resources/sql-snippets"
+    target = "assets/sql-snippets/flink"
+  [[module.mounts]]
+    source = "../flink-connector-gcp-spanner/src/test/resources/sql-snippets"
+    target = "assets/sql-snippets/spanner"
 
   [[module.imports]]
     path = "github.com/alex-shpak/hugo-book"
 
 [params]
+  # A generic code-block render hook rejects raw SQL fences under these paths. Source-backed
+  # sql-snippet shortcodes call transform.Highlight directly and therefore remain renderable.
+  SourceBackedSqlPaths = ["/docs/examples", "/docs/quickstart"]
+
   # Everything hugo-book already defaults to (BookSection, BookToC, BookSearch)
   # is left unset; only genuine departures are listed. The theme's own default
   # is a light theme, so "auto" is a real choice.

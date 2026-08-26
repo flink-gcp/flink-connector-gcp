@@ -341,6 +341,18 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `just test-java-snippet-shortcode` mounts the repository shortcode into a synthetic Hugo site
   under `docs/tests/fixtures/` and holds its rendering and error branches to fixture pages and Java
   sources instead of the live examples
+- **SQL guidance in examples and quickstarts renders one tested source region** (#1097; ADR-0144).
+  Flink SQL regions live under the docs-validation module and are parsed and planned against the
+  current connector factories. GoogleSQL regions live under the Spanner module and execute against
+  the pinned emulator. The `sql-snippet` shortcode renders those same tagged regions, so Markdown
+  carries no second copy. Table connector reference pages remain ordinary fences under this
+  decision because their 32 blocks mix complete connector DDL and queries, partial option or schema
+  fragments, and intentionally invalid examples; extending validation first requires classifying
+  those distinct boundaries. Use
+  `.agents/skills/maintain-doc-sql-snippets/` for either dialect. `just check-doc-sql-snippets`
+  validates the executable boundary, while `just test-sql-snippet-shortcode` holds the rendering
+  and marker-error contract. Emulator acceptance is syntax and example evidence, never authority
+  for behavior of the Spanner service
 - **Every module README Java fence is classified and synchronized** (#705; ADR-0120).
   Runnable examples retain ordinary fenced Markdown so GitHub renders them, with a hidden
   `readme-example` marker mapping the displayed copy to one exact tagged region in the

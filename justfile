@@ -88,12 +88,29 @@ verify-flink version *extra:
 check-readme-examples:
     python3 scripts/check-readme-examples.py
 
-# Check and compile the source-backed Java examples rendered in documentation, module READMEs and
-# Javadoc.
+# The site build lets Hugo decide which SQL shortcodes are actually rendered. The docs-validation
+# module inventories those rendered markers and plans the corresponding Flink SQL regions.
+#
+# Check and compile source-backed examples and plan Flink SQL regions.
 check-doc-snippets *args:
     just check-readme-examples
     python3 scripts/check-javadoc-examples.py
-    {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am {{ args }} test-compile
+    just docs
+    {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation clean
+    {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am -Dflink.gcp.docs.public=docs/public {{ args }} test-compile
+    grep -Eq 'tests="[1-9][0-9]*"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Eq 'skipped="0"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="everyRenderedSqlBlockIsSourceBacked"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="everyFlinkRegionIsPlanned"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="documentedFlinkSqlCanBePlanned' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="batchRuntimeModeDetectionDoesNotDependOnSpacing"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="statementSplitterIgnoresTrailingSqlComments"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml || { echo 'Flink documentation SQL validation did not execute every required boundary or skipped a test.' >&2; exit 1; }
+
+# Plan every source-backed Flink SQL region and execute every source-backed GoogleSQL region against
+# the Spanner emulator. The first command retains the Java, README and Javadoc checks because the
+# docs-validation module is their shared opt-in reactor boundary. Its site build also lets Hugo's
+# SQL render hook reject any ordinary fence that bypasses the source-region inventory.
+#
+# Validate every source-backed Flink SQL and GoogleSQL documentation region.
+check-doc-sql-snippets:
+    just check-doc-snippets
+    {{ mvn }} -pl flink-connector-gcp-spanner clean
+    {{ mvn }} -pl flink-connector-gcp-spanner -am integration-test -Dgroups=documentation-sql
+    grep -Eq 'tests="[1-9][0-9]*"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Eq 'skipped="0"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Fq 'name="everyGoogleSqlRegionIsExecuted"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Fq 'name="documentedGoogleSqlExecutes' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Fq 'name="statementSplitterIgnoresSqlComments"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml || { echo 'Spanner documentation SQL validation did not execute every required boundary or skipped a test.' >&2; exit 1; }
 
 # The fixture site mounts this repository's shortcode and supplies synthetic pages and Java
 # sources, so changes to the parser are measured without depending on the live documentation.
@@ -101,6 +118,10 @@ check-doc-snippets *args:
 # Test the java-snippet shortcode's rendering and validation branches.
 test-java-snippet-shortcode:
     mise x hugo-extended -- scripts/test-java-snippet-shortcode.sh
+
+# Test the sql-snippet shortcode's rendering and validation branches.
+test-sql-snippet-shortcode:
+    mise x hugo-extended -- scripts/test-sql-snippet-shortcode.sh
 
 # -am is load-bearing: without it the io.github.flink-gcp siblings resolve from
 # ~/.m2 rather than from the reactor, so the recipe reports on whichever jar
@@ -530,14 +551,16 @@ docs-javadoc:
     {{ mvn }} javadoc:aggregate
 
 # --panicOnWarning turns deprecations, unresolved relrefs and missing shortcodes
-# into build failures.
+# into build failures. --cleanDestinationDir keeps removed or renamed pages out
+# of the rendered SQL inventory and the Pages artifact; stale HTML can otherwise
+# create either a false duplicate or a false source-backed match.
 #
 # The API reference is a separate recipe (`just docs-javadoc`) so that iterating
 # on prose stays a seconds-long build rather than a Maven one.
 #
 # Build the documentation site, as the docs workflow does.
 docs:
-    mise x hugo-extended go -- hugo --gc --minify --source docs --panicOnWarning
+    mise x hugo-extended go -- hugo --cleanDestinationDir --gc --minify --source docs --panicOnWarning
 
 # Preview the documentation site at http://localhost:1313.
 docs-serve:

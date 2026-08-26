@@ -1,0 +1,99 @@
+{{/*
+Copyright 2026 The flink-gcp authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/}}
+{{/*
+This partial serves both Java and SQL shortcodes. Before changing it, follow both snippet skills and
+run both synthetic fixture suites.
+*/}}
+{{- $file := .file -}}
+{{- $kind := .kind -}}
+{{- $lexer := .lexer -}}
+{{- $markerPrefix := .markerPrefix -}}
+{{- $position := .position -}}
+{{- $resourceDirectory := .resourceDirectory -}}
+{{- $tag := .tag -}}
+{{- if or (not $file) (not $tag) -}}
+  {{- errorf "%s: %s requires non-empty named file and tag arguments" $position $kind -}}
+{{- else -}}
+  {{- $resourcePath := printf "%s/%s" $resourceDirectory $file -}}
+  {{- $resource := resources.Get $resourcePath -}}
+  {{- if not $resource -}}
+    {{- errorf "%s: %s file %q for tag %q was not found" $position $kind $file $tag -}}
+  {{- else -}}
+    {{- $source := $resource.Content -}}
+    {{- $start := printf "%s tag::%s[]" $markerPrefix $tag -}}
+    {{- $end := printf "%s end::%s[]" $markerPrefix $tag -}}
+    {{- $lines := strings.Split $source "\n" -}}
+    {{- $startCount := 0 -}}
+    {{- $endCount := 0 -}}
+    {{- $startLine := -1 -}}
+    {{- $endLine := -1 -}}
+    {{- range $lineNumber, $line := $lines -}}
+      {{- $trimmedLine := strings.TrimSpace $line -}}
+      {{- if eq $trimmedLine $start -}}
+        {{- $startCount = add $startCount 1 -}}
+        {{- $startLine = $lineNumber -}}
+      {{- else if eq $trimmedLine $end -}}
+        {{- $endCount = add $endCount 1 -}}
+        {{- $endLine = $lineNumber -}}
+      {{- end -}}
+    {{- end -}}
+    {{- if ne $startCount 1 -}}
+      {{- errorf "%s: %s file %q must contain exactly one start marker for tag %q; found %d" $position $kind $file $tag $startCount -}}
+    {{- else if ne $endCount 1 -}}
+      {{- errorf "%s: %s file %q must contain exactly one end marker for tag %q; found %d" $position $kind $file $tag $endCount -}}
+    {{- else if le $endLine $startLine -}}
+      {{- errorf "%s: %s file %q has the end marker before the start marker for tag %q" $position $kind $file $tag -}}
+    {{- else -}}
+      {{- $snippetLineCount := sub $endLine (add $startLine 1) -}}
+      {{- $snippetLines := collections.First $snippetLineCount (collections.After (add $startLine 1) $lines) -}}
+      {{- $hasContent := false -}}
+      {{- $commonIndent := "" -}}
+      {{- range $line := $snippetLines -}}
+        {{- if strings.TrimSpace $line -}}
+          {{- $lineIndent := replaceRE "^([[:blank:]]*).*" "$1" $line -}}
+          {{- if not $hasContent -}}
+            {{- $hasContent = true -}}
+            {{- $commonIndent = $lineIndent -}}
+          {{- else if $commonIndent -}}
+            {{- $matchedIndentLength := 0 -}}
+            {{- range $index, $_ := strings.Split $commonIndent "" -}}
+              {{- $candidateLength := add $index 1 -}}
+              {{- $candidate := substr $commonIndent 0 $candidateLength -}}
+              {{- if strings.HasPrefix $lineIndent $candidate -}}
+                {{- $matchedIndentLength = $candidateLength -}}
+              {{- end -}}
+            {{- end -}}
+            {{- $commonIndent = substr $commonIndent 0 $matchedIndentLength -}}
+          {{- end -}}
+        {{- end -}}
+      {{- end -}}
+      {{- if not $hasContent -}}
+        {{- errorf "%s: %s file %q has an empty region for tag %q" $position $kind $file $tag -}}
+      {{- else -}}
+        {{- $normalizedLines := slice -}}
+        {{- range $line := $snippetLines -}}
+          {{- if strings.TrimSpace $line -}}
+            {{- $normalizedLines = $normalizedLines | append (strings.TrimPrefix $commonIndent $line) -}}
+          {{- else -}}
+            {{- $normalizedLines = $normalizedLines | append $line -}}
+          {{- end -}}
+        {{- end -}}
+        {{- $snippet := delimit $normalizedLines "\n" -}}
+        {{- transform.Highlight $snippet $lexer -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}

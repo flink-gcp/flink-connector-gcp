@@ -27,3 +27,6 @@ disableKinds = ["404", "home", "RSS", "robotsTXT", "section", "sitemap", "taxono
   [[module.mounts]]
     source = "../../../layouts/_shortcodes"
     target = "layouts/_shortcodes"
+  [[module.mounts]]
+    source = "../../../layouts/_partials"
+    target = "layouts/_partials"

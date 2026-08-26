@@ -83,32 +83,11 @@ Until it changes, register a changelog view from the complete envelope stream:
 
 Define the BigQuery sink table and map the source-properties column to writable metadata:
 
-```sql
-CREATE TABLE current_mysql_orders (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING>
-    METADATA FROM 'debezium-source-properties',
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_mysql_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.cdc.debezium-mysql.source-uuids' = '24bc7850-2c16-11e6-a073-0242ac110002',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min',
-  'sink.cdc.table-reconciliation' = 'reconcile'
-);
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="mysql-sink-table" >}}
 
 Insert the changelog rows and their source metadata:
 
-```sql
-INSERT INTO current_mysql_orders
-SELECT id, amount, source_properties FROM mysql_source_changes;
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="mysql-sink-insert" >}}
 
 The source UUID option and the DataStream provider use the same append-only epoch list.
 After a non-interleaved failover, append the new SID with Flink's semicolon delimiter, for example
@@ -198,33 +177,13 @@ This registered view is the source relation for the remaining SQL statements.
 
 Define the BigQuery sink table and map the source-properties column to writable metadata:
 
-```sql
-CREATE TABLE current_orders (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING>
-    METADATA FROM 'debezium-source-properties',
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min',
-  'sink.cdc.table-reconciliation' = 'reconcile'
-);
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="debezium-sink-table" >}}
 
 #### Insert query
 
 Forward the changelog rows and their ordering metadata from the source view into the sink table:
 
-```sql
-INSERT INTO current_orders
-SELECT id, amount, source_properties FROM source_changes;
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="debezium-sink-insert" >}}
 
 The job's checkpoint restores Kafka offsets after a Flink failure.
 Records between the restored offset and the last successful BigQuery append can be replayed, but
@@ -303,23 +262,7 @@ rather than a Debezium one, so `debezium-avro-confluent` does not read it.
 Flink's `debezium-json` format produces the changelog row kinds and retains the source object as
 `value.source.properties`:
 
-```sql
-CREATE TABLE source_changes (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING>
-    METADATA FROM 'value.source.properties' VIRTUAL,
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'kafka',
-  'topic' = 'tidb_test.test.orders',
-  'properties.bootstrap.servers' = 'kafka:9092',
-  'properties.group.id' = 'bigquery-cdc-orders',
-  'scan.startup.mode' = 'earliest-offset',
-  'value.format' = 'debezium-json',
-  'value.debezium-json.schema-include' = 'true'
-);
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="ticdc-source-table" >}}
 
 Keep `value.debezium-json.schema-include` at `true` whatever the changefeed sets: TiCDC always
 wraps the change in a `payload` object, which is what that option describes, while
@@ -328,28 +271,7 @@ Reading a `payload`-wrapped message with `schema-include` set to `false` fails e
 
 Define the BigQuery sink table with the cluster identity and the writable metadata column:
 
-```sql
-CREATE TABLE current_orders (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING>
-    METADATA FROM 'debezium-source-properties',
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.cdc.ticdc.cluster-id' = 'tidb-prod',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min',
-  'sink.cdc.table-reconciliation' = 'reconcile'
-);
-
-INSERT INTO current_orders
-SELECT id, amount, source_properties FROM source_changes;
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="ticdc-sink-and-insert" >}}
 
 ### TiCDC Kafka source
 
@@ -440,25 +362,7 @@ Registering the changelog as a view keeps the source properties available to SQL
 
 {{< java-snippet file="BigQueryExamplesDebeziumSpannerCdc.java" tag="bigquery-debezium-spanner-cdc-sql-bridge" >}}
 
-```sql
-CREATE TABLE current_orders (
-  id STRING NOT NULL,
-  amount BIGINT,
-  source_properties MAP<STRING, STRING> METADATA FROM 'debezium-source-properties',
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min'
-);
-
-INSERT INTO current_orders
-SELECT id, amount, source_properties FROM source_changes;
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="debezium-json-sink-and-insert" >}}
 
 ### Debezium Spanner envelope adapter
 
@@ -500,57 +404,15 @@ Source DDL, sink DDL, and the `INSERT` are therefore all the SQL below.
 Declare the change stream as a source table and expose its three ordering coordinates as metadata
 columns:
 
-```sql
-CREATE TABLE order_changes (
-  OrderId BIGINT,
-  Customer STRING,
-  Status STRING,
-  commit_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
-  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
-  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
-  PRIMARY KEY (OrderId) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'table' = 'Orders',
-  'scan.mode' = 'change-stream',
-  'scan.change-stream.name' = 'order_changes',
-  'scan.change-stream.changelog-mode' = 'upsert',
-  'scan.startup.mode' = 'latest'
-);
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="spanner-change-stream-source" >}}
 
 Declare the BigQuery table and take the sequence as one row of writable metadata:
 
-```sql
-CREATE TABLE current_orders (
-  OrderId BIGINT NOT NULL,
-  Customer STRING,
-  Status STRING,
-  change_sequence ROW<commit_timestamp TIMESTAMP_LTZ(9), record_sequence STRING, mod_number INT>
-    METADATA FROM 'spanner-change-sequence',
-  PRIMARY KEY (OrderId) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min'
-);
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="spanner-change-stream-sink" >}}
 
 Insert the changelog and build the sequence row from the three source metadata columns:
 
-```sql
-INSERT INTO current_orders
-SELECT OrderId, Customer, Status,
-       ROW(commit_timestamp, record_sequence, mod_number)
-FROM order_changes;
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="spanner-change-stream-insert" >}}
 
 Two details in that DDL are load-bearing.
 The source runs in `upsert` changelog mode, because `full` also emits update-before rows, which the
@@ -701,20 +563,7 @@ bq query --use_legacy_sql=false \
 
 Register it as a bounded Flink table source:
 
-```sql
-CREATE TABLE people (
-  id BIGINT,
-  name STRING
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'my_dataset',
-  'table' = 'people'
-);
-
-SELECT name
-FROM people;
-```
+{{< sql-snippet file="flink/BigQueryExamples.sql" tag="bounded-source" >}}
 
 The source finishes after reading one BigQuery snapshot, so the table works in a batch job or as the bounded side of a streaming job.
 Top-level projection is pushed into the Storage Read session, so the query above requests only `name`.
