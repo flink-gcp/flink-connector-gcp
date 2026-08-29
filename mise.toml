@@ -35,7 +35,12 @@ uv = "0.12.1"
 # same reason as shellcheck: a release that gains a rule (MD060 arrived this
 # way) would fail a pull request that changed nothing. The npm backend rides
 # the node entry below.
-"npm:markdownlint-cli2" = "0.23.2"
+# fastq 1.20.2, pulled transitively by markdownlint-cli2, dropped the npm
+# provenance metadata that 1.20.0 and 1.20.1 carried. Its registry integrity
+# and runtime sources match upstream tag v1.20.2, and 1.20.3 restores
+# provenance with the same runtime sources. Exempt only the reviewed release;
+# every other version stays under aube's no-downgrade policy.
+"npm:markdownlint-cli2" = { version = "0.23.2", trust_policy_excludes = ["fastq@1.20.2"] }
 # Runtime for the npm backend above — nothing else here uses node. Pinned to a
 # major: markdownlint-cli2's behavior is its own version's, and a node patch
 # cannot add a lint rule.
