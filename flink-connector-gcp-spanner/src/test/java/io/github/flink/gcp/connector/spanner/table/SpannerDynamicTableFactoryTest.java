@@ -207,6 +207,7 @@ class SpannerDynamicTableFactoryTest {
         options.put("sink.buffer-flush.max-size", "2 mb");
         options.put("sink.buffer-flush.max-commit-delay", "25 ms");
         options.put("sink.rpc-priority", "low");
+        options.put("sink.batch-write.timeout", "17 s");
         options.put("sink.recovery.initial-backoff", "2 s");
         options.put("sink.recovery.max-backoff", "8 s");
         options.put("sink.recovery.max-attempts", "4");
@@ -222,6 +223,8 @@ class SpannerDynamicTableFactoryTest {
                 .isEqualTo(Duration.ofMillis(25));
         assertThat(sink.getConfig().getWriterOptions().getRpcPriority())
                 .isEqualTo(SpannerRpcPriority.LOW);
+        assertThat(sink.getConfig().getWriterOptions().getBatchWriteTimeout())
+                .isEqualTo(Duration.ofSeconds(17));
         assertThat(sink.getConfig().getWriterOptions().getRecoveryInitialBackoff())
                 .isEqualTo(Duration.ofSeconds(2));
         assertThat(sink.getConfig().getWriterOptions().getRecoveryMaxBackoff())
@@ -760,6 +763,12 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(SCHEMA, recovery))
                 .hasStackTraceContaining("Option 'sink.recovery.max-attempts' is invalid")
                 .hasStackTraceContaining("recoveryMaxAttempts must be positive");
+
+        Map<String, String> timeout = options();
+        timeout.put("sink.batch-write.timeout", "500 micros");
+        assertThatThrownBy(() -> sink(SCHEMA, timeout))
+                .hasStackTraceContaining("Option 'sink.batch-write.timeout' is invalid")
+                .hasStackTraceContaining("batchWriteTimeout must be at least 1 millisecond");
     }
 
     @Test

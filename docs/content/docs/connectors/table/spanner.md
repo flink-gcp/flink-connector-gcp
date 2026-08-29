@@ -320,6 +320,7 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |
 | `sink.buffer-flush.max-commit-delay` | *unset* | Maps to `maxCommitDelay` |
 | `sink.rpc-priority` | *unset ⇒ Spanner treats it as `HIGH`* | Maps to `rpcPriority` |
+| `sink.batch-write.timeout` | `30 s` | Maps to `batchWriteTimeout`; bounds one complete `BatchWrite` attempt |
 | `sink.recovery.initial-backoff` | `500 ms` | Maps to `recoveryInitialBackoff` |
 | `sink.recovery.max-backoff` | `10 s` | Maps to `recoveryMaxBackoff` |
 | `sink.recovery.max-attempts` | `10` | Maps to `recoveryMaxAttempts` |

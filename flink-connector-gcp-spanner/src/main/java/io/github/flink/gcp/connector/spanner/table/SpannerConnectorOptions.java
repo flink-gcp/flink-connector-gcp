@@ -308,6 +308,13 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("The LOW, MEDIUM, or HIGH priority of sink RPCs.");
 
+    /** The timeout for one complete BatchWrite RPC attempt. */
+    public static final ConfigOption<Duration> SINK_BATCH_WRITE_TIMEOUT =
+            ConfigOptions.key("sink.batch-write.timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The timeout for one complete BatchWrite RPC attempt.");
+
     /** The first delay in the sink's transient-failure retry loop. */
     public static final ConfigOption<Duration> SINK_RECOVERY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.recovery.initial-backoff")

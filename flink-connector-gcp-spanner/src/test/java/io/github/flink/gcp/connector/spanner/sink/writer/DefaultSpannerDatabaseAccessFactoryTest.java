@@ -16,19 +16,26 @@
 
 package io.github.flink.gcp.connector.spanner.sink.writer;
 
+import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Options;
+import com.google.cloud.spanner.SpannerOptions;
+import com.google.cloud.spanner.v1.stub.SpannerStubSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -79,6 +86,54 @@ class DefaultSpannerDatabaseAccessFactoryTest {
         assertThat(factory.settings().getCredentials() == credentials).isTrue();
     }
 
+    @Test
+    void changesOnlyBatchWriteAndKeepsSdkRetriesDisabled() {
+        SpannerOptions baseline = SpannerClients.settings(DATABASE, null, null);
+        SpannerOptions actual =
+                new DefaultSpannerDatabaseAccessFactory(
+                                DATABASE,
+                                SpannerWriterOptions.builder()
+                                        .batchWriteTimeout(Duration.ofSeconds(17))
+                                        .build(),
+                                null)
+                        .settings();
+
+        RetrySettings retry =
+                actual.getSpannerStubSettings().batchWriteSettings().getRetrySettings();
+        assertThat(actual.getSpannerStubSettings().batchWriteSettings().getRetryableCodes())
+                .isEmpty();
+        assertThat(retry.getInitialRpcTimeoutDuration()).isEqualTo(Duration.ofSeconds(17));
+        assertThat(retry.getMaxRpcTimeoutDuration()).isEqualTo(Duration.ofSeconds(17));
+        assertThat(retry.getTotalTimeoutDuration()).isEqualTo(Duration.ofSeconds(17));
+        assertThat(retry.getMaxAttempts()).isEqualTo(1);
+
+        assertThat(nonBatchWriteSettings(actual.getSpannerStubSettings()))
+                .containsExactlyElementsOf(
+                        nonBatchWriteSettings(baseline.getSpannerStubSettings()));
+        assertThat(actual.getInstanceAdminStubSettings().getInstanceSettings())
+                .isEqualTo(baseline.getInstanceAdminStubSettings().getInstanceSettings());
+        assertThat(actual.getDatabaseAdminStubSettings().getDatabaseSettings())
+                .isEqualTo(baseline.getDatabaseAdminStubSettings().getDatabaseSettings());
+    }
+
+    @Test
+    void revalidatesTheTimeoutAtTheTaskManagerBoundary() throws Exception {
+        SpannerWriterOptions forged = SpannerWriterOptions.builder().build();
+        Field timeout = SpannerWriterOptions.class.getDeclaredField("batchWriteTimeout");
+        timeout.setAccessible(true);
+        timeout.set(forged, Duration.ofNanos(999_999));
+
+        assertThatThrownBy(
+                        () ->
+                                new DefaultSpannerDatabaseAccessFactory(DATABASE, forged, null)
+                                        .settings())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("batchWriteTimeout")
+                .hasMessageContaining("at least 1 millisecond");
+        assertThat(SpannerWriterOptions.defaults().getBatchWriteTimeout())
+                .isEqualTo(Duration.ofSeconds(30));
+    }
+
     @ParameterizedTest
     @EnumSource(SpannerRpcPriority.class)
     void mapsEveryPriorityThisConnectorOffers(SpannerRpcPriority priority) {
@@ -97,6 +152,31 @@ class DefaultSpannerDatabaseAccessFactoryTest {
 
     private static Class<?> priorityKind() {
         return Options.priority(Options.RpcPriority.LOW).getClass();
+    }
+
+    private static List<String> nonBatchWriteSettings(SpannerStubSettings settings) {
+        return Arrays.asList(
+                        settings.createSessionSettings(),
+                        settings.batchCreateSessionsSettings(),
+                        settings.getSessionSettings(),
+                        settings.listSessionsSettings(),
+                        settings.deleteSessionSettings(),
+                        settings.executeSqlSettings(),
+                        settings.executeStreamingSqlSettings(),
+                        settings.executeBatchDmlSettings(),
+                        settings.readSettings(),
+                        settings.streamingReadSettings(),
+                        settings.beginTransactionSettings(),
+                        settings.commitSettings(),
+                        settings.rollbackSettings(),
+                        settings.partitionQuerySettings(),
+                        settings.partitionReadSettings(),
+                        settings.fetchCacheUpdateSettings())
+                .stream()
+                // ServerStreamingCallSettings does not implement structural equality; its string
+                // form contains the retry codes, retry settings, idle timeout and wait timeout.
+                .map(Object::toString)
+                .toList();
     }
 
     @Test

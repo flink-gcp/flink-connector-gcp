@@ -122,6 +122,8 @@ raising one alone often changes nothing; `maxBatchCells` and `maxBatchBytes` are
 for. Setting `maxBatchMutations` above `maxBatchCells` writes a warning to the log of wherever the
 job's `main` runs, because the cell cap is then reached first and the mutation cap can never take
 effect.
+`batchWriteTimeout` separately bounds a complete write attempt so that a stalled response stream
+cannot hold the task thread indefinitely.
 
 {{< java-snippet file="SpannerExamplesSinkOptions.java" tag="spanner-examples-batch-options" >}}
 

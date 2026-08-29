@@ -68,6 +68,7 @@ class SpannerOptionParityTest {
                         "maxBatchBytes",
                         "maxCommitDelay",
                         "rpcPriority",
+                        "batchWriteTimeout",
                         "recoveryInitialBackoff",
                         "recoveryMaxBackoff",
                         "recoveryMaxAttempts");
@@ -79,6 +80,7 @@ class SpannerOptionParityTest {
                         "sink.buffer-flush.max-size",
                         "sink.buffer-flush.max-commit-delay",
                         "sink.rpc-priority",
+                        "sink.batch-write.timeout",
                         "sink.recovery.initial-backoff",
                         "sink.recovery.max-backoff",
                         "sink.recovery.max-attempts");
@@ -97,7 +99,7 @@ class SpannerOptionParityTest {
                         "emulatorEndpoint");
 
         // database is assembled from project/instance/database, serializer from the physical DDL,
-        // writerOptions from the eight options above. Failure policy stays fail-job because a DDL
+        // writerOptions from the nine options above. Failure policy stays fail-job because a DDL
         // has no serializable FailureHandler to pair with a dropping constraint policy.
         assertThat(declaredKeys())
                 .contains(
@@ -215,6 +217,7 @@ class SpannerOptionParityTest {
                         "sink.buffer-flush.max-size",
                         "sink.buffer-flush.max-commit-delay",
                         "sink.rpc-priority",
+                        "sink.batch-write.timeout",
                         "sink.recovery.initial-backoff",
                         "sink.recovery.max-backoff",
                         "sink.recovery.max-attempts");

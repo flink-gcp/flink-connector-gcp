@@ -274,6 +274,30 @@ part-way through leaves behind. Mutations already applied are never re-sent, so 
 multiply the duplicates an at-least-once sink can produce. Exhausting `recoveryMaxAttempts` fails the
 job.
 
+`batchWriteTimeout` bounds one complete attempt, including a response stream that reports some
+groups and then stalls.
+The 30-second default replaces the client library's one-hour timeout only for the data client's
+`BatchWrite` RPC; reads and administration keep their client-library settings.
+A deadline is a transient failure, so the connector retries only the mutations whose outcome is
+still undecided and increments `errorClass.DEADLINE_EXCEEDED.errors` and `mutationsRetried`.
+
+The maximum time spent in the write loop is bounded by the attempts, the per-attempt timeout, and
+the jittered backoffs:
+
+```text
+A × T + (1 + j) × Σ(i=1..A-1) min(Bmax, B0 × 2^(i-1))
+```
+
+With the defaults, the upper bound is 369.375 seconds: 300 seconds in ten attempts and up to
+69.375 seconds in nine backoffs.
+This is the bound for one invocation of the write loop, not for a checkpoint.
+A record-triggered synchronous flush may already be running when a checkpoint barrier reaches the
+sink, and the checkpoint flush may then invoke the loop again.
+Choose the attempt timeout and recovery schedule so that this work, processing, alignment, other
+operators, and checkpoint transport fit within the checkpoint timeout.
+If larger batches or service load make valid attempts approach the configured timeout, raise
+`batchWriteTimeout` and recompute the combined budget.
+
 ### Dead-letter payloads
 
 `FailedMutation.getPayloadBytes()` is the **Java-serialized** `Mutation`, not a protobuf. That is
