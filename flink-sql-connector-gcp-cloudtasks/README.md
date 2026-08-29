@@ -45,9 +45,10 @@ drift — a dependency added, removed or re-licensed upstream cannot ship unreco
 
 ## Provenance and attribution
 
-No production connector code has been copied into this module; its Java sources are packaging and
-smoke tests only. The build follows the shape of Apache Flink's own SQL connector modules —
-`flink-sql-connector-kafka` for the overall module layout and the `shade-flink` execution inherited
-from `flink-connector-parent`, and
+No code has been copied into this module.
+Its Java sources support packaging, NOTICE, and smoke verification only.
+The build follows the shape of Apache Flink's own SQL
+connector modules — `flink-sql-connector-kafka` for the overall module layout and the `shade-flink`
+execution inherited from `flink-connector-parent`, and
 `flink-sql-connector-aws-kinesis-streams` for the NOTICE grouping convention. Those are **design
 references only**; the shade configuration here was written for this project.

@@ -65,13 +65,17 @@ shape of its mutation size estimator were all read and followed. Where this conn
 it is the write RPC: Beam predates `BatchWrite` and uses `writeAtLeastOnceWithOptions` with a
 retry-and-bisect scheme, while this sink uses `batchWriteAtLeastOnce` and the per-group statuses it
 reports — which is also why Beam's limits, values it chose for a `Commit`, are a starting point here
-rather than figures the service is documented to enforce on this RPC. The
-[Spanner connector for Apache Spark](https://github.com/GoogleCloudDataproc/spark-spanner-connector)
-and [debezium-connector-spanner](https://github.com/debezium/debezium-connector-spanner) (both
-Apache-2.0) were read as further design references for the batch source and Change Streams work.
-The Table source's transaction and mod metadata vocabulary follows Debezium's Spanner source
-metadata where the same Spanner fields exist.
-The implemented Change Streams source design otherwise
-follows the Cloud Tasks sink in this repository, whose writer likewise owns its retry loop.
+rather than figures the service is documented to enforce on this RPC.
+The [Spanner connector for Apache Spark](https://github.com/GoogleCloudDataproc/spark-spanner-connector)
+(Apache-2.0) was read as a design reference for the batch source; the comparison and no-copied-code
+boundary are recorded in
+[ADR-0085](../docs/adr/0085-the-spanner-batch-source-splits-by-server-planned-partition.md).
+The Table Change Streams source's transaction and mod metadata vocabulary follows
+[debezium-connector-spanner](https://github.com/debezium/debezium-connector-spanner) (Apache-2.0)
+where the same Spanner fields exist; [ADR-0105](../docs/adr/0105-the-spanner-table-change-stream-source-emits-full-or-keyed-changelogs.md)
+records the exact mapping.
+The Spanner sink's retry handling was designed by comparison with this repository's Cloud Tasks and Bigtable sinks.
+It follows Cloud Tasks' connector-owned loop rather than Bigtable's SDK-batcher adapter.
+[ADR-0075](../docs/adr/0075-the-spanner-sink-batch-writes-and-owns-the-whole-retry-loop.md) records the resulting Spanner-specific retry boundary.
 
 No source code has been copied into this module.

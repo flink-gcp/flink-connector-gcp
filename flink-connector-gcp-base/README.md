@@ -20,3 +20,11 @@ configured. Everything else is consumed by the sibling connector modules at comp
 part of any connector's public API, and carries no compatibility guarantee outside this
 repository. Retry behavior is configured through each connector's own public options objects,
 which map onto the internal schedule type here.
+
+## Provenance and attribution
+
+This module contains abstractions extracted from sibling connector modules.
+It also contains shared infrastructure written directly for those modules.
+No source code from another project has been copied or adapted into this module.
+Its current source files carry only this project's copyright holder, and the
+repository `NOTICE` records no externally adapted code in this module.

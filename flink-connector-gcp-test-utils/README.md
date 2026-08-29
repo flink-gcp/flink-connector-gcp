@@ -11,3 +11,11 @@ harnesses need them, own stock clients.
 Consumed by the sibling modules at `test` scope only. This module is internal test infrastructure:
 it is not part of any connector's public API, carries no compatibility guarantee, and is not
 intended for use outside this repository.
+
+## Provenance and attribution
+
+This module contains test support extracted from sibling connector modules.
+It also contains shared infrastructure written directly for their test suites.
+No source code from another project has been copied or adapted into this module.
+Its current source files carry only this project's copyright holder, and the
+repository `NOTICE` records no externally adapted code in this module.
