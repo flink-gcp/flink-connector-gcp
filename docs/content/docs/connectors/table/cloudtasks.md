@@ -34,35 +34,7 @@ or no body at all.
 SQL represents that split with a Flink format for the body and writable metadata for the rest of
 the request.
 
-```sql
-CREATE TABLE order_tasks (
-  order_id   STRING,
-  amount     DECIMAL(12, 2),
-  trace      MAP<STRING, STRING> METADATA FROM 'headers',
-  schedule_at TIMESTAMP_LTZ(6)   METADATA FROM 'schedule-time',
-  dedupe_key STRING              METADATA FROM 'task-id'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project'   = 'my-project',
-  'location'  = 'asia-northeast1',
-  'queue'     = 'orders',
-  'http.url'  = 'https://orders-abc-an.a.run.app/tasks',
-  'http.method' = 'POST',
-  'http.headers.Content-Type' = 'application/json',
-  'http.oidc.service-account-email' =
-    'dispatcher@my-project.iam.gserviceaccount.com',
-  'http.oidc.audience' = 'https://orders-abc-an.a.run.app',
-  'format' = 'json'
-);
-
-INSERT INTO order_tasks
-SELECT order_id,
-       amount,
-       MAP['X-Trace-Id', trace_id],
-       dispatch_at,
-       order_id
-FROM staged_orders;
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="overview" >}}
 
 The JSON format sees only `order_id` and `amount`.
 The three metadata columns configure the request outside that body.
@@ -75,9 +47,7 @@ Use `flink-sql-connector-gcp-cloudtasks`, the relocated SQL uber-jar, for SQL Cl
 Place `flink-sql-connector-gcp-cloudtasks-<version>.jar` in Flink's `lib/` before starting the
 cluster, or load it for one SQL Client session:
 
-```sql
-ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-0.1.0-SNAPSHOT.jar';
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="add-jar" >}}
 
 The jar bundles `flink-connector-gcp-cloudtasks` and the runtime dependency tree it needs. Java
 dependency packages linked by the connector move under
@@ -142,30 +112,7 @@ Cloud Tasks may dispatch that request more than once under the queue retry polic
 An `ARRAY<STRING>` column repeats its column name, while `ARRAY_JOIN` converts an array to one
 scalar form value when the receiving API expects a delimiter.
 
-```sql
-CREATE TABLE form_tasks (
-  order_id   STRING,
-  note       STRING,
-  tags       ARRAY<STRING>,
-  categories STRING
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'forms',
-  'http.url' = 'https://api.example.com/orders',
-  'http.method' = 'POST',
-  'format' = 'form-urlencoded'
-);
-
-INSERT INTO form_tasks
-VALUES (
-  '42',
-  '東京 + pickup',
-  ARRAY['urgent', 'gift'],
-  ARRAY_JOIN(ARRAY['books', 'sale'], ',')
-);
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="repeated-form-values" >}}
 
 The inserted row produces this request body.
 
@@ -183,15 +130,7 @@ The receiving form parser recovers the value `books,sale`.
 
 The same table can distinguish an empty string from an omitted value.
 
-```sql
-INSERT INTO form_tasks
-VALUES (
-  '43',
-  '',
-  CAST(NULL AS ARRAY<STRING>),
-  CAST(NULL AS STRING)
-);
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="null-and-empty-form-values" >}}
 
 The empty `note` remains present, while the null `tags` array and null `categories` value add no
 fields.
@@ -210,29 +149,7 @@ Some servers interpret brackets or dots in field names as a nested structure.
 The connector does not assign those meanings, but quoted SQL column names can produce the names a
 specific server expects.
 
-```sql
-CREATE TABLE nested_form_tasks (
-  `items[]`              ARRAY<STRING>,
-  `customer.name`        STRING,
-  `customer[postalCode]` STRING,
-  `attributes[priority]` STRING
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'forms',
-  'http.url' = 'https://api.example.com/orders',
-  'http.method' = 'POST',
-  'format' = 'form-urlencoded'
-);
-
-INSERT INTO nested_form_tasks
-SELECT items,
-       customer.name,
-       customer.postal_code,
-       attributes['priority']
-FROM incoming_orders;
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="nested-form-names" >}}
 
 For an input containing items `['book', 'pen']`, customer `('Alice', '100-0001')` and priority
 `high`, the request body is:
@@ -250,27 +167,7 @@ physical column names are fixed when Flink plans the job.
 `JSON_OBJECT` can convert selected structured values to one `STRING` column before the form format
 encodes it.
 
-```sql
-CREATE TABLE json_parameter_tasks (
-  payload STRING
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'forms',
-  'http.url' = 'https://api.example.com/orders',
-  'http.method' = 'POST',
-  'format' = 'form-urlencoded'
-);
-
-INSERT INTO json_parameter_tasks
-SELECT JSON_OBJECT(
-         KEY 'name' VALUE customer.name,
-         KEY 'postalCode' VALUE customer.postal_code,
-         KEY 'items' VALUE items
-       )
-FROM incoming_orders;
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="json-form-field" >}}
 
 For the preceding customer and items, the JSON value can produce the following URL-encoded
 `payload` field.
@@ -289,25 +186,7 @@ Dynamic field names such as `items[0]`, `items[1]` and every key from an arbitra
 serializer that owns the complete form body.
 One SQL approach is an application-provided scalar function combined with Flink's `raw` format.
 
-```sql
-CREATE TABLE custom_form_tasks (
-  body STRING
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'forms',
-  'http.url' = 'https://api.example.com/orders',
-  'http.method' = 'POST',
-  'http.headers.Content-Type' = 'application/x-www-form-urlencoded',
-  'format' = 'raw'
-);
-
--- TO_API_FORM is a scalar function supplied and registered by the job.
-INSERT INTO custom_form_tasks
-SELECT TO_API_FORM(items, attributes)
-FROM incoming_orders;
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="custom-form-body" >}}
 
 The function must return a complete UTF-8 form body with every name and value form-encoded.
 For example, it could return:
@@ -336,24 +215,7 @@ invoke the format for that row.
 For a GET API, construct the query string as part of `http.url` or the `url` metadata column.
 For example:
 
-```sql
-CREATE TABLE search_tasks (
-  unused_body STRING,
-  target_url STRING NOT NULL METADATA FROM 'url'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'search',
-  'http.method' = 'GET',
-  'format' = 'raw'
-);
-
-INSERT INTO search_tasks
-SELECT '',
-       'https://api.example.com/search?q=' || URL_ENCODE(query_text)
-FROM pending_searches;
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="get-request" >}}
 
 `URL_ENCODE` is a built-in Flink SQL function on the supported Flink 2.x line.
 Flink 1.20 jobs must register an equivalent UTF-8 URL-encoding scalar UDF or construct the complete
@@ -392,28 +254,7 @@ external URL.
 Task-level service, version and instance selectors are independent, and a queue-level
 `appEngineRoutingOverride` remains authoritative when the queue defines one.
 
-```sql
-CREATE TABLE app_engine_tasks (
-  payload        STRING,
-  target_path    STRING NOT NULL METADATA FROM 'relative-uri',
-  service_name   STRING          METADATA FROM 'app-engine-service',
-  version_name   STRING          METADATA FROM 'app-engine-version',
-  instance_name  STRING          METADATA FROM 'app-engine-instance',
-  dedupe_key     STRING          METADATA FROM 'task-id'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'app-engine-orders',
-  'target.type' = 'app-engine',
-  'app-engine.method' = 'POST',
-  'app-engine.headers.Content-Type' = 'application/json',
-  'format' = 'json'
-);
-
-INSERT INTO app_engine_tasks
-VALUES ('ready', '/tasks/42?source=sql', 'worker', 'v2', CAST(NULL AS STRING), 'order-42');
-```
+{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="app-engine-target" >}}
 
 An empty or absent routing value lets App Engine choose its default service, version and an
 available instance.

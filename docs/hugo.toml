@@ -53,7 +53,7 @@ title = "GCP Connectors for Apache Flink"
 [params]
   # A generic code-block render hook rejects raw SQL fences under these paths. Source-backed
   # sql-snippet shortcodes call transform.Highlight directly and therefore remain renderable.
-  SourceBackedSqlPaths = ["/docs/examples", "/docs/quickstart"]
+  SourceBackedSqlPaths = ["/docs/examples", "/docs/quickstart", "/docs/connectors/table"]
 
   # Everything hugo-book already defaults to (BookSection, BookToC, BookSearch)
   # is left unset; only genuine departures are listed. The theme's own default
