@@ -324,6 +324,30 @@ ends, which is what makes reading a Spanner table and joining it against an unbo
 
 The options are in [the reference]({{< relref "docs/reference/spanner" >}}#spannersourcebuilder).
 
+### Fetch hand-off bounds
+
+Each fetch hands at most `maxRowsPerFetch` input rows and targets at most `maxBytesPerFetch` of decoded logical field content before returning control to Flink.
+The default bounds are 1,000 rows and 12 MiB.
+Whichever bound is reached first ends the fetch.
+The row bound preserves the source's established narrow-row hand-off, while the byte target ends wide-row batches much earlier.
+
+The byte estimate counts UTF-8 bytes for text and JSON, byte payloads for `BYTES` and `PROTO`, natural widths for fixed-width values, and recursively counts arrays and structs.
+Field content of a type newer than the estimator is counted as 64 bytes rather than failing a read.
+It is deliberately not an estimate of retained JVM heap because object layouts and client internals are not a stable connector contract.
+Measuring variable fields can force a value that the Spanner client held lazily to decode.
+
+The reader looks ahead by one row to decide whether adding it would take a non-empty batch over the byte target.
+That row stays with the same open partition for the next fetch.
+A single row larger than the target is handed over alone so the source always makes progress.
+If a wake-up cancels the read while a look-ahead row is pending, the row is discarded with the stream and the whole partition is reopened from its start, preserving the recovery behavior below.
+
+These are TaskManager hand-off bounds.
+They do not configure Spanner transport paging, `maxPartitions`, or `partitionSizeBytes`.
+SDK transport buffers, the one look-ahead row, the element queue's own overhead and capacity for multiple batches, records produced by the deserializer, and downstream operators remain outside the byte target.
+
+Each active source subtask queues batches independently, so source parallelism can multiply retained input.
+Tune the per-fetch bounds together with the planned split count and the TaskManager memory budget.
+
 ### Splits, partitions and recovery
 
 **Spanner decides how the read is divided, not the job.** The enumerator opens one batch read-only
@@ -626,7 +650,7 @@ each subtask.
 | `splitsReturned` | counter | Partition splits a failed reader gave back, to be handed out again |
 | `unassignedSplits` | gauge (Flink standard) | Partition splits nobody holds yet |
 | `numRecordsIn` | counter (Flink standard) | Records handed downstream |
-| `rowsRead` | counter | Rows pulled off a partition, including rows whose deserializer emitted no output |
+| `rowsRead` | counter | Input rows accepted from a partition into fetch batches, including rows whose deserializer emitted no output. A look-ahead row deferred or discarded before batch acceptance is not counted |
 | `recordsSkipped` | counter | Input rows whose deserializer call returned successfully without emitting output |
 | `partitionsReread` | counter | Partitions opened again from their start after a wake-up cancelled them part-way. Non-zero means some rows were delivered twice by a run that never failed |
 

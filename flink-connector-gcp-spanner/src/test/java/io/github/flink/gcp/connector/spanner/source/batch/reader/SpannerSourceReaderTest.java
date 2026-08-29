@@ -20,6 +20,7 @@ import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.core.io.InputStatus;
 
 import com.google.cloud.spanner.TestPartitions;
+import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
 import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
@@ -29,6 +30,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.Collections;
+import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -102,6 +105,33 @@ class SpannerSourceReaderTest {
 
         // The opener holds the reader's Spanner client, and the reader is its only owner.
         assertThat(opener.closes()).isEqualTo(1);
+    }
+
+    @Test
+    @Timeout(30)
+    void publicFetchLimitsReachTheRuntimeSplitReader() throws Exception {
+        assertFirstBatchReturnsBeforeBlockedSecondRow("r5", builder -> builder.maxRowsPerFetch(1));
+        assertFirstBatchReturnsBeforeBlockedSecondRow("r6", builder -> builder.maxBytesPerFetch(8));
+    }
+
+    private void assertFirstBatchReturnsBeforeBlockedSecondRow(
+            String id, UnaryOperator<SpannerSourceBuilder<Long>> limits) throws Exception {
+        FakeSourceReaderContext context = context();
+        ScriptedStructStreamOpener opener = ScriptedStructStreamOpener.single(id, 1, 2);
+        opener.blockBefore(1);
+        CollectingReaderOutput<Long> output = new CollectingReaderOutput<>();
+
+        try (SourceReader<Long, BatchReadSplit> reader =
+                TestSources.source(builder -> limits.apply(TestSources.withOpener(builder, opener)))
+                        .createReader(context)) {
+            reader.start();
+            reader.addSplits(Collections.singletonList(split("p0")));
+
+            reader.isAvailable().get(10, TimeUnit.SECONDS);
+            reader.pollNext(output);
+
+            assertThat(output.records()).containsExactly(1L);
+        }
     }
 
     private FakeSourceReaderContext context() {

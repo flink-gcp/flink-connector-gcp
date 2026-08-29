@@ -23,6 +23,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TestPartitions;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
+import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.TestStructs;
 import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +32,7 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -100,6 +102,120 @@ class SpannerSplitReaderTest {
         // no row is delivered twice.
         assertThat(opener.openedTokens()).containsExactly("p0");
         assertThat(metrics.counter(SpannerMetricNames.PARTITIONS_REREAD)).isZero();
+    }
+
+    @Test
+    void aFetchStopsBeforeTheNextRowWouldCrossTheByteTarget() throws Exception {
+        ScriptedStructStreamOpener opener =
+                ScriptedStructStreamOpener.over(
+                        "t",
+                        Collections.singletonMap(
+                                "p0", Arrays.asList(sized(1, 10), sized(2, 10), sized(3, 12))));
+        SpannerSplitReader reader = reader(opener, 10, 21);
+        reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split("p0"))));
+
+        RecordsWithSplitIds<Struct> first = reader.fetch();
+        RecordsWithSplitIds<Struct> second = reader.fetch();
+
+        assertThat(idsOf(first, "p0")).containsExactly(1L, 2L);
+        assertThat(first.finishedSplits()).isEmpty();
+        assertThat(idsOf(second, "p0")).containsExactly(3L);
+        assertThat(second.finishedSplits()).containsExactly("p0");
+        assertThat(opener.openedTokens()).containsExactly("p0");
+    }
+
+    @Test
+    void aRowThatExactlyReachesTheByteTargetStaysInTheBatch() throws Exception {
+        ScriptedStructStreamOpener opener =
+                ScriptedStructStreamOpener.over(
+                        "t",
+                        Collections.singletonMap("p0", Arrays.asList(sized(1, 10), sized(2, 11))));
+        SpannerSplitReader reader = reader(opener, 10, 21);
+        reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split("p0"))));
+
+        RecordsWithSplitIds<Struct> first = reader.fetch();
+        RecordsWithSplitIds<Struct> second = reader.fetch();
+
+        assertThat(idsOf(first, "p0")).containsExactly(1L, 2L);
+        assertThat(second.finishedSplits()).containsExactly("p0");
+    }
+
+    @Test
+    void anOversizedRowIsHandedOverAloneSoTheSourceMakesProgress() throws Exception {
+        ScriptedStructStreamOpener opener =
+                ScriptedStructStreamOpener.over(
+                        "t",
+                        Collections.singletonMap("p0", Arrays.asList(sized(1, 20), sized(2, 9))));
+        SpannerSplitReader reader = reader(opener, 10, 10);
+        reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split("p0"))));
+
+        RecordsWithSplitIds<Struct> first = reader.fetch();
+        RecordsWithSplitIds<Struct> second = reader.fetch();
+
+        assertThat(idsOf(first, "p0")).containsExactly(1L);
+        assertThat(idsOf(second, "p0")).containsExactly(2L);
+        assertThat(second.finishedSplits()).containsExactly("p0");
+    }
+
+    @Test
+    void theDefaultCanBatchAServiceMaximumCellWithOrdinaryFields() throws Exception {
+        int mebibyte = 1024 * 1024;
+        Struct maximumCell =
+                Struct.newBuilder()
+                        .set("id")
+                        .to(1L)
+                        .set("payload")
+                        .to("x".repeat(10 * mebibyte))
+                        .build();
+        Struct ordinaryFields = sized(2, 2 * mebibyte - Long.BYTES);
+        assertThat(
+                        StructSizeEstimator.estimate(maximumCell)
+                                + StructSizeEstimator.estimate(ordinaryFields))
+                .isEqualTo(SpannerSourceBuilder.DEFAULT_MAX_BYTES_PER_FETCH);
+
+        ScriptedStructStreamOpener opener =
+                ScriptedStructStreamOpener.over(
+                        "t",
+                        Collections.singletonMap("p0", Arrays.asList(maximumCell, ordinaryFields)));
+        SpannerSplitReader reader =
+                reader(
+                        opener,
+                        SpannerSourceBuilder.DEFAULT_MAX_ROWS_PER_FETCH,
+                        SpannerSourceBuilder.DEFAULT_MAX_BYTES_PER_FETCH);
+        reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split("p0"))));
+
+        RecordsWithSplitIds<Struct> first = reader.fetch();
+        RecordsWithSplitIds<Struct> second = reader.fetch();
+
+        assertThat(idsOf(first, "p0")).containsExactly(1L, 2L);
+        assertThat(second.finishedSplits()).containsExactly("p0");
+    }
+
+    @Test
+    void aWakeUpDiscardsALookAheadRowAndRereadsTheWholePartition() throws Exception {
+        ScriptedStructStreamOpener opener =
+                ScriptedStructStreamOpener.over(
+                        "t",
+                        Collections.singletonMap("p0", Arrays.asList(sized(1, 12), sized(2, 12))));
+        SpannerSplitReader reader = reader(opener, 10, 15);
+        reader.handleSplitsChanges(new SplitsAddition<>(Collections.singletonList(split("p0"))));
+
+        RecordsWithSplitIds<Struct> first = reader.fetch();
+        reader.wakeUp();
+        RecordsWithSplitIds<Struct> woken = reader.fetch();
+        RecordsWithSplitIds<Struct> replayedFirst = reader.fetch();
+        RecordsWithSplitIds<Struct> replayedSecond = reader.fetch();
+
+        assertThat(idsOf(first, "p0")).containsExactly(1L);
+        assertThat(woken.nextSplit()).isNull();
+        assertThat(idsOf(replayedFirst, "p0")).containsExactly(1L);
+        assertThat(idsOf(replayedSecond, "p0")).containsExactly(2L);
+        assertThat(replayedSecond.finishedSplits()).containsExactly("p0");
+        assertThat(opener.openedTokens()).containsExactly("p0", "p0");
+        // The discarded look-ahead row was pulled from the SDK stream but never accepted into a
+        // fetch batch, so it does not become an input-row metric event.
+        assertThat(metrics.counter(SpannerMetricNames.ROWS_READ)).isEqualTo(3);
+        assertThat(metrics.counter(SpannerMetricNames.PARTITIONS_REREAD)).isEqualTo(1);
     }
 
     @Test
@@ -288,9 +404,31 @@ class SpannerSplitReaderTest {
                 .hasMessageContaining("maxRowsPerFetch must be positive");
     }
 
-    private SpannerSplitReader reader(ScriptedStructStreamOpener opener, int maxRowsPerFetch) {
+    @Test
+    void aNonPositiveByteTargetIsRefused() {
         metrics = new TestReaderMetrics();
-        return new SpannerSplitReader(DATABASE, opener, maxRowsPerFetch, metrics.metrics());
+
+        assertThatThrownBy(
+                        () ->
+                                new SpannerSplitReader(
+                                        DATABASE,
+                                        ScriptedStructStreamOpener.single("t", 1),
+                                        1,
+                                        0,
+                                        metrics.metrics()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxBytesPerFetch must be positive");
+    }
+
+    private SpannerSplitReader reader(ScriptedStructStreamOpener opener, int maxRowsPerFetch) {
+        return reader(opener, maxRowsPerFetch, Long.MAX_VALUE);
+    }
+
+    private SpannerSplitReader reader(
+            ScriptedStructStreamOpener opener, int maxRowsPerFetch, long maxBytesPerFetch) {
+        metrics = new TestReaderMetrics();
+        return new SpannerSplitReader(
+                DATABASE, opener, maxRowsPerFetch, maxBytesPerFetch, metrics.metrics());
     }
 
     private static BatchReadSplit split(String token) {
@@ -298,6 +436,15 @@ class SpannerSplitReaderTest {
                 token,
                 TestPartitions.batchTransactionId(),
                 TestPartitions.queryPartition(token, "SELECT id FROM singers"));
+    }
+
+    private static Struct sized(long id, int bytes) {
+        return Struct.newBuilder()
+                .set("id")
+                .to(id)
+                .set("payload")
+                .to("x".repeat(bytes - Long.BYTES))
+                .build();
     }
 
     private static List<Long> idsOf(RecordsWithSplitIds<Struct> batch, String splitId) {

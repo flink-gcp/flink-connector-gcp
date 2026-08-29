@@ -121,18 +121,6 @@ public final class TestSources {
         return builder.opener(opener);
     }
 
-    /**
-     * Lowers the per-fetch row cap, reaching the package-private setter for a subpackage.
-     *
-     * @param builder the builder
-     * @param maxRecordsPerFetch the cap
-     * @return the builder
-     */
-    public static SpannerSourceBuilder<Long> withMaxRecordsPerFetch(
-            SpannerSourceBuilder<Long> builder, int maxRecordsPerFetch) {
-        return builder.maxRecordsPerFetch(maxRecordsPerFetch);
-    }
-
     /** A deserializer that reads the {@code id} column. */
     public static final class IdDeserializer implements SpannerStructDeserializationSchema<Long> {
 

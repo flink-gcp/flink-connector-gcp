@@ -98,7 +98,7 @@ public final class SpannerMetricNames {
 
     // Registered by the batch source's readers (SpannerSourceReaderMetrics).
 
-    /** Rows pulled off a partition. */
+    /** Input rows accepted from a partition into fetch batches. */
     public static final String ROWS_READ = "rowsRead";
 
     /**

@@ -238,6 +238,22 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("The desired size of one read partition.");
 
+    /** The maximum rows one bounded-scan fetch hands to Flink's element queue. */
+    public static final ConfigOption<Integer> SCAN_MAX_ROWS_PER_FETCH =
+            ConfigOptions.key("scan.max-rows-per-fetch")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum rows one bounded-scan fetch hands to Flink's element queue.");
+
+    /** The target maximum decoded input bytes one bounded-scan fetch hands to Flink. */
+    public static final ConfigOption<MemorySize> SCAN_MAX_BYTES_PER_FETCH =
+            ConfigOptions.key("scan.max-bytes-per-fetch")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The target maximum decoded input bytes one bounded-scan fetch hands to Flink.");
+
     /** Whether reads use Spanner Data Boost compute. */
     public static final ConfigOption<Boolean> SCAN_DATA_BOOST_ENABLED =
             ConfigOptions.key("scan.data-boost-enabled")

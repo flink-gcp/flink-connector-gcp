@@ -56,7 +56,8 @@ public final class SpannerSourceConfig<T> implements Serializable {
     @Nullable private final String serviceAccountKeyFile;
     private final PartitionPlannerFactory plannerFactory;
     private final StructStreamOpener opener;
-    private final int maxRecordsPerFetch;
+    private final int maxRowsPerFetch;
+    private final long maxBytesPerFetch;
 
     SpannerSourceConfig(
             DatabaseDestination database,
@@ -69,7 +70,8 @@ public final class SpannerSourceConfig<T> implements Serializable {
             @Nullable String serviceAccountKeyFile,
             PartitionPlannerFactory plannerFactory,
             StructStreamOpener opener,
-            int maxRecordsPerFetch) {
+            int maxRowsPerFetch,
+            long maxBytesPerFetch) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.readOperation =
                 Preconditions.checkNotNull(readOperation, "readOperation must not be null");
@@ -86,10 +88,15 @@ public final class SpannerSourceConfig<T> implements Serializable {
                 Preconditions.checkNotNull(plannerFactory, "plannerFactory must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         Preconditions.checkArgument(
-                maxRecordsPerFetch > 0,
-                "maxRecordsPerFetch must be positive, but was %s",
-                maxRecordsPerFetch);
-        this.maxRecordsPerFetch = maxRecordsPerFetch;
+                maxRowsPerFetch > 0,
+                "maxRowsPerFetch must be positive, but was %s",
+                maxRowsPerFetch);
+        this.maxRowsPerFetch = maxRowsPerFetch;
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0,
+                "maxBytesPerFetch must be positive, but was %s",
+                maxBytesPerFetch);
+        this.maxBytesPerFetch = maxBytesPerFetch;
     }
 
     /**
@@ -191,7 +198,16 @@ public final class SpannerSourceConfig<T> implements Serializable {
      *
      * @return the per-fetch row cap
      */
-    public int getMaxRecordsPerFetch() {
-        return maxRecordsPerFetch;
+    public int getMaxRowsPerFetch() {
+        return maxRowsPerFetch;
+    }
+
+    /**
+     * Returns the target maximum estimated bytes one fetch hands to the task thread.
+     *
+     * @return the per-fetch byte target
+     */
+    public long getMaxBytesPerFetch() {
+        return maxBytesPerFetch;
     }
 }

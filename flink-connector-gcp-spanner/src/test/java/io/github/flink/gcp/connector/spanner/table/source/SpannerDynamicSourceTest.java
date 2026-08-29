@@ -60,6 +60,8 @@ class SpannerDynamicSourceTest {
         assertThat(source(config("scan.index", "by_name"))).isNotEqualTo(source);
         assertThat(source(config("scan.partition.max-partitions", "10"))).isNotEqualTo(source);
         assertThat(source(config("scan.partition.size-bytes", "1 mb"))).isNotEqualTo(source);
+        assertThat(source(config("scan.max-rows-per-fetch", "200"))).isNotEqualTo(source);
+        assertThat(source(config("scan.max-bytes-per-fetch", "8 mb"))).isNotEqualTo(source);
         assertThat(source(config("scan.data-boost-enabled", "true"))).isNotEqualTo(source);
         assertThat(source(config("scan.rpc-priority", "HIGH"))).isNotEqualTo(source);
         assertThat(source(config("scan.timestamp-bound.exact-staleness", "10s")))

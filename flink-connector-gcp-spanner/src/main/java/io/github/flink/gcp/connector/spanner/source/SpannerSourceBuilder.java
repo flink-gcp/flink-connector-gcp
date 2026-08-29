@@ -32,7 +32,6 @@ import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.DefaultPartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.BatchClientStructStreamOpener;
-import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSplitReader;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.StructStreamOpener;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 
@@ -49,6 +48,12 @@ import javax.annotation.Nullable;
 @Public
 public class SpannerSourceBuilder<T> {
 
+    /** The default maximum rows one fetch hands to the task thread. */
+    public static final int DEFAULT_MAX_ROWS_PER_FETCH = 1000;
+
+    /** The default target maximum decoded input bytes one fetch hands to the task thread. */
+    public static final long DEFAULT_MAX_BYTES_PER_FETCH = 12L * 1024 * 1024;
+
     private @Nullable DatabaseDestination database;
     private @Nullable SpannerReadOperation readOperation;
     private @Nullable SpannerStructDeserializationSchema<T> deserializer;
@@ -61,7 +66,8 @@ public class SpannerSourceBuilder<T> {
     private @Nullable EmulatorEndpoint emulatorEndpoint;
     private @Nullable PartitionPlannerFactory plannerFactory;
     private @Nullable StructStreamOpener opener;
-    private int maxRecordsPerFetch = SpannerSplitReader.DEFAULT_MAX_ROWS_PER_FETCH;
+    private int maxRowsPerFetch = DEFAULT_MAX_ROWS_PER_FETCH;
+    private long maxBytesPerFetch = DEFAULT_MAX_BYTES_PER_FETCH;
 
     SpannerSourceBuilder() {}
 
@@ -267,15 +273,44 @@ public class SpannerSourceBuilder<T> {
     }
 
     /**
-     * Lowers how many rows one fetch hands to the task thread.
+     * Sets the maximum input rows one fetch hands to Flink's element queue. Optional; defaults to
+     * {@value #DEFAULT_MAX_ROWS_PER_FETCH}.
      *
-     * <p>Not a public option, and not one because nothing about it is workload-dependent: the
-     * client hands rows over one at a time, so the cap bounds a batch rather than a buffer. Tests
-     * lower it so that a wake-up can land in the middle of a partition that holds only a few rows.
+     * <p>The fetch returns when either this row limit or {@link #maxBytesPerFetch(long)} is
+     * reached. Lower values can reduce the source reader's queued memory and the delay before a
+     * checkpoint or cancellation can be observed, at the cost of more fetch hand-offs. This is a
+     * TaskManager hand-off bound, not a hint for how Spanner plans read partitions.
+     *
+     * @param maxRowsPerFetch the positive maximum number of rows per fetch
+     * @return this builder
+     * @throws IllegalArgumentException if the value is not positive
      */
-    @VisibleForTesting
-    SpannerSourceBuilder<T> maxRecordsPerFetch(int maxRecordsPerFetch) {
-        this.maxRecordsPerFetch = maxRecordsPerFetch;
+    public SpannerSourceBuilder<T> maxRowsPerFetch(int maxRowsPerFetch) {
+        Preconditions.checkArgument(
+                maxRowsPerFetch > 0, "maxRowsPerFetch must be positive: %s", maxRowsPerFetch);
+        this.maxRowsPerFetch = maxRowsPerFetch;
+        return this;
+    }
+
+    /**
+     * Sets the target maximum decoded input bytes one fetch hands to Flink's element queue.
+     * Optional; defaults to {@value #DEFAULT_MAX_BYTES_PER_FETCH} bytes.
+     *
+     * <p>The estimate counts logical field content rather than JVM object overhead. A fetch stops
+     * before a row would take a non-empty batch over the target, while one oversized row is handed
+     * over alone so the source always makes progress. Lower values can reduce the source reader's
+     * queued memory for multi-row batches, while higher values can reduce fetch hand-offs for wide
+     * rows. This is a TaskManager hand-off bound, not a Spanner transport or partition-planning
+     * setting.
+     *
+     * @param maxBytesPerFetch the positive target maximum estimated bytes per fetch
+     * @return this builder
+     * @throws IllegalArgumentException if the value is not positive
+     */
+    public SpannerSourceBuilder<T> maxBytesPerFetch(long maxBytesPerFetch) {
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
+        this.maxBytesPerFetch = maxBytesPerFetch;
         return this;
     }
 
@@ -312,7 +347,8 @@ public class SpannerSourceBuilder<T> {
                         opener != null
                                 ? opener
                                 : new BatchClientStructStreamOpener(database, emulatorEndpoint),
-                        maxRecordsPerFetch));
+                        maxRowsPerFetch,
+                        maxBytesPerFetch));
     }
 
     /**

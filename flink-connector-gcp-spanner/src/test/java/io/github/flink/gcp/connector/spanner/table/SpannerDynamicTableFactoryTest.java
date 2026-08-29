@@ -610,6 +610,8 @@ class SpannerDynamicTableFactoryTest {
                         Map.entry("scan.index", "by_name"),
                         Map.entry("scan.partition.max-partitions", "12"),
                         Map.entry("scan.partition.size-bytes", "2 mb"),
+                        Map.entry("scan.max-rows-per-fetch", "200"),
+                        Map.entry("scan.max-bytes-per-fetch", "8 mb"),
                         Map.entry("scan.data-boost-enabled", "true"),
                         Map.entry("scan.timestamp-bound.read-timestamp", "2026-08-13T00:00:00Z"),
                         Map.entry("scan.timestamp-bound.exact-staleness", "15 s"),
@@ -660,6 +662,8 @@ class SpannerDynamicTableFactoryTest {
         Map<String, String> options = options();
         options.put("scan.partition.max-partitions", "12");
         options.put("scan.partition.size-bytes", "2 mb");
+        options.put("scan.max-rows-per-fetch", "200");
+        options.put("scan.max-bytes-per-fetch", "8 mb");
         options.put("scan.data-boost-enabled", "true");
         options.put("scan.rpc-priority", "low");
         options.put("scan.timestamp-bound.exact-staleness", "15 s");
@@ -673,6 +677,8 @@ class SpannerDynamicTableFactoryTest {
         assertThat(config.getPartitionOptions().getMaxPartitions()).isEqualTo(12);
         assertThat(config.getPartitionOptions().getPartitionSizeBytes())
                 .isEqualTo(2L * 1024 * 1024);
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(200);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(8L * 1024 * 1024);
         assertThat(config.isDataBoostEnabled()).isTrue();
         assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
         assertThat(config.getTimestampBound().getExactStaleness(TimeUnit.SECONDS)).isEqualTo(15);
@@ -787,6 +793,20 @@ class SpannerDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.partition.size-bytes' is invalid")
                 .hasMessageContaining("partitionSizeBytes must be positive");
+
+        Map<String, String> maxRows = options();
+        maxRows.put("scan.max-rows-per-fetch", "0");
+        assertThatThrownBy(() -> builtSource(SCHEMA, maxRows))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.max-rows-per-fetch' is invalid")
+                .hasMessageContaining("maxRowsPerFetch must be positive");
+
+        Map<String, String> maxBytes = options();
+        maxBytes.put("scan.max-bytes-per-fetch", "0 b");
+        assertThatThrownBy(() -> builtSource(SCHEMA, maxBytes))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.max-bytes-per-fetch' is invalid")
+                .hasMessageContaining("maxBytesPerFetch must be positive");
     }
 
     @Test

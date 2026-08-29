@@ -169,6 +169,43 @@ rather than of Flink: `PullAssignmentSplitEnumerator` assigns only in answer to 
 reader requests only when it holds no partition, so the mid-partition wake-ups a job actually meets
 come from `SplitFetcher.shutdown()`. A shutdown never fetches again, so the re-read is not reached.
 
+**A fetch is bounded by both input rows and estimated decoded logical bytes** (#1140).
+The public builder exposes `maxRowsPerFetch` and `maxBytesPerFetch`, and the Table API maps them only for bounded scans.
+The byte estimate uses UTF-8 or payload length for variable values, stable natural widths for fixed values, and recursive sums for arrays and structs.
+An unrecognized scalar or array element type contributes a 64-byte fallback rather than turning an otherwise readable row into a source failure.
+It is not retained JVM heap, whose object layout and client implementation are unstable, and measuring variable values may force the client to decode a lazy value.
+The reader looks ahead by one row and stops before that row would take a non-empty batch over the target; an oversized first row is handed over alone so progress is unconditional.
+The pending row is deliberately not checkpoint state.
+A wake-up discards it with the cancelled stream and reopens the whole partition, keeping the partition-level replay contract above rather than introducing an unresumable row position.
+
+The defaults are 1,000 rows and 12 MiB: the established row cap remains unchanged, while a local candidate sweep selected the byte target on 2026-08-29.
+The target is the smallest tested 4 MiB step above [Spanner's 10 MiB per-cell limit][Spanner limits], so a maximum-size cell can share a batch with up to about 2 MiB of ordinary key and field content instead of always taking the oversized-row exception.
+It is not derived from a transport limit, and a row containing several large cells can still exceed it and progress alone.
+
+A real-service run first established the row-cap and byte-bound baselines against one 100-processing-unit `STANDARD` regional instance in `us-central1`.
+The temporary table held 4,096 narrow 1 KiB rows, 128 variable rows cycling through 1 KiB, 64 KiB, 1 MiB, and 4 MiB `BYTES` values, and one 9 MiB value used as the oversized row in the 4 MiB arm.
+Each candidate had two warmups and five measured scans, with partition planning outside the timed interval and candidate order rotated between measured rounds after an initial sequential run exposed service-order noise.
+For the row candidates 64, 256, and 1,000, median narrow throughput was 8.50, 8.03, and 8.12 MiB/s, while median variable throughput was 21.41, 21.35, and 22.03 MiB/s.
+The 64-row candidate was the smallest within 5% of the best throughput on both workloads.
+That result showed a smaller cap was viable, not that changing the existing narrow-row hand-off was necessary: the byte target addresses row width directly, while the 1,000-row cap still bounds object-count overhead the logical-byte estimate does not model.
+At 64 rows, the 4 MiB byte target delivered 22.60 MiB/s on the variable workload versus 22.54 MiB/s without a byte bound, while two retained batches after forced GC fell from 484.8 MiB to 15.2 MiB.
+The byte target ended every variable-width batch below 64 rows, so increasing the independent row cap to 1,000 does not change those batches.
+
+The byte-target sweep then compared 4, 8, 12, 16, 32, and 64 MiB with an effectively unbounded target at the shipped 1,000-row cap.
+The synthetic arm64 macOS 26.6.2 and Temurin 17.0.20 harness used prebuilt `Struct` values to exclude row construction and isolate estimator and Flink hand-off overhead.
+Each candidate had two warmups and five measured scans in rotated order over 1,048,576 rows.
+On the variable-width shape, 12 MiB processed 28% more logical bytes per second than 4 MiB and reduced the fetch count from 524,289 to 131,072; 16 MiB was another 5% faster than 12 MiB.
+The absolute synthetic rates are not service-throughput claims because the harness repeatedly reads prebuilt rows from memory.
+The narrow shape reached the 1,000-row cap under every candidate and varied by less than 1.5% across their medians.
+
+Memory selected between the two candidates above the service's cell limit.
+In independent 192 MiB child JVMs, four retained 12 MiB-targeted variable batches completed at a 136.4 MiB retained-heap delta, while the 16 MiB candidate exhausted the heap while constructing its fourth batch.
+Separate 1 GiB JVMs measured 75.8 MiB for two retained 12 MiB batches and 95.1 MiB for two retained 16 MiB batches.
+The 12 MiB target therefore admits one maximum-size cell with ordinary surrounding fields, improves the isolated hand-off rate over 4 MiB, and keeps four measured batches inside the constrained-heap envelope that rejected 16 MiB.
+
+On the narrow real-service workload, 1,000 1-KiB values remain below 12 MiB, so the row hand-off matches the measured 1,000-row arm; that arm did not enable the byte estimator, however, so its CPU cost remains unmeasured against the service.
+The real-service run also did not measure the final 12 MiB target directly, so the evidence makes no end-to-end throughput claim for that exact combination.
+
 **An empty partition is normal, not an error.** The emulator plans one on every run, and a reader
 must finish such a split without complaint — which is also what a restored split whose partition
 was fully read looks like from the outside.
@@ -263,3 +300,4 @@ against, and an SDK release that moves any of them fails a test at compile time.
 [#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452
 [#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
+[Spanner limits]: https://cloud.google.com/spanner/quotas#schema_limits

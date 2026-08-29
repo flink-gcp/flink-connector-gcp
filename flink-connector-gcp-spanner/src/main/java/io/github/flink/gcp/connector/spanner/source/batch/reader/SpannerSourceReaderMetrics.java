@@ -59,7 +59,7 @@ public class SpannerSourceReaderMetrics {
                         SpannerMetricNames.PARTITIONS_REREAD, new ThreadSafeSimpleCounter());
     }
 
-    /** Counts one row pulled off a read. Called from a fetcher thread. */
+    /** Counts one input row accepted into a fetch batch. Called from a fetcher thread. */
     public void rowRead() {
         rowsRead.inc();
     }

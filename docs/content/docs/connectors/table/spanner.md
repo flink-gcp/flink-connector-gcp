@@ -149,7 +149,7 @@ There are deliberately no column-range partition options because Spanner chooses
 Set `scan.mode = 'change-stream'` to replace the bounded scan with an unbounded CDC source over one Spanner Change Stream.
 The default remains `bounded`, so existing DDL keeps its snapshot behavior.
 Change-stream mode maps the declared `schema` and `table` to the exact dialect-aware native table name and silently advances past records for other watched tables.
-It does not support lookup joins, projection or filter pushdown, bounded-scan partition and timestamp options, or lookup options.
+It does not support lookup joins, projection or filter pushdown, bounded-scan fetch, partition, and timestamp options, or lookup options.
 A change-stream table is source-only.
 Its declared columns are the watched table's own, so an `INSERT INTO` naming one would otherwise write into the very table being watched; it is rejected when the statement is planned instead.
 A table written to may still carry the bounded-scan and lookup options it is also read with, but a `scan.change-stream.*` option on it is rejected rather than ignored.
@@ -240,6 +240,8 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; one canonical quoted or unquoted component in the configured schema, validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
 | `scan.partition.size-bytes` | *unset* | Desired partition size passed to Spanner as a hint |
+| `scan.max-rows-per-fetch` | *unset ⇒ builder default of 1,000 rows* | Maximum input rows one bounded-scan fetch hands to Flink's element queue |
+| `scan.max-bytes-per-fetch` | *unset ⇒ builder default of 12 MiB* | Target maximum decoded logical field bytes one bounded-scan fetch hands to Flink's element queue. One oversized row is handed over alone |
 | `scan.data-boost-enabled` | `false` | Whether scans use Data Boost compute |
 | `scan.rpc-priority` | *unset ⇒ bounded Spanner default; Change Streams `HIGH`* | Priority of scan or Change Streams partition-query RPCs |
 | `scan.timestamp-bound.read-timestamp` | *unset* | RFC 3339 snapshot timestamp; mutually exclusive with exact staleness |
