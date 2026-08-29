@@ -17,11 +17,12 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13
+- Date: 2026-08-12; revised 2026-08-13 and by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
-  [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635)
+  [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635),
+  [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -47,14 +48,16 @@ A parent query can return several child-partitions records with the same start t
 The reader reports every child record first and reports completion only after the query ends successfully.
 The coordinator deduplicates identical child reports and moves a child from `CREATED` to `SCHEDULED` only when every named parent is `FINISHED`.
 
-The coordinator checkpoints both scheduled and running entries, plus finished parents that still establish lineage.
+The coordinator checkpoints only unfinished entries.
+A finished parent leaves the live ledger immediately and remains as a compact split-id proof only while an already-discovered `CREATED` child still names it.
+Successful query completion comes after every child record, so no future child can first name that parent; after all known children become schedulable, the proof is no longer needed and is removed.
 Reader progress events keep the running entries' current position and watermark monotonic.
 A returned split keeps that progress and moves back to `SCHEDULED`; a restored running entry waits for Flink to return its reader-owned split rather than being assigned twice.
-The coordinator signals no more splits when every entry in a bounded ledger is finished.
+The checkpoint records boundedness separately, so a bounded source whose final live entry has been removed can restore an empty ledger and still signal no more splits.
 
 The coordinator also owns the source-wide event-time frontier.
-It is the minimum safe watermark across every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` entry in the complete ledger, including partitions that no reader currently owns.
-Finished parents remain lineage evidence but leave this minimum after their children have been accepted.
+It is the minimum safe watermark across every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` entry in the compact ledger, including partitions that no reader currently owns.
+Finished-parent proofs carry no progress and do not participate in this minimum.
 The enumerator checkpoints the last emitted source frontier beside the ledger and sends it to every registered reader, including readers with no split, so restore and rescaling cannot move event time backwards.
 At runtime, a counted ordered index tracks unfinished partition watermarks and is rebuilt from the ledger after restore; ordinary data progress with an unchanged partition watermark does not scan or rewrite that index.
 
@@ -74,13 +77,16 @@ This handshake is necessary because Flink restores reader state independently of
 
 Both checkpoint serializers use connector-owned versioned formats.
 They encode optional values and lifecycle states with explicit tags and reject unknown versions, tags, negative counts, and invalid timestamps.
-Enumerator state version 2 adds the source-wide frontier; version 1 restore derives a conservative frontier from its complete ledger.
+Enumerator state version 3 writes unfinished entries, finished-parent proof IDs, boundedness, and the source-wide frontier.
+Versions 1 and 2 remain readable as complete ledgers; restore validates their full graphs before deriving the conservative version-1 frontier and compacting finished entries into only the proofs still needed by `CREATED` children.
 
 ## Evidence
 
 The real-GCP acceptance produced two child partitions in each 5,000-row recovery run and observed work on both reader subtasks.
 It intentionally failed after a completed checkpoint, recovered every unique mutation id with the allowed inclusive-boundary duplicates, stopped with a savepoint, and consumed both a mutation written while stopped and one written after restore.
 Separate stale-state savepoints verify the reader handshake and whole-ledger fallback in both dialects.
+A slow serializer test migrates a version-2 chain with 100,000 historical transitions and requires version 3 to retain one live entry and no proofs.
+Its 2026-08-29 local measurement reduced the checkpoint from 10,477,838 bytes to 123 bytes; the test reports checkpoint bytes, migration, snapshot and restore times, exact retained lineage-entry counts, and current-thread heap allocation during legacy and compact snapshot serialization rather than fixing environment-dependent byte or timing observations as thresholds.
 
 ## Alternatives declined
 
@@ -95,7 +101,8 @@ Separate stale-state savepoints verify the reader handshake and whole-ledger fal
 
 ## Consequences
 
-- The ledger grows with partition lineage because finished parents remain recovery evidence.
-  Compaction requires a separate proof that no current or future dependency can name the removed entry.
+- Checkpoint and coordinator lineage state scale with unfinished topology and unresolved parent proofs rather than job lifetime.
+- `changeStreamPartitionLedgerEntries` and `changeStreamFinishedParentProofs` expose those two bounded structures without partition-token labels.
+- Version-1 and version-2 restore pays one validation and compaction pass before subsequent checkpoints use version 3.
 - The public source and reader can be added independently in #536 because the coordinator-facing split and event contracts are now fixed.
 - Real-service partition, checkpoint, savepoint, retention, and fallback behavior is covered by the gated acceptance in #535.

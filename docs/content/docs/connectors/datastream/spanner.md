@@ -519,6 +519,11 @@ A reader checkpoint contains every active and queued split with its greatest con
 Recovery starts the partition query at that timestamp inclusively because several records can share one commit timestamp.
 The boundary can therefore be delivered again; advancing past it could skip another record from the same timestamp.
 
+The coordinator checkpoint contains only unfinished partition entries.
+When an already-discovered child is still waiting for another parent, a completed parent remains only as a compact split-id proof until that child becomes schedulable.
+The proof then leaves the checkpoint too, so partition-lineage state follows the unfinished topology rather than all historical transitions.
+Enumerator-state versions 1 and 2 remain restorable and are compacted when read; new checkpoints use version 3.
+
 The source is **at least once**.
 Downstream state that requires uniqueness should deduplicate with a domain key that includes enough of the Spanner record identity, such as the server transaction id and record sequence, rather than assuming the commit timestamp is unique.
 
@@ -617,6 +622,8 @@ Registered on the split enumerator's coordinator group and on each source reader
 | `unassignedSplits` | gauge (Flink standard) | Scheduled partitions no reader holds yet |
 | `changeStreamPartitionsDiscovered` | counter | Child partition tokens first accepted into the coordinator ledger |
 | `unassignedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest scheduled partition no reader owns, or zero when none are scheduled |
+| `changeStreamPartitionLedgerEntries` | gauge | Unfinished partition entries retained by the coordinator |
+| `changeStreamFinishedParentProofs` | gauge | Finished-parent split-id proofs still needed by created children |
 | `numRecordsIn` | counter (Flink standard) | Output records the deserializer handed downstream |
 | `recordsSkipped` | counter | Data-change records for which the deserializer returned successfully without emitting output |
 | `changeStreamRecordsFilteredByTable` | counter | Data-change records removed by table filters before deserialization |
@@ -646,6 +653,8 @@ Read the query and lag metrics together:
 - If active query counts remain uneven after restoring at a new parallelism, check split redistribution and stalled readers before adding capacity.
 - Queued partitions beside a free query slot indicate an unhealthy reader scheduling or backpressure path.
 - Unassigned partitions beside free reader query slots indicate an unhealthy split-request or coordinator assignment path.
+- The partition-ledger gauge should follow current unfinished topology rather than job age; growth without corresponding active, queued, or unassigned work points to partitions that are not completing.
+- Finished-parent proofs are transient fan-in dependencies; a sustained count means created children are still waiting for other parents to finish.
 - Alert before either partition-lag gauge approaches the configured Change Streams retention period.
 
 Changing `maxConcurrentQueriesPerSubtask` changes the capacity of each running reader.

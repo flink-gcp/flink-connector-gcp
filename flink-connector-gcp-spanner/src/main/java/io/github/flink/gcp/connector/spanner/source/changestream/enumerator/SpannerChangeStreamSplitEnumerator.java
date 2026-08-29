@@ -70,19 +70,21 @@ import java.util.function.LongSupplier;
 /**
  * Coordinates the checkpointed parent-child lifecycle of Spanner Change Streams partitions.
  *
- * <h2>The ledger is the only record</h2>
+ * <h2>The compact lineage is the only record</h2>
  *
  * <p>Spanner's change stream hands out partitions as a lineage: reading one partition discovers its
  * children, and a child may only be read once <em>every</em> parent that names it has finished.
  * Beam keeps that lineage in a metadata table in the user's database. This connector keeps it in
  * {@code ledger} and checkpoints it, so the source needs no table of its own and no write
- * permission — which also means a lost checkpoint is a lost lineage, and there is no second copy to
- * reconcile against.
+ * permission. A lost checkpoint is a lost lineage because there is no second copy to reconcile
+ * against.
  *
  * <p>An entry moves {@code CREATED} → {@code SCHEDULED} → {@code RUNNING} → {@code FINISHED}.
  * {@code CREATED} is the state that carries the dependency: a discovered child sits there until
  * {@link #allParentsFinished} holds, which is why {@code childrenByParent} exists and why finishing
- * a partition is the event that promotes children rather than discovering them.
+ * a partition is the event that promotes children rather than discovering them. A finished split
+ * leaves the ledger immediately. Its id remains in {@code finishedParentProofs} only while a
+ * created child still needs that durable fact after restore.
  *
  * <p><b>Child discovery does not finish a parent.</b> A reader forwards child-partitions records as
  * it meets them and sends a separate completion event only when its query ends successfully, so a
@@ -96,10 +98,10 @@ import java.util.function.LongSupplier;
  * advance past work it has not started.
  *
  * <p>{@code unfinishedWatermarkCounts} is a counted ordered index maintained incrementally, rather
- * than a scan of the ledger on every progress event: a ledger grows for the life of the job, and
- * progress events arrive per record. {@link #replacePartition} keeps it in step, and skips both
- * halves of the update when an entry's indexed watermark has not moved. It is rebuilt from the
- * ledger on restore rather than checkpointed beside it, so the two can never disagree.
+ * than a scan of the ledger on every progress event because progress events arrive per record.
+ * {@link #replacePartition} keeps it in step and skips both halves of the update when an entry's
+ * indexed watermark has not moved. It is rebuilt from the compact ledger on restore rather than
+ * checkpointed beside it, so the two can never disagree.
  *
  * <p>A transition that would move the frontier backwards is rejected rather than absorbed: readers
  * have already emitted the old value, and Flink treats records at or below a watermark as late, so
@@ -141,6 +143,7 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private final Map<String, ChangeStreamPartitionSplit> ledger = new LinkedHashMap<>();
     private final Map<String, Set<String>> childrenByParent = new HashMap<>();
+    private final Map<String, Integer> finishedParentProofReferences = new LinkedHashMap<>();
     private final Deque<String> scheduledPartitions = new ArrayDeque<>();
     private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
     private final TreeMap<Long, Integer> unfinishedWatermarkCounts = new TreeMap<>();
@@ -148,6 +151,8 @@ public final class SpannerChangeStreamSplitEnumerator
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicLong scheduledCount = new AtomicLong();
     private final AtomicLong oldestScheduledPositionMillis = new AtomicLong(Long.MAX_VALUE);
+    private final AtomicLong ledgerEntryCount = new AtomicLong();
+    private final AtomicLong finishedParentProofCount = new AtomicLong();
 
     private Counter splitsAssigned = new ThreadSafeSimpleCounter();
     private Counter splitsReturned = new ThreadSafeSimpleCounter();
@@ -238,7 +243,10 @@ public final class SpannerChangeStreamSplitEnumerator
         }
         if (expiries.isEmpty()) {
             return Initialization.restored(
-                    restoredState.getPartitions(), restoredState.getSourceWatermark());
+                    restoredState.getPartitions(),
+                    restoredState.getFinishedParentProofs(),
+                    restoredState.isBounded(),
+                    restoredState.getSourceWatermark());
         }
         if (resumeFallback == null) {
             FlinkRuntimeException expiry = expiries.get(0).asFailure();
@@ -305,6 +313,10 @@ public final class SpannerChangeStreamSplitEnumerator
         for (ChangeStreamPartitionSplit partition : initialization.partitions) {
             ledger.put(partition.splitId(), partition);
         }
+        for (String proof : initialization.finishedParentProofs) {
+            finishedParentProofReferences.put(proof, 0);
+        }
+        boundedLedger = initialization.bounded;
         rebuildRuntimeIndexes();
         sourceWatermark = initialization.sourceWatermark;
         initializeSourceWatermark();
@@ -319,12 +331,13 @@ public final class SpannerChangeStreamSplitEnumerator
         deferredActions.clear();
         serveWaitingReaders();
         LOG.info(
-                "Initialized Spanner Change Streams with {} partition ledger entries ({}"
-                        + " scheduled, {} running, {} finished).",
+                "Initialized Spanner Change Streams with {} unfinished partition ledger entries"
+                        + " ({} created, {} scheduled, {} running) and {} finished-parent proofs.",
                 ledger.size(),
+                count(PartitionLifecycleState.CREATED),
                 count(PartitionLifecycleState.SCHEDULED),
                 count(PartitionLifecycleState.RUNNING),
-                count(PartitionLifecycleState.FINISHED));
+                finishedParentProofReferences.size());
     }
 
     private long count(PartitionLifecycleState state) {
@@ -479,15 +492,17 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private void acceptChildren(int subtaskId, ChildPartitionsEvent event) {
         ChangeStreamPartitionSplit parent = ledger.get(event.getParentSplitId());
-        if (parent == null) {
+        boolean reportingParentIsProof =
+                parent == null
+                        && finishedParentProofReferences.containsKey(event.getParentSplitId());
+        if (parent == null && !reportingParentIsProof) {
             LOG.warn(
                     "Ignoring child partitions for unknown split {} from subtask {}.",
                     event.getParentSplitId(),
                     subtaskId);
             return;
         }
-        if (parent.getLifecycleState() != PartitionLifecycleState.RUNNING
-                && parent.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+        if (parent != null && parent.getLifecycleState() != PartitionLifecycleState.RUNNING) {
             throw new IllegalStateException(
                     "Child partitions arrived for "
                             + parent.splitId()
@@ -497,18 +512,34 @@ public final class SpannerChangeStreamSplitEnumerator
         }
         for (ChildPartitionsEvent.ChildPartition child : event.getChildren()) {
             Preconditions.checkArgument(
-                    child.getParentPartitionIds().contains(parent.splitId()),
+                    child.getParentPartitionIds().contains(event.getParentSplitId()),
                     "child token %s does not name reporting parent %s",
                     child.getToken(),
-                    parent.splitId());
+                    event.getParentSplitId());
+            String childId = ChangeStreamPartitionSplit.idForToken(child.getToken());
+            ChangeStreamPartitionSplit existing = ledger.get(childId);
+            if (reportingParentIsProof) {
+                Preconditions.checkArgument(
+                        existing != null,
+                        "child token %s was first reported after parent %s was compacted",
+                        child.getToken(),
+                        event.getParentSplitId());
+                Preconditions.checkState(
+                        sameCompactedChildReport(existing, child, event.getStartTimestamp()),
+                        "child token %s was reported with conflicting partition metadata",
+                        child.getToken());
+                promoteIfReady(existing);
+                continue;
+            }
             for (String parentId : child.getParentPartitionIds()) {
                 Preconditions.checkArgument(
-                        ledger.containsKey(parentId),
+                        ledger.containsKey(parentId)
+                                || (existing != null
+                                        && finishedParentProofReferences.containsKey(parentId)),
                         "child token %s names unknown parent %s",
                         child.getToken(),
                         parentId);
             }
-            String childId = ChangeStreamPartitionSplit.idForToken(child.getToken());
             ChangeStreamPartitionSplit discovered =
                     new ChangeStreamPartitionSplit(
                             child.getToken(),
@@ -519,7 +550,6 @@ public final class SpannerChangeStreamSplitEnumerator
                             event.getStartTimestamp(),
                             PartitionLifecycleState.CREATED,
                             event.getStartTimestamp());
-            ChangeStreamPartitionSplit existing = ledger.get(childId);
             if (existing == null) {
                 ledger.put(childId, discovered);
                 trackUnfinishedWatermark(discovered);
@@ -535,20 +565,30 @@ public final class SpannerChangeStreamSplitEnumerator
                 promoteIfReady(existing);
             }
         }
+        refreshLineageMetricCounts();
         refreshSourceWatermark();
         serveWaitingReaders();
+    }
+
+    private static boolean sameCompactedChildReport(
+            ChangeStreamPartitionSplit existing,
+            ChildPartitionsEvent.ChildPartition reported,
+            Instant startTimestamp) {
+        return existing.splitId().equals(ChangeStreamPartitionSplit.idForToken(reported.getToken()))
+                && existing.getParentPartitionIds().equals(reported.getParentPartitionIds())
+                && existing.getStartTimestamp().equals(startTimestamp);
     }
 
     private void finishPartition(int subtaskId, PartitionFinishedEvent event) {
         ChangeStreamPartitionSplit current = ledger.get(event.getSplitId());
         if (current == null) {
+            if (finishedParentProofReferences.containsKey(event.getSplitId())) {
+                return;
+            }
             LOG.warn(
                     "Ignoring completion for unknown split {} from subtask {}.",
                     event.getSplitId(),
                     subtaskId);
-            return;
-        }
-        if (current.getLifecycleState() == PartitionLifecycleState.FINISHED) {
             return;
         }
         if (current.getLifecycleState() != PartitionLifecycleState.RUNNING) {
@@ -559,38 +599,35 @@ public final class SpannerChangeStreamSplitEnumerator
                             + current.getLifecycleState()
                             + ".");
         }
-        ChangeStreamPartitionSplit finished =
-                current.withProgress(
-                                later(current.getCurrentPosition(), event.getCurrentPosition()),
-                                later(current.getWatermark(), event.getWatermark()))
-                        .withLifecycleState(PartitionLifecycleState.FINISHED);
-        replacePartition(current, finished);
+        untrackUnfinishedWatermark(current);
+        ledger.remove(current.splitId());
         unfinishedPartitions--;
-        Set<String> children = childrenByParent.remove(finished.splitId());
+        Set<String> children = childrenByParent.remove(current.splitId());
+        if (children != null && !children.isEmpty()) {
+            finishedParentProofReferences.put(current.splitId(), children.size());
+        }
         for (String childId : children == null ? Collections.<String>emptySet() : children) {
             ChangeStreamPartitionSplit child = ledger.get(childId);
             if (child != null) {
                 promoteIfReady(child);
             }
         }
+        refreshLineageMetricCounts();
         refreshSourceWatermark();
         serveWaitingReaders();
     }
 
     private void rebuildRuntimeIndexes() {
         childrenByParent.clear();
+        finishedParentProofReferences.replaceAll((ignored, references) -> 0);
         scheduledPartitions.clear();
         scheduledPositionCounts.clear();
         unfinishedWatermarkCounts.clear();
         scheduledCount.set(0);
         unfinishedPartitions = 0;
-        boundedLedger = false;
         for (ChangeStreamPartitionSplit partition : ledger.values()) {
-            boundedLedger |= partition.getEndTimestamp() != null;
-            if (partition.getLifecycleState() != PartitionLifecycleState.FINISHED) {
-                unfinishedPartitions++;
-                trackUnfinishedWatermark(partition);
-            }
+            unfinishedPartitions++;
+            trackUnfinishedWatermark(partition);
             if (partition.getLifecycleState() == PartitionLifecycleState.SCHEDULED) {
                 scheduledPartitions.addLast(partition.splitId());
                 scheduledCount.incrementAndGet();
@@ -603,12 +640,13 @@ public final class SpannerChangeStreamSplitEnumerator
             promoteIfReady(partition);
         }
         refreshOldestScheduledPosition();
+        refreshLineageMetricCounts();
     }
 
     private void indexCreatedPartition(ChangeStreamPartitionSplit partition) {
         for (String parentId : partition.getParentPartitionIds()) {
-            ChangeStreamPartitionSplit parent = ledger.get(parentId);
-            if (parent != null && parent.getLifecycleState() == PartitionLifecycleState.FINISHED) {
+            if (finishedParentProofReferences.containsKey(parentId)) {
+                finishedParentProofReferences.merge(parentId, 1, Integer::sum);
                 continue;
             }
             childrenByParent
@@ -625,6 +663,7 @@ public final class SpannerChangeStreamSplitEnumerator
     private void promoteIfReady(ChangeStreamPartitionSplit partition) {
         if (partition.getLifecycleState() == PartitionLifecycleState.CREATED
                 && allParentsFinished(partition)) {
+            releaseParentDependencies(partition);
             schedule(partition);
         }
     }
@@ -643,12 +682,33 @@ public final class SpannerChangeStreamSplitEnumerator
         scheduledCount.incrementAndGet();
         trackScheduledPosition(scheduled.getCurrentPosition().toEpochMilli());
         refreshOldestScheduledPosition();
+        refreshLineageMetricCounts();
+    }
+
+    private void releaseParentDependencies(ChangeStreamPartitionSplit partition) {
+        for (String parentId : partition.getParentPartitionIds()) {
+            Set<String> waitingChildren = childrenByParent.get(parentId);
+            if (waitingChildren != null) {
+                waitingChildren.remove(partition.splitId());
+                if (waitingChildren.isEmpty()) {
+                    childrenByParent.remove(parentId);
+                }
+            }
+            Integer references = finishedParentProofReferences.get(parentId);
+            if (references == null) {
+                continue;
+            }
+            if (references == 1) {
+                finishedParentProofReferences.remove(parentId);
+            } else {
+                finishedParentProofReferences.put(parentId, references - 1);
+            }
+        }
     }
 
     private boolean allParentsFinished(ChangeStreamPartitionSplit partition) {
         for (String parentId : partition.getParentPartitionIds()) {
-            ChangeStreamPartitionSplit parent = ledger.get(parentId);
-            if (parent == null || parent.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+            if (!finishedParentProofReferences.containsKey(parentId)) {
                 return false;
             }
         }
@@ -728,7 +788,7 @@ public final class SpannerChangeStreamSplitEnumerator
         long next = unfinishedWatermarkCounts.firstKey();
         Preconditions.checkState(
                 next >= sourceWatermark,
-                "Spanner Change Streams complete-ledger watermark moved backwards from %s to %s.",
+                "Spanner Change Streams unfinished-ledger watermark moved backwards from %s to %s.",
                 sourceWatermark,
                 next);
         if (next == sourceWatermark) {
@@ -748,7 +808,7 @@ public final class SpannerChangeStreamSplitEnumerator
         long candidate = unfinishedWatermarkCounts.firstKey();
         Preconditions.checkState(
                 candidate >= sourceWatermark,
-                "Restored Spanner Change Streams source watermark %s is ahead of complete-ledger"
+                "Restored Spanner Change Streams source watermark %s is ahead of unfinished-ledger"
                         + " frontier %s.",
                 sourceWatermark,
                 candidate);
@@ -762,7 +822,10 @@ public final class SpannerChangeStreamSplitEnumerator
                 "Spanner Change Streams initialization is still outstanding; retry the"
                         + " checkpoint after its deferred reader actions have been replayed.");
         return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
-                ledger.values(), sourceWatermark);
+                ledger.values(),
+                finishedParentProofReferences.keySet(),
+                boundedLedger,
+                sourceWatermark);
     }
 
     private void registerMetrics() {
@@ -784,6 +847,17 @@ public final class SpannerChangeStreamSplitEnumerator
         metricGroup.gauge(
                 SpannerMetricNames.UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS,
                 (Gauge<Long>) this::unassignedPartitionLagMillis);
+        metricGroup.gauge(
+                SpannerMetricNames.CHANGE_STREAM_PARTITION_LEDGER_ENTRIES,
+                (Gauge<Long>) ledgerEntryCount::get);
+        metricGroup.gauge(
+                SpannerMetricNames.CHANGE_STREAM_FINISHED_PARENT_PROOFS,
+                (Gauge<Long>) finishedParentProofCount::get);
+    }
+
+    private void refreshLineageMetricCounts() {
+        ledgerEntryCount.set(ledger.size());
+        finishedParentProofCount.set(finishedParentProofReferences.size());
     }
 
     private void refreshOldestScheduledPosition() {
@@ -833,14 +907,20 @@ public final class SpannerChangeStreamSplitEnumerator
     private static final class Initialization {
 
         private final List<ChangeStreamPartitionSplit> partitions;
+        private final Set<String> finishedParentProofs;
+        private final boolean bounded;
         private final boolean discardRestoredReaderSplits;
         private final long sourceWatermark;
 
         private Initialization(
                 List<ChangeStreamPartitionSplit> partitions,
+                Set<String> finishedParentProofs,
+                boolean bounded,
                 boolean discardRestoredReaderSplits,
                 long sourceWatermark) {
             this.partitions = partitions;
+            this.finishedParentProofs = finishedParentProofs;
+            this.bounded = bounded;
             this.discardRestoredReaderSplits = discardRestoredReaderSplits;
             this.sourceWatermark = sourceWatermark;
         }
@@ -851,13 +931,23 @@ public final class SpannerChangeStreamSplitEnumerator
                 long sourceWatermark) {
             return new Initialization(
                     Collections.singletonList(initial),
+                    Collections.emptySet(),
+                    initial.getEndTimestamp() != null,
                     discardRestoredReaderSplits,
                     sourceWatermark);
         }
 
         private static Initialization restored(
-                List<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
-            return new Initialization(new ArrayList<>(partitions), false, sourceWatermark);
+                List<ChangeStreamPartitionSplit> partitions,
+                Set<String> finishedParentProofs,
+                boolean bounded,
+                long sourceWatermark) {
+            return new Initialization(
+                    new ArrayList<>(partitions),
+                    new LinkedHashSet<>(finishedParentProofs),
+                    bounded,
+                    false,
+                    sourceWatermark);
         }
     }
 

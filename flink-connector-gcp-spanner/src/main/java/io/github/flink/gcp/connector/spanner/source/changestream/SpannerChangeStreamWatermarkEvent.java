@@ -19,7 +19,7 @@ package io.github.flink.gcp.connector.spanner.source.changestream;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceEvent;
 
-/** Advances every reader subtask to the coordinator's complete-ledger watermark. */
+/** Advances every reader subtask to the coordinator's unfinished-ledger watermark. */
 @Internal
 public final class SpannerChangeStreamWatermarkEvent implements SourceEvent {
 

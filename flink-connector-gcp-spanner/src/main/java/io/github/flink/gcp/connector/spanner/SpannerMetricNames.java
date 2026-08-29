@@ -80,6 +80,14 @@ public final class SpannerMetricNames {
     public static final String UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS =
             "unassignedChangeStreamPartitionLagMillis";
 
+    /** Unfinished partition entries held in the Change Streams coordinator ledger. */
+    public static final String CHANGE_STREAM_PARTITION_LEDGER_ENTRIES =
+            "changeStreamPartitionLedgerEntries";
+
+    /** Finished parent IDs retained while a Change Streams child awaits another parent. */
+    public static final String CHANGE_STREAM_FINISHED_PARENT_PROOFS =
+            "changeStreamFinishedParentProofs";
+
     // Registered by the batch source's enumerator (SpannerBatchReadSplitEnumerator).
 
     /**
