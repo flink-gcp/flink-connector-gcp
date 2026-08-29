@@ -85,5 +85,10 @@ def check_readme_examples():
 
 
 @pytest.fixture(scope="session")
+def check_gated_tags():
+    return load_script("check-gated-tags.py")
+
+
+@pytest.fixture(scope="session")
 def check_javadoc_links():
     return load_script("check-javadoc-links.py")

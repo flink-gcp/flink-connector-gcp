@@ -89,8 +89,9 @@ both directions.
   cases, and an allowlist only if one is needed) is the recorded fix. The two properties this
   once also listed have since acquired counter-examples and are not part of the style:
   `check-gated-tags` has no `curate-*` skill because it has no allowlist to exercise judgment
-  over, and `check-skill-frontmatter` is not standard-library-only because answering its question
-  needs a YAML parser (ADR-0069).
+  over. Java-aware checkers share the root project's locked Tree-sitter runtime, while
+  `check-skill-frontmatter` keeps its single-script YAML runtime in PEP 723 metadata (ADR-0069,
+  ADR-0118).
 
 ## Consequences
 

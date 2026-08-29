@@ -97,26 +97,6 @@ def exit_code(module) -> int:
         return error.code
 
 
-# --- lexing: comments and literals blanked in one pass ---
-
-
-def test_javadoc_apostrophes_do_not_swallow_the_declaration(check_flink_api_tiers):
-    # Measured on six Flink 2.2.1 sources: stripping strings and comments in
-    # two passes pairs "Guava's" with "it's" into a phantom char literal that
-    # eats everything between them, including the annotated declaration.
-    source = "/** Guava's, and it's. */\n@Internal\npublic class Demo {}\n"
-    stripped = check_flink_api_tiers.strip_comments(source)
-    assert "@Internal" in stripped
-    assert "public class Demo" in stripped
-
-
-def test_string_and_char_bodies_are_emptied(check_flink_api_tiers):
-    stripped = check_flink_api_tiers.strip_comments(
-        "class A {\n  String s = \"@Internal class Fake {}\";\n  char c = 'x';\n}\n"
-    )
-    assert stripped == 'class A {\n  String s = "";\n  char c = "";\n}\n'
-
-
 # --- classification ---
 
 
@@ -154,24 +134,23 @@ def test_class_level_annotations_decide_the_tier(
     assert classify(check_flink_api_tiers, source) == expected
 
 
-def test_a_fully_qualified_annotation_demotes_rather_than_being_read(
+def test_a_fully_qualified_annotation_is_read(
     check_flink_api_tiers,
 ):
-    # The accepted blind spot, pinned so it stays accepted rather than
-    # rediscovered: `@\w+` stops at the dot, so the match restarts at the
-    # modifier line and the type reads as unannotated. Safe in the direction
-    # that matters — unannotated demands an allowlist entry, which fails loudly
-    # — and no imported type has this shape today, though the 2.2.1 sources
-    # jars carry ten of them (`@ChannelHandler.Sharable` on AbstractRestHandler
-    # among them, surveyed 2026-08-02). A tier annotation written this way
-    # would be filed under the wrong table, with a reason, which is the cost.
     source = "@org.apache.flink.annotation.Internal\npublic class Demo {}\n"
-    assert classify(check_flink_api_tiers, source) == "unannotated"
+    assert classify(check_flink_api_tiers, source) == "Internal"
+
+
+def test_invalid_java_is_an_infrastructure_error(check_flink_api_tiers):
+    with pytest.raises(SystemExit) as error:
+        classify(check_flink_api_tiers, "public class Demo {\n")
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("kind", ["class", "interface", "enum", "record", "@interface"])
 def test_every_declaration_kind_is_read(check_flink_api_tiers, kind):
-    source = f"@Internal\npublic {kind} Demo {{}}\n"
+    parameters = "()" if kind == "record" else ""
+    source = f"@Internal\npublic {kind} Demo{parameters} {{}}\n"
     assert classify(check_flink_api_tiers, source) == "Internal"
 
 
@@ -240,6 +219,29 @@ def test_imports_are_collected_from_every_per_major_source_root(
         "org.apache.flink.demo.Two",
         "org.apache.flink.demo.Util.check",
     }
+
+
+def test_import_whitespace_does_not_hide_a_flink_import(root, check_flink_api_tiers):
+    source = root / "conn/src/main/java/io/github/User.java"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        "package io.github;\n\nimport\torg.apache.flink.demo.One;\n\nclass X {}\n"
+    )
+    assert check_flink_api_tiers.collect_imports() == {"org.apache.flink.demo.One"}
+
+
+def test_a_flink_wildcard_import_names_the_fixable_source_error(
+    root, check_flink_api_tiers, capsys
+):
+    write_import(root, "org.apache.flink.demo.*")
+
+    with pytest.raises(SystemExit) as error:
+        check_flink_api_tiers.collect_imports()
+
+    stderr = capsys.readouterr().err
+    assert error.value.code == 2
+    assert "User.java:3: wildcard import org.apache.flink.demo.*" in stderr
+    assert "replace it with explicit type imports" in stderr
 
 
 def test_a_tree_with_no_flink_imports_is_an_infrastructure_error(

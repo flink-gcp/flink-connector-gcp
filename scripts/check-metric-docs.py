@@ -54,16 +54,21 @@ all-caps placeholder — and their group and leaf names are read from the
 `base.metrics` sources that register them, listed under [[subgroups]].
 
 Exit codes: 0 clean, 1 policy violation (undocumented, stale or mis-typed
-metric), 2 infrastructure or config authoring error (missing file, a source
-that parses to nothing, malformed config).
-
-Standard library only, like its siblings in this directory.
+metric), 2 infrastructure or config authoring error (missing file, invalid
+Java, a source that parses to nothing, malformed config).
 """
 
 import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
+
+from java_ast import (
+    JavaSource,
+    JavaSyntaxError,
+    code_named_children,
+    string_literal_content,
+)
 
 try:
     import tomllib  # stdlib since 3.11
@@ -81,24 +86,6 @@ CONFIG = Path(__file__).resolve().parent / "config" / "metric-docs.toml"
 # connector registers, as `static final String` constants.
 INVENTORY_GLOB = "*MetricNames.java"
 
-CONSTANT = re.compile(r'static\s+final\s+String\s+(\w+)\s*=\s*"([^"]+)"')
-
-# `metricGroup.counter(FooMetricNames.X)` / `.gauge(FooMetricNames.X, ...)`,
-# possibly wrapped across lines by the formatter (`\s` matches newlines).
-REGISTRATION = re.compile(r"\.(counter|gauge)\(\s*(\w*MetricNames)\.(\w+)")
-
-# Any registration call at all, however it names the metric. Every match must
-# also match REGISTRATION at the same position, or the name bypassed the
-# inventory.
-ANY_REGISTRATION = re.compile(r"\.(counter|gauge)\(")
-
-# Inside a [[subgroups]] source: the leaf names it registers on the subgroup
-# (`group.counter(RECORDS_SEND)`) and the group segment it opens
-# (`metricGroup.addGroup(ERROR_CLASS_GROUP, errorClass)`), both as local
-# constants resolved through CONSTANT.
-SUBGROUP_LEAF = re.compile(r"\.(counter|gauge)\(\s*([A-Z][A-Z0-9_]*)\s*[,)]")
-ADD_GROUP = re.compile(r"\.addGroup\(\s*([A-Z][A-Z0-9_]*)\s*,")
-
 # A table row's first cell, and the backticked metric names inside it. One cell
 # may name a pair that shares a meaning (`destination.TABLE.recordsSend`,
 # `destination.TABLE.sendErrors`).
@@ -114,18 +101,6 @@ FLINK_STANDARD = "(Flink standard)"
 # repository registers itself, so a connector metric cannot masquerade as a
 # standard one.
 NUM_PREFIX = re.compile(r"^num[A-Z]")
-
-# Comments are blanked before every scan, so a name in javadoc — the inventory
-# classes' own javadoc spells out `errorClass.CODE.errors` — cannot be read as
-# a declaration or a registration. String literals are matched first and kept:
-# CONSTANT reads them, and a `//` inside one (`"http://…"`) must not swallow
-# the registration sharing its line.
-COMMENT_OR_STRING = re.compile(
-    r'"(?:\\.|[^"\\\n])*"'  # string literal, kept intact
-    r"|//[^\n]*"  # line comment
-    r"|/\*.*?\*/",  # block comment, incl. javadoc
-    re.DOTALL,
-)
 
 
 class Subgroup(NamedTuple):
@@ -146,16 +121,12 @@ def infra(message: str) -> "sys.NoReturn":
     sys.exit(2)
 
 
-def blank_comments(source: str) -> str:
-    """Blank every comment, preserving newlines and columns so anchors still hold."""
-    return COMMENT_OR_STRING.sub(
-        lambda m: (
-            m.group(0)
-            if m.group(0).startswith('"')
-            else re.sub(r"[^\n]", " ", m.group(0))
-        ),
-        source,
-    )
+def parse_java(path: Path) -> JavaSource:
+    """Parse one Java source or terminate before using a partial inventory."""
+    try:
+        return JavaSource.parse(path.relative_to(ROOT), path.read_bytes())
+    except JavaSyntaxError as error:
+        infra(str(error))
 
 
 def read(path: Path) -> str:
@@ -164,8 +135,8 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def blanked_sources(module: str) -> dict[Path, str]:
-    """Every main-tree source of the module, comment-blanked, read once.
+def parsed_sources(module: str) -> dict[Path, JavaSource]:
+    """Every main-tree source of the module, parsed once.
 
     `src/main/java*` rather than `src/main/java`: the per-major compat roots
     (`java-flink1`/`java-flink2`) are main sources too, so a registration
@@ -175,7 +146,7 @@ def blanked_sources(module: str) -> dict[Path, str]:
     if not (main / "java").is_dir():
         infra(f"{module}/src/main/java does not exist; {CONFIG.name} names it.")
     return {
-        source: blank_comments(source.read_text(encoding="utf-8"))
+        source: parse_java(source)
         for tree in sorted(main.glob("java*"))
         for source in sorted(tree.rglob("*.java"))
     }
@@ -220,13 +191,59 @@ def metric_table_rows(page: Path) -> tuple[list[tuple[list[str], str, int]], lis
     return rows, problems
 
 
-def inventory(module: str, sources: dict[Path, str]) -> dict[str, dict[str, str]]:
+def string_constants(parsed: JavaSource) -> dict[str, str]:
+    """Static-final String declarations initialized by string literals."""
+    found: dict[str, str] = {}
+    for field in parsed.nodes("constant_declaration", "field_declaration"):
+        modifiers = next(
+            (child for child in field.children if child.type == "modifiers"), None
+        )
+        tokens = {child.type for child in modifiers.children} if modifiers else set()
+        declared_type = field.child_by_field_name("type")
+        if (
+            field.type != "constant_declaration"
+            and ("static" not in tokens or "final" not in tokens)
+        ) or (declared_type is None or parsed.text(declared_type) != "String"):
+            continue
+        for declarator in (
+            child
+            for child in field.named_children
+            if child.type == "variable_declarator"
+        ):
+            name = declarator.child_by_field_name("name")
+            value = declarator.child_by_field_name("value")
+            if (
+                name is not None
+                and value is not None
+                and value.type == "string_literal"
+            ):
+                literal = string_literal_content(parsed, value)
+                if literal is not None:
+                    found[parsed.text(name)] = literal
+    return found
+
+
+def metric_calls(parsed: JavaSource):
+    """Yield counter and gauge method invocations in source order."""
+    for call in parsed.nodes("method_invocation"):
+        name = call.child_by_field_name("name")
+        if (
+            name is not None
+            and call.child_by_field_name("object") is not None
+            and parsed.text(name) in ("counter", "gauge")
+        ):
+            yield parsed.text(name), call
+
+
+def inventory(
+    module: str, sources: dict[Path, JavaSource]
+) -> dict[str, dict[str, str]]:
     """Constant -> name literal, per `*MetricNames` class of the module."""
     found: dict[str, dict[str, str]] = {}
-    for source, text in sources.items():
+    for source, parsed in sources.items():
         if not source.match(INVENTORY_GLOB):
             continue
-        constants = dict(CONSTANT.findall(text))
+        constants = string_constants(parsed)
         if not constants:
             infra(
                 f"{source.relative_to(ROOT)} matches {INVENTORY_GLOB} but declares "
@@ -244,7 +261,9 @@ def inventory(module: str, sources: dict[Path, str]) -> dict[str, dict[str, str]
 
 
 def registrations(
-    module: str, sources: dict[Path, str], constants: dict[str, dict[str, str]]
+    module: str,
+    sources: dict[Path, JavaSource],
+    constants: dict[str, dict[str, str]],
 ) -> tuple[dict[str, str], set[tuple[str, str]], list[str]]:
     """Registered kinds and constants, from every registration in the module.
 
@@ -258,19 +277,31 @@ def registrations(
     used_constants: set[tuple[str, str]] = set()
     conflicted: set[str] = set()
     problems: list[str] = []
-    for source, text in sources.items():
-        for match in ANY_REGISTRATION.finditer(text):
-            resolved = REGISTRATION.match(text, match.start())
-            if resolved is None:
-                line = text.count("\n", 0, match.start()) + 1
+    for source, parsed in sources.items():
+        for kind, call in metric_calls(parsed):
+            arguments = call.child_by_field_name("arguments")
+            values = code_named_children(arguments) if arguments is not None else ()
+            first = values[0] if values else None
+            if first is None or first.type != "field_access":
                 problems.append(
-                    f"{source.relative_to(ROOT)}:{line}: registers a "
-                    f"{match.group(1)} by a name outside the module's "
+                    f"{source.relative_to(ROOT)}:{parsed.line(call)}: registers a "
+                    f"{kind} by a name outside the module's "
                     f"{INVENTORY_GLOB} inventory. Declare the name there and "
                     f"register it through the constant."
                 )
                 continue
-            kind, klass, constant = resolved.groups()
+            owner = first.child_by_field_name("object")
+            field = first.child_by_field_name("field")
+            klass = parsed.text(owner) if owner is not None else ""
+            constant = parsed.text(field) if field is not None else ""
+            if not klass.endswith("MetricNames"):
+                problems.append(
+                    f"{source.relative_to(ROOT)}:{parsed.line(call)}: registers a "
+                    f"{kind} by a name outside the module's {INVENTORY_GLOB} "
+                    f"inventory. Declare the name there and register it through "
+                    f"the constant."
+                )
+                continue
             if klass not in constants or constant not in constants[klass]:
                 infra(
                     f"{source.relative_to(ROOT)} registers {klass}.{constant}, "
@@ -291,26 +322,37 @@ def registrations(
 
 def subgroup_template(source: Path) -> Subgroup:
     """The group and leaves a [[subgroups]] source registers, read from it."""
-    text = blank_comments(read(source))
-    constants = dict(CONSTANT.findall(text))
-    groups = {constants.get(name) for name in ADD_GROUP.findall(text)}
+    read(source)
+    parsed = parse_java(source)
+    constants = string_constants(parsed)
+    groups: set[str | None] = set()
     leaves: dict[str, str] = {}
     consistent = True
-    for kind, name in SUBGROUP_LEAF.findall(text):
-        leaf = constants.get(name)
-        consistent &= leaf is not None and leaves.setdefault(leaf, kind) == kind
+    for call in parsed.nodes("method_invocation"):
+        name = call.child_by_field_name("name")
+        arguments = call.child_by_field_name("arguments")
+        values = code_named_children(arguments) if arguments is not None else ()
+        method = parsed.text(name) if name is not None else ""
+        if method == "addGroup" and values and values[0].type == "identifier":
+            groups.add(constants.get(parsed.text(values[0])))
+        if method in ("counter", "gauge") and values and values[0].type == "identifier":
+            leaf = constants.get(parsed.text(values[0]))
+            consistent &= leaf is not None and leaves.setdefault(leaf, method) == method
     if len(groups) != 1 or None in groups or not leaves or not consistent:
         infra(
             f"{source.relative_to(ROOT)}: could not read one addGroup segment "
             f"and its registered leaves, one kind each, as string constants. "
-            f"The registration shape changed; fix the patterns, not the config."
+            f"The Java registration shape changed; fix the checker, not the config."
         )
     return Subgroup(source.stem, groups.pop(), leaves)
 
 
-def module_uses(sources: dict[Path, str], class_name: str) -> bool:
-    pattern = re.compile(rf"\b{class_name}\b")
-    return any(pattern.search(text) for text in sources.values())
+def module_uses(sources: dict[Path, JavaSource], class_name: str) -> bool:
+    return any(
+        parsed.text(node) == class_name
+        for parsed in sources.values()
+        for node in parsed.nodes("identifier", "type_identifier")
+    )
 
 
 def check_rows(
@@ -469,9 +511,8 @@ def main() -> int:
             relative = str(source.relative_to(ROOT))
             if relative in claimed:
                 continue
-            if source.match(INVENTORY_GLOB) or ANY_REGISTRATION.search(
-                blank_comments(source.read_text(encoding="utf-8"))
-            ):
+            parsed = parse_java(source)
+            if source.match(INVENTORY_GLOB) or next(metric_calls(parsed), None):
                 stray_by_module.setdefault(module, []).append(relative)
     for module, stray in sorted(stray_by_module.items()):
         problems.append(
@@ -483,7 +524,7 @@ def main() -> int:
 
     for entry in config["connectors"]:
         module, page = entry["module"], ROOT / entry["page"]
-        sources = blanked_sources(module)
+        sources = parsed_sources(module)
         constants = inventory(module, sources)
         registered, used_constants, reg_problems = registrations(
             module, sources, constants

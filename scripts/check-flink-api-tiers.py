@@ -28,17 +28,15 @@ annotation referenced anywhere in the class, including on its methods, so
 reading it misclassifies a @Public class with one @Internal method — the exact
 bug that produced the wrong numbers this script replaces (see issue #103).
 
-Parsing degrades fail-closed: a class-level annotation the parser misses
-demotes the type to "unannotated", which demands an allowlist entry, which
-fails loudly; a declaration it cannot find at all is a hard error. The one
-accepted blind spot is a declaration-lookalike inside a Java text block, which
-survives comment/string stripping.
+Parsing is syntax-aware and fail-closed: every Java compilation unit must form
+a complete Tree-sitter syntax tree before its imports or declarations can
+contribute to the inventory.
 
 Exit codes: 0 clean, 1 policy violation (unlisted type, stale entry, unused
 artifact), 2 infrastructure or config authoring error (download failure,
 unresolvable import, unparseable declaration, malformed allowlist).
 
-Standard library only, deliberately: nothing here justifies a package manager.
+Tree-sitter is shared with the repository's other Java-aware checkers.
 """
 
 import argparse
@@ -50,6 +48,15 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+
+from java_ast import (
+    TYPE_DECLARATIONS,
+    JavaSource,
+    JavaSyntaxError,
+    annotation_name,
+    annotations,
+    declaration_target,
+)
 
 try:
     import tomllib  # stdlib since 3.11
@@ -83,52 +90,6 @@ ALLOWLISTED = {
     UNANNOTATED: "unannotated",
 }
 
-# Single-type imports only, and that is complete: checkstyle's AvoidStarImport
-# (tools/maven/checkstyle.xml) keeps wildcard imports out of the tree, so a
-# star import cannot slip a type past this scan.
-IMPORT = re.compile(
-    r"^import\s+(?:static\s+)?(org\.apache\.flink[\w.]+)\s*;", re.MULTILINE
-)
-
-# One alternation over string | char | line comment | block comment, applied in
-# document order. Single-pass on purpose: stripping strings and comments in two
-# passes mis-pairs javadoc apostrophes ("Guava's", "it's") into phantom char
-# literals that swallow the annotated declaration — measured on six of the
-# Flink 2.2.1 sources this script reads.
-LEXEME = re.compile(
-    r'"(?:\\.|[^"\\])*"'  # string literal
-    r"|'(?:\\.|[^'\\])*'"  # char literal
-    r"|//[^\n]*"  # line comment
-    r"|/\*.*?\*/",  # block comment, incl. javadoc
-    re.DOTALL,
-)
-
-
-def strip_comments(source: str) -> str:
-    """Blank comments and string/char bodies, leaving declarations intact."""
-    return LEXEME.sub(
-        lambda m: '""' if m.group(0)[0] in "\"'" else " ",
-        source,
-    )
-
-
-def declaration(simple: str) -> re.Pattern[str]:
-    """The type declaration of `simple` with its class-level annotations in group 1.
-
-    The annotation-argument alternative allows one level of nested parens:
-    `@ConfigGroups(groups = @ConfigGroup(...))` (TaskManagerOptions in
-    flink-core) would otherwise break the anchor at the first `)` and demote
-    the type to unannotated.
-    """
-    return re.compile(
-        r"^[ \t]*("
-        r"(?:@\w+(?:\s*\((?:[^()]|\([^()]*\))*\))?\s*"
-        r"|(?:public|protected|private|abstract|final|static|sealed|non-sealed|strictfp)\s+)*"
-        r")"
-        r"(?:class|interface|enum|record|@interface)\s+" + re.escape(simple) + r"\b",
-        re.MULTILINE,
-    )
-
 
 def fail(message: str) -> "sys.NoReturn":
     print(message, file=sys.stderr)
@@ -153,10 +114,23 @@ def flink_version() -> str:
 
 
 def collect_imports() -> set[str]:
-    """Distinct org.apache.flink imports across every module's main source roots."""
+    """Distinct concrete Flink imports across every module's main source roots."""
     found: set[str] = set()
     for source in ROOT.glob("*/src/main/java*/**/*.java"):
-        found.update(IMPORT.findall(source.read_text(encoding="utf-8")))
+        try:
+            parsed = JavaSource.parse(source.relative_to(ROOT), source.read_bytes())
+        except JavaSyntaxError as error:
+            infra(str(error))
+        for node in parsed.nodes("import_declaration"):
+            imported = declaration_target(parsed, node)
+            if imported.startswith("org.apache.flink.") and imported.endswith(".*"):
+                infra(
+                    f"{parsed.path}:{parsed.line(node)}: wildcard import {imported} "
+                    "cannot be classified by API tier; replace it with explicit "
+                    "type imports."
+                )
+            if imported.startswith("org.apache.flink."):
+                found.add(imported)
     if not found:
         infra(f"No org.apache.flink imports found under {ROOT}/*/src/main/java*.")
     return found
@@ -262,15 +236,30 @@ def resolve(
 
 
 def classify(source: str, entry: str, nested: list[str]) -> str:
-    """The class-level tier of the imported type inside one stripped source."""
-    stripped = strip_comments(source)
+    """The class-level tier of the imported type in one Java syntax tree."""
+    try:
+        parsed = JavaSource.parse(entry, source)
+    except JavaSyntaxError as error:
+        infra(str(error))
     # For a nested import, the innermost declared name wins if it carries a
     # tier; otherwise the file's primary type speaks for it.
     for simple in [*reversed(nested), Path(entry).stem]:
-        match = declaration(simple).search(stripped)
-        if not match:
+        declaration = next(
+            (
+                node
+                for node in parsed.nodes(*TYPE_DECLARATIONS)
+                if (name := node.child_by_field_name("name")) is not None
+                and parsed.text(name) == simple
+            ),
+            None,
+        )
+        if declaration is None:
             continue
-        tiers = [t for t in re.findall(r"@(\w+)", match.group(1)) if t in TIERS]
+        tiers = [
+            name.rsplit(".", 1)[-1]
+            for annotation in annotations(declaration)
+            if (name := annotation_name(parsed, annotation)).rsplit(".", 1)[-1] in TIERS
+        ]
         if tiers:
             # Flink does dual-annotate (ExternallyInducedSourceReader is
             # @Experimental @PublicEvolving in 2.2.1): the weaker guarantee

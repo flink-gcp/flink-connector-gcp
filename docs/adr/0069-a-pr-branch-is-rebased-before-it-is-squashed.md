@@ -101,8 +101,8 @@ guard.
   What it does buy is a directory whose files every tool agrees about, in a place where
   disagreement is silent. It parses with **PyYAML** rather than an approximation — a second,
   diverging parser is the failure this repository has paid for elsewhere — declared in the
-  script's own **PEP 723** header, so the uv project takes no runtime dependency and every other
-  script is unchanged. Two costs remain and are stated rather than hidden: that script alone runs
+  script's own **PEP 723** header, so the root project does not take PyYAML as a runtime
+  dependency. Two costs remain and are stated rather than hidden: that script alone runs
   as `uv run --no-project scripts/…`, and pyyaml joins the **dev** group regardless, because
   `just test-scripts` loads every script by file path — which a local `.venv` left over from an
   earlier lock hid until CI ran it clean. Because it downloads, it is a `verify.yaml` job rather

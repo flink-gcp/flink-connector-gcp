@@ -228,12 +228,12 @@ def test_a_metric_table_without_a_type_column_fails(root, check_metric_docs):
 
 
 def sources_of(check_metric_docs, module):
-    return check_metric_docs.blanked_sources(module)
+    return check_metric_docs.parsed_sources(module)
 
 
 def test_registrations_resolve_constants_across_line_wraps(root, check_metric_docs):
     # The formatter wraps long registrations (`metricGroup.counter(\n
-    # Names.X, ...)`); the pattern must reach across the newline.
+    # Names.X, ...)`); the invocation node must retain the first argument.
     connector(root)
     write_source(
         root,
@@ -256,6 +256,30 @@ def test_registrations_resolve_constants_across_line_wraps(root, check_metric_do
     )
     assert registered == {"rowsSent": "counter"} and problems == []
     assert used == {("AMetricNames", "ROWS_SENT")}
+
+
+def test_an_interface_inventory_uses_its_implicit_static_final_constants(
+    root, check_metric_docs
+):
+    write_source(
+        root,
+        "conn",
+        "AMetricNames.java",
+        "package io.github.x;\n\n"
+        "public interface AMetricNames {\n"
+        '    String ROWS_SENT = "rowsSent";\n'
+        "}\n",
+    )
+    write_source(
+        root,
+        "conn",
+        "WriterMetrics.java",
+        metrics_class("AMetricNames", counters=("ROWS_SENT",)),
+    )
+    page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
+    write_config(root, connectors=[("conn", page)])
+
+    assert exit_code(check_metric_docs) == 0
 
 
 def test_a_registration_inside_a_comment_is_not_a_registration(root, check_metric_docs):
@@ -282,8 +306,8 @@ def test_a_registration_inside_a_comment_is_not_a_registration(root, check_metri
 def test_a_comment_marker_inside_a_string_does_not_swallow_its_line(
     root, check_metric_docs
 ):
-    # `"http://…"` carries `//`; naive comment blanking would erase the rest of
-    # the line, and a registration sharing it would silently vanish.
+    # `"http://…"` carries `//`; it is a string literal, not the start of a
+    # comment that can hide the registration sharing its line.
     connector(root, counters=("ROWS_SENT", "OTHER"))
     write_source(
         root,
@@ -847,4 +871,32 @@ def test_a_subgroup_leaf_with_two_kinds_is_infrastructure(root, check_metric_doc
         connectors=[("conn", "docs/conn.md")],
         subgroups=[source],
     )
+    assert exit_code(check_metric_docs) == 2
+
+
+def test_a_dynamic_subgroup_name_is_infrastructure(root, check_metric_docs):
+    """A [[subgroups]] source must describe one constant template."""
+    source = write_source(
+        root,
+        "base",
+        "ErrorCounters.java",
+        "package io.github.x;\n\n"
+        "public final class ErrorCounters {\n"
+        '    public static final String GROUP = "errorClass";\n'
+        '    public static final String ERRORS = "errors";\n'
+        "    static void register(\n"
+        "            MetricGroup metricGroup, String key, String dynamicGroup) {\n"
+        "        MetricGroup group = metricGroup.addGroup(GROUP, key);\n"
+        "        group.counter(ERRORS);\n"
+        "        metricGroup.addGroup(dynamicGroup);\n"
+        "    }\n"
+        "}\n",
+    )
+    clean_tree(root)
+    write_config(
+        root,
+        connectors=[("conn", "docs/conn.md")],
+        subgroups=[source],
+    )
+
     assert exit_code(check_metric_docs) == 2

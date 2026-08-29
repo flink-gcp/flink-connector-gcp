@@ -286,6 +286,29 @@ def test_a_malformed_backing_marker_fails(tree, check_javadoc_examples):
     assert any("malformed source tag" in problem for problem in problems)
 
 
+def test_a_marker_trailing_code_on_its_line_fails(tree, check_javadoc_examples):
+    main, snippets = tree
+    write(
+        main,
+        source(
+            ' * String value = "ok";',
+            '<!-- javadoc-example file="Backing.java" tag="example" -->',
+        ),
+    )
+    write(
+        snippets / "Backing.java",
+        "final class Backing {\n"
+        'String dropped = "wrong"; // tag::example[]\n'
+        'String value = "ok";\n'
+        "// end::example[]\n"
+        "}",
+    )
+
+    _, _, problems, _ = audit(check_javadoc_examples)
+
+    assert any("malformed source tag" in problem for problem in problems)
+
+
 def test_one_backing_region_cannot_serve_two_blocks(tree, check_javadoc_examples):
     main, snippets = tree
     clean_tree(main, snippets)

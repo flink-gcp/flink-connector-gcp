@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0118: Script checker tests use a non-package root uv project and synthetic fixtures
 
 - Status: Accepted
-- Date: 2026-08-02
-- Issues: [#243], [#249]
+- Date: 2026-08-02; revised by [#1115] (2026-08-29)
+- Issues: [#243], [#249], [#1115]
 - Modules: scripts, CI
 - Current behavior: [`pyproject.toml`](../../pyproject.toml), [`just test-scripts`](../../justfile),
   [script test sources](../../scripts/tests)
@@ -42,8 +42,9 @@ uv is pinned in `mise.toml`, while test dependency versions are resolved in the 
 `just test-scripts` runs `uv run --locked pytest`, so CI and local runs reject an unrecorded resolution change.
 The machine-generated lockfile is explicitly excluded from Apache RAT because it cannot carry the repository's license header.
 
-The root project owns test dependencies only.
-A script that needs a third-party runtime dependency declares it in its own PEP 723 metadata and may run through `uv run --no-project`; the dev group repeats that dependency only when the pytest suite loads the script by file path.
+The root project owns test dependencies and runtime dependencies shared by multiple checker commands.
+Shared checker dependencies run through `uv run --locked`, so their compatible range and resolved version have one owner.
+A dependency needed by only one standalone script remains in that script's PEP 723 metadata and may run through `uv run --no-project`; the dev group repeats that dependency only when the pytest suite loads the script by file path.
 
 Checker tests build synthetic trees under `tmp_path` and redirect the checker's root, configuration and other derived paths to those fixtures.
 They do not assert the live repository tree because that would make every Java or documentation input an input to the lint workflow's paths filter and would let an unrelated change land a stale expectation while the suite never ran.
@@ -64,20 +65,26 @@ That pull request's final record contains 16 rule-level mutants.
 Two survived the first pass, and both exposed non-discriminating tests rather than equivalent mutants: an `Option` header control also failed the mutated `startswith` rule, and a commented setter sat outside the declaration regex's reachable indentation.
 The controls were rewritten before the mutants were counted as killed.
 
+[#1115] moved seven Java-aware checkers to one Tree-sitter-backed parser and added Tree-sitter and its Java grammar to the root project.
+The committed lock gives those commands one parser version, while the project constraint excludes tree-sitter 0.26.0 because its `Point` getter reference-counting regression can crash a large compilation-unit traversal.
+The upstream fix is present on the main branch but was not released when the constraint was added.
+
 ## Alternatives declined
 
 - **Install pytest through mise/pipx only**: it would pin an executable but provide no dependency lock or configuration home for the growing suite.
 - **Create a packaged Python project under `scripts/`**: the production scripts are executables loaded by path, so package metadata would describe a distribution the repository never builds.
 - **Assert every checker against the live repository**: the lint workflow would need to enumerate every source and documentation input, and a missed path would make the test stale silently.
 - **Treat line coverage as sufficient evidence**: a test can execute a rule while accepting both the original and mutated behavior, as the two surviving controls demonstrated.
-- **Add checker runtime dependencies to the root project**: that would make direct script execution depend on the test environment and erase the PEP 723 boundary.
+- **Give each Java-aware checker separate PEP 723 metadata**: seven copies would let their compatible ranges and resolved parser versions drift even though they consume one shared parsing module.
 
 ## Consequences
 
 New or changed checker behavior adds synthetic positive and negative fixtures under `scripts/tests`, with a mutation or equivalent control showing that the new assertion can fail for the intended defect.
 No checker test reaches the network unless the test explicitly owns and controls that boundary.
 
-The root uv project may grow test-only dependencies as the suite loads more scripts by path, but it remains non-packaged and does not become the runtime environment for those scripts.
+The root uv project may grow test dependencies as the suite loads more scripts by path and shared runtime dependencies when multiple checker commands use the same library.
+It remains non-packaged, and a dependency used by only one standalone script does not move into the project's runtime set.
 
 [#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
 [#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249
+[#1115]: https://github.com/flink-gcp/flink-connector-gcp/issues/1115

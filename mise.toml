@@ -20,15 +20,10 @@ actionlint = "1.7.12"
 # Lints scripts/*.py. Exactly pinned for the same reason as the two above: a
 # linter that gains a rule fails a pull request that changed nothing.
 ruff = "0.16.0"
-# scripts/check-notice.py and scripts/check-flink-api-tiers.py are
-# standard-library only bar check-skill-frontmatter.py, whose PyYAML comes from
-# its own PEP 723 header; and that standard library must be 3.11+: tomllib
-# reads their scripts/*.toml configs. A major.minor pin, not exact — the
-# requirement is the module’s presence, and a patch release cannot fail a
-# pull request. CI does not use this entry: the ci.yaml jobs that run a
-# tomllib script install their own with actions/setup-python (the changes
-# job's deriver deliberately runs on the runner image's python3 instead), so
-# mise stays out of the setup-java job.
+# The Java-aware source checkers run through the root uv project; the remaining
+# TOML-reading scripts need 3.11+ for tomllib. A major.minor pin, not exact — a
+# patch release cannot fail a pull request. CI's small checker jobs still pin
+# their interpreter independently where they invoke Python before uv.
 python = "3.12"
 # Runs the scripts/tests suite through the root pyproject.toml (`just
 # test-scripts`). uv itself is pinned exactly like the linters — a runner that

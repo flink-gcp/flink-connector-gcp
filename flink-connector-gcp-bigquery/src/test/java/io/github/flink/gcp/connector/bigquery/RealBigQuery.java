@@ -44,8 +44,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * sibling for the FILE_LOADS staging bucket, which only that write method needs.
  *
  * <p>Deliberately a static utility and <b>not</b> a base class carrying the gating annotation:
- * {@code scripts/e2e-gated-its.sh} greps test sources for the literal environment-variable gate and
- * demands a surefire report per match, so an abstract class carrying it would fail {@code
+ * {@code scripts/e2e-gated-its.sh} parses test sources for the environment-variable gate and
+ * demands a surefire report per discovered file, so an abstract class carrying it would fail {@code
  * --assert-ran}. Each gated ITCase declares its own {@code @EnabledIfEnvironmentVariable}
  * annotations.
  */

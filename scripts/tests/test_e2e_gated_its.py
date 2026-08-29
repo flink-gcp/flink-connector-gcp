@@ -29,6 +29,7 @@ lists for test_ci_maven_args.py's sake.
 
 import os
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -109,10 +110,15 @@ def tree(tmp_path):
         return path
 
     def run(*args, env=None):
+        inherited = {
+            name: os.environ[name]
+            for name in ("UV_RUN_RECURSION_DEPTH", "VIRTUAL_ENV")
+            if name in os.environ
+        }
         return subprocess.run(
             [str(SCRIPT), *args],
             cwd=tmp_path,
-            env={"PATH": os.environ["PATH"], **(env or {})},
+            env={"PATH": os.environ["PATH"], **inherited, **(env or {})},
             capture_output=True,
             text=True,
             check=False,
@@ -140,6 +146,93 @@ def test_paired_markers_pass(tree):
     result = tree("--check-tags")
     assert result.returncode == 0, result.stderr
     assert str(len(sources)) in result.stdout
+
+
+def test_direct_run_ignores_an_ambient_parser_and_restores_the_lock(tree, tmp_path):
+    sources = full_suite(tree)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python = bin_dir / "python3"
+    python.write_text(
+        "#!/bin/sh\n"
+        '[ "$1" = -c ] && exit 0\n'
+        'echo "ambient python was used" >&2\n'
+        "exit 97\n"
+    )
+    python.chmod(0o755)
+    mise = bin_dir / "mise"
+    mise.write_text(
+        "#!/bin/sh\n"
+        'while [ "$#" -gt 0 ] && [ "$1" != python ]; do shift; done\n'
+        '[ "$1" = python ] || exit 99\n'
+        "shift\n"
+        'exec "$REAL_PYTHON" "$@"\n'
+    )
+    mise.chmod(0o755)
+
+    result = tree(
+        "--check-tags",
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_PYTHON": sys.executable,
+            "UV_RUN_RECURSION_DEPTH": "1",
+            "VIRTUAL_ENV": "/ambient",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(len(sources)) in result.stdout
+
+    tree.add("UntaggedITCase", gate="BQ_IT_PROJECT")
+    result = tree(
+        "--check-tags",
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_PYTHON": sys.executable,
+            "UV_RUN_RECURSION_DEPTH": "1",
+            "VIRTUAL_ENV": "/ambient",
+        },
+    )
+    assert result.returncode == 1
+    assert "UntaggedITCase.java" in result.stderr
+
+
+def test_uv_run_uses_its_parser_without_mise(tree, tmp_path):
+    sources = full_suite(tree)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    python = bin_dir / "python3"
+    python.write_text('#!/bin/sh\nexec "$REAL_PYTHON" "$@"\n')
+    python.chmod(0o755)
+
+    result = tree(
+        "--check-tags",
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "REAL_PYTHON": sys.executable,
+            "UV_RUN_RECURSION_DEPTH": "1",
+            "VIRTUAL_ENV": str(SCRIPTS.parent / ".venv"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert str(len(sources)) in result.stdout
+
+
+def test_comments_inside_annotation_arguments_do_not_hide_the_markers(tree):
+    sources = full_suite(tree)
+    source = sources[0]
+    text = source.read_text()
+    text = text.replace('@Tag("gated")', '@Tag(/* category */ "gated")')
+    text = text.replace(
+        'named = "BQ_IT_PROJECT"',
+        'named = /* environment */ "BQ_IT_PROJECT"',
+    )
+    source.write_text(text)
+
+    result = tree("--check-tags")
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_slow_tag_with_its_lane_passes(tree):
@@ -228,13 +321,23 @@ def test_a_gate_outside_the_e2e_variables_still_needs_the_tag(tree):
 
 
 def test_no_gated_class_at_all_is_fatal(tree):
-    """A grep that has stopped matching must not read as "nothing to fix"."""
+    """Discovery that finds no gated class must not read as "nothing to fix"."""
     tree.add("PlainITCase")
     result = tree("--check-tags")
     assert result.returncode == 1
     # Asserted on the message, not just the status: without the guard the empty
     # match falls through the loop below and still exits 1, naming no file.
     assert "vacuously" in result.stderr
+
+
+def test_java_syntax_error_is_an_infrastructure_failure(tree):
+    sources = full_suite(tree)
+    sources[0].write_text("class Broken {")
+
+    result = tree("--check-tags")
+
+    assert result.returncode == 2
+    assert "Java parser produced" in result.stderr
 
 
 # --- the E2E modes, which now share one discovery function ---
@@ -286,7 +389,25 @@ def test_gate_selector_rejects_an_unknown_gate(tree, mode):
     result = tree(mode, "UNKNOWN_GATE")
 
     assert result.returncode == 2
-    assert "GATE" in result.stderr
+    assert "usage:" in result.stderr
+
+
+@pytest.mark.parametrize("mode", ["--for-gate", "--except-gate"])
+def test_unknown_gate_is_diagnosed_before_parser_restoration(tree, mode):
+    result = tree(mode, "BQ_IT_PROJEKT", env={"PATH": "/usr/bin:/bin"})
+
+    assert result.returncode == 2
+    assert "usage:" in result.stderr
+    assert "parser is unavailable" not in result.stderr
+
+
+def test_shell_gate_selector_mirrors_the_python_inventory(tree, check_gated_tags):
+    full_suite(tree)
+    assert E2E_GATES == check_gated_tags.E2E_GATES
+
+    for gate in check_gated_tags.E2E_GATES:
+        result = tree("--for-gate", gate)
+        assert result.returncode == 0, result.stderr
 
 
 def test_require_env_accepts_a_complete_environment(tree):

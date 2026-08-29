@@ -41,10 +41,8 @@ generation would have given for free — that the set of options cannot drift �
 and nothing else.
 
 Exit codes: 0 clean, 1 policy violation (undocumented or stale option),
-2 infrastructure or config authoring error (missing file, a source that parses
-to no options at all, malformed config).
-
-Standard library only, like its siblings in this directory.
+2 infrastructure or config authoring error (missing file, invalid Java, a
+source that parses to no options at all, malformed config).
 """
 
 import fnmatch
@@ -52,6 +50,16 @@ import os.path
 import re
 import sys
 from pathlib import Path
+
+from java_ast import (
+    TYPE_DECLARATIONS,
+    JavaSource,
+    JavaSyntaxError,
+    annotation_name,
+    annotations,
+    code_named_children,
+    string_literal_content,
+)
 
 try:
     import tomllib  # stdlib since 3.11
@@ -90,60 +98,6 @@ CONFIG = Path(__file__).resolve().parent / "config" / "option-docs.toml"
 # entry. Naming the one class costs one config line and no false demands.
 SOURCE_GLOBS = ("*Options.java", "*SinkBuilder.java", "*SourceBuilder.java")
 
-# `public Builder maxInFlightBytes(long ...)` or `public Builder<T>
-# sequenceNumberProvider(...)` on a nested options builder, and `public
-# PubSubSinkBuilder<T> topic(TopicDestination ...)` on a sink/source builder.
-# Anchored at line start with leading whitespace so a match inside an expression
-# cannot count.
-SETTER = re.compile(
-    r"^[ \t]+public\s+(?:Builder(?:<\w*>)?|\w+Builder<\w*>)\s+(\w+)\s*\(",
-    re.MULTILINE,
-)
-
-CONFIG_OPTION_KEY = re.compile(r'ConfigOptions\.key\(\s*"([^"]+)"\s*\)')
-
-# The annotation block immediately above a file's first top-level type, and only
-# that one: a builder nested inside an `@Internal` class is internal too, which
-# is how `BigQueryDynamicSink.Builder`'s 14 setters stay out. The block is
-# optional in the pattern so an *unannotated* type still matches and is read as
-# carrying no annotation — reported rather than skipped, which is the direction
-# check-flink-api-tiers.py takes on an unannotated type as well.
-#
-# A top-level declaration is what starts at column 0, so `public` is not required
-# and must not be: 22 of this repository's `@Internal` main sources are
-# package-private (`@Internal` then `final class BoolFieldOptionReader`), and
-# demanding `public` would read their annotation as absent and report them by a
-# message telling you to add the annotation they already carry. Blank lines are
-# allowed inside the block for the same reason — a javadoc between the annotation
-# and the declaration is blanked to them by the time this runs.
-TOP_LEVEL_TYPE = re.compile(
-    r"^((?:@[\w.]+(?:\([^\n]*\))?[ \t]*\n|[ \t]*\n)*)"
-    r"^(?:(?:public|final|abstract|sealed|non-sealed|strictfp|static)\s+)*"
-    r"(?:class|interface|enum|record|@interface)\s+\w+",
-    re.MULTILINE,
-)
-
-# Anchored at a line start so `@SuppressWarnings("@Internal")` — a string literal,
-# which blank_comments deliberately keeps — cannot exempt a class, and accepting a
-# package qualifier so the fully-qualified spelling counts.
-INTERNAL = re.compile(r"^@(?:[\w.]+\.)?Internal\b", re.MULTILINE)
-
-# Comments are blanked before both scans above run, so a setter named in javadoc
-# — `{@link #maxInFlightMessages(int)}` is everywhere in these files — cannot be
-# read as a declaration.
-#
-# String literals are deliberately left intact, unlike in check-flink-api-tiers.py:
-# a ConfigOption's key *is* a string literal, so blanking them would leave the
-# Table API surface looking empty. They are matched first and kept, so a `//`
-# inside one (`"http://…"`) cannot be read as a comment opener and blank the
-# rest of its line — the same mechanism check-metric-docs.py uses.
-COMMENT_OR_STRING = re.compile(
-    r'"(?:\\.|[^"\\\n])*"'  # string literal, kept intact
-    r"|//[^\n]*"  # line comment
-    r"|/\*.*?\*/",  # block comment, incl. javadoc
-    re.DOTALL,
-)
-
 # A table row's first cell, and the backticked identifiers inside it. The cell
 # may name several options (`subscription` / `subscriptions`), and an entry may
 # carry an argument list to distinguish overloads (`timePartitioning(type)`).
@@ -160,15 +114,83 @@ def infra(message: str) -> "sys.NoReturn":
     sys.exit(2)
 
 
-def blank_comments(source: str) -> str:
-    """Blank every comment, preserving newlines and columns so anchors still hold."""
-    return COMMENT_OR_STRING.sub(
-        lambda m: (
-            m.group(0)
-            if m.group(0).startswith('"')
-            else re.sub(r"[^\n]", " ", m.group(0))
+def parse_java(path: Path, text: str | None = None) -> JavaSource:
+    """Parse one Java source or terminate before using a partial inventory."""
+    try:
+        return JavaSource.parse(
+            path.relative_to(ROOT),
+            path.read_bytes() if text is None else text,
+        )
+    except JavaSyntaxError as error:
+        infra(str(error))
+
+
+def builder_setter_names(parsed: JavaSource) -> set[str]:
+    """Public methods whose AST return type is a connector builder type."""
+    found: set[str] = set()
+    for method in parsed.nodes("method_declaration"):
+        modifiers = next(
+            (child for child in method.children if child.type == "modifiers"), None
+        )
+        modifier_tokens = (
+            {child.type for child in modifiers.children}
+            if modifiers is not None
+            else set()
+        )
+        if "public" not in modifier_tokens or "static" in modifier_tokens:
+            continue
+        if method.child_by_field_name("type_parameters") is not None:
+            continue
+        return_type = method.child_by_field_name("type")
+        name = method.child_by_field_name("name")
+        if return_type is None or name is None:
+            continue
+        raw_type = re.sub(r"\s+", "", parsed.text(return_type))
+        raw_base = raw_type.split("<", 1)[0]
+        if "." in raw_base:
+            continue
+        simple_type = raw_base
+        if simple_type == "Builder" or simple_type.endswith("Builder"):
+            found.add(parsed.text(name))
+    return found
+
+
+def config_option_keys(parsed: JavaSource) -> set[str]:
+    """String-literal arguments of ConfigOptions.key(...) invocations."""
+    found: set[str] = set()
+    for call in parsed.nodes("method_invocation"):
+        name = call.child_by_field_name("name")
+        owner = call.child_by_field_name("object")
+        arguments = call.child_by_field_name("arguments")
+        if (
+            name is None
+            or owner is None
+            or arguments is None
+            or parsed.text(name) != "key"
+            or parsed.text(owner) != "ConfigOptions"
+        ):
+            continue
+        values = code_named_children(arguments)
+        if len(values) == 1 and values[0].type == "string_literal":
+            literal = string_literal_content(parsed, values[0])
+            if literal is not None:
+                found.add(literal)
+    return found
+
+
+def top_level_is_internal(parsed: JavaSource) -> bool:
+    """Whether the compilation unit's first top-level type is @Internal."""
+    declaration = next(
+        (
+            child
+            for child in parsed.root.named_children
+            if child.type in TYPE_DECLARATIONS
         ),
-        source,
+        None,
+    )
+    return declaration is not None and any(
+        annotation_name(parsed, annotation).rsplit(".", 1)[-1] == "Internal"
+        for annotation in annotations(declaration)
     )
 
 
@@ -255,12 +277,13 @@ def setters_of(path: Path, text: str, whence: str, remedy: str) -> set[str]:
     untrustworthy rather than that one class merely absent, so it is exit 2 in
     both cases and only the wording differs.
     """
-    setters = set(SETTER.findall(blank_comments(text)))
+    setters = builder_setter_names(parse_java(path, text))
     if not setters:
         infra(
             f"{path.relative_to(ROOT)} {whence} but declares no builder setter this "
             f"script recognises. Either it is not an options class — {remedy} — or "
-            f"its builder no longer follows the shape SETTER matches, which would "
+            f"its builder no longer follows the builder-returning method shape, "
+            f"which would "
             f"make every other class's result untrustworthy too."
         )
     return setters
@@ -347,7 +370,7 @@ def unmapped_public_builders(
 
     It is the stray-module guard one level down. Two things exempt a class, and
     they answer different questions. `@Internal` says the builder is not a user
-    surface at all; see TOP_LEVEL_TYPE for what is read to decide it. A
+    surface at all; the top-level type's AST annotations decide it. A
     `[value_builders]` entry says the opposite — it *is* public, and it builds a
     value rather than a configuration, so no reference row could exist for it.
     `DataChangeRecord` is the case that forced the distinction: a `@PublicEvolving`
@@ -361,12 +384,11 @@ def unmapped_public_builders(
             name = str(source.relative_to(ROOT))
             if name in seen:
                 continue
-            blanked = blank_comments(source.read_text("utf-8"))
-            setters = sorted(set(SETTER.findall(blanked)))
+            parsed = parse_java(source)
+            setters = sorted(builder_setter_names(parsed))
             if not setters:
                 continue
-            declaration = TOP_LEVEL_TYPE.search(blanked)
-            if declaration and INTERNAL.search(declaration.group(1)):
+            if top_level_is_internal(parsed):
                 continue
             if name in value_builders:
                 used.add(name)
@@ -496,7 +518,7 @@ def main() -> int:
 
     for entry in config.get("config_options", []):
         source, page = ROOT / entry["source"], ROOT / entry["page"]
-        keys = set(CONFIG_OPTION_KEY.findall(blank_comments(read(source))))
+        keys = config_option_keys(parse_java(source, read(source)))
         if not keys:
             infra(f"{entry['source']} declares no ConfigOptions.key(...) entries.")
         documented = option_table_entries(page)

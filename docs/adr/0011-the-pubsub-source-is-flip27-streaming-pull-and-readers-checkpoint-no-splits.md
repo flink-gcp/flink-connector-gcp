@@ -94,9 +94,10 @@ asserting non-loss only), and the subscription admin's permission-denied message
 impersonation of the zero-role `e2e-no-pubsub` account — the local-run self-grant is documented
 on the docs page and deliberately not in opentofu, keeping personal identifiers out of source).
 Gating is `@EnabledIfEnvironmentVariable` on `PUBSUB_IT_PROJECT` **on every concrete class,
-never the abstract base** — `scripts/e2e-gated-its.sh` greps the annotation literal and then
-expects a surefire report per matching file. `PubSubSubscriptionAdmin` carries a
-`CredentialsProvider` constructor that the impersonation tests drive. It was `@VisibleForTesting`
+never the abstract base** — `scripts/e2e-gated-its.sh` parses the annotation in each concrete
+test source and then expects a surefire report per matching file.
+`PubSubSubscriptionAdmin` carries a `CredentialsProvider` constructor that the impersonation tests
+drive. It was `@VisibleForTesting`
 and test-only when this was written; [#139] and [#546] gave it a production caller — the source's
 own `serviceAccountKeyFile` reaches the admin through it — so it is an ordinary public constructor
 now, and this paragraph no longer claims otherwise.

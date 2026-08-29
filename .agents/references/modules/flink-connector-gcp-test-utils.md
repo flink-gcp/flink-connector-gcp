@@ -15,8 +15,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (#437); a moved double becomes `@Internal public final`.
 - `testutils.sql` holds `ShadedJar` and the three abstract SQL test bases; the
   unrelocated-package allow-list split is the **intersection**, never the union.
-- **Real-GCP gating annotations never move here** — `scripts/e2e-gated-its.sh` greps the
-  literals on concrete classes; a meta-annotation or shared base would silently defeat it.
+- **Real-GCP gating annotations never move here** — `scripts/e2e-gated-its.sh` parses the
+  annotations on concrete classes; a meta-annotation or shared base would silently defeat it.
 - The justfile `binary-compat`/`e2e` install lists name this module; a rename must update them.
 - **The bar for a test in this module is narrow**: only behaviour a consumer *cannot* reach
   (`AwaitsTest`, `LogCaptureTest`). Anything covered incidentally by a consumer's ITs stays
