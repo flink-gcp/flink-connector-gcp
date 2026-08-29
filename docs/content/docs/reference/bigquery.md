@@ -295,7 +295,8 @@ does with the two stream-count knobs, is under
 | `snapshotTime` | the table's current contents | Reads the table as of an instant inside BigQuery's time-travel window, seven days by default; an older instant is rejected when the session is created |
 | `maxStreamCount` | `0`, BigQuery decides | An upper bound on the read streams the session gets. A cap and never a floor: a small table is read by one stream however many are asked for |
 | `preferredMinStreamCount` | `0`, no request | How many read streams to ask BigQuery for. Best effort; must not exceed `maxStreamCount` when both are set |
-| `maxRecordsPerFetch` | 10000 | The most rows one fetch hands to the task thread, so a checkpoint can be taken part-way through a response block |
+| `maxRecordsPerFetch` | 10000 | The most rows one fetch hands to the task thread. This independent count bound controls small-row batches and checkpoint cadence |
+| `maxBytesPerFetch` | 8 MiB | The target serialized Avro bytes one fetch hands to the task thread. The reader stops before a row would take a non-empty batch over it; one oversized row is emitted alone so the source makes progress |
 | `retryMaxAttempts` | 25 | How many consecutive attempts at a read stream the client library may make **without progress** before the read fails. An attempt that delivered rows resets the count; without a bound the client retries for twenty-four hours |
 | `serviceAccountKeyFile` | *unset → ADC* | Uses the service account in this JSON key file for the read-session, stream-reading, query, and view-materialization clients. Loaded at runtime; the same key file must exist at this path on the JobManager and every TaskManager. Rejected with either emulator endpoint |
 | `emulatorEndpoint` | — | Sends the source's read traffic to a BigQuery emulator at `host:port`, over plaintext and without credentials. The whole of it for a `table` source that does not ask for `materializeViews` |

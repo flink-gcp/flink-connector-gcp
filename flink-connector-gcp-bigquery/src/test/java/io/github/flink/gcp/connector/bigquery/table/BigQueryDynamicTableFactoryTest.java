@@ -264,6 +264,7 @@ class BigQueryDynamicTableFactoryTest {
         options.put("scan.max-stream-count", "7");
         options.put("scan.preferred-min-stream-count", "3");
         options.put("scan.max-records-per-fetch", "200");
+        options.put("scan.max-bytes-per-fetch", "4 mb");
         options.put("scan.retry.max-attempts", "9");
 
         BigQuerySourceConfig<?> config = sourceConfig(options);
@@ -278,6 +279,7 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(config.getMaxStreamCount()).isEqualTo(7);
         assertThat(config.getPreferredMinStreamCount()).isEqualTo(3);
         assertThat(config.getMaxRecordsPerFetch()).isEqualTo(200);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(4L * 1024 * 1024);
         assertThat(((ReadClientRowStreamOpener) config.getRowStreamOpener()).retryMaxAttempts())
                 .isEqualTo(9);
     }
@@ -405,6 +407,7 @@ class BigQueryDynamicTableFactoryTest {
         table.put("scan.max-stream-count", "7");
         table.put("scan.preferred-min-stream-count", "3");
         table.put("scan.max-records-per-fetch", "200");
+        table.put("scan.max-bytes-per-fetch", "4 mb");
         table.put("scan.retry.max-attempts", "9");
         table.put("emulator-endpoint", "localhost:9060");
         table.put("scan.parallelism", "4");
@@ -1299,6 +1302,17 @@ class BigQueryDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.max-records-per-fetch' is invalid")
                 .hasMessageContaining("maxRecordsPerFetch must be positive");
+    }
+
+    @Test
+    void namesTheByteOptionKeyWhenItsValueIsRejected() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.max-bytes-per-fetch", "0 b");
+
+        assertThatThrownBy(() -> builtSource(source(options)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.max-bytes-per-fetch' is invalid")
+                .hasMessageContaining("maxBytesPerFetch must be positive");
     }
 
     @Test

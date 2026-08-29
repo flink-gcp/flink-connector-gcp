@@ -47,8 +47,9 @@ import java.util.Deque;
  *
  * <p>Rows are decoded straight into the batch handed to the task thread: a response block holds up
  * to about 128 MiB, and materializing one into a list before copying it into a batch would double
- * both the memory and the work. The per-fetch cap is what bounds a batch, so a checkpoint can be
- * taken between two fetches of one large block.
+ * both the memory and the work. Each fetch stops at the configured record count or serialized Avro
+ * byte target, whichever comes first, so a checkpoint can be taken between two fetches of one large
+ * block. One row may exceed the byte target and is emitted alone to guarantee progress.
  *
  * <p>Only one stream is open at a time. The enumerator hands out one split per request, so a second
  * one only arrives after this reader reported the first finished; a queue is kept regardless,
@@ -61,6 +62,7 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStrea
 
     private final RowStreamOpener opener;
     private final int maxRecordsPerFetch;
+    private final long maxBytesPerFetch;
     private final BigQuerySourceReaderMetrics metrics;
     @Nullable private final Schema readerSchema;
 
@@ -80,20 +82,25 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStrea
      * @param opener opens the {@code ReadRows} calls; shared with this subtask's other split
      *     readers and closed by the source reader, not here
      * @param maxRecordsPerFetch the most rows one fetch hands to the task thread
+     * @param maxBytesPerFetch the target serialized Avro bytes one fetch hands to the task thread
      * @param readerSchema the schema rows are decoded into, or {@code null} for the session's own
      * @param metrics the reader's metrics
      */
     public BigQuerySplitReader(
             RowStreamOpener opener,
             int maxRecordsPerFetch,
+            long maxBytesPerFetch,
             @Nullable Schema readerSchema,
             BigQuerySourceReaderMetrics metrics) {
         Preconditions.checkArgument(
                 maxRecordsPerFetch > 0,
                 "maxRecordsPerFetch must be positive: %s",
                 maxRecordsPerFetch);
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         this.maxRecordsPerFetch = maxRecordsPerFetch;
+        this.maxBytesPerFetch = maxBytesPerFetch;
         this.readerSchema = readerSchema;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
     }
@@ -113,7 +120,16 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStrea
         }
 
         int emitted = 0;
-        while (emitted < maxRecordsPerFetch) {
+        long emittedBytes = 0;
+        if (stream.pendingRow != null) {
+            batch.add(stream.split.getStreamName(), stream.pendingRow);
+            emitted = 1;
+            emittedBytes = stream.pendingRowBytes;
+            stream.pendingRow = null;
+            stream.pendingRowBytes = 0;
+            stream.deliveredOffset++;
+        }
+        while (emitted < maxRecordsPerFetch && emittedBytes < maxBytesPerFetch) {
             if (!stream.cursor.hasNext()) {
                 ReadRowsResponse response;
                 try {
@@ -139,8 +155,16 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStrea
                 stream.cursor.reset(response);
                 continue;
             }
-            batch.add(stream.split.getStreamName(), stream.cursor.next());
+            GenericRecord row = stream.cursor.next();
+            long rowBytes = stream.cursor.lastRowBytes();
+            if (emitted > 0 && rowBytes > maxBytesPerFetch - emittedBytes) {
+                stream.pendingRow = row;
+                stream.pendingRowBytes = rowBytes;
+                break;
+            }
+            batch.add(stream.split.getStreamName(), row);
             emitted++;
+            emittedBytes += rowBytes;
             stream.deliveredOffset++;
         }
         return batch.build();
@@ -257,6 +281,12 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStrea
         /** Set by {@link #wakeUp()} on the task thread, read by the fetcher thread. */
         private volatile boolean cancelled;
 
+        /** One decoded row held for the next fetch because it would exceed a non-empty batch. */
+        @Nullable private GenericRecord pendingRow;
+
+        /** Serialized Avro bytes consumed by {@code pendingRow}. */
+        private long pendingRowBytes;
+
         private ActiveStream(ReadStreamSplit split) {
             this.split = split;
             this.cursor =
@@ -276,6 +306,8 @@ public class BigQuerySplitReader implements SplitReader<GenericRecord, ReadStrea
             // two are in the element queue on their way to the emitter, and re-reading them here
             // would hand them over twice.
             cursor.discard();
+            pendingRow = null;
+            pendingRowBytes = 0;
             LOG.info(
                     "Opening read stream {} at offset {}.", split.getStreamName(), deliveredOffset);
             RowStream opened = opener.open(split.getStreamName(), deliveredOffset);

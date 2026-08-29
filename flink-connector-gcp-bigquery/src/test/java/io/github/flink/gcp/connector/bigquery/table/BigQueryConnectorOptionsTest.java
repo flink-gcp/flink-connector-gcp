@@ -114,6 +114,7 @@ class BigQueryConnectorOptionsTest {
                         BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT,
                         BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT,
                         BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
+                        BigQueryConnectorOptions.SCAN_MAX_BYTES_PER_FETCH,
                         BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS);
 
         assertThat(scanOptions)
@@ -130,6 +131,7 @@ class BigQueryConnectorOptionsTest {
                         "scan.max-stream-count",
                         "scan.preferred-min-stream-count",
                         "scan.max-records-per-fetch",
+                        "scan.max-bytes-per-fetch",
                         "scan.retry.max-attempts");
         assertThat(declaredOptions())
                 .extracting(ConfigOption::key)

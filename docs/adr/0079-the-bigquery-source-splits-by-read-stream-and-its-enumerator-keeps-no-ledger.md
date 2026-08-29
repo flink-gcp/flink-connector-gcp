@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-09 (BigQuery and emulator behaviour measured the same day), revised by [#392]
-  (2026-08-10), [#393] (2026-08-11), and [#587] (2026-08-13)
-- Issues: [#390], [#64], [#392], [#393], [#542], [#587]
+  (2026-08-10), [#393] (2026-08-11), [#587] (2026-08-13), and [#1136] (2026-08-29)
+- Issues: [#390], [#64], [#392], [#393], [#542], [#587], [#1136]
 - Modules: bigquery (`source`, `source.enumerator`, `source.reader`, `source.serializer`,
   `source.split`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
@@ -66,6 +66,31 @@ Measured against goccy/bigquery-emulator 0.8.1 — the pinned image — the same
 One more measurement decided the deserializer's shape: `TypeInformation.of(GenericRecord.class)` is
 a generic type backed by Kryo, and Kryo **cannot serialize a `GenericData.Record` at all** — it
 throws `UnsupportedOperationException` on the record's own schema (Flink 2.2, Avro 1.12.1).
+
+[#1136] measured the fetch boundary locally on arm64 macOS 26.6.2 with Temurin 17.0.20.
+The harness encoded one response block, warmed each arm twice, and reports the median of five runs.
+The small workload was 100,000 ordinary `id`/`name` rows (1.22 MiB serialized), and the large
+workload was 768 rows cycling through 4, 16, 64, and 256 KiB strings (63.75 MiB serialized).
+Thread allocation came from `com.sun.management.ThreadMXBean`; retained size is the used-heap delta
+after a forced collection before and after the first fetch, so it measures the retained decoded
+batch rather than an object-layout estimate.
+
+| workload | byte target | median throughput | thread allocation / row | first retained batch |
+|---|---:|---:|---:|---:|
+| small | count only | 10.30 M rows/s | 207.5 B | — |
+| small | 8 MiB | 10.83 M rows/s | 207.5 B | — |
+| small | 16 MiB | 10.07 M rows/s | 207.5 B | — |
+| small | 32 MiB | 11.85 M rows/s | 207.5 B | — |
+| large | count only | 110.9 K rows/s | 170.2 KiB | 64.0 MiB |
+| large | 8 MiB | 102.0 K rows/s | 170.2 KiB | 8.1 MiB |
+| large | 16 MiB | 106.8 K rows/s | 170.2 KiB | 16.1 MiB |
+| large | 32 MiB | 93.5 K rows/s | 170.2 KiB | 32.4 MiB |
+
+The benchmark is comparative rather than a portable service-throughput claim: it isolates the
+in-memory response-to-batch path and excludes network time.
+Eight MiB is the smallest candidate and retains 92% of count-only throughput on the large workload,
+above the 90% selection floor, while the small workload still reaches its 10,000-row cap.
+The 10,000-row default therefore remains useful and unchanged.
 
 ## Decision
 
@@ -119,6 +144,30 @@ server decides", it is also the only value the emulator accepts, and the documen
 measurement shows: `maxStreamCount` is a cap and never a floor. The builder rejects
 `preferredMinStreamCount > maxStreamCount` with the service's own rule, so a job fails where it is
 written rather than at session creation.
+
+**A fetch stops at 10,000 records or a target of 8 MiB of serialized Avro rows, whichever comes
+first.**
+The record cap remains independent because it bounds ordinary small-row batches and checkpoint
+cadence.
+The cursor counts source bytes consumed by each decoded row while subtracting the buffered decoder's
+read-ahead, which keeps the decoder reuse and 8 KiB buffering chosen in ADR-0090.
+A row that would take a non-empty batch over the byte target is retained for the next fetch, and a
+row larger than the target is emitted by itself so the reader always makes progress.
+Only rows handed to the task thread advance the split reader's delivered offset; cancelling with a
+deferred row discards it and reopens at that offset, so the row is re-read rather than lost.
+
+The byte target is not a heap limit.
+The cursor still retains one response block of up to about 128 MiB, one deferred decoded row may sit
+beside it, and decoded objects can be larger than their wire form.
+Flink can retain `(source.reader.element.queue.capacity + 2)` fetched batches around a source reader
+(four at the default capacity of two), and source subtasks sharing a TaskManager multiply this
+envelope.
+A child-process test holds four default-sized batches while reading a 96 MiB response under a
+192 MiB heap.
+Projection and row restriction reduce bytes before this boundary; SQL projection maps to the same
+`selectedFields`, while SQL filter pushdown remains [#1137].
+No new metric is added: decoded retained heap cannot be measured actionably without distorting the
+per-row hot path, while `bytesRead` already reports response bytes received.
 
 **The deserializer takes a `GenericRecord` and emits zero or more non-null records through a
 synchronous collector.**
@@ -190,3 +239,5 @@ the Avro-namespace reason above.
 [#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452
 [#542]: https://github.com/flink-gcp/flink-connector-gcp/issues/542
 [#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587
+[#1136]: https://github.com/flink-gcp/flink-connector-gcp/issues/1136
+[#1137]: https://github.com/flink-gcp/flink-connector-gcp/issues/1137

@@ -49,8 +49,8 @@ import java.util.Objects;
  *
  * <p>Built through {@link #builder()} rather than a constructor, for the reason its sibling {@link
  * io.github.flink.gcp.connector.bigquery.table.sink.BigQueryDynamicSink the sink} states: the
- * resolved option families and the planner-applied projection would otherwise form a positional
- * list of eighteen mostly nullable values, repeated by construction, {@link #copy()} and the
+ * resolved option families and the planner-applied projection would otherwise form a long
+ * positional list of mostly nullable values, repeated by construction, {@link #copy()} and the
  * factory's call site — and a transposition among the adjacent same-typed values compiles.
  */
 @Internal
@@ -70,6 +70,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
     @Nullable private final Integer maxStreamCount;
     @Nullable private final Integer preferredMinStreamCount;
     @Nullable private final Integer maxRecordsPerFetch;
+    @Nullable private final Long maxBytesPerFetch;
     @Nullable private final Integer retryMaxAttempts;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
@@ -96,6 +97,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         this.maxStreamCount = builder.maxStreamCount;
         this.preferredMinStreamCount = builder.preferredMinStreamCount;
         this.maxRecordsPerFetch = builder.maxRecordsPerFetch;
+        this.maxBytesPerFetch = builder.maxBytesPerFetch;
         this.retryMaxAttempts = builder.retryMaxAttempts;
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.emulatorEndpoint = builder.emulatorEndpoint;
@@ -183,6 +185,10 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 maxRecordsPerFetch,
                 builder::maxRecordsPerFetch);
         OptionSetters.accept(
+                BigQueryConnectorOptions.SCAN_MAX_BYTES_PER_FETCH.key(),
+                maxBytesPerFetch,
+                builder::maxBytesPerFetch);
+        OptionSetters.accept(
                 BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS.key(),
                 retryMaxAttempts,
                 builder::retryMaxAttempts);
@@ -233,6 +239,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 .maxStreamCount(maxStreamCount)
                 .preferredMinStreamCount(preferredMinStreamCount)
                 .maxRecordsPerFetch(maxRecordsPerFetch)
+                .maxBytesPerFetch(maxBytesPerFetch)
                 .retryMaxAttempts(retryMaxAttempts)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .emulatorEndpoint(emulatorEndpoint)
@@ -270,6 +277,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 && Objects.equals(maxStreamCount, that.maxStreamCount)
                 && Objects.equals(preferredMinStreamCount, that.preferredMinStreamCount)
                 && Objects.equals(maxRecordsPerFetch, that.maxRecordsPerFetch)
+                && Objects.equals(maxBytesPerFetch, that.maxBytesPerFetch)
                 && Objects.equals(retryMaxAttempts, that.retryMaxAttempts)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
@@ -295,6 +303,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 maxStreamCount,
                 preferredMinStreamCount,
                 maxRecordsPerFetch,
+                maxBytesPerFetch,
                 retryMaxAttempts,
                 serviceAccountKeyFile,
                 emulatorEndpoint,
@@ -333,6 +342,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         @Nullable private Integer maxStreamCount;
         @Nullable private Integer preferredMinStreamCount;
         @Nullable private Integer maxRecordsPerFetch;
+        @Nullable private Long maxBytesPerFetch;
         @Nullable private Integer retryMaxAttempts;
         @Nullable private String serviceAccountKeyFile;
         @Nullable private String emulatorEndpoint;
@@ -483,6 +493,18 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
          */
         public Builder maxRecordsPerFetch(@Nullable Integer maxRecordsPerFetch) {
             this.maxRecordsPerFetch = maxRecordsPerFetch;
+            return this;
+        }
+
+        /**
+         * Sets the target serialized Avro bytes one fetch hands to the task thread, or {@code null}
+         * to leave it at the connector's default.
+         *
+         * @param maxBytesPerFetch the target, or {@code null}
+         * @return this builder
+         */
+        public Builder maxBytesPerFetch(@Nullable Long maxBytesPerFetch) {
+            this.maxBytesPerFetch = maxBytesPerFetch;
             return this;
         }
 

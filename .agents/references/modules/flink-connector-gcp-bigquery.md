@@ -479,6 +479,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   without materialising a row from it — a faster decode number is not that. The same run measured
   this module's own Avro path: **the stream decoder allocates a fresh 8 KiB buffer on every
   `configure`**, so `AvroRowCursor` pays one per response block.
+- **A fetch is bounded independently by 10,000 rows and an 8 MiB serialized-Avro target** (#1136;
+  `docs/adr/0079`).
+  The cursor measures bytes actually consumed by each row without disabling Avro's buffered decoder.
+  A row that would cross the byte target is decoded once and held for the next fetch; one row larger
+  than the target is emitted alone.
+  That target bounds neither the retained response block nor decoded-object heap, and Flink may hold
+  `(source.reader.element.queue.capacity + 2)` batches per reader.
 
 ## Metrics (`docs/adr/0034`; conventions in the base module's detailed guidance)
 
