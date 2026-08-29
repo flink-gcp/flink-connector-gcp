@@ -332,7 +332,10 @@ class PubSubPausedSplitBufferITCase extends AbstractPubSubSourceEmulatorITCase {
                 ackTracker,
                 options,
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount),
-                metrics);
+                metrics,
+                event -> {
+                    throw new AssertionError("Unexpected subscriber-buffer overflow: " + event);
+                });
     }
 
     private static String[] payloads(int count) {

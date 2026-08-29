@@ -20,6 +20,8 @@ import org.apache.flink.util.InstantiationUtil;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ObjectStreamClass;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.function.UnaryOperator;
 
@@ -35,6 +37,8 @@ class PubSubSubscriberOptionsTest {
 
         assertThat(options.getFlowControlMaxOutstandingElementCount()).isNull();
         assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isNull();
+        assertThat(options.getSubscriberBufferMaxMessages()).isEqualTo(10_000);
+        assertThat(options.getSubscriberBufferMaxBytes()).isEqualTo(64L * 1024 * 1024);
         // Unset, which resolves to twice the effective flow-control limits rather than to a
         // number of their own — PausedSplitBufferLimits is where that fallback lives.
         assertThat(options.getPausedSplitBufferMaxMessages()).isNull();
@@ -56,6 +60,8 @@ class PubSubSubscriberOptionsTest {
 
         assertThat(options.getFlowControlMaxOutstandingElementCount()).isEqualTo(500L);
         assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(1_048_576L);
+        assertThat(options.getSubscriberBufferMaxMessages()).isEqualTo(8_000);
+        assertThat(options.getSubscriberBufferMaxBytes()).isEqualTo(32L * 1024 * 1024);
         assertThat(options.getPausedSplitBufferMaxMessages()).isEqualTo(400L);
         assertThat(options.getPausedSplitBufferMaxBytes()).isEqualTo(524_288L);
         assertThat(options.getParallelPullCount()).isNull();
@@ -78,6 +84,12 @@ class PubSubSubscriberOptionsTest {
         assertThatThrownBy(() -> builder.flowControlMaxOutstandingRequestBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("flowControlMaxOutstandingRequestBytes");
+        assertThatThrownBy(() -> builder.subscriberBufferMaxMessages(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("subscriberBufferMaxMessages");
+        assertThatThrownBy(() -> builder.subscriberBufferMaxBytes(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("subscriberBufferMaxBytes");
         assertThatThrownBy(() -> builder.pausedSplitBufferMaxMessages(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("pausedSplitBufferMaxMessages");
@@ -254,6 +266,10 @@ class PubSubSubscriberOptionsTest {
                 .isNotEqualTo(fullyPopulated());
         assertThat(variedBy(builder -> builder.flowControlMaxOutstandingRequestBytes(1_048_577)))
                 .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.subscriberBufferMaxMessages(8_001)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.subscriberBufferMaxBytes(33L * 1024 * 1024)))
+                .isNotEqualTo(fullyPopulated());
         assertThat(variedBy(builder -> builder.pausedSplitBufferMaxMessages(401)))
                 .isNotEqualTo(fullyPopulated());
         assertThat(variedBy(builder -> builder.pausedSplitBufferMaxBytes(524_289)))
@@ -284,6 +300,41 @@ class PubSubSubscriberOptionsTest {
                 .isEqualTo(options);
     }
 
+    @Test
+    void serializedOptionsFromBeforeTheBufferLimitsUseTheNewDefaults() throws Exception {
+        assertThat(ObjectStreamClass.lookup(PubSubSubscriberOptions.class).getSerialVersionUID())
+                .isEqualTo(1L);
+        PubSubSubscriberOptions legacy = fullyPopulated();
+        // ObjectInputStream assigns null to a reference field absent from an older stream. Nulling
+        // the two newly added fields before this round trip exercises that exact post-read state
+        // without checking in a Java-serialization blob tied to a compiler implementation.
+        setField(legacy, "subscriberBufferMaxMessages", null);
+        setField(legacy, "subscriberBufferMaxBytes", null);
+
+        PubSubSubscriberOptions restored =
+                InstantiationUtil.deserializeObject(
+                        InstantiationUtil.serializeObject(legacy), getClass().getClassLoader());
+        PubSubSubscriberOptions expected =
+                fullyPopulatedBuilder()
+                        .subscriberBufferMaxMessages(10_000)
+                        .subscriberBufferMaxBytes(64L * 1024 * 1024)
+                        .build();
+
+        assertThat(restored.getSubscriberBufferMaxMessages()).isEqualTo(10_000);
+        assertThat(restored.getSubscriberBufferMaxBytes()).isEqualTo(64L * 1024 * 1024);
+        assertThat(restored).isEqualTo(expected);
+        assertThat(restored).hasSameHashCodeAs(expected);
+        assertThat(restored.toString())
+                .contains("subscriberBufferMaxMessages=10000")
+                .contains("subscriberBufferMaxBytes=67108864");
+    }
+
+    private static void setField(Object target, String name, Object value) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(target, value);
+    }
+
     private static PubSubSubscriberOptions variedBy(
             UnaryOperator<PubSubSubscriberOptions.Builder> variation) {
         return variation.apply(fullyPopulatedBuilder()).build();
@@ -302,6 +353,8 @@ class PubSubSubscriberOptionsTest {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(500)
                 .flowControlMaxOutstandingRequestBytes(1_048_576)
+                .subscriberBufferMaxMessages(8_000)
+                .subscriberBufferMaxBytes(32L * 1024 * 1024)
                 .pausedSplitBufferMaxMessages(400)
                 .pausedSplitBufferMaxBytes(524_288)
                 .maxAckExtensionPeriod(Duration.ofMinutes(30))

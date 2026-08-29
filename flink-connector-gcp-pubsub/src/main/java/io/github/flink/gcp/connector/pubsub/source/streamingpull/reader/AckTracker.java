@@ -63,6 +63,14 @@ public interface AckTracker {
     void addPendingAck(String splitId, String messageId, AckHandle ackHandle);
 
     /**
+     * Nacks a delivery rejected before it enters the pending state. The delivery still counts as
+     * received and nacked even though no later tracker operation can address it.
+     *
+     * @param ackHandle the handle settling the rejected delivery
+     */
+    void nackReceived(AckHandle ackHandle);
+
+    /**
      * Marks a pending message as emitted downstream, making it eligible for the next checkpoint.
      * Does nothing if the message is not pending.
      *

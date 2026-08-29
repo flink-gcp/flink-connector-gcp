@@ -25,6 +25,8 @@ final class RecordingAckTracker implements AckTracker {
 
     private final List<String> calls;
 
+    private int pendingAckCount;
+
     @Nullable private RuntimeException nackFailure;
 
     RecordingAckTracker(List<String> calls) {
@@ -40,7 +42,19 @@ final class RecordingAckTracker implements AckTracker {
     }
 
     @Override
-    public void addPendingAck(String splitId, String messageId, AckHandle ackHandle) {}
+    public void addPendingAck(String splitId, String messageId, AckHandle ackHandle) {
+        pendingAckCount++;
+    }
+
+    int pendingAckCount() {
+        return pendingAckCount;
+    }
+
+    @Override
+    public void nackReceived(AckHandle ackHandle) {
+        calls.add("nackReceived");
+        ackHandle.nack();
+    }
 
     @Override
     public void stagePendingAck(String splitId, String messageId) {}

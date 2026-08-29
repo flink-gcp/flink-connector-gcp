@@ -213,9 +213,11 @@ class PubSubBackpressuredReaderGuardTest {
     @Test
     void aFrozenLoopPinsWholeBatchesWhereTheSubscribersBufferCannotSeeThem() throws Exception {
         // What `bufferUsage()` reports is the subscriber's deque alone, and the bound built on it
-        // (#357) is evaluated against that. Everything the fetcher has already pulled is held in
-        // the element queue, in the fetch the reader is working through and in the batch the
-        // fetcher cannot put — invisible to the deque and to every metric.
+        // (#357) is evaluated against that.
+        // Everything the fetcher has already pulled is held in the element queue, in the fetch the
+        // reader is working through and in the batch the fetcher cannot put.
+        // The fetcher-buffer gauges report that separate footprint without folding it into the
+        // subscriber-buffer bound.
         int batch = 1000;
         int buffered = 5 * batch;
         try (PubSubSourceReader<String> reader = reader(batch, buffered)) {
@@ -238,6 +240,8 @@ class PubSubBackpressuredReaderGuardTest {
             // The queue plus the current fetch plus the held batch, less the one record
             // emitted to free the slot that let the third put through.
             assertThat(pinned).isEqualTo((ELEMENT_QUEUE_CAPACITY + 2) * batch - 1);
+            assertThat(testMetrics.gauge("fetcherBufferedMessages")).isEqualTo(pinned);
+            assertThat(testMetrics.gauge("fetcherBufferedBytes")).isPositive();
         }
     }
 
@@ -420,6 +424,11 @@ class PubSubBackpressuredReaderGuardTest {
         @Override
         public BufferUsage bufferUsage() {
             return delegate.bufferUsage();
+        }
+
+        @Override
+        public void requestStop() {
+            delegate.requestStop();
         }
 
         @Override

@@ -19,14 +19,19 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadInfo;
+import java.lang.management.ThreadMXBean;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -201,7 +206,8 @@ class StreamingPullSubscriberTest {
         // The half that decides whether the reader's bound is a bound at all: without the drain's
         // subtraction the load only ever grows, so a busy split would eventually be parked the
         // moment it was paused.
-        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls));
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(10, Long.MAX_VALUE, event -> {});
+        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls), budget);
         PubsubMessage first = message("1", "x");
         PubsubMessage second = message("2", "xxxxxxxxxx");
         subscriber.receiveMessage(first, new RecordingAckHandle("1"));
@@ -211,12 +217,94 @@ class StreamingPullSubscriberTest {
 
         assertThat(subscriber.bufferUsage().messages()).isEqualTo(1);
         assertThat(subscriber.bufferUsage().bytes()).isEqualTo(second.getSerializedSize());
+        assertThat(budget.usage().messages()).isEqualTo(1);
+        assertThat(budget.usage().bytes()).isEqualTo(second.getSerializedSize());
+    }
+
+    @Test
+    void drainingPublishesDequeAndBudgetSpaceAtomicallyToCallbacks() throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, Long.MAX_VALUE, events::add);
+        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls), budget);
+        budget.register(SPLIT_ID, subscriber::requestStop);
+        PubsubMessage first = message("1", "x");
+        PubsubMessage second = message("2", "y");
+        subscriber.receiveMessage(first, new RecordingAckHandle("1"));
+        AtomicReference<List<PubsubMessage>> drained = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread puller =
+                new Thread(
+                        () -> {
+                            try {
+                                drained.set(subscriber.pullMessages(1));
+                            } catch (Throwable thrown) {
+                                failure.compareAndSet(null, thrown);
+                            }
+                        },
+                        "subscriber-budget-puller");
+        Thread receiver =
+                new Thread(
+                        () -> {
+                            try {
+                                subscriber.receiveMessage(second, new RecordingAckHandle("2"));
+                            } catch (Throwable thrown) {
+                                failure.compareAndSet(null, thrown);
+                            }
+                        },
+                        "subscriber-budget-receiver");
+
+        boolean callbackWaitedForPuller;
+        synchronized (budget) {
+            puller.start();
+            assertThat(waitUntilBlocked(puller, Thread.currentThread().getId())).isTrue();
+            receiver.start();
+            callbackWaitedForPuller = waitUntilBlocked(receiver, puller.getId());
+        }
+        puller.join(TimeUnit.SECONDS.toMillis(5));
+        receiver.join(TimeUnit.SECONDS.toMillis(5));
+
+        assertThat(puller.isAlive()).isFalse();
+        assertThat(receiver.isAlive()).isFalse();
+        assertThat(failure.get()).isNull();
+        assertThat(callbackWaitedForPuller)
+                .as("the pull retains the subscriber monitor until its budget release")
+                .isTrue();
+        assertThat(drained.get()).containsExactly(first);
+        assertThat(subscriber.pullMessages(1)).containsExactly(second);
+        assertThat(events).isEmpty();
+    }
+
+    @Test
+    void rejectsAndStopsBeforeRetainingPastTheReaderBudget() throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        ScriptedClient client = new ScriptedClient(calls);
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, Long.MAX_VALUE, events::add);
+        StreamingPullSubscriber subscriber = subscriberOf(client, budget);
+        budget.register(SPLIT_ID, client::stopAsync);
+        PubsubMessage admitted = message("1", "x");
+        RecordingAckHandle rejected = new RecordingAckHandle("2");
+
+        subscriber.receiveMessage(admitted, new RecordingAckHandle("1"));
+        subscriber.receiveMessage(message("2", "y"), rejected);
+
+        assertThat(subscriber.bufferUsage().messages()).isEqualTo(1);
+        assertThat(subscriber.pullMessages(10)).containsExactly(admitted);
+        assertThat(ackTracker.pendingAckCount())
+                .as("the rejected delivery never entered the checkpoint acknowledgement state")
+                .isEqualTo(1);
+        assertThat(rejected.isNacked()).isTrue();
+        assertThat(events).hasSize(1);
+        assertThat(calls)
+                .containsExactly("dataAvailable", "stopAsync", "nackReceived", "dataAvailable");
     }
 
     @Test
     void shutdownEmptiesTheUsageItReports() throws Exception {
-        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls));
-        subscriber.receiveMessage(message("1", "xxxxx"), new RecordingAckHandle("1"));
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(Long.MAX_VALUE, Long.MAX_VALUE, event -> {});
+        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls), budget);
+        PubsubMessage buffered = message("1", "xxxxx");
+        subscriber.receiveMessage(buffered, new RecordingAckHandle("1"));
 
         subscriber.shutdown();
 
@@ -224,11 +312,16 @@ class StreamingPullSubscriberTest {
         // holding is nothing.
         assertThat(subscriber.bufferUsage().messages()).isZero();
         assertThat(subscriber.bufferUsage().bytes()).isZero();
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(budget.usage().bytes()).isZero();
     }
 
     @Test
-    void aMessageArrivingAfterShutdownIsNackedRatherThanBuffered() throws Exception {
-        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls));
+    void anOversizedMessageArrivingAfterShutdownIsNackedWithoutAFalseLimitResponse()
+            throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, 1, events::add);
+        StreamingPullSubscriber subscriber = subscriberOf(new ScriptedClient(calls), budget);
         subscriber.shutdown();
         RecordingAckHandle late = new RecordingAckHandle("late");
 
@@ -236,7 +329,10 @@ class StreamingPullSubscriberTest {
 
         assertThat(subscriber.bufferUsage().messages()).isZero();
         assertThat(subscriber.bufferUsage().bytes()).isZero();
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(budget.usage().bytes()).isZero();
         assertThat(late.isNacked()).isTrue();
+        assertThat(events).isEmpty();
     }
 
     private static PubsubMessage message(String messageId, String payload) {
@@ -246,13 +342,35 @@ class StreamingPullSubscriberTest {
                 .build();
     }
 
+    private static boolean waitUntilBlocked(Thread thread, long expectedOwnerId)
+            throws InterruptedException {
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            ThreadInfo info = threads.getThreadInfo(thread.getId());
+            if (info != null
+                    && info.getThreadState() == Thread.State.BLOCKED
+                    && info.getLockOwnerId() == expectedOwnerId) {
+                return true;
+            }
+            Thread.sleep(1);
+        }
+        return false;
+    }
+
     private StreamingPullSubscriber subscriberOf(ScriptedClient client) throws IOException {
+        return subscriberOf(client, SubscriberBufferBudget.unbounded());
+    }
+
+    private StreamingPullSubscriber subscriberOf(
+            ScriptedClient client, SubscriberBufferBudget bufferBudget) throws IOException {
         return new StreamingPullSubscriber(
                 SPLIT_ID,
                 SUBSCRIPTION,
                 ackTracker,
                 () -> calls.add("dataAvailable"),
                 SHUTDOWN_TIMEOUT,
+                bufferBudget,
                 client::start,
                 client::stopAsync,
                 client::awaitTerminated);

@@ -106,6 +106,16 @@ public final class PubSubMetricNames {
     public static final String BUFFERED_BYTES = "bufferedBytes";
 
     /**
+     * Messages already removed from subscriber buffers but not yet taken from Flink's fetcher
+     * batches by the source reader. This includes a batch waiting to enter the element queue, the
+     * queue itself, and the batch the source reader is currently consuming.
+     */
+    public static final String FETCHER_BUFFERED_MESSAGES = "fetcherBufferedMessages";
+
+    /** {@link #FETCHER_BUFFERED_MESSAGES} in serialized bytes. */
+    public static final String FETCHER_BUFFERED_BYTES = "fetcherBufferedBytes";
+
+    /**
      * The <em>state</em> a paused split is left in once its buffer outgrows its bound and the
      * reader stops its subscriber (#357), so it takes the gauge shape — and "parked" in the sense
      * {@link #PARKED_MESSAGES} already gives it here, held for a resumption that is expected. This

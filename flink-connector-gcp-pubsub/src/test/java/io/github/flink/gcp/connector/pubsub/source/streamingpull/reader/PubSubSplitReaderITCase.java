@@ -153,7 +153,10 @@ class PubSubSplitReaderITCase extends AbstractPubSubSourceEmulatorITCase {
                 ackTracker,
                 options,
                 new MissingCheckpointDetector(Duration.ZERO, ackTracker::outstandingAckCount),
-                new TestReaderMetrics().metrics());
+                new TestReaderMetrics().metrics(),
+                event -> {
+                    throw new AssertionError("Unexpected subscriber-buffer overflow: " + event);
+                });
     }
 
     /**

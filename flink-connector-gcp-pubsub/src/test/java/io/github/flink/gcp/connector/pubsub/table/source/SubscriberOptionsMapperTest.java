@@ -56,6 +56,12 @@ class SubscriberOptionsMapperTest {
                 "flowControlMaxOutstandingRequestBytes",
                 PubSubConnectorOptions.SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES);
         SETTER_TO_OPTION.put(
+                "subscriberBufferMaxMessages",
+                PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_MESSAGES);
+        SETTER_TO_OPTION.put(
+                "subscriberBufferMaxBytes",
+                PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_BYTES);
+        SETTER_TO_OPTION.put(
                 "pausedSplitBufferMaxMessages",
                 PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES);
         SETTER_TO_OPTION.put(
@@ -107,6 +113,8 @@ class SubscriberOptionsMapperTest {
         Map<String, String> options = new HashMap<>();
         options.put(key("flowControlMaxOutstandingElementCount"), "500");
         options.put(key("flowControlMaxOutstandingRequestBytes"), "7 mb");
+        options.put(key("subscriberBufferMaxMessages"), "1200");
+        options.put(key("subscriberBufferMaxBytes"), "13 mb");
         options.put(key("pausedSplitBufferMaxMessages"), "900");
         options.put(key("pausedSplitBufferMaxBytes"), "11 mb");
         options.put(key("parallelPullCount"), "3");
@@ -124,6 +132,8 @@ class SubscriberOptionsMapperTest {
 
         assertThat(mapped.getFlowControlMaxOutstandingElementCount()).isEqualTo(500L);
         assertThat(mapped.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(7L * 1024 * 1024);
+        assertThat(mapped.getSubscriberBufferMaxMessages()).isEqualTo(1_200L);
+        assertThat(mapped.getSubscriberBufferMaxBytes()).isEqualTo(13L * 1024 * 1024);
         assertThat(mapped.getPausedSplitBufferMaxMessages()).isEqualTo(900L);
         assertThat(mapped.getPausedSplitBufferMaxBytes()).isEqualTo(11L * 1024 * 1024);
         assertThat(mapped.getParallelPullCount()).isEqualTo(3);
@@ -160,5 +170,24 @@ class SubscriberOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.parallel-pull-count' is invalid")
                 .hasMessageContaining("parallelPullCount must be positive");
+    }
+
+    @Test
+    void namesEachSubscriberBufferOptionKeyWhenAValueIsRejected() {
+        Map<String, String> messageOptions = new HashMap<>();
+        messageOptions.put("scan.subscriber-buffer.max-messages", "0");
+
+        assertThatThrownBy(() -> SubscriberOptionsMapper.map(Configuration.fromMap(messageOptions)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.subscriber-buffer.max-messages' is invalid")
+                .hasMessageContaining("subscriberBufferMaxMessages must be positive");
+
+        Map<String, String> byteOptions = new HashMap<>();
+        byteOptions.put("scan.subscriber-buffer.max-bytes", "0 b");
+
+        assertThatThrownBy(() -> SubscriberOptionsMapper.map(Configuration.fromMap(byteOptions)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.subscriber-buffer.max-bytes' is invalid")
+                .hasMessageContaining("subscriberBufferMaxBytes must be positive");
     }
 }

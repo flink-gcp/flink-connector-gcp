@@ -102,6 +102,13 @@ public class PubSubAckTracker implements AckTracker {
     }
 
     @Override
+    public void nackReceived(AckHandle ackHandle) {
+        metrics.messageReceived();
+        ackHandle.nack();
+        metrics.messagesNacked(1);
+    }
+
+    @Override
     public synchronized void stagePendingAck(String splitId, String messageId) {
         AckHandle handle = removePendingAck(splitId, messageId);
         if (handle != null) {

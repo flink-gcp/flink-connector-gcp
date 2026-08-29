@@ -22,15 +22,21 @@ import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.AbstractCollection;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,6 +50,8 @@ class SubscriberRosterTest {
 
     private static final SubscriptionSplit SPLIT =
             new SubscriptionSplit(SubscriptionDestination.of("project", "sub-a"), "0");
+    private static final SubscriptionSplit SECOND_SPLIT =
+            new SubscriptionSplit(SubscriptionDestination.of("project", "sub-b"), "1");
 
     private final Map<String, FakePullSubscriber> subscribers = new HashMap<>();
     private final TestReaderMetrics readerMetrics = new TestReaderMetrics();
@@ -52,6 +60,10 @@ class SubscriberRosterTest {
     private IOException failNextOpen;
 
     private SubscriberRoster roster(long maxMessages) {
+        return roster(maxMessages, SubscriberBufferBudget.unbounded());
+    }
+
+    private SubscriberRoster roster(long maxMessages, SubscriberBufferBudget bufferBudget) {
         return new SubscriberRoster(
                 (split, signal) -> {
                     if (failNextOpen != null) {
@@ -70,9 +82,124 @@ class SubscriberRosterTest {
                                 .pausedSplitBufferMaxMessages(maxMessages)
                                 .pausedSplitBufferMaxBytes(Long.MAX_VALUE)
                                 .build()),
+                bufferBudget,
                 readerMetrics.metrics(),
                 LoggerFactory.getLogger(PubSubSplitReader.class),
                 () -> {});
+    }
+
+    @Test
+    void aReaderWideLimitParksAnEntirelyPausedRoster() throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget bufferBudget = new SubscriberBufferBudget(1, 100, events::add);
+        SubscriberRoster roster = roster(Long.MAX_VALUE, bufferBudget);
+        roster.addSplit(SPLIT);
+        roster.pauseOrResume(List.of(SPLIT), List.of());
+        FakePullSubscriber parked = subscribers.get(SPLIT.splitId());
+        List<String> calls = new ArrayList<>();
+        parked.recordCallsInto(calls);
+        parked.deliver(message("1"));
+        assertThat(bufferBudget.tryReserve(SPLIT.splitId(), 1).isAdmitted()).isTrue();
+        bufferBudget.tryReserve(SPLIT.splitId(), 1).respond();
+
+        roster.parkOverfullPausedSplits();
+
+        assertThat(events).isEmpty();
+        assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
+        assertThat(parked.isClosed()).isTrue();
+        assertThat(calls)
+                .containsExactly(
+                        "requestStop:" + SPLIT.splitId(),
+                        "shutdown:" + SPLIT.splitId(),
+                        "close:" + SPLIT.splitId());
+
+        // The production subscriber releases its reservations during the park shutdown. Model
+        // that release explicitly because this roster fake does not own the shared budget.
+        bufferBudget.release(1, 1);
+        roster.pauseOrResume(List.of(), List.of(SPLIT));
+
+        assertThat(events).isEmpty();
+        assertThat(readerMetrics.gauge("parkedSplits")).isZero();
+        assertThat(subscribers.get(SPLIT.splitId())).isNotSameAs(parked);
+        assertThat(bufferBudget.tryReserve(SPLIT.splitId(), 1).isAdmitted()).isTrue();
+        bufferBudget.release(1, 1);
+        roster.closeAll();
+    }
+
+    @Test
+    void addingAnActiveSplitWhileAReaderWideParkIsPendingPromotesItToFailure() throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        AtomicBoolean activeSubscriberStoppedBeforeFailure = new AtomicBoolean();
+        SubscriberBufferBudget bufferBudget =
+                new SubscriberBufferBudget(
+                        1,
+                        100,
+                        event -> {
+                            activeSubscriberStoppedBeforeFailure.set(
+                                    subscribers.get(SECOND_SPLIT.splitId()).isStopRequested());
+                            events.add(event);
+                        });
+        SubscriberRoster roster = roster(Long.MAX_VALUE, bufferBudget);
+        roster.addSplit(SPLIT);
+        roster.pauseOrResume(List.of(SPLIT), List.of());
+        assertThat(bufferBudget.tryReserve(SPLIT.splitId(), 1).isAdmitted()).isTrue();
+        bufferBudget.tryReserve(SPLIT.splitId(), 1).respond();
+        assertThat(bufferBudget.parkingRequested()).isTrue();
+
+        roster.addSplit(SECOND_SPLIT);
+
+        assertThat(bufferBudget.parkingRequested()).isFalse();
+        assertThat(events)
+                .singleElement()
+                .satisfies(event -> assertThat(event.splitId()).isEqualTo(SPLIT.splitId()));
+        assertThat(activeSubscriberStoppedBeforeFailure).isTrue();
+        assertThat(subscribers.get(SECOND_SPLIT.splitId()).isStopRequested()).isTrue();
+        bufferBudget.release(1, 1);
+        roster.closeAll();
+        assertThat(subscribers.get(SECOND_SPLIT.splitId()).isClosed()).isTrue();
+    }
+
+    @Test
+    void aPausedSplitRemainsRegisteredUntilShutdownStopsItsCallbacks() throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget bufferBudget = new SubscriberBufferBudget(2, 100, events::add);
+        SubscriberRoster roster = roster(1, bufferBudget);
+        roster.addSplit(SPLIT);
+        roster.pauseOrResume(List.of(SPLIT), List.of());
+        FakePullSubscriber parked = subscribers.get(SPLIT.splitId());
+        parked.deliver(message("1"), message("2"));
+        assertThat(bufferBudget.tryReserve(SPLIT.splitId(), 1).isAdmitted()).isTrue();
+        assertThat(bufferBudget.tryReserve(SPLIT.splitId(), 1).isAdmitted()).isTrue();
+        parked.runOnShutdown(() -> bufferBudget.tryReserve(SPLIT.splitId(), 1).respond());
+
+        roster.parkOverfullPausedSplits();
+
+        assertThat(events).isEmpty();
+        assertThat(parked.isClosed()).isTrue();
+        bufferBudget.release(2, 2);
+        assertThat(bufferBudget.parkingRequested()).isFalse();
+        roster.closeAll();
+    }
+
+    @Test
+    void aPauseRequestPublishesTheWholeGroupBeforeACallbackCanCrossTheLimit() throws Exception {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget bufferBudget = new SubscriberBufferBudget(1, 100, events::add);
+        SubscriberRoster roster = roster(Long.MAX_VALUE, bufferBudget);
+        roster.addSplit(SPLIT);
+        roster.addSplit(SECOND_SPLIT);
+        assertThat(bufferBudget.tryReserve(SPLIT.splitId(), 1).isAdmitted()).isTrue();
+        long transitionsBeforePause = bufferBudget.pauseTransitions();
+
+        roster.pauseOrResume(pauseGroupThatCrossesAfterTheFirstPause(bufferBudget), List.of());
+
+        assertThat(bufferBudget.pauseTransitions() - transitionsBeforePause)
+                .as("the roster publishes one batch transition for the whole pause group")
+                .isEqualTo(1);
+        assertThat(bufferBudget.parkingRequested()).isTrue();
+        assertThat(events).isEmpty();
+        bufferBudget.release(1, 1);
+        roster.closeAll();
     }
 
     @Test
@@ -92,7 +219,7 @@ class SubscriberRosterTest {
                 .hasRootCauseMessage("no such subscription");
 
         RecordsBySplits.Builder<PubsubMessage> builder = new RecordsBySplits.Builder<>();
-        assertThat(roster.drainInto(builder)).isZero();
+        assertThat(roster.drainInto(builder).messages()).isZero();
         assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
         roster.closeAll();
     }
@@ -160,7 +287,7 @@ class SubscriberRosterTest {
         roster.addSplit(SPLIT);
         subscribers.get(SPLIT.splitId()).deliver(message("1"));
         RecordsBySplits.Builder<PubsubMessage> builder = new RecordsBySplits.Builder<>();
-        assertThat(roster.drainInto(builder)).isEqualTo(1);
+        assertThat(roster.drainInto(builder).messages()).isEqualTo(1);
         roster.closeAll();
     }
 
@@ -169,5 +296,44 @@ class SubscriberRosterTest {
                 .setMessageId(payload)
                 .setData(ByteString.copyFromUtf8(payload))
                 .build();
+    }
+
+    /**
+     * Crosses the budget on the first traversal that can observe split A paused. The production
+     * roster's first traversal only gathers ids, then publishes both pause flags atomically, so the
+     * crossing sees both paused. A sequential per-split implementation instead crosses while A is
+     * paused and B is still active, turning the same alignment request into a false failure.
+     */
+    private static Collection<SubscriptionSplit> pauseGroupThatCrossesAfterTheFirstPause(
+            SubscriberBufferBudget bufferBudget) {
+        List<SubscriptionSplit> splits = List.of(SPLIT, SECOND_SPLIT);
+        return new AbstractCollection<>() {
+            private boolean crossed;
+
+            @Override
+            public Iterator<SubscriptionSplit> iterator() {
+                Iterator<SubscriptionSplit> delegate = splits.iterator();
+                return new Iterator<>() {
+                    @Override
+                    public boolean hasNext() {
+                        return delegate.hasNext();
+                    }
+
+                    @Override
+                    public SubscriptionSplit next() {
+                        if (!crossed && bufferBudget.isPaused(SPLIT.splitId())) {
+                            crossed = true;
+                            bufferBudget.tryReserve(SECOND_SPLIT.splitId(), 1).respond();
+                        }
+                        return delegate.next();
+                    }
+                };
+            }
+
+            @Override
+            public int size() {
+                return splits.size();
+            }
+        };
     }
 }

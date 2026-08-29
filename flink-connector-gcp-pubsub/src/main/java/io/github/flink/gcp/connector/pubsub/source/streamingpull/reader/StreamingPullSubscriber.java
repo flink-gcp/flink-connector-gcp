@@ -50,16 +50,18 @@ import java.util.function.Consumer;
  * on acknowledgement, which happens a whole checkpoint later — the client library's per-key
  * serialization waits for the callback to return, not for the acknowledgement.
  *
- * <p><b>The buffer is deliberately unbounded, and its bound is elsewhere.</b> The two things a
- * bounded buffer could do here are both ruled out by the paragraph above: blocking inside the
- * callback would stall the key's dispatch chain and hold a client-library thread, and refusing a
- * message means nacking one already leased. So backpressure comes from the client library's flow
- * control, which stops pulling once its outstanding limit fills — <em>for one {@code
- * maxAckExtensionPeriod}</em>. Past it the client releases a message's flow-control permit while
- * this subscriber is still holding the message, and pulling resumes with nothing capping what
- * accumulates (#357, measured by {@code PubSubPausedSplitBufferITCase}). What bounds it after that
- * is {@link SubscriberRoster}, which reads {@link #bufferUsage()} and stops the client of a paused
- * split that has outgrown it.
+ * <p><b>The callback never blocks.</b> Before appending a delivery, it atomically reserves space in
+ * the shared {@link SubscriberBufferBudget}. A delivery crossing that reader-wide hard bound is
+ * refused: all subscribers are asked to stop before the crossing delivery is nacked, then an active
+ * reader fails or an entirely paused reader parks its subscribers. Returning promptly from the
+ * callback preserves the ordering-key dispatch chain described above.
+ *
+ * <p>The hard bound cannot come from client flow control alone. Flow control stops pulling once its
+ * outstanding limit fills only for one {@code maxAckExtensionPeriod}; past it the client releases a
+ * delivery's permit while this subscriber still holds the message, and pulling resumes (#357,
+ * measured by {@code PubSubPausedSplitBufferITCase}). {@link SubscriberRoster} separately reads
+ * {@link #bufferUsage()} for the per-paused-split policy, which may park one split before the
+ * aggregate reader budget is reached.
  *
  * <p>The client's three lifecycle operations are held as functional values rather than as a {@link
  * Subscriber}, <b>because that is the only seam a test can drive</b> (#325). {@code Subscriber} is
@@ -81,7 +83,7 @@ import java.util.function.Consumer;
  * with a caller-supplied data-available signal in place of per-subscriber notification futures.
  */
 @Internal
-public class StreamingPullSubscriber implements PullSubscriber {
+final class StreamingPullSubscriber implements PullSubscriber {
 
     /**
      * Registers a permanent-failure sink with the client and starts it, returning once it is
@@ -111,6 +113,7 @@ public class StreamingPullSubscriber implements PullSubscriber {
     private final String splitId;
     private final SubscriptionDestination subscription;
     private final AckTracker ackTracker;
+    private final SubscriberBufferBudget bufferBudget;
     private final Runnable dataAvailableSignal;
     private final Runnable subscriberStopAsync;
     private final SubscriberTeardown teardown;
@@ -149,19 +152,22 @@ public class StreamingPullSubscriber implements PullSubscriber {
      * @param dataAvailableSignal invoked when messages become available or the subscriber fails, so
      *     a blocked fetch wakes up
      * @param shutdownTimeout how long {@link #close()} waits for the client to release its messages
+     * @param bufferBudget the shared hard bound for every subscriber opened by this reader
      * @throws IOException if the subscriber cannot be created or started
      */
-    public StreamingPullSubscriber(
+    StreamingPullSubscriber(
             String splitId,
             SubscriptionDestination subscription,
             SubscriberFactory subscriberFactory,
             AckTracker ackTracker,
             Runnable dataAvailableSignal,
-            Duration shutdownTimeout)
+            Duration shutdownTimeout,
+            SubscriberBufferBudget bufferBudget)
             throws IOException {
         this.splitId = splitId;
         this.subscription = subscription;
         this.ackTracker = ackTracker;
+        this.bufferBudget = bufferBudget;
         this.dataAvailableSignal = dataAvailableSignal;
         Subscriber subscriber = subscriberFactory.create(subscription, this::receiveMessage);
         this.subscriberStopAsync = subscriber::stopAsync;
@@ -198,9 +204,34 @@ public class StreamingPullSubscriber implements PullSubscriber {
             Runnable subscriberStopAsync,
             TerminationWait subscriberAwaitTerminated)
             throws IOException {
+        this(
+                splitId,
+                subscription,
+                ackTracker,
+                dataAvailableSignal,
+                shutdownTimeout,
+                SubscriberBufferBudget.unbounded(),
+                subscriberStart,
+                subscriberStopAsync,
+                subscriberAwaitTerminated);
+    }
+
+    @VisibleForTesting
+    StreamingPullSubscriber(
+            String splitId,
+            SubscriptionDestination subscription,
+            AckTracker ackTracker,
+            Runnable dataAvailableSignal,
+            Duration shutdownTimeout,
+            SubscriberBufferBudget bufferBudget,
+            SubscriberStart subscriberStart,
+            Runnable subscriberStopAsync,
+            TerminationWait subscriberAwaitTerminated)
+            throws IOException {
         this.splitId = splitId;
         this.subscription = subscription;
         this.ackTracker = ackTracker;
+        this.bufferBudget = bufferBudget;
         this.dataAvailableSignal = dataAvailableSignal;
         this.subscriberStopAsync = subscriberStopAsync;
         this.teardown =
@@ -308,15 +339,58 @@ public class StreamingPullSubscriber implements PullSubscriber {
      */
     @VisibleForTesting
     void receiveMessage(PubsubMessage message, AckHandle ackHandle) {
+        long messageBytes = message.getSerializedSize();
+        SubscriberBufferBudget.Admission admission;
         synchronized (this) {
             if (closed || permanentError != null) {
-                // Nack rather than drop: the message must go back for redelivery immediately.
-                ackHandle.nack();
+                // Nack rather than drop: the message must go back for redelivery immediately. Check
+                // before reserving, so a late oversized callback from an asynchronously stopping
+                // client cannot manufacture a limit response for data this subscriber will discard.
+                ackTracker.nackReceived(ackHandle);
                 return;
             }
-            ackTracker.addPendingAck(splitId, message.getMessageId(), ackHandle);
-            messages.addLast(message);
-            bufferedBytes += message.getSerializedSize();
+            // Shutdown needs the same monitor before it can mark this subscriber closed. It can
+            // therefore either win above, or run after an admitted delivery is in the deque and
+            // release that reservation as part of its ordinary teardown.
+            admission = bufferBudget.tryReserve(splitId, messageBytes);
+            if (admission.isAdmitted()) {
+                ackTracker.addPendingAck(splitId, message.getMessageId(), ackHandle);
+                messages.addLast(message);
+                bufferedBytes += messageBytes;
+            }
+        }
+        if (!admission.isAdmitted()) {
+            RuntimeException firstFailure = null;
+            try {
+                // Stop intake before releasing this delivery's permit, so an immediate
+                // redelivery cannot race ahead of the asynchronous stop and form a live NACK
+                // loop.
+                admission.respond(this::requestStop);
+            } catch (RuntimeException failure) {
+                firstFailure = failure;
+            }
+            try {
+                ackTracker.nackReceived(ackHandle);
+            } catch (RuntimeException failure) {
+                if (firstFailure == null) {
+                    firstFailure = failure;
+                } else {
+                    firstFailure.addSuppressed(failure);
+                }
+            }
+            try {
+                dataAvailableSignal.run();
+            } catch (RuntimeException failure) {
+                if (firstFailure == null) {
+                    firstFailure = failure;
+                } else {
+                    firstFailure.addSuppressed(failure);
+                }
+            }
+            if (firstFailure != null) {
+                throw firstFailure;
+            }
+            return;
         }
         dataAvailableSignal.run();
     }
@@ -332,19 +406,27 @@ public class StreamingPullSubscriber implements PullSubscriber {
 
     @Override
     public List<PubsubMessage> pullMessages(int maxMessages) throws IOException {
+        List<PubsubMessage> drained;
+        long releasedBytes = 0;
         synchronized (this) {
             throwIfFailed();
             if (messages.isEmpty()) {
                 return Collections.emptyList();
             }
-            List<PubsubMessage> drained = new ArrayList<>(Math.min(maxMessages, messages.size()));
+            drained = new ArrayList<>(Math.min(maxMessages, messages.size()));
             while (drained.size() < maxMessages && !messages.isEmpty()) {
                 PubsubMessage message = messages.pollFirst();
-                bufferedBytes -= message.getSerializedSize();
+                long messageBytes = message.getSerializedSize();
+                bufferedBytes -= messageBytes;
+                releasedBytes += messageBytes;
                 drained.add(message);
             }
-            return drained;
+            // A callback reserves while holding this same subscriber monitor. Release before
+            // dropping it, so no callback can observe the deque after this drain but the shared
+            // budget before it and manufacture a false limit crossing.
+            bufferBudget.release(drained.size(), releasedBytes);
         }
+        return drained;
     }
 
     @Override
@@ -357,6 +439,11 @@ public class StreamingPullSubscriber implements PullSubscriber {
     @Override
     public synchronized BufferUsage bufferUsage() {
         return BufferUsage.of(messages.size(), bufferedBytes);
+    }
+
+    @Override
+    public void requestStop() {
+        subscriberStopAsync.run();
     }
 
     /**
@@ -377,15 +464,20 @@ public class StreamingPullSubscriber implements PullSubscriber {
 
     @Override
     public void shutdown() {
+        int releasedMessages;
+        long releasedBytes;
         synchronized (this) {
             if (closed) {
                 return;
             }
             closed = true;
             // Buffered messages were never emitted; nackSplit below returns them for redelivery.
+            releasedMessages = messages.size();
+            releasedBytes = bufferedBytes;
             messages.clear();
             bufferedBytes = 0L;
         }
+        bufferBudget.release(releasedMessages, releasedBytes);
         // One list rather than two calls, for the reason #297 gave the same shape one level up in
         // SubscriberRoster.closeAll(): closed is already true by the time these run, so the stop
         // must not be skipped when the nack throws. It would leave this method's idempotence guard
