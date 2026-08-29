@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
@@ -32,6 +33,7 @@ import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionInfo;
@@ -444,6 +446,33 @@ public class PubSubSplitEnumerator
     @Override
     public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
         // Assignment is push-based and complete from addReader onwards; readers never need to ask.
+    }
+
+    @Override
+    public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        if (!(sourceEvent instanceof SubscriberBufferLimitExceededEvent)) {
+            SplitEnumerator.super.handleSourceEvent(subtaskId, sourceEvent);
+            return;
+        }
+        SubscriberBufferLimitExceededEvent exceeded =
+                (SubscriberBufferLimitExceededEvent) sourceEvent;
+        throw new FlinkRuntimeException(
+                "Pub/Sub source reader subtask "
+                        + subtaskId
+                        + " could not admit a delivery for split "
+                        + exceeded.splitId()
+                        + ": the attempted aggregate subscriber buffer was "
+                        + exceeded.attemptedMessages()
+                        + " messages and "
+                        + exceeded.attemptedBytes()
+                        + " bytes, past subscriberBufferMaxMessages="
+                        + exceeded.maxMessages()
+                        + " or subscriberBufferMaxBytes="
+                        + exceeded.maxBytes()
+                        + ". Increase those PubSubSubscriberOptions limits (Table API:"
+                        + " 'scan.subscriber-buffer.max-messages' and"
+                        + " 'scan.subscriber-buffer.max-bytes') only when the TaskManager has the"
+                        + " corresponding memory, or remove the downstream stall.");
     }
 
     @Override

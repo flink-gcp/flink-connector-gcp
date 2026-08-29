@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.pubsub.ResidueCounter;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.ToLongFunction;
 
 /**
@@ -79,6 +80,9 @@ public final class PubSubSourceReaderMetrics {
      */
     private final AtomicInteger parkedSplits = new AtomicInteger();
 
+    private final AtomicLong fetcherBufferedMessages = new AtomicLong();
+    private final AtomicLong fetcherBufferedBytes = new AtomicLong();
+
     /**
      * The subscribers the two buffer gauges sum over, keyed by split id.
      *
@@ -125,6 +129,11 @@ public final class PubSubSourceReaderMetrics {
         metricGroup.gauge(
                 PubSubMetricNames.BUFFERED_BYTES,
                 (Gauge<Long>) () -> sumBuffers(BufferUsage::bytes));
+        metricGroup.gauge(
+                PubSubMetricNames.FETCHER_BUFFERED_MESSAGES,
+                (Gauge<Long>) fetcherBufferedMessages::get);
+        metricGroup.gauge(
+                PubSubMetricNames.FETCHER_BUFFERED_BYTES, (Gauge<Long>) fetcherBufferedBytes::get);
         // Registered and never held: nothing here increments them, so a field would only invite a
         // caller to try — which the counter refuses, its mutators throwing rather than no-opping.
         // The subscribers count into the adders directly, on the thread running their close().
@@ -220,6 +229,31 @@ public final class PubSubSourceReaderMetrics {
      */
     public void subscriberClosed(String splitId) {
         bufferedSubscribers.remove(splitId);
+    }
+
+    /** Adds a batch that has left subscribers and entered Flink's fetcher-side retention. */
+    public void recordsEnteredFetcher(long messages, long bytes) {
+        fetcherBufferedMessages.addAndGet(messages);
+        fetcherBufferedBytes.addAndGet(bytes);
+    }
+
+    /** Removes one message the source reader has taken from a fetcher batch. */
+    public void recordLeftFetcher(long bytes) {
+        recordsLeftFetcher(1, bytes);
+    }
+
+    /** Removes an unconsumed remainder when Flink recycles a fetcher batch. */
+    public void recordsLeftFetcher(long messages, long bytes) {
+        long remainingMessages = fetcherBufferedMessages.addAndGet(-messages);
+        long remainingBytes = fetcherBufferedBytes.addAndGet(-bytes);
+        if (remainingMessages < 0 || remainingBytes < 0) {
+            throw new IllegalStateException(
+                    "Fetcher buffer accounting became negative: "
+                            + remainingMessages
+                            + " messages, "
+                            + remainingBytes
+                            + " bytes.");
+        }
     }
 
     private long sumBuffers(ToLongFunction<BufferUsage> dimension) {

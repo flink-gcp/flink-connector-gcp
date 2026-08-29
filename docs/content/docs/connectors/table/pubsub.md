@@ -275,6 +275,8 @@ under the same "absent means default" rule as the sink.
 | `scan.deserialization-failure-policy` | `fail` \| `drop` \| `nack` | `deserializationFailurePolicy` |
 | `scan.flow-control.max-outstanding-element-count` | Long | `flowControlMaxOutstandingElementCount` |
 | `scan.flow-control.max-outstanding-request-bytes` | MemorySize | `flowControlMaxOutstandingRequestBytes` |
+| `scan.subscriber-buffer.max-messages` | Long | `subscriberBufferMaxMessages` |
+| `scan.subscriber-buffer.max-bytes` | MemorySize | `subscriberBufferMaxBytes` |
 | `scan.paused-split-buffer.max-messages` | Long | `pausedSplitBufferMaxMessages` |
 | `scan.paused-split-buffer.max-bytes` | MemorySize | `pausedSplitBufferMaxBytes` |
 | `scan.parallel-pull-count` | Integer | `parallelPullCount` |

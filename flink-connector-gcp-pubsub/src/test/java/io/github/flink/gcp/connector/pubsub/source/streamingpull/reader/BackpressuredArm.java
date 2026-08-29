@@ -19,12 +19,15 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
 import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
 
+import com.google.api.core.ApiService;
+import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 
 import javax.annotation.Nullable;
@@ -34,11 +37,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -115,6 +121,9 @@ final class BackpressuredArm {
     private final TestReaderMetrics metrics = new TestReaderMetrics();
     private final PubSubAckTracker ackTracker;
     private final AtomicReference<PullSubscriber> subscriber = new AtomicReference<>();
+    private final AtomicReference<Subscriber> client = new AtomicReference<>();
+    private final AtomicReference<SubscriberBufferLimitExceededEvent> limitExceeded =
+            new AtomicReference<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
 
     /** What killed the drain, so a run that lost its drain cannot be read as a measurement. */
@@ -129,12 +138,19 @@ final class BackpressuredArm {
     /** Distinct message ids the drain saw, so a redelivered copy shows up as a repeat. */
     private final Set<String> distinctDrained = new HashSet<>();
 
+    /**
+     * Callback deliveries by message id, observed before the connector can accept or reject one.
+     */
+    private final Map<String, AtomicLong> callbackDeliveries = new ConcurrentHashMap<>();
+
     private volatile long drained;
     private volatile long buffered;
     private volatile long peakBuffered;
     private volatile long received;
     private volatile long nacked;
     private volatile long samples;
+    private volatile long samplesAfterLimit;
+    @Nullable private volatile ApiService.State clientStateBeforeClose;
     private long lastBuffered = -1;
     private long lastReceived = -1;
     private long startNanos;
@@ -151,15 +167,72 @@ final class BackpressuredArm {
             double ratePerSecond,
             SubscriptionDestination subscription,
             @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(
+                name,
+                ratePerSecond,
+                subscription,
+                emulatorEndpoint,
+                Long.MAX_VALUE,
+                Long.MAX_VALUE,
+                OrderingMode.NONE);
+    }
+
+    BackpressuredArm(
+            String name,
+            double ratePerSecond,
+            SubscriptionDestination subscription,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            long subscriberBufferMaxMessages,
+            long subscriberBufferMaxBytes) {
+        this(
+                name,
+                ratePerSecond,
+                subscription,
+                emulatorEndpoint,
+                subscriberBufferMaxMessages,
+                subscriberBufferMaxBytes,
+                OrderingMode.NONE);
+    }
+
+    BackpressuredArm(
+            String name,
+            double ratePerSecond,
+            SubscriptionDestination subscription,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            long subscriberBufferMaxMessages,
+            long subscriberBufferMaxBytes,
+            OrderingMode orderingMode) {
         this.name = name;
         this.ratePerSecond = ratePerSecond;
         this.ackTracker = new PubSubAckTracker(metrics.metrics(), null);
         // As the source does: the gauges read the tracker, so they exist only once it is bound.
         metrics.metrics().bindAckTracker(ackTracker);
 
-        PubSubSubscriberOptions options = options();
-        DefaultSubscriberFactory factory =
-                new DefaultSubscriberFactory(options, OrderingMode.NONE, emulatorEndpoint);
+        PubSubSubscriberOptions options =
+                options(subscriberBufferMaxMessages, subscriberBufferMaxBytes);
+        SubscriberBufferBudget bufferBudget =
+                new SubscriberBufferBudget(
+                        subscriberBufferMaxMessages,
+                        subscriberBufferMaxBytes,
+                        event -> limitExceeded.compareAndSet(null, event));
+        DefaultSubscriberFactory delegateFactory =
+                new DefaultSubscriberFactory(options, orderingMode, emulatorEndpoint);
+        SubscriberFactory factory =
+                (assignedSubscription, consumer) -> {
+                    Subscriber created =
+                            delegateFactory.create(
+                                    assignedSubscription,
+                                    (message, ackHandle) -> {
+                                        callbackDeliveries
+                                                .computeIfAbsent(
+                                                        message.getMessageId(),
+                                                        unused -> new AtomicLong())
+                                                .incrementAndGet();
+                                        consumer.receive(message, ackHandle);
+                                    });
+                    client.set(created);
+                    return created;
+                };
         this.reader =
                 new PubSubSplitReader(
                         (assigned, signal) -> {
@@ -170,7 +243,8 @@ final class BackpressuredArm {
                                             factory,
                                             ackTracker,
                                             signal,
-                                            options.getShutdownTimeout());
+                                            options.getShutdownTimeout(),
+                                            bufferBudget);
                             subscriber.set(opened);
                             return opened;
                         },
@@ -178,15 +252,23 @@ final class BackpressuredArm {
                         new MissingCheckpointDetector(
                                 Duration.ZERO, ackTracker::outstandingAckCount),
                         PausedSplitBufferLimits.of(options),
-                        metrics.metrics());
+                        metrics.metrics(),
+                        bufferBudget);
         this.split = new SubscriptionSplit(subscription, "0");
     }
 
     /** The options every arm runs under; the paused-split bound is held out of the way. */
     static PubSubSubscriberOptions options() {
+        return options(Long.MAX_VALUE, Long.MAX_VALUE);
+    }
+
+    private static PubSubSubscriberOptions options(
+            long subscriberBufferMaxMessages, long subscriberBufferMaxBytes) {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(FLOW_CONTROL_MESSAGES)
                 .maxAckExtensionPeriod(MAX_ACK_EXTENSION_PERIOD)
+                .subscriberBufferMaxMessages(subscriberBufferMaxMessages)
+                .subscriberBufferMaxBytes(subscriberBufferMaxBytes)
                 // Moot as well as held out of the way: no split here is ever paused, and the bound
                 // reads a paused split alone.
                 .pausedSplitBufferMaxMessages(Long.MAX_VALUE)
@@ -254,6 +336,7 @@ final class BackpressuredArm {
             // anyway.
             arms.forEach(arm -> teardown.add(arm::sample));
             arms.forEach(arm -> teardown.add(arm::stopDraining));
+            arms.forEach(arm -> teardown.add(arm::recordClientState));
             arms.forEach(arm -> teardown.add(arm::close));
             Closers.closeAll(teardown);
         }
@@ -294,6 +377,9 @@ final class BackpressuredArm {
         nacked = metrics.counter("messagesNacked");
         peakBuffered = Math.max(peakBuffered, current);
         samples++;
+        if (limitExceeded.get() != null) {
+            samplesAfterLimit++;
+        }
         // Delivery as well as the buffer, because an arm that keeps up holds nothing: its buffer
         // reads zero from the moment it catches up, and a series keyed on the buffer alone ends
         // there while the arm goes on being delivered hundreds of messages. #440 was filed against
@@ -335,6 +421,12 @@ final class BackpressuredArm {
         reader.close();
     }
 
+    /** Records the SDK client's state before harness teardown can stop it independently. */
+    private void recordClientState() {
+        Subscriber opened = client.get();
+        clientStateBeforeClose = opened == null ? null : opened.state();
+    }
+
     /** Messages the subscriber is holding as of the last {@link #sample()}. */
     long buffered() {
         return buffered;
@@ -348,6 +440,16 @@ final class BackpressuredArm {
     /** Messages the client library delivered to the connector, redelivered copies included. */
     long received() {
         return received;
+    }
+
+    /** Callback deliveries observed directly, without sampling the asynchronous metrics counter. */
+    long callbackDeliveries() {
+        return callbackDeliveries.values().stream().mapToLong(AtomicLong::get).sum();
+    }
+
+    /** The largest number of callback deliveries observed for one message id. */
+    long maximumCallbackDeliveriesForOneMessage() {
+        return callbackDeliveries.values().stream().mapToLong(AtomicLong::get).max().orElse(0);
     }
 
     /** Messages the drain took out of the subscriber. */
@@ -370,13 +472,31 @@ final class BackpressuredArm {
     /**
      * Messages nacked as of the last {@link #sample()}, which is taken before the close.
      *
-     * <p>This is the direct observation of a redelivery. While an arm runs, the only thing that
-     * nacks is {@code PubSubAckTracker.addPendingAck} superseding a message the connector still
-     * holds with the copy the service has just redelivered — a park nacks too, but no split here is
-     * paused, and the teardown's nack lands after the last sample.
+     * <p>Without a hard subscriber-buffer cap, this directly observes a redelivery superseding a
+     * message the connector still holds. With a cap, it also includes callback deliveries rejected
+     * at the boundary. Teardown's NACK lands after the last sample in both cases.
      */
     long nacked() {
         return nacked;
+    }
+
+    /** The first callback-side hard-limit event, or {@code null} when the arm stayed below it. */
+    @Nullable
+    SubscriberBufferLimitExceededEvent limitExceeded() {
+        return limitExceeded.get();
+    }
+
+    /**
+     * Samples taken after the hard limit responded, so a plateau is observed rather than inferred.
+     */
+    long samplesAfterLimit() {
+        return samplesAfterLimit;
+    }
+
+    /** The SDK client's state before {@link #close()} could stop it as part of test teardown. */
+    @Nullable
+    ApiService.State clientStateBeforeClose() {
+        return clientStateBeforeClose;
     }
 
     /** Fetches no faster than the arm's rate, one message at a time. */

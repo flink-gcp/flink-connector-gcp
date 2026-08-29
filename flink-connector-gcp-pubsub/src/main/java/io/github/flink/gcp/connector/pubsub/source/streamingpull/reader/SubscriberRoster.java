@@ -50,6 +50,7 @@ final class SubscriberRoster {
     private final PullSubscriberOpener subscriberOpener;
     private final int maxRecordsPerFetch;
     private final PausedSplitBufferLimits pausedSplitBufferLimits;
+    private final SubscriberBufferBudget bufferBudget;
     private final PubSubSourceReaderMetrics metrics;
     private final Logger log;
     private final Runnable dataAvailableSignal;
@@ -70,12 +71,14 @@ final class SubscriberRoster {
             PullSubscriberOpener subscriberOpener,
             int maxRecordsPerFetch,
             PausedSplitBufferLimits pausedSplitBufferLimits,
+            SubscriberBufferBudget bufferBudget,
             PubSubSourceReaderMetrics metrics,
             Logger log,
             Runnable dataAvailableSignal) {
         this.subscriberOpener = subscriberOpener;
         this.maxRecordsPerFetch = maxRecordsPerFetch;
         this.pausedSplitBufferLimits = pausedSplitBufferLimits;
+        this.bufferBudget = bufferBudget;
         this.metrics = metrics;
         this.log = log;
         this.dataAvailableSignal = dataAvailableSignal;
@@ -89,20 +92,30 @@ final class SubscriberRoster {
             return;
         }
         log.info("Opening a Pub/Sub subscriber for split {}.", split.splitId());
-        slots.put(split.splitId(), new SubscriberSlot(split, openSubscriber(split)));
+        PullSubscriber subscriber = openSubscriber(split);
+        slots.put(split.splitId(), new SubscriberSlot(split, subscriber));
+        registerSubscriber(split, subscriber);
     }
 
     private PullSubscriber openSubscriber(SubscriptionSplit split) {
         try {
-            PullSubscriber subscriber = subscriberOpener.open(split, dataAvailableSignal);
-            // The one place a subscriber is created, so the one place the buffer gauges have to
-            // hear about it; a reopen after a park re-registers under the same split id.
-            metrics.subscriberOpened(split.splitId(), subscriber);
-            return subscriber;
+            return subscriberOpener.open(split, dataAvailableSignal);
         } catch (IOException e) {
             throw new RuntimeException(
                     "Failed to open the Pub/Sub subscriber for split " + split.splitId(), e);
         }
+    }
+
+    private void registerSubscriber(SubscriptionSplit split, PullSubscriber subscriber) {
+        SubscriberBufferBudget.Admission registration =
+                bufferBudget.register(split.splitId(), subscriber::requestStop);
+        // The one place a subscriber is registered, so the one place the buffer gauges have to
+        // hear about it; a reopen after a park re-registers under the same split id.
+        metrics.subscriberOpened(split.splitId(), subscriber);
+        // After the slot and metric are installed: a registration racing a pending reader-wide
+        // park promotes it to failure, and cleanup must still own this subscriber if responding
+        // raises an exception.
+        registration.respond();
     }
 
     /** Closes the split's subscriber and drops its slot, if this roster holds one. */
@@ -114,6 +127,7 @@ final class SubscriberRoster {
         // Below the guard, not above it: the registry is shared with every split reader this
         // reader's supplier makes, so evicting on a removal this one does not own would drop
         // another's live subscriber from the gauges with nothing to say so.
+        bufferBudget.unregister(split.splitId());
         metrics.subscriberClosed(split.splitId());
         if (slot.isParked()) {
             // Nothing to close and nothing to nack: parking already did both. The count still has
@@ -145,8 +159,9 @@ final class SubscriberRoster {
      * Drains up to {@code maxRecordsPerFetch} messages from every unpaused split into the builder,
      * and returns how many it drained in total.
      */
-    int drainInto(RecordsBySplits.Builder<PubsubMessage> builder) throws IOException {
+    BufferUsage drainInto(RecordsBySplits.Builder<PubsubMessage> builder) throws IOException {
         int total = 0;
+        long totalBytes = 0;
         for (Map.Entry<String, SubscriberSlot> entry : slots.entrySet()) {
             SubscriberSlot slot = entry.getValue();
             if (slot.isPaused()) {
@@ -159,9 +174,10 @@ final class SubscriberRoster {
             if (!messages.isEmpty()) {
                 builder.addAll(entry.getKey(), messages);
                 total += messages.size();
+                totalBytes += messages.stream().mapToLong(PubsubMessage::getSerializedSize).sum();
             }
         }
-        return total;
+        return BufferUsage.of(total, totalBytes);
     }
 
     /**
@@ -239,6 +255,7 @@ final class SubscriberRoster {
      * list keeps every nack running when an earlier step throws.
      */
     void parkOverfullPausedSplits() throws IOException {
+        boolean readerWidePark = bufferBudget.parkingRequested();
         // Two lists so the closes can be appended after every shutdown, as closeAll() orders them.
         // Allocated only once an overfull paused split is found, so the ordinary path — the one
         // that must cost nothing, because a job that never aligns watermarks pauses no split —
@@ -254,23 +271,33 @@ final class SubscriberRoster {
             }
             PullSubscriber subscriber = slot.subscriber();
             BufferUsage usage = subscriber.bufferUsage();
-            if (!pausedSplitBufferLimits.exceededBy(usage)) {
+            if (!readerWidePark && !pausedSplitBufferLimits.exceededBy(usage)) {
                 continue;
             }
-            log.warn(
-                    "Paused split {} has buffered {}, past the {} a paused split may hold, so its"
-                            + " Pub/Sub subscriber is being stopped and its messages returned for"
-                            + " redelivery; a fresh subscriber opens when the split resumes. The split"
-                            + " is paused by watermark alignment, and a pause this long usually"
-                            + " means an aligned source has gone idle without withIdleness(...) on"
-                            + " its watermark strategy: add it, or bring the aligned group's slow"
-                            + " member forward. Raising pausedSplitBufferMaxMessages or"
-                            + " pausedSplitBufferMaxBytes only holds more memory for a split"
-                            + " nothing is consuming, so prefer it only for a pause you expect to"
-                            + " end.",
-                    entry.getKey(),
-                    usage,
-                    pausedSplitBufferLimits);
+            if (readerWidePark) {
+                log.warn(
+                        "The source reader's assigned splits are all paused and their subscribers"
+                                + " have filled the aggregate subscriber buffer budget at {}, so"
+                                + " split {} is being parked and its messages returned for"
+                                + " redelivery; a fresh subscriber opens when the split resumes.",
+                        bufferBudget.usage(),
+                        entry.getKey());
+            } else {
+                log.warn(
+                        "Paused split {} has buffered {}, past the {} a paused split may hold, so"
+                                + " its Pub/Sub subscriber is being stopped and its messages"
+                                + " returned for redelivery; a fresh subscriber opens when the"
+                                + " split resumes. The split is paused by watermark alignment, and"
+                                + " a pause this long usually means an aligned source has gone idle"
+                                + " without withIdleness(...) on its watermark strategy: add it, or"
+                                + " bring the aligned group's slow member forward. Raising"
+                                + " pausedSplitBufferMaxMessages or pausedSplitBufferMaxBytes only"
+                                + " holds more memory for a split nothing is consuming, so prefer"
+                                + " it only for a pause you expect to end.",
+                        entry.getKey(),
+                        usage,
+                        pausedSplitBufferLimits);
+            }
             // Marked parked before the release, so a release that throws cannot leave the reader
             // holding a half-closed client it would go on to drain or close a second time.
             slot.park();
@@ -285,6 +312,11 @@ final class SubscriberRoster {
             // report of it (#325).
             steps.add(subscriber::checkFailure);
             steps.add(subscriber::shutdown);
+            String splitId = entry.getKey();
+            // Behind shutdown in the same failure-tolerant list. Until shutdown marks the client
+            // closed, an SDK callback can still race in; keeping its paused registration visible
+            // prevents that callback from turning a paused-split park into an active-reader FAIL.
+            steps.add(() -> bufferBudget.unregister(splitId));
             closes.add(subscriber);
         }
         if (closes == null) {
@@ -309,12 +341,28 @@ final class SubscriberRoster {
         // A streaming-pull client cannot be paused, so a paused split is simply not drained. The
         // client library's flow control then stops pulling once its outstanding limit fills — for
         // one maxAckExtensionPeriod, after which parkOverfullPausedSplits() is the bound (#357).
+        List<String> assignedPauses = new ArrayList<>();
+        for (SubscriptionSplit split : splitsToPause) {
+            if (slots.containsKey(split.splitId())) {
+                assignedPauses.add(split.splitId());
+            }
+        }
+        // One budget transition for the whole Flink request. A crossing callback may run before or
+        // after it, but cannot observe only part of an alignment group as paused.
+        bufferBudget.setPaused(assignedPauses, true);
         for (SubscriptionSplit split : splitsToPause) {
             SubscriberSlot slot = slots.get(split.splitId());
             if (slot != null) {
                 slot.pause();
             }
         }
+        List<String> assignedResumes = new ArrayList<>();
+        for (SubscriptionSplit split : splitsToResume) {
+            if (slots.containsKey(split.splitId())) {
+                assignedResumes.add(split.splitId());
+            }
+        }
+        bufferBudget.setPaused(assignedResumes, false);
         for (SubscriptionSplit split : splitsToResume) {
             SubscriberSlot slot = slots.get(split.splitId());
             if (slot == null) {
@@ -344,7 +392,9 @@ final class SubscriberRoster {
         log.info(
                 "Reopening the Pub/Sub subscriber for split {}, parked while it was paused.",
                 slot.split().splitId());
-        slot.reopen(openSubscriber(slot.split()));
+        PullSubscriber subscriber = openSubscriber(slot.split());
+        slot.reopen(subscriber);
+        registerSubscriber(slot.split(), subscriber);
         metrics.splitUnparked();
     }
 
@@ -379,6 +429,7 @@ final class SubscriberRoster {
             // gauge lives in the reader's metrics because it outlives this object, so a reader
             // closing while it holds parked splits would leave it reporting splits that are gone.
             for (Map.Entry<String, SubscriberSlot> entry : slots.entrySet()) {
+                bufferBudget.unregister(entry.getKey());
                 if (entry.getValue().isParked()) {
                     metrics.splitUnparked();
                 }

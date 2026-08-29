@@ -136,7 +136,8 @@ public class PubSubStreamingPullSource<T>
                                 ackTracker,
                                 options,
                                 checkpointDetector,
-                                metrics);
+                                metrics,
+                                context::sendSourceEventToCoordinator);
         return new PubSubSourceReader<>(
                 splitReaderSupplier,
                 new PubSubRecordEmitter<>(

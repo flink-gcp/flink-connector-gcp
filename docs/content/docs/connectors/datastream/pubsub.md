@@ -925,23 +925,35 @@ is equivalent to not setting options at all. Every knob and its default is in th
 [configuration reference]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions); this
 section is why they are what they are.
 
-**Flow control is the bound on in-flight messages, for as long as the client is extending their
-leases.** Because the source acknowledges only on checkpoint completion, everything received since
-the last completed checkpoint counts against these limits, and the client stops pulling once they
-are reached — until `maxAckExtensionPeriod` passes for a message the job has not emitted, after
-which the client releases its permit while the connector still holds it. **What decides whether that
-accumulates is how fast the split is being drained**, and the break-even is
+**Flow control bounds in-flight messages only while the client is extending their leases.**
+Because the source acknowledges only on checkpoint completion, everything received since the last
+completed checkpoint counts against these limits, and the client stops pulling once they are
+reached.
+After `maxAckExtensionPeriod` passes for a message the job has not emitted, however, the client
+releases its permit while the connector still holds it.
+**What decides whether that accumulates is how fast the split is being drained**, and the break-even is
 `flowControlMaxOutstandingElementCount / (maxAckExtensionPeriod − one lease extension)` — about
 **0.28 messages a second at the defaults**, since an acknowledgement only ever covers a message the
 job already consumed, leaving expiry as the only source of permits that does not track the drain.
 The subtracted term is the client library's *own* extension length, which starts at ten seconds and
 adapts to how long messages are taking; it is not the subscription's `ackDeadlineSeconds`, and it
 is why the rate is an order rather than a constant.
-Any job making real progress stays above it. The two cases that do not are a split paused by
-watermark alignment, which is not drained at all and is bounded by `pausedSplitBufferMaxMessages` /
-`pausedSplitBufferMaxBytes` (see [Watermark alignment](#watermark-alignment)), and a downstream that
-has stopped consuming altogether, which nothing bounds — watch `bufferedMessages` and
-`bufferedBytes` ([#377]({{< param BookRepo >}}/issues/377)).
+Any job making real progress stays above it.
+The two cases that do not are a split paused by watermark alignment and a downstream that has
+stopped consuming altogether.
+Both share the reader-wide hard `subscriberBufferMaxMessages` / `subscriberBufferMaxBytes` budget
+([#1138]({{< param BookRepo >}}/issues/1138)).
+A paused group is also governed by the per-split `pausedSplitBufferMaxMessages` /
+`pausedSplitBufferMaxBytes` policy described under [Watermark alignment](#watermark-alignment).
+
+The hard budget is aggregate across every subscriber assigned to one source reader.
+The delivery that would cross either limit is NACKed before it enters the acknowledgement tracker
+or subscriber deque, and every subscriber in that reader is asked to stop asynchronously.
+When every assigned split is paused by watermark alignment, the reader parks those subscribers and
+opens fresh ones on resume.
+Otherwise the callback sends a source event directly to the coordinator, which fails the job even
+when downstream backpressure has stopped both `pollNext()` and `fetch()`.
+Stopping the subscribers makes the NACK a bounded response instead of a live redelivery loop.
 
 Once a split is in either state, **most of what it is handed stops being new data**. A lapsed lease
 is redelivered, and the copy is buffered *beside* the one the reader is still holding, so the buffer
@@ -949,10 +961,11 @@ fills with duplicates and the same record is emitted twice into a running pipeli
 at-least-once, but not at a restart. Measured against the service at 215 and 338 such redeliveries
 out of 369 and 462 deliveries over 90 s.
 
-`maxRecordsPerFetch` only caps how much
-a single fetch drains from one split; it is not a memory bound. The limit behavior is not exposed
-because the SDK subscriber does not expose it either — it forces blocking regardless of the
-settings, which for a subscriber means it stops pulling rather than blocking a thread.
+`maxRecordsPerFetch` only caps how much a single fetch drains from one split; it is not a complete
+memory bound.
+Records already handed to Flink's fetcher queues sit outside the subscriber-buffer budget.
+Their count is controlled jointly by `maxRecordsPerFetch`, the assigned-split count and Flink's
+`source.reader.element.queue.capacity`, and is reported separately by the fetcher-buffer metrics.
 
 **The subscriber shutdown mode is fixed at `NACK_IMMEDIATELY`** and deliberately not a knob. The
 SDK's `WAIT_FOR_PROCESSING` default waits for acknowledgements that only arrive at checkpoint
@@ -968,6 +981,24 @@ rejects it, for the reason given under [Message ordering](#message-ordering): ca
 serialization is per streaming-pull connection, so a second connection breaks per-key order.
 
 #### Tuning
+
+The connector's reader-wide hard defaults are 10000 subscriber-buffer messages and 64 MiB of
+serialized message data, whichever would be crossed first.
+They are aggregate per source reader rather than multiplied by its assigned splits, and the default
+message cap is regression-tested with 4 KiB messages in a 256 MiB JVM.
+Raise either only when ordinary delivery bursts reach it and the TaskManager has room for the
+corresponding retained data.
+Lower them when a smaller failure domain matters more than absorbing bursts.
+
+The complete message-count envelope for one reader is:
+
+```text
+subscriberBufferMaxMessages
+  + (source.reader.element.queue.capacity + 2) × maxRecordsPerFetch × assigned splits
+```
+
+The serialized-byte side is `subscriberBufferMaxBytes` plus the fetcher-side batches, whose actual
+bytes are reported by `fetcherBufferedBytes` rather than bounded by the connector.
 
 Google does not publish recommended flow-control values — the
 [flow control documentation](https://cloud.google.com/pubsub/docs/flow-control) says to size the
@@ -993,7 +1024,9 @@ flowControlMaxOutstandingElementCount ≳ peak messages/s × checkpoint interval
 ```
 
 Below that, the client stops pulling before each checkpoint completes and throughput is capped by
-the checkpoint interval rather than by Pub/Sub. Above it, the limit stops bounding anything.
+the checkpoint interval rather than by Pub/Sub.
+Above it, SDK flow control no longer constrains normal in-flight retention before the connector's
+hard budget.
 Raising the limits also raises what a failure replays and what a reader holds in memory, so the
 byte limit should stay within the TaskManager's memory budget. `maxAckExtensionPeriod` is the other
 half: it must exceed the checkpoint interval by a comfortable margin (see
@@ -1146,6 +1179,8 @@ Registered on the reader and enumerator metric groups:
 | `pendingCheckpoints` | gauge | checkpoints taken but not yet completed |
 | `bufferedMessages` | gauge | messages this subtask's subscribers hold that the fetch loop has not taken yet — see below |
 | `bufferedBytes` | gauge | the same in bytes; either dimension can be the one that fills a TaskManager first |
+| `fetcherBufferedMessages` | gauge | messages removed from subscriber buffers but not yet taken from Flink's fetcher batches by the source reader |
+| `fetcherBufferedBytes` | gauge | the same fetcher-side retention in serialized bytes |
 | `parkedSplits` | gauge | paused splits whose subscriber has been stopped, awaiting a resume |
 | `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
 | `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
@@ -1168,24 +1203,25 @@ landing.
 acknowledgement future completes with `SUCCESSFUL` on success and never completes at all on
 failure, so there is no error to observe, only the absence of a confirmation.
 
-**`bufferedMessages` and `bufferedBytes` are what a reader is holding and has not handed to the
-pipeline yet**, summed over the subtask's splits. They are the pair to watch for the failure mode
-[Watermark alignment](#watermark-alignment) describes, and for the one under sustained
-backpressure — in both, a reader accumulates messages the client library keeps delivering because
-`maxAckExtensionPeriod` has released their flow-control permits. `pendingAcks` cannot stand in for
-them: it counts messages received *or emitted* and not yet acknowledged, so it climbs for a slow
-checkpoint just as readily.
+**`bufferedMessages` and `bufferedBytes` are the messages still in subscriber deques**, summed over
+the subtask's splits.
+The callback-side hard budget applies to exactly this aggregate.
+`pendingAcks` cannot stand in for it because that gauge also counts emitted messages waiting for a
+checkpoint.
 
 They are read by the metric reporter's own thread, which matters here: the fetch loop that
 evaluates the paused-split bound stops running altogether when the downstream stops consuming
 ([#377]({{< param BookRepo >}}/issues/377)), and these gauges do not.
 
-What they do **not** cover is everything already pulled out of the subscriber: Flink's element
-queue, the fetch the reader is working through and the batch the fetcher cannot hand over, each
-holding one drain of every assigned split. That is up to
-`(source.reader.element.queue.capacity + 2)` × `maxRecordsPerFetch` × splits messages — measured at
-3999 with a capacity of 2, a 1000-message fetch and one split. Nothing reports it, and the bound in
-[Watermark alignment](#watermark-alignment) does not see it either.
+**`fetcherBufferedMessages` and `fetcherBufferedBytes` cover the separate Flink-owned side** after
+messages leave those deques and before the source reader takes them from a fetcher batch.
+That includes Flink's element queue, the fetch the reader is working through and the batch the
+fetcher cannot hand over.
+The count envelope is `(source.reader.element.queue.capacity + 2)` × `maxRecordsPerFetch` × assigned
+splits messages — measured at 3999 with a capacity of 2, a 1000-message fetch and one split.
+This footprint has no connector byte cap because Flink owns the queues; lower
+`maxRecordsPerFetch`, lower the runtime queue capacity or assign fewer splits per reader when the
+fetcher gauges show that it is too large.
 
 `pendingRecordsGauge` is deliberately **not** set. Pub/Sub exposes no backlog through the data
 plane, and a wrong lag number is worse than none.
@@ -1296,11 +1332,12 @@ Two of those reasons are specific to the `SourceFunction` model that connector i
 and lock coordination. Under FLIP-27 that bridge is the framework's job: `SplitReader.fetch()` is
 already a pull loop, and `SourceReaderBase` already owns the element queue and the backpressure
 between the fetcher and the task thread. The remaining reason — that flow control becomes a knob the
-user can get wrong, and that it rather than Flink bounds how much is buffered — does apply here, and
-is why the subscriber's flow-control settings are exposed rather than hidden. It is also why the
-connector has a bound of its own for the case flow control stops covering, a paused split (see
-[Watermark alignment](#watermark-alignment)), and gauges for the case nothing bounds, a downstream
-that has stopped consuming (see [Metrics](#metrics)).
+user can get wrong — does apply here, and is why the subscriber's flow-control settings are exposed
+rather than hidden. The connector also enforces its own reader-wide hard budget when flow control
+stops covering retention, whether every split is paused by [Watermark
+alignment](#watermark-alignment) or the downstream has stopped consuming altogether. The
+[Metrics](#metrics) distinguish that subscriber retention from records already handed to Flink's
+fetcher queues.
 
 Two things decided it the other way:
 
@@ -1363,10 +1400,17 @@ extension* before the period elapses, not after it, because the client drops a m
 longer extend past the next one — and that extension is the client's own adaptive value, which
 starts at ten seconds, not the subscription's acknowledgement deadline.
 
-**So past its bound, a paused split's subscriber is stopped, and a fresh one opens when the split
-resumes.** The bound is [`pausedSplitBufferMaxMessages` and
-`pausedSplitBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions), and either
-being exceeded is enough — which of the two binds depends on message size. Both default to
+**Two bounds can park a paused subscriber, and a fresh one opens when the split resumes.**
+The reader-wide [`subscriberBufferMaxMessages` and
+`subscriberBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions) budget
+is enforced synchronously in the callback and is exact across all assigned splits.
+When it fills while every assigned split is paused, the callback stops every subscriber and the
+reader parks the paused group.
+The per-split [`pausedSplitBufferMaxMessages` and
+`pausedSplitBufferMaxBytes`]({{< relref "docs/reference/pubsub" >}}#pubsubsubscriberoptions) policy
+is evaluated from `fetch()` and may park one split earlier.
+Either dimension crossing is enough — which one binds depends on message size.
+The per-split limits default to
 **twice** the flow-control limit they shadow: one lease-expiry wave is worth a whole window, so the
 lapse crosses that bound and ordinary skew does not. (A healthy buffer can sit a little above the
 flow-control limit — a message larger than the byte limit is admitted anyway, a dead-letter
@@ -1387,23 +1431,27 @@ messages meanwhile, and a key is replayed in order rather than reordered.
 acknowledgement deadline instead. A park is a teardown like any other here, so it increments
 [`subscriberShutdownsAbandoned`](#metrics) when it does.
 
-The bound is evaluated once per fetch, so it caps what a split holds between checks rather than what
-its buffer can momentarily reach: a burst delivered between two fetches overshoots it, bounded in
-turn by what the client library delivers at once (measured at 104 and 121 buffered against a bound of
-60 over two runs, one wave of a 50-message window each time).
+The per-split bound is evaluated once per fetch, so it caps what a split holds between checks rather
+than what its buffer can momentarily reach.
+A burst delivered between two fetches can overshoot it, bounded in turn by what the client library
+delivers at once (measured at 104 and 121 buffered against a bound of 60 over two runs, one wave of a
+50-message window each time).
+The reader-wide hard bound does not overshoot: the crossing delivery is rejected before retention.
 
 **An indefinite pause is still a problem, just no longer a memory one.** An aligned group holds its
 slowest member's watermark, so a subscription that goes quiet holds every other split paused forever
 unless the strategy carries `withIdleness(...)` — and a split that stays parked consumes nothing
 while its subscription's backlog grows, until Pub/Sub's message retention begins dropping it.
-`parkedSplits` is the signature to alert on, and it is zero on a healthy job for a reason worth
-stating: a park takes about a `maxAckExtensionPeriod` of *continuous* pause to reach, which a
-strategy carrying `withIdleness(...)` does not produce. So a split that is parked means alignment
-is holding it indefinitely, and the fix is the strategy or the laggard — add `withIdleness(...)`,
-bring the slow member forward, or widen the drift limit. Raising the bound holds more memory for a
-split nobody is consuming, which is worth doing only for a pause you know is bounded and have the
-heap for. `splitsParked` counts the parks themselves, which is what a park and its resume falling
-between two scrapes would otherwise hide.
+`parkedSplits` is the signature to alert on, but one nonzero sample does not by itself prove an
+indefinite pause. The per-split bound normally takes about one `maxAckExtensionPeriod` of continuous
+pause to reach, while the reader-wide hard bound can park every split immediately when a finite
+pause crosses its message or byte cap. Alert on a sustained parked value or repeated `splitsParked`
+increments alongside subscription backlog, then distinguish an alignment problem from a limit that
+is too small for ordinary bursts. For the former, add `withIdleness(...)`, bring the slow member
+forward, or widen the drift limit. For the latter, raising the bound holds more memory for splits
+nobody is consuming, so do it only for a pause you know is bounded and have the heap for.
+`splitsParked` counts the parks themselves, which is what a park and its resume falling between two
+scrapes would otherwise hide.
 
 **A paused split is still watched.** If its subscriber fails permanently while paused, the job
 fails, exactly as it would for a split that was being consumed
@@ -1436,12 +1484,15 @@ Downstream backpressure produces the same shape from the other end, and the meas
 [#377]({{< param BookRepo >}}/issues/377) is worth stating because the natural reading is worse than
 the truth. Flink's fetcher holds the batch it could not hand over and does not call `fetch()` again
 until the element queue has room, so a *stalled* downstream stops the fetch loop entirely, and with
-it every check the reader makes there. But a downstream that is merely slow frees a queue slot for
+it every check the reader makes there.
+But a downstream that is merely slow frees a queue slot for
 every batch it takes, and each slot lets exactly one more `fetch()` run — so the checks are delayed
-by one drain interval, not skipped. And where the loop does stop, so does the mailbox: the reader
-would have nowhere to report a failure to either, which is why the connector adds no check on a
-thread of its own. What it adds instead is `bufferedMessages` and `bufferedBytes`, which the metric
-reporter reads whatever the fetch loop is doing.
+by one drain interval, not skipped.
+Where both the loop and mailbox stop, the hard subscriber-buffer budget remains active on the SDK
+callback threads.
+It stops intake and reports through the source coordinator rather than recording a fetcher failure
+that would still need `pollNext()`.
+The subscriber- and fetcher-buffer gauge pairs remain readable by the metric reporter throughout.
 
 ### Message ordering
 

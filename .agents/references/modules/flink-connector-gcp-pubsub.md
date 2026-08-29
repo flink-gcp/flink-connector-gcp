@@ -150,31 +150,32 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   defaults are read live from `Subscriber.Builder.getDefaultFlowControlSettings()` — never
   mirrored, unlike `maxAckExtensionPeriod`'s, whose SDK constant is package-private. What this
   costs is that #348 does not hold while a split is parked.
-- **Backpressure was measured, and the measurement narrowed the fear rather than confirming it**
-  (#377; the second Evidence block of `docs/adr/0066`). A *slow* downstream frees an element-queue
-  slot per batch and each slot lets exactly one more `fetch()` run, so the guards there are delayed
-  by one drain interval, not skipped; only a downstream that has stopped outright freezes the loop,
-  and there the mailbox is not polling either — `pollNext` is the only path a fetcher's failure has
-  to the job — so a guard on another thread would report nothing sooner. Hence **gauges and no
-  second bound**: `bufferedMessages`/`bufferedBytes` sum `bufferUsage()` over a registry
-  `PubSubSourceReaderMetrics` owns, so they cannot come to disagree with the number the #357 bound
-  reads, and a stale entry cannot corrupt them (a `shutdown()` empties the buffer). Whether the
-  buffer *grows* is decided by the drain rate against
-  `W / (maxAckExtensionPeriod − one lease extension)`, where the second term is the client's own
-  adaptive `messageDeadlineSeconds` and **not** the subscription's ack deadline — an ack only
-  covers what was already drained, so
-  expiry is the only drain-independent source of permits — but that is a rate of the right order,
-  **not a bound on `messagesReceived`**, because a supersede returns the permit it took (a draft
-  asserted such a ceiling and CI produced 327 against 250). **Nothing bounds delivery from above in
-  any shape, and the rig asserts none**: a bar on the fast arm's *drain* is one too, an arm being
-  able to drain only what it was given, and CI met the half-of-requested-rate form of it exactly at
-  300 against 300 (#440). How much an arm is delivered belongs to the runner — 151–195 locally
-  against 175–318 on one CI runner — while what it is left *holding* reproduces on both, which is
-  why that is the finding. Two facts to keep: the buffer is not the
-  reader's footprint (a frozen loop held 3999 messages in the element queue, invisible to
-  `bufferUsage()` and so to the bound), and on the real service **most of what a backpressured split
-  is handed is redelivery churn** — 215 and 338 supersedes out of 369 and 462 deliveries, against
-  exactly zero on the emulator, which never redelivers.
+- **A reader-wide callback budget now covers the complete-stall gap** (#1138, refinement of
+  `docs/adr/0066`).
+  One `SubscriberBufferBudget` is shared by every split subscriber in the reader and admits a
+  delivery only when both the aggregate message and serialized-byte totals remain at or below
+  `subscriberBufferMaxMessages` / `subscriberBufferMaxBytes` (10000 / 64 MiB by default).
+  The crossing delivery is NACKed before `AckTracker` or the deque sees it, and every subscriber is
+  asked to stop asynchronously.
+  If every assigned split is alignment-paused, the fetcher completes the existing park lifecycle;
+  otherwise the callback sends `SubscriberBufferLimitExceededEvent` to the coordinator and the
+  enumerator throws so `SourceCoordinator` fails the job without `pollNext()` or `fetch()`.
+  Do not replace that event with a fetcher failure: a complete downstream stall polls neither.
+- **Subscriber and fetcher retention are deliberately separate.**
+  `bufferedMessages` / `bufferedBytes` sum the exact deques governed by the hard budget.
+  `fetcherBufferedMessages` / `fetcherBufferedBytes` count records already pulled into Flink's
+  element queue, current fetch and blocked batch until `SourceReaderBase` takes or recycles them.
+  Their count envelope remains `(source.reader.element.queue.capacity + 2) × maxRecordsPerFetch ×
+  assigned splits`, measured at 3999 under the defaults; the connector cannot impose a byte cap on
+  Flink-owned queues.
+- **The old backpressure evidence still explains why the callback is the boundary.**
+  A slow downstream frees one element-queue slot and therefore one more `fetch()`, but a complete
+  stall freezes that loop while acknowledgement expiry and real-service redelivery keep callback
+  delivery live.
+  The emulator never redelivers expired messages, so real Pub/Sub is the authority for the stop's
+  redelivery, ordering and dead-letter-attempt behavior.
+  `PubSubBackpressuredSplitBufferRealGcpITCase` is the gated probe for that behavior; its successful
+  2026-08-29 run makes the #1138 path service-verified, as recorded in ADR-0066.
 - The real-GCP gated suite (#82) is the **only** coverage of ordered dispatch, dead-letter
   forwarding, ordered seek, create-option persistence, nack-redelivery promptness and the
   permission-denied message texts. Gating annotations go on every concrete class, never the

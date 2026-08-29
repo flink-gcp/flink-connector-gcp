@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionInfo;
 import org.junit.jupiter.api.Test;
@@ -160,6 +161,28 @@ class PubSubSplitEnumeratorTest {
         PubSubSplitEnumerator enumerator = started(context, OrderingMode.NONE, SUB_A, SUB_B);
 
         assertThat(enumerator.snapshotState(1L).getSubscriptions()).containsExactly(SUB_A, SUB_B);
+    }
+
+    @Test
+    void aSubscriberBufferEventFailsThroughTheCoordinatorWithTheTuningKeys() {
+        PubSubSplitEnumerator enumerator =
+                started(new FakeSplitEnumeratorContext(1), OrderingMode.NONE, SUB_A);
+
+        assertThatThrownBy(
+                        () ->
+                                enumerator.handleSourceEvent(
+                                        3,
+                                        new SubscriberBufferLimitExceededEvent(
+                                                "split-a", 101, 65, 100, 64)))
+                .isInstanceOf(FlinkRuntimeException.class)
+                .hasMessageContaining("subtask 3")
+                .hasMessageContaining("split-a")
+                .hasMessageContaining("101 messages")
+                .hasMessageContaining("65 bytes")
+                .hasMessageContaining("subscriberBufferMaxMessages=100")
+                .hasMessageContaining("subscriberBufferMaxBytes=64")
+                .hasMessageContaining("scan.subscriber-buffer.max-messages")
+                .hasMessageContaining("scan.subscriber-buffer.max-bytes");
     }
 
     // -- The startup check -----------------------------------------------------------------

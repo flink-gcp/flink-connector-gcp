@@ -45,9 +45,11 @@ final class FakePullSubscriber implements PullSubscriber {
 
     @Nullable private IOException failure;
     private boolean closed;
+    private boolean stopRequested;
     private boolean shutdownRequested;
     @Nullable private Throwable closeFailure;
     @Nullable private RuntimeException shutdownFailure;
+    private Runnable onShutdown = () -> {};
 
     /** Set by {@link #recordCallsInto}; shared across the subscribers of one test. */
     @Nullable private List<String> calls;
@@ -121,12 +123,20 @@ final class FakePullSubscriber implements PullSubscriber {
         this.shutdownFailure = shutdownFailure;
     }
 
+    void runOnShutdown(Runnable onShutdown) {
+        this.onShutdown = onShutdown;
+    }
+
     boolean isClosed() {
         return closed;
     }
 
     boolean isShutdownRequested() {
         return shutdownRequested;
+    }
+
+    boolean isStopRequested() {
+        return stopRequested;
     }
 
     /**
@@ -163,12 +173,22 @@ final class FakePullSubscriber implements PullSubscriber {
     }
 
     @Override
+    public synchronized void requestStop() {
+        if (stopRequested) {
+            return;
+        }
+        stopRequested = true;
+        record("requestStop");
+    }
+
+    @Override
     public synchronized void shutdown() {
         if (shutdownRequested) {
             return;
         }
         shutdownRequested = true;
         record("shutdown");
+        onShutdown.run();
         if (shutdownFailure != null) {
             // After the record, mirroring the production subscriber: it flips its own closed flag
             // and nacks before anything that could fail, so a failure here is a shutdown that

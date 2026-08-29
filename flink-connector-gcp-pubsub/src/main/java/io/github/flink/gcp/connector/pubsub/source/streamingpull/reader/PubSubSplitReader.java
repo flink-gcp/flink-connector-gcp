@@ -27,6 +27,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,6 +35,7 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 /**
  * Multiplexes the streaming-pull subscribers of one reader subtask's splits.
@@ -50,33 +52,53 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
     private final SubscriberRoster roster;
     private final DataAvailabilitySignal signal;
     private final MissingCheckpointDetector checkpointDetector;
+    private final PubSubSourceReaderMetrics metrics;
 
     /**
-     * Creates the split reader.
+     * Creates the split reader and reports a callback-side subscriber-buffer overflow through the
+     * source coordinator.
      *
-     * @param subscriberFactory creates the client backing each split
-     * @param ackTracker tracks the acknowledgement lifecycle of received messages
-     * @param options the subscriber tuning options, which carry the per-fetch drain size and the
-     *     per-subscriber shutdown budget
-     * @param checkpointDetector fails the reader if checkpoints never arrive; armed by the first
-     *     split assignment and evaluated from {@link #fetch()}, because the state it detects is the
-     *     state with no records
-     * @param metrics the reader's metrics, which own the parked-split count because it outlives
-     *     this object
+     * @param subscriberFactory creates the SDK subscriber for each assigned split
+     * @param ackTracker holds acknowledgement handles until checkpoint completion
+     * @param options source-reader and subscriber options
+     * @param checkpointDetector detects a source that receives messages without checkpoints
+     * @param metrics source-reader metrics
+     * @param failureReporter sends a hard-buffer-limit event to the source coordinator
      */
     public PubSubSplitReader(
             SubscriberFactory subscriberFactory,
             AckTracker ackTracker,
             PubSubSubscriberOptions options,
             MissingCheckpointDetector checkpointDetector,
-            PubSubSourceReaderMetrics metrics) {
+            PubSubSourceReaderMetrics metrics,
+            Consumer<SubscriberBufferLimitExceededEvent> failureReporter) {
+        this(
+                subscriberFactory,
+                ackTracker,
+                options,
+                checkpointDetector,
+                metrics,
+                new SubscriberBufferBudget(
+                        options.getSubscriberBufferMaxMessages(),
+                        options.getSubscriberBufferMaxBytes(),
+                        failureReporter));
+    }
+
+    PubSubSplitReader(
+            SubscriberFactory subscriberFactory,
+            AckTracker ackTracker,
+            PubSubSubscriberOptions options,
+            MissingCheckpointDetector checkpointDetector,
+            PubSubSourceReaderMetrics metrics,
+            SubscriberBufferBudget bufferBudget) {
         this(
                 new DefaultPullSubscriberOpener(
-                        subscriberFactory, ackTracker, options.getShutdownTimeout()),
+                        subscriberFactory, ackTracker, options.getShutdownTimeout(), bufferBudget),
                 options.getMaxRecordsPerFetch(),
                 checkpointDetector,
                 PausedSplitBufferLimits.of(options),
-                metrics);
+                metrics,
+                bufferBudget);
     }
 
     @VisibleForTesting
@@ -86,13 +108,32 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
             MissingCheckpointDetector checkpointDetector,
             PausedSplitBufferLimits pausedSplitBufferLimits,
             PubSubSourceReaderMetrics metrics) {
+        this(
+                subscriberOpener,
+                maxRecordsPerFetch,
+                checkpointDetector,
+                pausedSplitBufferLimits,
+                metrics,
+                SubscriberBufferBudget.unbounded());
+    }
+
+    @VisibleForTesting
+    PubSubSplitReader(
+            PullSubscriberOpener subscriberOpener,
+            int maxRecordsPerFetch,
+            MissingCheckpointDetector checkpointDetector,
+            PausedSplitBufferLimits pausedSplitBufferLimits,
+            PubSubSourceReaderMetrics metrics,
+            SubscriberBufferBudget bufferBudget) {
         this.checkpointDetector = checkpointDetector;
+        this.metrics = metrics;
         this.signal = new DataAvailabilitySignal();
         this.roster =
                 new SubscriberRoster(
                         subscriberOpener,
                         maxRecordsPerFetch,
                         pausedSplitBufferLimits,
+                        bufferBudget,
                         metrics,
                         LOG,
                         signal::raise);
@@ -105,30 +146,49 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
      * rate</b> (#377, measured by {@code PubSubBackpressuredReaderGuardTest}). {@code FetchTask}
      * keeps the batch it could not hand over and skips this method while it holds one, so a
      * downstream that is merely slow delays each guard by one element-queue slot, while one that
-     * has stopped outright stops them entirely. Placing a guard on a thread of its own would not
-     * help the second case: the same stall means {@code pollNext} is not being called, and it is
-     * the only path a fetcher's recorded failure has to the job. What that case gets instead is
-     * {@code bufferedMessages} and {@code bufferedBytes}, which a metric reporter reads whatever
-     * this loop is doing.
+     * has stopped outright stops them entirely. Placing those fetch-thread guards on a thread of
+     * their own would not help the second case: the same stall means {@code pollNext} is not being
+     * called, and it is the only path a fetcher's recorded failure has to the job. The reader-wide
+     * subscriber-buffer guard is deliberately different: it runs on the SDK callback thread and
+     * reports an active reader's crossing through the coordinator. The {@code bufferedMessages} and
+     * {@code bufferedBytes} gauges remain available to a metric reporter whatever this loop is
+     * doing.
      */
     @Override
     public RecordsWithSplitIds<PubsubMessage> fetch() throws IOException {
         CompletableFuture<Void> armed = signal.arm();
         RecordsBySplits.Builder<PubsubMessage> builder = new RecordsBySplits.Builder<>();
-        if (roster.drainInto(builder) == 0) {
+        BufferUsage fetched = roster.drainInto(builder);
+        if (fetched.messages() == 0) {
             // Nothing buffered: park until a message arrives, a subscriber fails, or the fetcher is
             // woken up to run a queued task (which is how new splits reach this reader).
             signal.await(armed, checkpointDetector.parkTimeoutMillis());
-            roster.drainInto(builder);
+            fetched = roster.drainInto(builder);
         }
-        // Reports a permanent failure of a split the drain above skipped because it is paused
-        // (#348).
-        roster.checkPausedSplitFailures();
-        // Bounds a paused split's buffer by stopping its subscriber (#357, ADR-0066).
-        roster.parkOverfullPausedSplits();
-        // Fails the reader if checkpoints never arrive while messages are outstanding (ADR-0011).
-        checkpointDetector.check();
-        return builder.build();
+        MeteredRecordsWithSplitIds records =
+                new MeteredRecordsWithSplitIds(
+                        builder.build(), fetched.messages(), fetched.bytes(), metrics);
+        try {
+            // Reports a permanent failure of a split the drain above skipped because it is paused
+            // (#348).
+            roster.checkPausedSplitFailures();
+            // Bounds a paused split's buffer by stopping its subscriber (#357, ADR-0066).
+            roster.parkOverfullPausedSplits();
+            // Fails the reader if checkpoints never arrive while messages are outstanding
+            // (ADR-0011).
+            checkpointDetector.check();
+            return records;
+        } catch (IOException | RuntimeException | Error failure) {
+            // The batch left the subscriber deques before the guards ran, so its fetcher metrics
+            // start before them too. A failing guard hands no batch to Flink; recycle it so the
+            // failed fetch does not leave retention attributed to the fetcher forever.
+            try {
+                records.recycle();
+            } catch (RuntimeException | Error recycleFailure) {
+                failure.addSuppressed(recycleFailure);
+            }
+            throw failure;
+        }
     }
 
     @Override

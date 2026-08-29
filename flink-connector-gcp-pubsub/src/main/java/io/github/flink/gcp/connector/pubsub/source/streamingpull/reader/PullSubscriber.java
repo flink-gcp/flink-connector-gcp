@@ -70,10 +70,10 @@ public interface PullSubscriber extends AutoCloseable {
      * Returns what this subscriber currently holds buffered, so the reader can bound a split it is
      * not draining.
      *
-     * <p>Reported rather than bounded here because the bound is the reader's policy and the
-     * response is the reader's to make: this buffer is deliberately unbounded, and a subscriber
-     * that refused a message would have to block a client-library thread or nack it, which are the
-     * two things the implementation's design rules out (see {@link StreamingPullSubscriber}).
+     * <p>The reader-wide {@link SubscriberBufferBudget} enforces its aggregate hard bound before a
+     * callback delivery enters any subscriber buffer. This per-subscriber view remains separate:
+     * {@link SubscriberRoster} uses it for the paused-split policy, and the source metrics use it
+     * to report what the subscriber deques hold.
      *
      * <p><b>Unlike the rest of this interface, this must be safe to call from any thread.</b> The
      * reader calls it on the fetcher thread, and the {@code bufferedMessages} and {@code
@@ -83,6 +83,13 @@ public interface PullSubscriber extends AutoCloseable {
      * @return the buffered messages and their total serialized size
      */
     BufferUsage bufferUsage();
+
+    /**
+     * Asks the client to stop delivering without clearing the connector buffer or waiting for
+     * termination. The reader-wide admission guard uses this from a callback thread before the
+     * fetcher performs the ordinary shutdown and park sequence.
+     */
+    void requestStop();
 
     /**
      * Nacks every message this subscriber's split still holds and asks the client to shut down,

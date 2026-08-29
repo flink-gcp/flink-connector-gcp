@@ -14,14 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0066: A paused split's buffer is bounded by parking its subscriber
+# ADR-0066: Pub/Sub subscriber buffers are bounded independently of SDK flow control
 
 - Status: Accepted
-- Date: 2026-08-08, refined 2026-08-09 ([#377], [#440])
-- Issues: [#357], [#377], [#440]
+- Date: 2026-08-08, refined 2026-08-09 ([#377], [#440]) and 2026-08-29 ([#1138])
+- Issues: [#357], [#377], [#440], [#1138]
 - Modules: pubsub (source)
-- Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (§ Watermark alignment);
-  `docs/content/docs/reference/pubsub.md` for the two knobs
+- Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (§ Subscriber options,
+  Metrics and Watermark alignment); `docs/content/docs/reference/pubsub.md` for the four knobs
 
 ## Context
 
@@ -30,12 +30,53 @@ the client library's flow control, and [#356]'s second review round found that c
 `maxAckExtensionPeriod`. Filed as [#357], P1: the failure mode is a TaskManager filling up while
 the job looks healthy, since alignment holding a split is alignment working as asked.
 
+[#377] then showed that the same lapse grows a subscriber deque when downstream is completely
+stalled, and that Flink's fetcher retains another four drains at its default queue capacity.
+The observability response left the subscriber deque unbounded because a failure recorded on the
+fetcher still needs `pollNext()` to reach the job.
+[#1138] closes that remaining pre-1.0 OOM gap with a callback-visible response and a coordinator
+event that does not depend on the task or fetcher polling.
+
 ## Decision
 
 **When a paused split's buffer passes its bound, the reader stops that split's SDK client and
 opens a fresh one when the split resumes.** The bound is two new `PubSubSubscriberOptions` knobs,
 `pausedSplitBufferMaxMessages` and `pausedSplitBufferMaxBytes`, each defaulting to twice the
 flow-control limit it shadows.
+
+**Every source reader also owns one hard aggregate budget across all of its subscriber deques.**
+`subscriberBufferMaxMessages` defaults to 10000 and `subscriberBufferMaxBytes` defaults to 64 MiB.
+The callback reserves both dimensions before adding the delivery to `PubSubAckTracker` or the
+deque, so the delivery that would cross either bound is NACKed and never retained.
+
+- **The response is non-blocking and stops intake before it reports.** The first crossing asks
+  every subscriber in that reader to stop asynchronously.
+  Later in-flight callbacks are also rejected and NACKed while those clients terminate, but the
+  stopped streams cannot sustain a redelivery loop.
+- **An entirely alignment-paused reader parks instead of failing.** The callback marks a
+  reader-wide park request, stops all subscribers, and wakes the fetcher.
+  The existing park lifecycle then checks failures, NACKs accepted deliveries, closes the clients
+  and reopens them when their splits resume.
+  A resume that races the park promotes the response to coordinator failure, because its subscriber
+  has already received the asynchronous stop request and cannot safely remain active.
+- **Any unpaused split makes the coordinator fail the job.** The callback sends a
+  `SubscriberBufferLimitExceededEvent` through `SourceReaderContext` after stopping intake.
+  `PubSubSplitEnumerator.handleSourceEvent` throws an actionable exception, and Flink's
+  `SourceCoordinator.runInEventLoop` turns that exception into `context.failJob(...)`.
+  This path stays live when complete downstream backpressure has stopped both `pollNext()` and
+  `PubSubSplitReader.fetch()`.
+- **The defaults are independent of split cardinality.** They bound one reader's subscriber
+  aggregate rather than multiplying a per-subscriber allowance by the number of assigned splits.
+  A constrained 256 MiB child-JVM probe holds the default 10000 messages with 4 KiB payloads and
+  rejects the next delivery.
+- **Flink-owned fetcher retention remains a separate envelope and now has separate gauges.**
+  `fetcherBufferedMessages` and `fetcherBufferedBytes` count batches after they leave subscriber
+  deques and before `SourceReaderBase` takes them.
+  The message-count ceiling is `(source.reader.element.queue.capacity + 2) × maxRecordsPerFetch ×
+  assigned splits`; the connector cannot impose a byte cap on queues Flink owns.
+- **Checkpoint completion remains the Ack boundary.** An admitted and emitted record follows the
+  existing staged/pending/checkpoint lifecycle unchanged.
+  Only a delivery rejected before admission is NACKed directly.
 
 - **The default is twice the flow-control limit it shadows, and the factor is the lapse's own
   size.** The client releases a whole window of permits per expiry wave, so the first wave carries
@@ -179,21 +220,55 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
   the fourth batch in the measurement comes from, and each of the three holds one drain of every
   assigned split rather than of one.
 
+Verified 2026-08-29 for [#1138] by `SubscriberBufferBudgetTest`,
+`PubSubBackpressuredReaderGuardTest`, `SubscriberBufferMemoryBoundaryTest` and the slow emulator
+`PubSubBackpressuredSplitBufferITCase`.
+
+- **Concurrent callbacks stop at the exact aggregate boundary.** Sixty-four callback threads
+  racing a 17-message budget admitted exactly 17, and count/byte boundary tests rejected the first
+  crossing without changing retained usage.
+- **The frozen-downstream series plateaus after acknowledgement extension expires.** The emulator
+  arm never calls `fetch()`, runs for twice its 20-second `maxAckExtensionPeriod`, reaches the
+  75-message hard cap and remains there for sampled observations after its subscriber is stopped.
+  A drained control in the same trial stays below the cap and continues receiving.
+- **The standalone subscriber-buffer probe fits in a 256 MiB heap.** A child JVM under `-Xmx256m`
+  retains 10000 distinct messages with 4 KiB payloads and their pending acknowledgement handles,
+  then rejects message 10001 without exhausting the heap.
+  This is a boundary regression, not a TaskManager sizing result: Flink, the SDK client, fetcher
+  queues and user code all consume additional heap that the probe deliberately excludes.
+- **Fetcher retention is separately visible.** The deterministic frozen-fetcher test still
+  measures 3999 records outside the subscriber deque and now observes the same count through
+  `fetcherBufferedMessages`, with a positive serialized-byte gauge.
+- **The real-service contract has a gated, small-volume test.** Four messages under one ordering
+  key and a five-attempt dead-letter policy cross a one-message cap.
+  The test requires their complete ordered redelivery after the stop and requires the dead-letter
+  observer to remain empty, covering the service behavior the emulator cannot supply.
+  `PubSubBackpressuredSplitBufferRealGcpITCase` passed against real Pub/Sub on 2026-08-29: the
+  callback crossed the cap, all four messages were then pulled in their original order with their
+  ordering key intact, and the dead-letter observer remained empty for the 20-second observation
+  window.
+
 ## Alternatives declined
 
-- **Fail the job at a threshold.** Smallest change, keeps ADR-0012's watching trivially intact,
-  and turns an eventual heap exhaustion into a diagnosable failure naming `withIdleness(...)`.
-  Declined because it kills a job the pause would not otherwise have killed, and a restart lands
-  in the same state — a crash loop until the watermark strategy is fixed.
+- **Fail an alignment-paused reader at a threshold.** Smallest original change, keeps ADR-0012's
+  watching trivially intact, and turns an eventual heap exhaustion into a diagnosable failure
+  naming `withIdleness(...)`.
+  Declined for the paused-only case because it kills a job alignment would not otherwise have
+  killed, and a restart lands in the same state.
+  The #1138 refinement does choose coordinator failure when any split is unpaused, because a total
+  downstream stall has no safe resume event and no task-thread path capable of surfacing a local
+  failure.
 - **Document a sizing rule and leave the buffer unbounded.** Cheapest and reversible. Declined on
   the measurement above: the growth has no ceiling, and the deployments most exposed are the ones
   that followed the page's own advice to size `flowControlMaxOutstandingElementCount` to
   peak-rate × checkpoint interval.
-- **Nack what arrives once the buffer is full.** Bounds memory, keeps the client alive and so
-  keeps [#348]'s watching. Declined because a nack is an immediate redelivery: the split would
-  loop its backlog through delivery continuously, spending a dead-letter policy's
-  `maxDeliveryAttempts` on messages nobody is consuming and diverting live data to the dead-letter
+- **Keep the client alive and NACK everything after the buffer is full.** Bounds memory and keeps
+  [#348]'s watching.
+  Declined because an immediate redelivery would loop continuously, spend a dead-letter policy's
+  `maxDeliveryAttempts` on messages nobody is consuming and divert live data to the dead-letter
   topic.
+  The chosen response NACKs the crossing delivery but stops all reader subscribers in the same
+  callback response, so there is no live intake to sustain that loop.
 - **Block in the receiver callback.** Ruled out by the design already recorded on
   `StreamingPullSubscriber` (then named `PubSubNotifyingPullSubscriber`): it stalls an ordering
   key's dispatch chain and holds a client-library thread.
@@ -208,15 +283,14 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
   an unbounded buffer, and a liveness probe would mean opening a client that immediately buffers
   again.
 - **Re-emission on resume** is this split's records emitted since the last completed checkpoint —
-  `nackSplit` drains pending, staged and checkpoint-bound alike. **At the default bound** it is
-  normally empty: a park cannot happen before roughly one `maxAckExtensionPeriod` into the pause,
-  and the split emits nothing while paused, so any checkpoint covering its pre-pause output has
-  long completed; what is left is the case where checkpoints are not completing, which
-  `pendingCheckpoints` already reports. **That argument is about the common case, not a
-  guarantee** — a split that was draining until the moment it was paused can be parked on the next
-  fetch, with the previous checkpoint still in flight, and its records are then re-emitted into a
-  running pipeline. Lowering the bound makes that likelier rather than introducing it. Within
-  at-least-once, and stated on the knob and the docs page rather than left to the reader.
+  `nackSplit` drains pending, staged and checkpoint-bound alike. The per-split default normally takes
+  roughly one `maxAckExtensionPeriod` of continuous pause to park, by which time a checkpoint often
+  covers pre-pause output. The reader-wide hard bound is different: it can park every paused split as
+  soon as an ordinary finite pause crosses the aggregate count or byte cap. A split that was draining
+  until the pause can therefore be parked with its previous checkpoint still in flight even under
+  the defaults, and its records are then re-emitted into a running pipeline. Lowering either bound
+  makes that likelier rather than introducing it. This remains within at-least-once and is stated on
+  the knobs and docs page rather than left to the reader.
 - **`PER_KEY` replays, never reorders.** Pub/Sub resumes an ordered key at its earliest unacked
   message, so the reopened client delivers the same run in the same order — which rests on the old
   client being terminated first, and is why the close is inline.
@@ -234,17 +308,15 @@ Pub/Sub, two runs) and `PubSubBackpressuredReaderGuardTest`.
   falls at each park. `parkedSplits` replaces it there.
 - The same lapse reaches a split held back by sustained downstream **backpressure**, where a
   reader-driven park cannot see it: `FetchTask` keeps its `lastRecords` until `elementsQueue.put`
-  succeeds (capacity 2) and skips `fetch()` while it holds one, so no guard placed there runs —
-  equally true of the paused-split failure check and `MissingCheckpointDetector`. Filed as [#377]
-  and **measured there** (the second Evidence block above), which narrowed it in one direction and
-  widened it in another: only a downstream that has stopped altogether reaches the state, and there
-  no thread could report a failure any sooner, but the reader's footprint turned out larger than
-  this bound sees and the service's redelivery adds to it. The response was observability rather
-  than a second bound — `bufferedMessages` and `bufferedBytes`, summed over the subtask's
-  subscribers and read by the metric reporter's own thread, which a frozen fetch loop does not stop.
+  succeeds (capacity 2) and skips `fetch()` while it holds one, so no guard placed there runs.
+  The callback-side hard budget now stops the subscribers without that loop and sends the failure
+  through the source coordinator.
+  `bufferedMessages` / `bufferedBytes` report the bounded subscriber aggregate, while
+  `fetcherBufferedMessages` / `fetcherBufferedBytes` report the separate Flink-owned footprint.
 
 [#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348
 [#356]: https://github.com/flink-gcp/flink-connector-gcp/issues/356
 [#357]: https://github.com/flink-gcp/flink-connector-gcp/issues/357
 [#377]: https://github.com/flink-gcp/flink-connector-gcp/issues/377
 [#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440
+[#1138]: https://github.com/flink-gcp/flink-connector-gcp/issues/1138

@@ -56,6 +56,14 @@ public final class SubscriberOptionsMapper {
                 size -> builder.flowControlMaxOutstandingRequestBytes(size.getBytes()));
         OptionSetters.apply(
                 config,
+                PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_MESSAGES,
+                builder::subscriberBufferMaxMessages);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_BYTES,
+                size -> builder.subscriberBufferMaxBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
                 PubSubConnectorOptions.SCAN_PAUSED_SPLIT_BUFFER_MAX_MESSAGES,
                 builder::pausedSplitBufferMaxMessages);
         OptionSetters.apply(

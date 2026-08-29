@@ -199,6 +199,8 @@ class PubSubSplitReaderTest {
         assertThatThrownBy(reader::fetch)
                 .isInstanceOf(IOException.class)
                 .hasMessage("stream broke");
+        assertThat(readerMetrics.gauge("fetcherBufferedMessages")).isZero();
+        assertThat(readerMetrics.gauge("fetcherBufferedBytes")).isZero();
         reader.close();
     }
 
@@ -235,6 +237,48 @@ class PubSubSplitReaderTest {
         assertThat(parked.isClosed()).isTrue();
         assertThat(readerMetrics.counter("splitsParked")).isEqualTo(1);
         assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
+        reader.close();
+    }
+
+    @Test
+    void aDrainedBatchIsCountedWhileAnotherSplitParks() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        FakePullSubscriber parked = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        parked.deliver(message("a1"), message("a2"));
+        PubsubMessage active = message("b");
+        subscriberOf(SPLIT_B).deliver(active);
+        parked.runOnShutdown(
+                () -> {
+                    assertThat(readerMetrics.gauge("fetcherBufferedMessages")).isEqualTo(1);
+                    assertThat(readerMetrics.gauge("fetcherBufferedBytes"))
+                            .isEqualTo(active.getSerializedSize());
+                });
+
+        RecordsWithSplitIds<PubsubMessage> records = reader.fetch();
+
+        assertThat(readerMetrics.gauge("fetcherBufferedMessages")).isEqualTo(1);
+        assertThat(payloadsBySplit(records)).containsOnlyKeys(SPLIT_B.splitId());
+        assertThat(readerMetrics.gauge("fetcherBufferedMessages")).isZero();
+        reader.close();
+    }
+
+    @Test
+    void aDrainedBatchIsRecycledWhenAnotherSplitParkingThrowsAnError() throws Exception {
+        PubSubSplitReader reader = reader(10, noCheckpointDetector(), boundOf(1, Long.MAX_VALUE));
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(SPLIT_A, SPLIT_B)));
+        FakePullSubscriber parked = subscriberOf(SPLIT_A);
+        reader.pauseOrResumeSplits(List.of(SPLIT_A), Collections.emptyList());
+        parked.deliver(message("a1"), message("a2"));
+        parked.failOnClose(new NoClassDefFoundError("close blew up"));
+        subscriberOf(SPLIT_B).deliver(message("b"));
+
+        assertThatThrownBy(reader::fetch)
+                .isInstanceOf(NoClassDefFoundError.class)
+                .hasMessage("close blew up");
+        assertThat(readerMetrics.gauge("fetcherBufferedMessages")).isZero();
+        assertThat(readerMetrics.gauge("fetcherBufferedBytes")).isZero();
         reader.close();
     }
 
@@ -759,6 +803,8 @@ class PubSubSplitReaderTest {
         assertThatThrownBy(reader::fetch)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("No checkpoint has been taken");
+        assertThat(readerMetrics.gauge("fetcherBufferedMessages")).isZero();
+        assertThat(readerMetrics.gauge("fetcherBufferedBytes")).isZero();
         reader.close();
     }
 

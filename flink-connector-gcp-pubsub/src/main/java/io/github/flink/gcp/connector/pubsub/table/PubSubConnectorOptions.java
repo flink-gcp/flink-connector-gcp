@@ -181,6 +181,33 @@ public final class PubSubConnectorOptions {
                                     + " pausing the stream.");
 
     /**
+     * The hard aggregate message cap for subscriber buffers in one source reader. A reader whose
+     * assigned splits are all paused parks them at the cap; otherwise the source fails the job.
+     */
+    public static final ConfigOption<Long> SCAN_SUBSCRIBER_BUFFER_MAX_MESSAGES =
+            ConfigOptions.key("scan.subscriber-buffer.max-messages")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The hard aggregate message cap for subscriber buffers in one source"
+                                    + " reader. A reader whose assigned splits are all paused parks"
+                                    + " them at the cap; otherwise the source fails the job.");
+
+    /**
+     * The hard aggregate serialized-byte cap corresponding to
+     * 'scan.subscriber-buffer.max-messages'. Whichever cap would be crossed first controls the
+     * response.
+     */
+    public static final ConfigOption<MemorySize> SCAN_SUBSCRIBER_BUFFER_MAX_BYTES =
+            ConfigOptions.key("scan.subscriber-buffer.max-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The hard aggregate serialized-byte cap corresponding to"
+                                    + " 'scan.subscriber-buffer.max-messages'. Whichever cap would"
+                                    + " be crossed first controls the response.");
+
+    /**
      * How many messages a split paused by watermark alignment may buffer before its subscriber is
      * stopped, to be reopened when the split resumes. Lowering it can park a split while a
      * checkpoint covering its output is still in flight, which re-emits those records on resume.

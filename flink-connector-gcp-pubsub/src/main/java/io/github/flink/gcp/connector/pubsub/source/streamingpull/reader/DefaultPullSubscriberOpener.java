@@ -33,6 +33,7 @@ final class DefaultPullSubscriberOpener implements PullSubscriberOpener {
     private final SubscriberFactory subscriberFactory;
     private final AckTracker ackTracker;
     private final Duration shutdownTimeout;
+    private final SubscriberBufferBudget bufferBudget;
 
     /**
      * @param subscriberFactory creates the client backing each split
@@ -40,10 +41,14 @@ final class DefaultPullSubscriberOpener implements PullSubscriberOpener {
      * @param shutdownTimeout the per-subscriber shutdown budget
      */
     DefaultPullSubscriberOpener(
-            SubscriberFactory subscriberFactory, AckTracker ackTracker, Duration shutdownTimeout) {
+            SubscriberFactory subscriberFactory,
+            AckTracker ackTracker,
+            Duration shutdownTimeout,
+            SubscriberBufferBudget bufferBudget) {
         this.subscriberFactory = subscriberFactory;
         this.ackTracker = ackTracker;
         this.shutdownTimeout = shutdownTimeout;
+        this.bufferBudget = bufferBudget;
     }
 
     @Override
@@ -55,6 +60,7 @@ final class DefaultPullSubscriberOpener implements PullSubscriberOpener {
                 subscriberFactory,
                 ackTracker,
                 dataAvailableSignal,
-                shutdownTimeout);
+                shutdownTimeout,
+                bufferBudget);
     }
 }
