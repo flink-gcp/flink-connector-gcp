@@ -77,6 +77,8 @@ public final class SpannerDynamicSource
     @Nullable private final SpannerTableName.AccessPathName scanIndex;
     @Nullable private final Long maxPartitions;
     @Nullable private final Long partitionSizeBytes;
+    @Nullable private final Integer maxRowsPerFetch;
+    @Nullable private final Long maxBytesPerFetch;
     @Nullable private final Boolean dataBoostEnabled;
     @Nullable private final SpannerRpcPriority rpcPriority;
     private final TimestampBound timestampBound;
@@ -104,6 +106,10 @@ public final class SpannerDynamicSource
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS)
                         .orElse(null),
                 config.getOptional(SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES)
+                        .map(size -> size.getBytes())
+                        .orElse(null),
+                config.getOptional(SpannerConnectorOptions.SCAN_MAX_ROWS_PER_FETCH).orElse(null),
+                config.getOptional(SpannerConnectorOptions.SCAN_MAX_BYTES_PER_FETCH)
                         .map(size -> size.getBytes())
                         .orElse(null),
                 config.getOptional(SpannerConnectorOptions.SCAN_DATA_BOOST_ENABLED).orElse(null),
@@ -137,6 +143,8 @@ public final class SpannerDynamicSource
             @Nullable SpannerTableName.AccessPathName scanIndex,
             @Nullable Long maxPartitions,
             @Nullable Long partitionSizeBytes,
+            @Nullable Integer maxRowsPerFetch,
+            @Nullable Long maxBytesPerFetch,
             @Nullable Boolean dataBoostEnabled,
             @Nullable SpannerRpcPriority rpcPriority,
             TimestampBound timestampBound,
@@ -152,6 +160,8 @@ public final class SpannerDynamicSource
         this.producedDataType = producedDataType;
         this.maxPartitions = maxPartitions;
         this.partitionSizeBytes = partitionSizeBytes;
+        this.maxRowsPerFetch = maxRowsPerFetch;
+        this.maxBytesPerFetch = maxBytesPerFetch;
         this.dataBoostEnabled = dataBoostEnabled;
         this.rpcPriority = rpcPriority;
         this.timestampBound = timestampBound;
@@ -234,6 +244,14 @@ public final class SpannerDynamicSource
                 SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES.key(),
                 partitionSizeBytes,
                 builder::partitionSizeBytes);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_MAX_ROWS_PER_FETCH.key(),
+                maxRowsPerFetch,
+                builder::maxRowsPerFetch);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_MAX_BYTES_PER_FETCH.key(),
+                maxBytesPerFetch,
+                builder::maxBytesPerFetch);
         if (rpcPriority != null) {
             builder.rpcPriority(rpcPriority);
         }
@@ -395,6 +413,8 @@ public final class SpannerDynamicSource
                         scanIndex,
                         maxPartitions,
                         partitionSizeBytes,
+                        maxRowsPerFetch,
+                        maxBytesPerFetch,
                         dataBoostEnabled,
                         rpcPriority,
                         timestampBound,
@@ -430,6 +450,8 @@ public final class SpannerDynamicSource
                 && producedDataType.equals(that.producedDataType)
                 && Objects.equals(maxPartitions, that.maxPartitions)
                 && Objects.equals(partitionSizeBytes, that.partitionSizeBytes)
+                && Objects.equals(maxRowsPerFetch, that.maxRowsPerFetch)
+                && Objects.equals(maxBytesPerFetch, that.maxBytesPerFetch)
                 && rpcPriority == that.rpcPriority
                 && timestampBound.equals(that.timestampBound)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
@@ -451,6 +473,8 @@ public final class SpannerDynamicSource
                 producedDataType,
                 maxPartitions,
                 partitionSizeBytes,
+                maxRowsPerFetch,
+                maxBytesPerFetch,
                 dataBoostEnabled,
                 rpcPriority,
                 timestampBound,

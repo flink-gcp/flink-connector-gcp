@@ -32,7 +32,6 @@ import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.DefaultPartitionPlannerFactory;
 import io.github.flink.gcp.connector.spanner.source.batch.reader.BatchClientStructStreamOpener;
-import io.github.flink.gcp.connector.spanner.source.batch.reader.SpannerSplitReader;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -60,6 +59,8 @@ class SpannerSourceBuilderTest {
                                         TimestampBound.ofExactStaleness(5, TimeUnit.SECONDS))
                                 .maxPartitions(12)
                                 .partitionSizeBytes(4096)
+                                .maxRowsPerFetch(17)
+                                .maxBytesPerFetch(8192)
                                 .dataBoostEnabled(true)
                                 .rpcPriority(SpannerRpcPriority.LOW));
 
@@ -71,21 +72,27 @@ class SpannerSourceBuilderTest {
         assertThat(config.getPartitionOptions().getPartitionSizeBytes()).isEqualTo(4096);
         assertThat(config.isDataBoostEnabled()).isTrue();
         assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
-        assertThat(config.getMaxRecordsPerFetch())
-                .isEqualTo(SpannerSplitReader.DEFAULT_MAX_ROWS_PER_FETCH);
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(17);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(8192);
     }
 
     @Test
     void serviceAccountKeyFileSurvivesJobSubmissionSerialization() throws Exception {
         Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source =
-                builder().serviceAccountKeyFile("/var/run/secrets/spanner.json").build();
+                builder()
+                        .serviceAccountKeyFile("/var/run/secrets/spanner.json")
+                        .maxRowsPerFetch(17)
+                        .maxBytesPerFetch(8192)
+                        .build();
 
         Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> restored =
                 InstantiationUtil.deserializeObject(
                         InstantiationUtil.serializeObject(source), getClass().getClassLoader());
 
-        assertThat(((SpannerBatchReadSource<Long>) restored).getConfig().getServiceAccountKeyFile())
-                .isEqualTo("/var/run/secrets/spanner.json");
+        SpannerSourceConfig<Long> config = ((SpannerBatchReadSource<Long>) restored).getConfig();
+        assertThat(config.getServiceAccountKeyFile()).isEqualTo("/var/run/secrets/spanner.json");
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(17);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(8192);
     }
 
     @Test
@@ -111,6 +118,10 @@ class SpannerSourceBuilderTest {
     void theDefaultsAreAStrongReadWithNoHintsAndNoDataBoost() {
         SpannerSourceConfig<Long> config = configOf(builder());
 
+        // The byte target addresses wide rows without changing the established count-only
+        // hand-off for narrow rows.
+        assertThat(SpannerSourceBuilder.DEFAULT_MAX_ROWS_PER_FETCH).isEqualTo(1000);
+        assertThat(SpannerSourceBuilder.DEFAULT_MAX_BYTES_PER_FETCH).isEqualTo(12L * 1024 * 1024);
         assertThat(config.getTimestampBound().getMode()).isEqualTo(TimestampBound.Mode.STRONG);
         assertThat(config.isDataBoostEnabled()).isFalse();
         // Unset rather than defaulted to HIGH: leaving the field out of the request keeps the
@@ -120,6 +131,10 @@ class SpannerSourceBuilderTest {
         // hint the user did not ask for.
         assertThat(config.getPartitionOptions().getMaxPartitions()).isZero();
         assertThat(config.getPartitionOptions().getPartitionSizeBytes()).isZero();
+        assertThat(config.getMaxRowsPerFetch())
+                .isEqualTo(SpannerSourceBuilder.DEFAULT_MAX_ROWS_PER_FETCH);
+        assertThat(config.getMaxBytesPerFetch())
+                .isEqualTo(SpannerSourceBuilder.DEFAULT_MAX_BYTES_PER_FETCH);
     }
 
     @Test
@@ -222,6 +237,16 @@ class SpannerSourceBuilderTest {
         assertThatThrownBy(() -> builder().partitionSizeBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("partitionSizeBytes must be positive");
+    }
+
+    @Test
+    void aNonPositiveFetchBoundIsRejected() {
+        assertThatThrownBy(() -> builder().maxRowsPerFetch(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maxRowsPerFetch must be positive: 0");
+        assertThatThrownBy(() -> builder().maxBytesPerFetch(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maxBytesPerFetch must be positive: -1");
     }
 
     @Test

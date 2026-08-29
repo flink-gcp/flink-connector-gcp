@@ -135,6 +135,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   read deadline whenever the service went quiet. The case is rare because this enumerator assigns
   only on request, so a mid-partition wake-up comes from `SplitFetcher.shutdown()` — which never
   fetches again.
+- **Each bounded fetch has public row and decoded-content byte bounds** (`docs/adr/0085`, #1140).
+  `maxRowsPerFetch` and `maxBytesPerFetch` bound the TaskManager hand-off, not Spanner partition
+  planning or transport paging. The byte estimate is logical content rather than retained heap,
+  and one oversized row is emitted alone. A row read ahead at the byte boundary stays only with the
+  open stream; wake-up discards it and replays the whole partition, so it is never checkpoint state.
 - **The `cancelled` flag decides whether a split finished, never the read's behaviour** — measured:
   closing a `ResultSet` from another thread ends a blocked `next()` either by returning `false` or
   by throwing `CANCELLED`. Both shapes occur.

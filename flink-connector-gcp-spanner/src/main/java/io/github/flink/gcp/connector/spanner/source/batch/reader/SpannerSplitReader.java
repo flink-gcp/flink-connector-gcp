@@ -45,8 +45,9 @@ import java.util.Deque;
  * second only arrives after this reader reported the first finished; a queue is kept regardless,
  * because a {@code SplitReader} may be handed several at once.
  *
- * <p>The per-fetch cap is a correctness floor rather than a tuning knob: without it a fetch would
- * not return until a whole partition had been read, and no checkpoint could be taken in between.
+ * <p>The per-fetch row and estimated-byte bounds make the hand-off batch configurable. Without a
+ * bound a fetch would not return until a whole partition had been read, and no checkpoint could be
+ * taken in between.
  *
  * <p><b>A cancelled read and a finished read look the same, and telling them apart is this class's
  * job.</b> Measured against the pinned emulator on 2026-08-10: closing a {@code ResultSet} from
@@ -68,20 +69,10 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerSplitReader.class);
 
-    /**
-     * The most rows one fetch hands to the task thread, unless a test lowers it.
-     *
-     * <p>A correctness floor rather than tuning: without a cap a fetch would not return until a
-     * whole partition had been read, and no checkpoint could be taken in between. It is not a
-     * builder option because nothing about it is workload-dependent — the client hands rows over
-     * one at a time, so this bounds a batch rather than a buffer, and a measurement rather than a
-     * preference is what would turn it into a knob.
-     */
-    public static final int DEFAULT_MAX_ROWS_PER_FETCH = 1000;
-
     private final DatabaseDestination database;
     private final StructStreamOpener opener;
     private final int maxRowsPerFetch;
+    private final long maxBytesPerFetch;
     private final SpannerSourceReaderMetrics metrics;
 
     private final Deque<BatchReadSplit> queued = new ArrayDeque<>();
@@ -113,18 +104,23 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
      * @param opener opens the reads; shared with this subtask's other split readers and closed by
      *     the source reader, not here
      * @param maxRowsPerFetch the most rows one fetch hands to the task thread
+     * @param maxBytesPerFetch the target maximum estimated bytes one fetch hands to the task thread
      * @param metrics the reader's metrics
      */
     public SpannerSplitReader(
             DatabaseDestination database,
             StructStreamOpener opener,
             int maxRowsPerFetch,
+            long maxBytesPerFetch,
             SpannerSourceReaderMetrics metrics) {
         Preconditions.checkArgument(
                 maxRowsPerFetch > 0, "maxRowsPerFetch must be positive: %s", maxRowsPerFetch);
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         this.maxRowsPerFetch = maxRowsPerFetch;
+        this.maxBytesPerFetch = maxBytesPerFetch;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
     }
 
@@ -162,7 +158,8 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
         }
 
         int emitted = 0;
-        while (emitted < maxRowsPerFetch) {
+        long emittedBytes = 0;
+        while (emitted < maxRowsPerFetch && (emitted == 0 || emittedBytes < maxBytesPerFetch)) {
             Struct row;
             try {
                 row = partition.read();
@@ -184,12 +181,22 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
                 finish(batch, partition);
                 break;
             }
-            metrics.rowRead();
+            long estimatedBytes = partition.lastReadEstimatedBytes;
+            if (emitted > 0 && estimatedBytes > maxBytesPerFetch - emittedBytes) {
+                partition.defer(row);
+                break;
+            }
             batch.add(partition.split.splitId(), row);
+            metrics.rowRead();
             emitted++;
+            emittedBytes = saturatedAdd(emittedBytes, estimatedBytes);
             partition.delivered += 1;
         }
         return batch.build();
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        return right > Long.MAX_VALUE - left ? Long.MAX_VALUE : left + right;
     }
 
     private String openFailureMessage(ActivePartition partition) {
@@ -263,6 +270,14 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
          */
         private long delivered;
 
+        /** A row decoded to detect a byte boundary but not yet handed to the task thread. */
+        @Nullable private Struct pendingRow;
+
+        /**
+         * The estimate paired with {@code pendingRow}, or the last row returned by {@link #read()}.
+         */
+        private long lastReadEstimatedBytes;
+
         /** Volatile for the same reason {@code active} is: {@link #cancel()} reads it. */
         @Nullable private volatile StructStream stream;
 
@@ -333,8 +348,21 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
 
         @Nullable
         private Struct read() {
+            Struct pending = pendingRow;
+            if (pending != null) {
+                pendingRow = null;
+                return pending;
+            }
             StructStream open = stream;
-            return open == null ? null : open.next();
+            Struct row = open == null ? null : open.next();
+            if (row != null) {
+                lastReadEstimatedBytes = StructSizeEstimator.estimate(row);
+            }
+            return row;
+        }
+
+        private void defer(Struct row) {
+            pendingRow = row;
         }
 
         private void cancel() {
@@ -347,6 +375,8 @@ public class SpannerSplitReader implements SplitReader<Struct, BatchReadSplit> {
 
         @Override
         public void close() {
+            pendingRow = null;
+            lastReadEstimatedBytes = 0;
             StructStream open = stream;
             stream = null;
             if (open != null) {

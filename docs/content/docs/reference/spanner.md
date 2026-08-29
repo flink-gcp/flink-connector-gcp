@@ -128,13 +128,15 @@ is under [Source]({{< relref "docs/connectors/datastream/spanner" >}}#source).
 | `timestampBound` | `TimestampBound.strong()` | The snapshot to read at. Only `strong()`, `ofReadTimestamp` and `ofExactStaleness` are accepted; the other two modes are single-use-only and are rejected here |
 | `maxPartitions` | *unset ⇒ the service decides* | How many partitions to ask for. A hint the service may ignore, and the emulator ignores outright |
 | `partitionSizeBytes` | *unset ⇒ the service decides* | How much data one partition should cover. A hint, like the one above |
+| `maxRowsPerFetch` | `1000` | Maximum input rows one fetch hands to Flink's element queue. The fetch returns when this count or `maxBytesPerFetch` is reached |
+| `maxBytesPerFetch` | `12 MiB` | Target maximum decoded logical field bytes one fetch hands to Flink's element queue. One row larger than the target is handed over alone |
 | `dataBoostEnabled` | `false` | Runs the read on Data Boost's independent compute. Needs `spanner.databases.useDataBoost`, is billed separately, and has a concurrency quota of its own |
 | `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`, applied to the reads that move the rows. `LOW` is what a backfill that must not disturb serving traffic wants. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it |
 | `serviceAccountKeyFile` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path read by a fresh or restored JobManager enumerator and by every TaskManager reader. The job graph contains the path, not the credential contents. Mutually exclusive with `emulatorEndpoint`; see [Credentials]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) |
 | `emulatorEndpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator. Setting it also stops the client looking for credentials |
 
-There is no per-fetch record cap here, and no options object: the cap is a correctness floor rather
-than a knob, and promoting it would need a measurement.
+The two fetch bounds control the TaskManager hand-off rather than Spanner partition planning or transport read-ahead.
+The byte estimate counts decoded logical content, not JVM object overhead, and may force lazy client values to decode while the row is measured.
 
 ## `SpannerChangeStreamSource.builder()`
 

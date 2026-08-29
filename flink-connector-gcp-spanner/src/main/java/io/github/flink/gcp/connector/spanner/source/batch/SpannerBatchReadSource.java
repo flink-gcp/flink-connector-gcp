@@ -108,7 +108,8 @@ public class SpannerBatchReadSource<T>
                         new SpannerSplitReader(
                                 config.getDatabase(),
                                 opener,
-                                config.getMaxRecordsPerFetch(),
+                                config.getMaxRowsPerFetch(),
+                                config.getMaxBytesPerFetch(),
                                 metrics);
         return new SpannerSourceReader<>(
                 splitReaderSupplier,

@@ -63,10 +63,10 @@ class SpannerSourceFailoverITCase extends AbstractSpannerEmulatorITCase {
     /**
      * Enough rows that the source cannot have finished before the failure lands.
      *
-     * <p>Sized against the reader's element queue rather than picked: the queue holds two fetches
-     * and a fetch holds a thousand rows, so a table of a few thousand can be read whole into memory
-     * while the map is still on its first hundred — and the duplicate assertion below, which is
-     * this test's control, would then have nothing to observe.
+     * <p>Sized against the reader's element queue rather than picked: with the default 1,000-row
+     * fetch, the reader can stage only a few thousand rows around that queue. A table of ten
+     * thousand therefore cannot be read whole while the map is still on its first hundred — which
+     * keeps the duplicate assertion below, this test's control, observable.
      */
     private static final int ROWS = 10_000;
 
