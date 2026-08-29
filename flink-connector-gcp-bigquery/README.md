@@ -58,7 +58,7 @@ Using the shipped `GenericRecord` deserializer needs `flink-avro` on the job's c
 | `bigquery` table connector; `DynamicTableSink` over `STORAGE_API_AT_LEAST_ONCE`, with the `sink.default-stream.*` tuning family and the `RowData` serializer | Implemented ([#287](https://github.com/flink-gcp/flink-connector-gcp/issues/287)) |
 | The remaining write methods from SQL (`sink.buffered-stream.*`, `sink.file-loads.*`) | Implemented ([#288](https://github.com/flink-gcp/flink-connector-gcp/issues/288)) |
 | Table-creation options (`sink.table-create.*`): time partitioning and clustering | Implemented ([#289](https://github.com/flink-gcp/flink-connector-gcp/issues/289)) |
-| Bounded `DynamicTableSource` over table, query, and view-materialization reads, with top-level projection pushdown | Implemented ([#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542)) |
+| Bounded `DynamicTableSource` over table, query, and view-materialization reads, with top-level projection and conservative filter pushdown | Implemented ([#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542), [#1137](https://github.com/flink-gcp/flink-connector-gcp/issues/1137)) |
 | `flink-sql-connector-gcp-bigquery` shaded uber-jar | Implemented ([#290](https://github.com/flink-gcp/flink-connector-gcp/issues/290)) |
 
 ## Documentation

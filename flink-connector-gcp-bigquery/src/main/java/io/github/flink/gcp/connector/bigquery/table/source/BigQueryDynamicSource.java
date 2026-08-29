@@ -23,8 +23,10 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
@@ -54,7 +56,8 @@ import java.util.Objects;
  * factory's call site — and a transposition among the adjacent same-typed values compiles.
  */
 @Internal
-public final class BigQueryDynamicSource implements ScanTableSource, SupportsProjectionPushDown {
+public final class BigQueryDynamicSource
+        implements ScanTableSource, SupportsProjectionPushDown, SupportsFilterPushDown {
 
     private final RowType physicalRowType;
     private final DataType physicalDataType;
@@ -79,6 +82,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
 
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
+    private BigQueryFilterPushDown.State filterState;
 
     private BigQueryDynamicSource(Builder builder) {
         this.physicalDataType = builder.physicalDataType;
@@ -104,6 +108,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
         this.parallelism = builder.parallelism;
         this.projectedFields = builder.projectedFields;
+        this.filterState = builder.filterState;
     }
 
     /**
@@ -133,6 +138,12 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         }
         this.projectedFields = topLevel;
         this.producedDataType = producedDataType;
+    }
+
+    @Override
+    public SupportsFilterPushDown.Result applyFilters(List<ResolvedExpression> filters) {
+        filterState = BigQueryFilterPushDown.translate(physicalRowType, filters, rowRestriction);
+        return filterState.result();
     }
 
     @Override
@@ -169,6 +180,9 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 BigQueryConnectorOptions.SCAN_ROW_RESTRICTION.key(),
                 rowRestriction,
                 builder::rowRestriction);
+        if (filterState.rowRestriction() != null) {
+            builder.rowRestriction(combinedRowRestriction(filterState.rowRestriction()));
+        }
         if (snapshotTime != null) {
             builder.snapshotTime(snapshotTime);
         }
@@ -203,6 +217,10 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         }
         Source<RowData, ?, ?> source = builder.build();
         return SourceProvider.of(source, parallelism);
+    }
+
+    private String combinedRowRestriction(String generated) {
+        return BigQueryFilterPushDown.combinedRowRestriction(rowRestriction, generated);
     }
 
     private List<String> selectedFields() {
@@ -247,6 +265,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 .parallelism(parallelism)
                 .producedDataType(producedDataType)
                 .projectedFields(projectedFields)
+                .filterState(filterState)
                 .build();
     }
 
@@ -284,7 +303,8 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && producedDataType.equals(that.producedDataType)
-                && Arrays.equals(projectedFields, that.projectedFields);
+                && Arrays.equals(projectedFields, that.projectedFields)
+                && filterState.equals(that.filterState);
     }
 
     @Override
@@ -310,7 +330,8 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
                 emulatorRestEndpoint,
                 parallelism,
                 producedDataType,
-                Arrays.hashCode(projectedFields));
+                Arrays.hashCode(projectedFields),
+                filterState);
     }
 
     /**
@@ -350,6 +371,7 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         @Nullable private Integer parallelism;
         @Nullable private DataType producedDataType;
         @Nullable private int[] projectedFields;
+        private BigQueryFilterPushDown.State filterState = BigQueryFilterPushDown.State.empty();
 
         private Builder() {}
 
@@ -571,6 +593,12 @@ public final class BigQueryDynamicSource implements ScanTableSource, SupportsPro
         /** Restores the applied projection when a source is copied. */
         Builder projectedFields(@Nullable int[] projectedFields) {
             this.projectedFields = projectedFields == null ? null : projectedFields.clone();
+            return this;
+        }
+
+        /** Restores the applied filters when a source is copied. */
+        Builder filterState(BigQueryFilterPushDown.State filterState) {
+            this.filterState = filterState;
             return this;
         }
 

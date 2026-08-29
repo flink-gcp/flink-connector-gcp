@@ -1954,8 +1954,10 @@ TaskManager share that JVM's heap.
 Use [`selectedFields`](#push-down) to avoid transferring columns the job does not need and
 [`rowRestriction`](#push-down) to remove rows before the read session sends them.
 Table API projection pushdown maps retained top-level columns to `selectedFields`.
-SQL predicate pushdown is not implemented; `scan.row-restriction` is the explicit BigQuery-native
-filter surface.
+Table API filter pushdown maps its conservative supported subset to `rowRestriction`, while every
+original predicate remains a Flink residual.
+`scan.row-restriction` remains the explicit BigQuery-native filter surface and is combined with a
+generated restriction using parenthesized `AND`.
 No batch-size metric is registered because measuring decoded heap on the per-row path would itself
 distort the allocation this guard is meant to contain; the existing `bytesRead` metric reports
 response bytes received instead.
@@ -2032,10 +2034,43 @@ than there are subtasks is how this source gets its elasticity. A `preferredMinS
 applies them before anything is transferred. What that saves differs between the two:
 `selectedFields` leaves whole columns out of the metered bytes-read usage;
 `rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
-partitioning or clustering column. The Table API source maps `selectedFields` onto
-`SupportsProjectionPushDown`. It deliberately does not advertise SQL filter pushdown:
-`rowRestriction` and `snapshotTime` remain explicit options because a BigQuery restriction is not a
-Flink SQL expression ([#57]({{< param BookRepo >}}/issues/57)).
+partitioning or clustering column.
+The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
+predicate subset onto `SupportsFilterPushDown`.
+
+Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`,
+`TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns.
+`BOOLEAN` accepts equality and inequality, BigQuery `STRING` accepts equality, and those supported
+column types also accept `IS NULL` and `IS NOT NULL`.
+An `AND` contributes every child that is a necessary condition for the whole expression.
+An `OR` contributes only when every branch translates.
+String inequality and ordered string comparisons are not translated.
+Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
+rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
+Timestamp comparison pushdown requires precision 6 because the source preserves BigQuery
+microseconds at that precision.
+
+BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
+Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
+unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
+reject the generated restriction at that point.
+A collated `STRING` equality can admit additional rows, which the Flink residual removes.
+`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+complex types, field-to-field comparisons, casts, and functions are not translated.
+
+Every generated restriction is a necessary condition for the Flink predicate; otherwise BigQuery
+could discard a matching row before Flink sees it.
+Every pushed predicate also remains a Flink residual, so Flink rejects any returned row that does
+not satisfy its own predicate semantics.
+Identifiers are derived from the physical schema and quoted as GoogleSQL identifiers, while
+literals are emitted by logical type and escaped before they enter the generated expression.
+An explicit `rowRestriction` is parenthesized separately and combined with the generated
+restriction using `AND`.
+The connector admits each generated restriction only while the combined UTF-8 expression remains
+within the Storage Read API's 1 MB limit.
+A predicate that would cross the limit remains with Flink without discarding other generated
+restrictions that fit.
+`snapshotTime` remains an explicit option rather than a SQL translation.
 
 `snapshotTime` is served from BigQuery's time-travel window, which is seven days by default: an
 instant outside it is rejected when the session is created, with `INVALID_ARGUMENT: time travel
@@ -2071,6 +2106,8 @@ scans out of its result. `selectedFields` and `rowRestriction` are applied by Bi
 *result*, so they cannot make the query cheaper — prune inside the query itself. `snapshotTime` is
 rejected beside `query(...)` rather than ignored: the result table is created by the query, so there
 is no earlier version of it, and the point in time belongs in the query as `FOR SYSTEM_TIME AS OF`.
+Table API filter pushdown follows the same boundary: it never rewrites the configured query and
+applies its generated row restriction only to the Storage Read session over that result.
 
 #### Reading a view without writing the query
 

@@ -17,6 +17,10 @@
 package io.github.flink.gcp.connector.bigquery.table.source;
 
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.types.DataType;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -26,8 +30,10 @@ import javax.annotation.Nullable;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -127,13 +133,27 @@ class BigQueryDynamicSourceTest {
     }
 
     @Test
+    void comparesTheAppliedFilterState() {
+        BigQueryDynamicSource first = source();
+        applyIdEquals(first, BigDecimal.ONE);
+        BigQueryDynamicSource sameAgain = source();
+        applyIdEquals(sameAgain, BigDecimal.ONE);
+        BigQueryDynamicSource otherFilter = source();
+        applyIdEquals(otherFilter, BigDecimal.valueOf(2));
+
+        assertThat(first).isEqualTo(sameAgain);
+        assertThat(first.hashCode()).isEqualTo(sameAgain.hashCode());
+        assertThat(otherFilter).as("filterState").isNotEqualTo(first);
+    }
+
+    @Test
     void aCopyOfAFullySpecifiedSourceRepeatsEveryFieldOfIt() throws Exception {
         // The guard ADR-0032 records the sink needing when it took a builder: a dropped positional
         // argument does not compile, a dropped builder call does. Reflection rather than a list of
         // getters, because the half worth catching is a field added later and forgotten in copy() —
         // which the option-driven copies in the factory test catch only if some DDL there happens
         // to set it.
-        BigQueryDynamicSource source = projected(fullySpecified());
+        BigQueryDynamicSource source = plannerApplied(fullySpecified());
         BigQueryDynamicSource copy = (BigQueryDynamicSource) source.copy();
 
         for (Field declared : BigQueryDynamicSource.class.getDeclaredFields()) {
@@ -154,7 +174,7 @@ class BigQueryDynamicSourceTest {
         // new field nobody adds there sits at its default on both sides of the copy and compares
         // equal however copy() treats it. This is the assertion that fails when that happens.
         BigQueryDynamicSource base = source();
-        BigQueryDynamicSource full = projected(fullySpecified());
+        BigQueryDynamicSource full = plannerApplied(fullySpecified());
 
         for (Field declared : BigQueryDynamicSource.class.getDeclaredFields()) {
             if (Modifier.isStatic(declared.getModifiers())) {
@@ -175,10 +195,23 @@ class BigQueryDynamicSourceTest {
     }
 
     /** The same source with the two planner-applied fields set, which no builder value reaches. */
-    private static BigQueryDynamicSource projected(BigQueryDynamicSource source) {
+    private static BigQueryDynamicSource plannerApplied(BigQueryDynamicSource source) {
         source.applyProjection(
                 new int[][] {{0}}, DataTypes.ROW(DataTypes.FIELD("id", DataTypes.BIGINT())));
+        applyIdEquals(source, BigDecimal.ONE);
         return source;
+    }
+
+    private static void applyIdEquals(BigQueryDynamicSource source, BigDecimal value) {
+        source.applyFilters(
+                java.util.Collections.singletonList(
+                        CallExpression.permanent(
+                                BuiltInFunctionDefinitions.EQUALS,
+                                Arrays.asList(
+                                        new FieldReferenceExpression(
+                                                "id", DataTypes.BIGINT(), 0, 0),
+                                        new ValueLiteralExpression(value)),
+                                DataTypes.BOOLEAN())));
     }
 
     /**
