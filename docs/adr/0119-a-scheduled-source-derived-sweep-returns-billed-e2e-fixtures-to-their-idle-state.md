@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0119: A scheduled source-derived sweep returns billed E2E fixtures to their idle state
 
 - Status: Accepted
-- Date: 2026-08-02; revised by [#224] (2026-08-10), [#630] (2026-08-14) and the interval change
-  of 2026-08-18
-- Issues: [#224], [#246], [#630]
+- Date: 2026-08-02; revised by [#224] (2026-08-10), [#630] (2026-08-14), the interval change
+  of 2026-08-18, and [#1161] (2026-08-30)
+- Issues: [#224], [#246], [#630], [#1161]
 - Modules: bigtable, spanner, cloudtasks (tests), scripts, CI
 - Current behavior: [`sweep-e2e.sh`](../../scripts/sweep-e2e.sh),
   [sweep workflow](../../.github/workflows/sweep-e2e.yaml),
@@ -43,13 +43,20 @@ Each fixture has a normal cleanup path, but all need a process-independent fallb
 The Bigtable, Spanner and App Engine fixtures in the shared sweep have two cleanup layers.
 The harness or lifecycle wrapper restores the idle state after an ordinary run, and a scheduled GitHub Actions workflow invokes `just sweep-e2e` after hard cancellation prevents that cleanup.
 The interval is a priced parameter rather than a fixed property of the design: it moved from weekly to daily when the sweep was introduced, and to three hours once the repository became public and its Actions minutes free.
-The staleness threshold, not the timetable, is what keeps a sweep from deleting a running instance, so shortening the interval is the safe direction and lowering the threshold is not.
-That safety rests on every run finishing inside the threshold.
-`e2e.yaml`'s 60-minute job ceiling guarantees it in CI, and issue #959 gave every run the same guarantee: the `integration-tests` surefire execution kills a fork after `it.fork.timeout.seconds`, 90 minutes by default.
-**That ceiling is coupled to this threshold rather than merely generous** — while it stays below two hours a gated run cannot outlive the staleness window, so a sweep cannot delete an instance from under a run that is still using it.
-Raising either the ceiling past the threshold or `e2e.yaml`'s `timeout-minutes` past it removes that guarantee, which is why both carry a note saying what depends on them.
-The value is deliberately not the tightest one that fits: `forkCount` is 2, so one fork carries about half of the 33 gated classes the E2E suite selects, and only Bigtable's 7 have been measured — 20.6 minutes of work, which extrapolates past a 45-minute ceiling.
-Tightness would buy nothing regardless, because the per-class `@Timeout` already fires at 5 or 10 minutes and this ceiling exists only for the fork that will not die.
+The staleness threshold, not the timetable, is what keeps an age-gated sweep from deleting a running instance, so shortening the interval is the safe direction and lowering the threshold is not.
+For the `integration-tests` path, that safety rests on every fork that creates and uses an owned instance finishing inside the threshold.
+Issue [#959] supplied that backstop: surefire kills each fork after `it.fork.timeout.seconds`, 90 minutes by default.
+**That ceiling is coupled to this threshold rather than merely generous** — while it stays below two hours, a fork cannot keep one of its own Bigtable or Spanner instances in use until that instance crosses the age gate.
+Raising the fork ceiling past the threshold removes that age-gated guarantee, which is why its POM definition says what depends on it.
+`e2e.yaml`'s separate job ceiling bounds the whole CI window and how long the fixed App Engine fixture can stay serving before the post-E2E sweep, but the fork ceiling already bounds Bigtable and Spanner in-use instance age if that job value later rises.
+A gated class selected through surefire's `default-test` execution with `-Dtest` and `-Dtest.excluded.groups=`, or run from an IDE, does not inherit the integration-test fork ceiling.
+If that runner survives the class's `@Timeout` and remains live for two hours, the next class's startup sweep or a scheduled sweep can delete its instance from under it.
+The 90-minute value deliberately reserves most of the headroom below two hours.
+Surefire fork pools are module-local, so the main gated Maven invocation applies the ceiling independently to each connector rather than across its combined class list.
+At selection time, the only measurement was Bigtable on 2026-08-18: seven classes took 20.6 minutes of total work across two forks.
+The other module-local workloads were unmeasured, so 45 minutes was not justified.
+Individual `@Timeout` values are not a substitute for this ceiling, which bounds the reused fork when it will not die.
+The two manual BigQuery schema-propagation probes do not use a fixture managed by this sweep, and their documented commands scope the raised property to the BigQuery module and one probe class; their three-hour timeouts therefore require a higher command-line fork ceiling without weakening this guarantee.
 It is not a service-side expiry and cannot bound a delayed or disabled workflow run, which is not a hypothetical: GitHub schedules are best effort and may be dropped under load, and this repository's slots have started 38 to 91 minutes late.
 The sweep therefore also triggers on the E2E workflow's completion in every terminal state (#964), so the run that creates the fixtures is always followed by one that reclaims them, whatever the schedule does.
 That trigger is `workflow_run` rather than a finalising step inside the E2E job because a step dies with its job and hard cancellation is the case the sweep exists for; the cost is one more event name on the E2E service account's Workload Identity binding, which widens which event may assume it and not the repository, ref or roles.
@@ -121,7 +128,7 @@ The verified idle state is `STOPPED` with zero instances, and runtime instance-c
 - **Drive the scheduled cleanup through Maven and the Java harness**: it would install a JDK and build the reactor to perform resource administration that `gcloud` can finish directly.
 - **Copy prefixes and thresholds into workflow configuration**: either copy could drift and make a broken sweep report an honest-looking empty result.
 - **Put each service in a separate justfile line**: the first failure would prevent later cleanup from running.
-- **Leave the run side unbounded and rely on the threshold alone**: the threshold cannot tell a leaked instance from one a still-running local job is using, so without a ceiling on the run the two are only distinguishable by luck.
+- **Leave the fork side unbounded and rely on the threshold alone**: the threshold cannot tell a leaked instance from one a still-running local fork is using, so without a ceiling on that fork the two are only distinguishable by luck.
 - **Manage a billing budget in the OpenTofu root**: budgets live on the billing account and would require the first grant outside the project's IAM boundary plus an account identifier in configuration and state.
 - **Use a Bigtable node quota as the leak control**: a count quota can stop runaway creation but cannot shorten the billed life of one allowed leaked instance.
 
@@ -136,3 +143,5 @@ Any proposal to manage those concerns must separately address billing-account pe
 [#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
 [#246]: https://github.com/flink-gcp/flink-connector-gcp/issues/246
 [#630]: https://github.com/flink-gcp/flink-connector-gcp/issues/630
+[#959]: https://github.com/flink-gcp/flink-connector-gcp/issues/959
+[#1161]: https://github.com/flink-gcp/flink-connector-gcp/issues/1161

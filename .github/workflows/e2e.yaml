@@ -72,10 +72,11 @@ jobs:
     # Raised from 30 when the Bigtable suite joined, and again when Spanner's
     # did: each gated class of either waits on an instance being provisioned
     # before its first test runs, and the Spanner classes seed and read a few
-    # thousand rows on top. The ceiling also bounds what a hung run can leave
-    # standing, since the resource sweeps treat anything older than two hours as
-    # abandoned and the App Engine sweep restores its stopped state — so this
-    # must stay well under two hours whatever else changes.
+    # thousand rows on top. This bounds the whole CI window and how long a hung
+    # App Engine fixture can stay serving before the post-E2E sweep restores its
+    # stopped state. Bigtable and Spanner in-use instance age is bounded
+    # separately by the integration-test fork's default 90-minute ceiling, so
+    # their two-hour age gates are not coupled to this job value.
     timeout-minutes: 60
     steps:
       # Pinned to the commit for the same reason as weekly.yaml: a merge
