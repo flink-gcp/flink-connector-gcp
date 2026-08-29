@@ -77,7 +77,8 @@ class TopicRepairerTest {
     }
 
     private DestinationState newState() {
-        return new DestinationState(TOPIC, new RecordingPublisher(events), metrics.forTopic(TOPIC));
+        return new DestinationState(
+                TOPIC, new RecordingPublisher(events), metrics.forTopic(TOPIC), 0L);
     }
 
     private static PubsubMessage message(String payload) {

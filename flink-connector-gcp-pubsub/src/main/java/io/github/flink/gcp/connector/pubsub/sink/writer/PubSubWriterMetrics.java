@@ -67,6 +67,8 @@ final class PubSubWriterMetrics {
     private final Counter numRecordsSendErrors;
     private final Counter recordsSkipped;
     private final Counter topicsCreated;
+    private final Counter capacityEvictions;
+    private final Counter idleEvictions;
     private final ErrorClassCounters errorClasses;
     private final DestinationMetrics destinations;
 
@@ -84,16 +86,19 @@ final class PubSubWriterMetrics {
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
         this.recordsSkipped = metricGroup.counter(PubSubMetricNames.RECORDS_SKIPPED);
         this.topicsCreated = metricGroup.counter(PubSubMetricNames.TOPICS_CREATED);
+        this.capacityEvictions = metricGroup.counter(PubSubMetricNames.CAPACITY_EVICTIONS);
+        this.idleEvictions = metricGroup.counter(PubSubMetricNames.IDLE_EVICTIONS);
         this.errorClasses = new ErrorClassCounters(metricGroup);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
         // Here rather than in bindWriterState, because it reads no writer state — and it is the
-        // one metric here that does not describe *this* writer. A teardown this writer's close
-        // abandons is never reported by this writer: the metric group is closed as the task is
-        // cleaned up, within the same instant. Measured, not assumed — a probe with a reporter at
-        // 10 ms (Flink's default is 10 s) scraped ~90 times per run and never once saw a counter
+        // one metric here whose storage does not describe only *this* writer. An eviction-time
+        // overrun increments it while this metric group remains registered and can therefore be
+        // observed on the running attempt. A teardown this writer's final close abandons is
+        // ordinarily reported by a later attempt: measured, not assumed — a probe with a reporter
+        // at 10 ms (Flink's default is 10 s) scraped ~90 times per run and never once saw a counter
         // the writer only incremented in close() above zero, across four runs, while a counter
-        // incremented during the run was seen at its full value. So whichever attempt runs next is
-        // what reports what the previous ones left behind, which is what #311 is about.
+        // incremented during the run was seen at its full value. Process-wide storage preserves
+        // both shapes and describes the resources actually retained by the JVM (#311, #1132).
         //
         // A Counter rather than a Gauge, because the quantity is a cumulative count of events and
         // that is what the naming convention calls a counter. Registering a caller-supplied
@@ -111,14 +116,17 @@ final class PubSubWriterMetrics {
      * @param inFlightMessages publishes not yet acknowledged
      * @param inFlightBytes serialized size of those publishes
      * @param parkedMessages messages held for a destination's next repair
+     * @param activePublishers publishers currently retained by the writer
      */
     void bindWriterState(
             Gauge<Integer> inFlightMessages,
             Gauge<Long> inFlightBytes,
-            Gauge<Integer> parkedMessages) {
+            Gauge<Integer> parkedMessages,
+            Gauge<Integer> activePublishers) {
         metricGroup.gauge(PubSubMetricNames.IN_FLIGHT_MESSAGES, inFlightMessages);
         metricGroup.gauge(PubSubMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
         metricGroup.gauge(PubSubMetricNames.PARKED_MESSAGES, parkedMessages);
+        metricGroup.gauge(PubSubMetricNames.ACTIVE_PUBLISHERS, activePublishers);
     }
 
     /**
@@ -191,5 +199,15 @@ final class PubSubWriterMetrics {
      */
     void topicCreated() {
         topicsCreated.inc();
+    }
+
+    /** Counts one publisher released to admit a new destination at the active-publisher cap. */
+    void capacityEviction() {
+        capacityEvictions.inc();
+    }
+
+    /** Counts one publisher released after exceeding the destination idle timeout. */
+    void idleEviction() {
+        idleEvictions.inc();
     }
 }

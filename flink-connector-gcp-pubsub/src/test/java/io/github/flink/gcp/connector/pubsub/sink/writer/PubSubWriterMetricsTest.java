@@ -210,6 +210,7 @@ class PubSubWriterMetricsTest {
         assertThat(metrics.<Integer>gaugeValue("inFlightMessages")).isEqualTo(1);
         assertThat(metrics.<Long>gaugeValue("inFlightBytes")).isEqualTo(sizeOf("topic-a"));
         assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("activePublishers")).isEqualTo(1);
 
         pending.setException(status(Status.NOT_FOUND));
         mailbox.drain();
@@ -223,6 +224,7 @@ class PubSubWriterMetricsTest {
         writer.flush(false);
 
         assertThat(metrics.<Integer>gaugeValue("parkedMessages")).isZero();
+        assertThat(metrics.<Integer>gaugeValue("activePublishers")).isEqualTo(1);
     }
 
     @Test

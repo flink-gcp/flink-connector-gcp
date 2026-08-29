@@ -54,7 +54,7 @@ The resolver cache holds names, while the sink creates the client-side resource 
 | Sink | Per-record route | Per-destination client-side state | Idle eviction | Auto-creation |
 |---|---|---|---|---|
 | BigQuery | `TableDestination` from `destinationResolver` | A Storage Write API writer on the streaming methods; conversion state and the current staging file on FILE_LOADS | Yes; FILE_LOADS also applies an active-destination capacity | Supported according to the create disposition |
-| Cloud Pub/Sub | `TopicDestination` from `destinationResolver` | One SDK publisher per topic | No; publishers close with the writer | Supported according to the create disposition |
+| Cloud Pub/Sub | `TopicDestination` from `destinationResolver` | One SDK publisher per active topic | Yes; clean publishers are also evicted by an LRU capacity | Supported according to the create disposition |
 | Cloud Tasks | `QueueDestination` from `destinationResolver` | None; one client serves every queue | Not needed | Not supported |
 | Bigtable | `TableDestination` from `destinationResolver` | One bulk mutation batcher per table; data clients are shared by project and instance | Yes | Opt-in with a declared table schema |
 | Spanner | Table name in the serialized `Mutation` | None per table; one database client and one shared mutation batch | Not needed | Not supported |
@@ -69,7 +69,9 @@ BigQuery's default and buffered stream writers drop drained destination state af
 FILE_LOADS finishes an idle destination file after its configured timeout, finishes the least recently used file before exceeding its active-destination capacity, and finishes every remaining file at a checkpoint.
 
 Bigtable sweeps idle table batchers after a successful non-end-of-input flush and rebuilds one transparently if the table becomes active again.
-Pub/Sub deliberately keeps each topic publisher until the writer closes, while Cloud Tasks and Spanner have no per-routed-destination service client state to evict.
+Pub/Sub similarly sweeps clean idle publishers, releases the least-recently-used clean publisher when its active limit is reached, and recreates one transparently if the topic becomes active again.
+If the pinned Pub/Sub SDK does not finish a running-task publisher shutdown within its configured budget, the writer fails before opening a replacement rather than letting destination churn accumulate abandoned resources.
+Cloud Tasks and Spanner have no per-routed-destination service client state to evict.
 
 ## BigQuery tables
 

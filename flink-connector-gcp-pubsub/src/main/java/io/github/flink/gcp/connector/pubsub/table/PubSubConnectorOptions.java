@@ -711,9 +711,10 @@ public final class PubSubConnectorOptions {
     /**
      * How long the sink may wait with no publish completing before it fails. The budget restarts at
      * every completion, so it bounds a publisher that has stopped answering rather than a slow
-     * topic. It covers both waits the sink makes on the task thread, the in-flight admission gate
-     * and the checkpoint drain. With 'sink.message-ordering.enabled' the SDK retries a publish
-     * without limit, so nothing inside the sink ends such an outage but this.
+     * topic. It covers every publish-completion wait the sink makes on the task thread: the
+     * in-flight admission gate and drains for checkpoints, capacity eviction, failure repair, and
+     * per-message isolation. With 'sink.message-ordering.enabled' the SDK retries a publish without
+     * limit, so nothing inside the sink ends such an outage but this.
      */
     public static final ConfigOption<Duration> SINK_PUBLISH_PROGRESS_TIMEOUT =
             ConfigOptions.key("sink.publish-progress-timeout")
@@ -723,8 +724,10 @@ public final class PubSubConnectorOptions {
                             "How long the sink may wait with no publish completing before it fails."
                                     + " The budget restarts at every completion, so it bounds a"
                                     + " publisher that has stopped answering rather than a slow topic."
-                                    + " It covers both waits the sink makes on the task thread, the"
-                                    + " in-flight admission gate and the checkpoint drain. With"
+                                    + " It covers every publish-completion wait the sink makes on the"
+                                    + " task thread: the in-flight admission gate and drains for"
+                                    + " checkpoints, capacity eviction, failure repair, and"
+                                    + " per-message isolation. With"
                                     + " 'sink.message-ordering.enabled' the SDK retries a publish"
                                     + " without limit, so nothing inside the sink ends such an"
                                     + " outage but this.");
@@ -752,20 +755,44 @@ public final class PubSubConnectorOptions {
                             "The cap on republish attempts of the topic auto-creation recovery.");
 
     /**
-     * How long the sink's close waits for one publisher to shut down. The budget is measured from
-     * the moment the publisher is asked to stop, and every publisher is asked before any is waited
-     * on, so a close costs one such timeout however many topics were written to.
+     * How long one sink publisher release waits for shutdown. Capacity eviction can spend this
+     * budget in write, idle eviction in a successful non-terminal flush, and final teardown in
+     * close. Every publisher selected by one release is asked to stop before any is waited on, so
+     * that release costs one such timeout however many publishers it covers. If a running-task
+     * release gives up while shutdown work or resources remain alive, the writer fails before
+     * opening a replacement rather than accumulating abandoned publisher resources.
      */
     public static final ConfigOption<Duration> SINK_SHUTDOWN_TIMEOUT =
             ConfigOptions.key("sink.shutdown-timeout")
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
-                            "How long the sink's close waits for one publisher to shut down. The"
-                                    + " budget is measured from the moment the publisher is asked"
-                                    + " to stop, and every publisher is asked before any is waited"
-                                    + " on, so a close costs one such timeout however many topics"
-                                    + " were written to.");
+                            "How long one sink publisher release waits for shutdown. Capacity"
+                                    + " eviction can spend this budget in write, idle eviction in a"
+                                    + " successful non-terminal flush, and final teardown in close."
+                                    + " Every publisher selected by one release is asked to stop"
+                                    + " before any is waited on, so that release costs one such"
+                                    + " timeout however many publishers it covers. If a running-task"
+                                    + " release gives up while shutdown work or resources remain"
+                                    + " alive, the writer fails before opening a replacement rather"
+                                    + " than accumulating abandoned publisher resources.");
+
+    /** The maximum number of publishers retained by one sink subtask. */
+    public static final ConfigOption<Integer> SINK_MAX_ACTIVE_PUBLISHERS =
+            ConfigOptions.key("sink.max-active-publishers")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum number of publishers retained by one sink subtask.");
+
+    /** How long an unused destination publisher remains active before a checkpoint releases it. */
+    public static final ConfigOption<Duration> SINK_DESTINATION_IDLE_TIMEOUT =
+            ConfigOptions.key("sink.destination-idle-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long an unused destination publisher remains active before a"
+                                    + " checkpoint releases it.");
 
     /**
      * Whether the sink registers per-topic send counters beside its totals. Flink cannot unregister

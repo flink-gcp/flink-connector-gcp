@@ -50,6 +50,9 @@ public final class PubSubMetricNames {
     public static final String IN_FLIGHT_MESSAGES = "inFlightMessages";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_MESSAGES = "parkedMessages";
+    public static final String ACTIVE_PUBLISHERS = "activePublishers";
+    public static final String CAPACITY_EVICTIONS = "capacityEvictions";
+    public static final String IDLE_EVICTIONS = "idleEvictions";
     public static final String TOPICS_CREATED = "topicsCreated";
 
     /**

@@ -107,8 +107,8 @@ class BoundedShutdownTest {
 
     @Test
     void aTerminationWaitThatRunsOutIsReported() throws Exception {
-        // The shutdown returns, so close() neither abandons nor counts anything, and the wait
-        // returning false is not an error either - the line is this outcome's only report (#323).
+        // The shutdown returns, but the client's resources outlive their bounded termination wait.
+        // That incomplete close is counted and the line reports which client left the residue.
         // Emitted from the background thread, but close() joins it, so it has landed by now.
         BoundedShutdown teardown =
                 new BoundedShutdown(
@@ -129,7 +129,8 @@ class BoundedShutdownTest {
                     .contains("did not terminate");
         }
 
-        assertThat(abandoned.sum()).isZero();
+        assertThat(abandoned.sum()).isEqualTo(1);
+        assertThat(teardown.wasIncomplete()).isTrue();
     }
 
     @Test
@@ -341,6 +342,7 @@ class BoundedShutdownTest {
 
             assertThat(releases).hasValue(1);
             assertThat(abandoned.sum()).isEqualTo(1);
+            assertThat(teardown.wasIncomplete()).isTrue();
         } finally {
             blocked.countDown();
         }
@@ -366,22 +368,25 @@ class BoundedShutdownTest {
             abandons.close();
 
             assertThat(abandoned.sum()).isEqualTo(1);
+            assertThat(abandons.wasIncomplete()).isTrue();
         } finally {
             blocked.countDown();
         }
 
-        new BoundedShutdown(
+        BoundedShutdown completes =
+                new BoundedShutdown(
                         () -> {},
                         (t, unit) -> true,
                         DESCRIPTION,
                         null,
                         Duration.ofSeconds(30),
-                        abandoned)
-                .close();
+                        abandoned);
+        completes.close();
 
         // A teardown that finished is not residue, so it must not inflate the count — the half that
         // makes a non-zero reading mean something.
         assertThat(abandoned.sum()).isEqualTo(1);
+        assertThat(completes.wasIncomplete()).isFalse();
     }
 
     /**
