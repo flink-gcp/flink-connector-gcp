@@ -164,8 +164,9 @@ Flink can retain `(source.reader.element.queue.capacity + 2)` fetched batches ar
 envelope.
 A child-process test holds four default-sized batches while reading a 96 MiB response under a
 192 MiB heap.
-Projection and row restriction reduce bytes before this boundary; SQL projection maps to the same
-`selectedFields`, while SQL filter pushdown remains [#1137].
+Projection and row restriction reduce bytes before this boundary.
+SQL projection maps to the same `selectedFields`, while the conservative SQL filter subset in
+ADR-0100 maps to `rowRestriction` and remains as Flink residual evaluation.
 No new metric is added: decoded retained heap cannot be measured actionably without distorting the
 per-row hot path, while `bytesRead` already reports response bytes received.
 
@@ -240,4 +241,3 @@ the Avro-namespace reason above.
 [#542]: https://github.com/flink-gcp/flink-connector-gcp/issues/542
 [#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587
 [#1136]: https://github.com/flink-gcp/flink-connector-gcp/issues/1136
-[#1137]: https://github.com/flink-gcp/flink-connector-gcp/issues/1137

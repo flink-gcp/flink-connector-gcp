@@ -570,7 +570,9 @@ Register it as a bounded Flink table source:
 
 The source finishes after reading one BigQuery snapshot, so the table works in a batch job or as the bounded side of a streaming job.
 Top-level projection is pushed into the Storage Read session, so the query above requests only `name`.
-Flink predicates are evaluated after the source because the connector does not translate them into BigQuery filters; set `scan.row-restriction` in the DDL when a BigQuery-native server-side predicate is required.
+Supported scalar comparisons and top-level scalar null predicates are also sent as Storage Read row restrictions.
+The connector keeps every pushed predicate as a Flink residual, so Flink rechecks every row BigQuery returns before producing the final result.
+Set `scan.row-restriction` in the DDL when a BigQuery-native expression outside that conservative subset is required.
 
 ## Reading one column of a large table
 

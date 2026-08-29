@@ -165,8 +165,46 @@ pushdown sends the planner's retained top-level column names to the Storage Read
 the direct table read and the generated SQL used to materialize a named view. A user-supplied query
 is left unchanged, so projection prunes only its result-table read and does not reduce what the
 query itself scans. A plan needing no output column retains the first physical column as a carrier;
-the planner discards it above the source. Nested projection and SQL filter pushdown are not
-advertised; use `scan.row-restriction` when a BigQuery-native server-side predicate is needed.
+the planner discards it above the source.
+Nested projection is not advertised.
+
+The source also translates a conservative subset of SQL predicates into Storage Read row
+restrictions.
+It supports literal comparisons on integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `TIMESTAMP(6)`,
+and `TIMESTAMP_LTZ(6)` columns; equality and inequality on `BOOLEAN`; equality on BigQuery
+`STRING`; and `IS NULL` or `IS NOT NULL` on those supported column types.
+An `AND` pushes every translatable necessary child, while an `OR` is pushed only when every branch
+translates.
+String inequality and ordered string comparisons are not translated.
+Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
+rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
+Timestamp comparison pushdown requires precision 6 because the source preserves BigQuery
+microseconds at that precision.
+
+BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
+Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
+unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
+reject the generated restriction at that point.
+A collated `STRING` equality can admit additional rows, which the Flink residual removes.
+`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+complex types, field-to-field comparisons, casts, and functions stay with Flink.
+Every generated restriction is a necessary condition for the Flink predicate because residual
+evaluation cannot recover a row BigQuery excluded.
+Every translated predicate also remains above the source, so Flink rejects any returned row that
+does not satisfy its own predicate semantics.
+An accepted filter may have contributed only a best-effort necessary condition, such as the safe
+children of a partially translatable `AND`; acceptance does not mean BigQuery evaluated the whole
+filter.
+
+`scan.row-restriction` remains the escape hatch for a BigQuery-native expression.
+When both it and a translated SQL predicate are present, the connector parenthesizes them
+separately and combines them with `AND`.
+The connector admits each generated restriction only while the combined UTF-8 expression remains
+within the Storage Read API's 1 MB limit.
+A predicate that would cross the limit remains with Flink without discarding other generated
+restrictions that fit.
+For `scan.query`, the configured query text is never rewritten; both explicit and generated
+restrictions apply only when Storage Read reads the materialized result table.
 
 | Option | Type | Maps to |
 |---|---|---|
@@ -176,7 +214,7 @@ advertised; use `scan.row-restriction` when a BigQuery-native server-side predic
 | `scan.query-location` | String | `queryLocation(...)`; query or view materialization only |
 | `scan.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
 | `scan.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `scan.query-location` |
-| `scan.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword |
+| `scan.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword. Combined with a translated SQL predicate using parenthesized `AND` |
 | `scan.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
 | `scan.max-stream-count` | Integer | `maxStreamCount(...)` |
 | `scan.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |

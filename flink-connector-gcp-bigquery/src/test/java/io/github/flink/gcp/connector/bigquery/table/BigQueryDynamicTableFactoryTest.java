@@ -33,7 +33,11 @@ import org.apache.flink.table.data.GenericMapData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.factories.utils.FactoryMocks;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
@@ -61,6 +65,7 @@ import org.assertj.core.util.Throwables;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
@@ -207,6 +212,87 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(config.getQuery()).isNull();
         assertThat(config.getParentProject()).isEqualTo("my-project");
         assertThat(config.getSelectedFields()).containsExactly("id", "amount");
+    }
+
+    @Test
+    void plannerFiltersBecomeStorageReadRestrictionsAndRemainResiduals() {
+        BigQueryDynamicSource source = (BigQueryDynamicSource) source(minimalOptions());
+        CallExpression amountAtLeast =
+                CallExpression.permanent(
+                        BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                        Arrays.asList(
+                                new FieldReferenceExpression("amount", DataTypes.INT(), 0, 1),
+                                new ValueLiteralExpression(BigDecimal.TEN)),
+                        DataTypes.BOOLEAN());
+
+        org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown.Result result =
+                source.applyFilters(Collections.singletonList(amountAtLeast));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(amountAtLeast);
+        assertThat(result.getRemainingFilters()).containsExactly(amountAtLeast);
+        assertThat(sourceConfig(source).getRowRestriction()).isEqualTo("((`amount` >= 10))");
+    }
+
+    @Test
+    void explicitAndPlannerRestrictionsAreParenthesizedSeparately() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.row-restriction", "country = 'JP' OR priority = 1");
+        BigQueryDynamicSource source = (BigQueryDynamicSource) source(options);
+        source.applyFilters(
+                Collections.singletonList(
+                        CallExpression.permanent(
+                                BuiltInFunctionDefinitions.EQUALS,
+                                Arrays.asList(
+                                        new FieldReferenceExpression(
+                                                "amount", DataTypes.INT(), 0, 1),
+                                        new ValueLiteralExpression(BigDecimal.TEN)),
+                                DataTypes.BOOLEAN())));
+
+        assertThat(sourceConfig(source).getRowRestriction())
+                .isEqualTo("(\ncountry = 'JP' OR priority = 1\n)\nAND\n(\n((`amount` = 10))\n)");
+    }
+
+    @Test
+    void aBlankExplicitRestrictionIsRejectedBeforeItCanBeCombined() {
+        Map<String, String> options = minimalOptions();
+        options.put("scan.row-restriction", " \t");
+        BigQueryDynamicSource source = (BigQueryDynamicSource) source(options);
+        source.applyFilters(
+                Collections.singletonList(
+                        CallExpression.permanent(
+                                BuiltInFunctionDefinitions.EQUALS,
+                                Arrays.asList(
+                                        new FieldReferenceExpression(
+                                                "amount", DataTypes.INT(), 0, 1),
+                                        new ValueLiteralExpression(BigDecimal.TEN)),
+                                DataTypes.BOOLEAN())));
+
+        assertThatThrownBy(() -> sourceConfig(source))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("scan.row-restriction")
+                .hasRootCauseMessage("rowRestriction must not be blank");
+    }
+
+    @Test
+    void aPlannerRestrictionDoesNotRewriteConfiguredQueryText() {
+        Map<String, String> options = minimalOptions();
+        options.remove("dataset");
+        options.remove("table");
+        options.put("scan.query", "SELECT id, amount FROM `p.d.t`");
+        BigQueryDynamicSource source = (BigQueryDynamicSource) source(options);
+        source.applyFilters(
+                Collections.singletonList(
+                        CallExpression.permanent(
+                                BuiltInFunctionDefinitions.EQUALS,
+                                Arrays.asList(
+                                        new FieldReferenceExpression(
+                                                "amount", DataTypes.INT(), 0, 1),
+                                        new ValueLiteralExpression(BigDecimal.TEN)),
+                                DataTypes.BOOLEAN())));
+
+        BigQuerySourceConfig<?> config = sourceConfig(source);
+        assertThat(config.getQuery()).isEqualTo("SELECT id, amount FROM `p.d.t`");
+        assertThat(config.getRowRestriction()).isEqualTo("((`amount` = 10))");
     }
 
     @Test

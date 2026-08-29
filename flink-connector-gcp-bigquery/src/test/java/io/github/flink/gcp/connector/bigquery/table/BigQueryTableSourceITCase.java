@@ -46,8 +46,19 @@ class BigQueryTableSourceITCase extends AbstractBigQuerySourceEmulatorITCase {
                         .build(),
                 Field.newBuilder("name", StandardSQLTypeName.STRING)
                         .setMode(Field.Mode.REQUIRED)
+                        .build(),
+                Field.newBuilder("alias", StandardSQLTypeName.STRING)
+                        .setMode(Field.Mode.REQUIRED)
+                        .build(),
+                Field.newBuilder("score", StandardSQLTypeName.FLOAT64)
+                        .setMode(Field.Mode.REQUIRED)
                         .build());
-        insert(TABLE, "id, name", "(1, 'Ada'), (2, 'Grace'), (3, 'Linus')");
+        insert(
+                TABLE,
+                "id, name, alias, score",
+                "(1, 'Ada', 'analytical', 1.0), "
+                        + "(2, 'Grace', 'compiler', 2.0), "
+                        + "(3, 'Linus', 'kernel', 3.0)");
     }
 
     @Test
@@ -68,12 +79,42 @@ class BigQueryTableSourceITCase extends AbstractBigQuerySourceEmulatorITCase {
                 .satisfies(row -> assertThat((Object) row.getField(0)).isEqualTo(3L));
     }
 
+    @Test
+    void appliesStringComparisonThroughTheGeneratedRestrictionAndResidual() throws Exception {
+        TableEnvironment table = tableEnvironment();
+
+        assertThat(rows(table, "SELECT id FROM people WHERE alias = 'analytical' ORDER BY id"))
+                .extracting(row -> row.getFieldAs(0))
+                .containsExactly(1L);
+    }
+
+    @Test
+    void appliesConjunctionsAndDisjunctionsWithoutChangingResults() throws Exception {
+        TableEnvironment table = tableEnvironment();
+
+        assertThat(rows(table, "SELECT id FROM people WHERE id >= 2 AND name = 'Grace'"))
+                .extracting(row -> row.getFieldAs(0))
+                .containsExactly(2L);
+        assertThat(rows(table, "SELECT id FROM people WHERE name = 'Ada' OR id = 3 ORDER BY id"))
+                .extracting(row -> row.getFieldAs(0))
+                .containsExactly(1L, 3L);
+    }
+
+    @Test
+    void appliesDoubleComparisonThroughTheGeneratedRestrictionAndResidual() throws Exception {
+        TableEnvironment table = tableEnvironment();
+
+        assertThat(rows(table, "SELECT id FROM people WHERE score > 1.5 ORDER BY id"))
+                .extracting(row -> row.getFieldAs(0))
+                .containsExactly(2L, 3L);
+    }
+
     private static TableEnvironment tableEnvironment() {
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         table.getConfig().set("parallelism.default", "1");
         table.executeSql(
-                "CREATE TABLE people (id BIGINT, name STRING) "
+                "CREATE TABLE people (id BIGINT, name STRING, alias STRING, score DOUBLE) "
                         + TableDdl.withOptions(
                                 PROJECT,
                                 DATASET,

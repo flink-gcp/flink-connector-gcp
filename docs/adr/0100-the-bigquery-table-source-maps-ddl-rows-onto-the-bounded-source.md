@@ -90,9 +90,57 @@ milliseconds, so neither logical type preserves that BigQuery value.
 The source rejects both Flink interval families when the job graph is built and rejects the
 measured record if a DDL attempts to expose its components as a `ROW`.
 
-**SQL filters are not translated.**
-The connector exposes `scan.row-restriction` as the existing BigQuery expression surface and
-does not implement `SupportsFilterPushDown` until a translation can preserve Flink SQL semantics.
+**SQL filters are conservative Storage Read prefilters.**
+The source implements `SupportsFilterPushDown`, but every accepted filter also remains in Flink's
+residual list.
+The accepted list records a filter that contributed a best-effort necessary condition, including a
+partially translatable `AND`; it does not claim that BigQuery evaluated the whole filter.
+Each generated restriction must be a necessary condition for the Flink predicate because a row
+BigQuery excludes cannot be recovered by residual evaluation.
+The residual then rejects any row that BigQuery admits but Flink does not.
+
+The supported comparison matrix covers scalar types whose necessary conditions can be rendered
+without fetching the BigQuery schema.
+Integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns accept
+`=`, `<>`, `<`, `<=`, `>`, and `>=` against typed literals.
+`BOOLEAN` accepts `=` and `<>`, BigQuery `STRING` accepts `=`, and those supported column types
+accept `IS NULL` and `IS NOT NULL`.
+String `<>` and ordered string comparisons are not translated.
+
+Some generated comparisons are deliberately weaker than the Flink predicate.
+A `DECIMAL` restriction expands its bound by one unit at the declared Flink scale because reading
+a BigQuery decimal through that scale can round the source value.
+A Flink `FLOAT` restriction uses adjacent single-precision values as bounds because the source
+narrows a BigQuery `FLOAT64` value before residual evaluation.
+`DOUBLE` uses the finite double literal directly.
+`TIMESTAMP(6)` maps to a BigQuery `DATETIME` literal, and `TIMESTAMP_LTZ(6)` maps to a UTC BigQuery
+`TIMESTAMP` literal; precision 6 is required because it preserves BigQuery microseconds.
+
+BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
+The planner does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot distinguish
+ordinary `STRING` from `JSON` or `GEOGRAPHY`; a generated string restriction against an unsupported
+physical type can be rejected when the Storage Read session is created.
+A collated `STRING` equality can admit additional rows, which the Flink residual removes.
+`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+complex types, field-to-field comparisons, casts, and functions remain only with Flink.
+
+An `AND` may push any translatable child because each child is necessary when the whole predicate
+is true.
+An `OR` is pushed only when every branch translates, because dropping one branch could exclude a
+row that Flink needs.
+Identifiers come from the physical schema index and are always quoted and escaped.
+Literals are rendered by logical type; untyped string concatenation is not a translation path.
+
+`scan.row-restriction` remains the explicit BigQuery expression surface.
+When it and a generated restriction coexist, the source validates the explicit value first,
+parenthesizes both operands separately, and combines them with `AND`.
+The source counts the combined expression as UTF-8 and admits each generated restriction only
+while the result remains within the Storage Read API's 1 MB row-restriction limit.
+A predicate that would cross the limit remains a Flink residual without discarding other generated
+restrictions that fit, and all SQL predicates remain residuals so that fallback does not change the
+result.
+A query source leaves the configured query untouched and applies both restrictions to the Storage
+Read session over its materialized result.
 
 ## Evidence
 
@@ -103,7 +151,14 @@ does not implement `SupportsFilterPushDown` until a translation can preserve Fli
   repeated, and map representations, projected order, zero-field rows, and plan-time type
   rejections.
 - `BigQueryTableSourceITCase` runs bounded projected scans and `COUNT(*)` through a real Flink
-  planner against the BigQuery emulator.
+  planner against the BigQuery emulator, including generated string, double, null, conjunction,
+  and disjunction restrictions.
+- `BigQueryTablePlanTest` proves each supported scalar family reaches the source, every predicate
+  remains a residual, unsupported shapes stay above the source, and direct and query sources share
+  the ability.
+- `BigQueryFilterPushDownRealGcpITCase` measures fewer returned rows and serialized Avro response
+  bytes and submits generated string, decimal, float, double, `DATETIME`, and `TIMESTAMP`
+  restrictions to the real Storage Read API before deleting its bounded temporary table.
 - `BigQueryTableSourceFidelityITCase` runs the production factory and converter against BigQuery's
   own writer schemas for native, decimal, temporal, nested, repeated and range values.
   Its interval arm reads a required control beside the measured record before verifying the
@@ -117,8 +172,9 @@ does not implement `SupportsFilterPushDown` until a translation can preserve Fli
   query materialization, and restore contracts and allow their behavior to drift.
 - **Require `dataset` and `table` for query sources**: those values do not decide the query result
   and would turn placeholders into a false requirement.
-- **Translate planner filters opportunistically**: BigQuery row restrictions are not Flink SQL
-  expressions, and a partial translation could filter out rows that Flink still needs to evaluate.
+- **Remove translated filters from Flink residual evaluation**: even within the necessary-condition
+  matrix, the residual prevents a row that BigQuery admits but Flink rejects from reaching the
+  result.
 - **Read every column after projection**: Storage Read charges for scanned bytes, so losing
   projection at the Table boundary would be a material cost regression.
 - **Map BigQuery `INTERVAL` to either Flink interval family**: choosing year-month discards the
@@ -136,7 +192,9 @@ The same service-account key must exist at the configured path on every JobManag
 that can plan or run the bounded read.
 Query and view sources use both REST and Storage Read clients, while a direct table source uses only
 Storage Read.
-SQL users who need server-side filtering must write a BigQuery row restriction explicitly or use a
-query source.
+SQL users get best-effort server-side filtering for the supported subset and retain Flink's final
+evaluation.
+Other predicates require an explicit BigQuery row restriction or a query source when server-side
+filtering matters.
 Range declarations are asymmetric by design: they read BigQuery ranges but write BigQuery structs.
 No DDL declaration reads or writes a BigQuery interval losslessly.
