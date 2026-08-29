@@ -28,3 +28,19 @@ For DDL, SQL type mappings, metadata columns, and planner-specific restrictions,
 [Table API connectors]({{< relref "docs/connectors/table" >}}).
 The [connector overview]({{< relref "docs/connectors" >}}) explains how to choose between the two
 APIs.
+
+## Capability map
+
+The source column names how Flink distributes reads, while the destination column names the
+record-level routing surface of the sink.
+The delivery column summarizes connector-to-service writes; the [delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) page defines the checkpoint and state qualifications.
+`Not applicable` means that the capability does not fit the service's role; it is not an
+implementation-status claim.
+
+| Connector pages | Primary role | Source and split strategy | Sink delivery | Per-record destination | CDC |
+|---|---|---|---|---|---|
+| BigQuery: [Quickstart]({{< relref "docs/quickstart/bigquery" >}}), [Examples]({{< relref "docs/examples/bigquery" >}}), [DataStream]({{< relref "docs/connectors/datastream/bigquery" >}}), [Table]({{< relref "docs/connectors/table/bigquery" >}}) | Analytics warehouse | Bounded; Storage Read API stream splits | At-least-once or exactly-once service writes | Table through a resolver | Upsert/delete sink on the at-least-once default stream; Experimental ([#706]({{< param BookRepo >}}/issues/706)) |
+| Cloud Pub/Sub: [Quickstart]({{< relref "docs/quickstart/pubsub" >}}), [Examples]({{< relref "docs/examples/pubsub" >}}), [DataStream]({{< relref "docs/connectors/datastream/pubsub" >}}), [Table]({{< relref "docs/connectors/table/pubsub" >}}) | Messaging | Unbounded; subscription splits | At-least-once | Topic through a resolver | No native DataStream changelog; Table formats can carry one |
+| Cloud Tasks: [Quickstart]({{< relref "docs/quickstart/cloudtasks" >}}), [Examples]({{< relref "docs/examples/cloudtasks" >}}), [DataStream]({{< relref "docs/connectors/datastream/cloudtasks" >}}), [Table]({{< relref "docs/connectors/table/cloudtasks" >}}) | Task delivery | Not applicable; sink only | At-least-once | Queue through a resolver | Not applicable |
+| Bigtable: [Quickstart]({{< relref "docs/quickstart/bigtable" >}}), [Examples]({{< relref "docs/examples/bigtable" >}}), [DataStream]({{< relref "docs/connectors/datastream/bigtable" >}}), [Table]({{< relref "docs/connectors/table/bigtable" >}}) | Wide-column store | Bounded; sampled row-range splits | At-least-once | Table through a resolver | Change Streams partitions; unbounded or bounded |
+| Spanner: [Quickstart]({{< relref "docs/quickstart/spanner" >}}), [Examples]({{< relref "docs/examples/spanner" >}}), [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}), [Table]({{< relref "docs/connectors/table/spanner" >}}) | Relational database | Bounded; service-planned partitions | At-least-once | Table in each serialized mutation | Change Streams partitions; unbounded |

@@ -286,6 +286,32 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   this page in the same change — `just check-option-docs` fails otherwise, in both directions.
   `docs/content/docs/{quickstart,examples}/<connector>.md` (#90) are the other two per-connector
   pages: one runnable job each, and the worked cases the design record describes but does not show
+- The connector indexes carry navigation-oriented capability maps, not lifecycle status
+  inventories. Group comparisons by the connector's service role, and use `Not applicable` when a
+  capability does not fit that role; an empty cell must not make a messaging or task-delivery
+  connector look like an incomplete datastore. The module README remains the feature-status
+  record. Each connector page includes only the capabilities that connector exposes; do not add
+  empty unsupported sections to make two pages look alike, because the map makes the omission
+  explicit
+- Capability maps include the distinctions that guide connector selection rather than stopping at
+  API presence. For DataStream that means source split strategy, sink delivery, per-record
+  destinations and CDC direction. For Table API that means scan pushdown, sink changelog shape,
+  lookup mode and caching, CDC changelog composition, and readable or writable metadata. A
+  composable source-to-sink path is not a stronger delivery or ordering guarantee than those two
+  endpoints already document. A change that adds, removes or materially changes one of these
+  capabilities updates every affected map cell in the same change
+- Connector-specific follow-ups migrate pages to the shared orders below; until a page is migrated,
+  its current order remains authoritative. Examples use DataStream source, DataStream sink, Table
+  source, Table sink, lookup joins, CDC, then operations and local development. Quickstart is the
+  canonical basic DataStream job for each supported direction, so Examples links to it instead of
+  copying that job
+- The target DataStream connector-page order is overview and setup, source, sink, delivery
+  guarantees, error handling, metrics and tuning, then testing, scope and provenance. The target
+  Table connector-page order is overview and setup, schema and type mapping, source, sink, lookup,
+  CDC, options, then delivery guarantees, design decisions and testing
+- Metadata stays with the direction that produces or consumes it: readable metadata with its
+  source, writable metadata with its sink, and Change Streams metadata with CDC. Reordering never
+  copies option or metric rows out of the tables and pages governed by their checkers
 - The module `README.md` is an **overview only**: title, one-paragraph description, the
   feature-status table (`Implemented (#N)` / `Planned (#N)` / `Declined (#N)` — the third for a
   feature measured and rejected, whose reasoning is the ADR the docs page links), a minimal code sample, a link to the

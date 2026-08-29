@@ -27,6 +27,27 @@ page starts from the [Quickstart]({{< relref "docs/quickstart" >}}) job for its 
 the parts that change are shown; the reasoning behind every option stays on the connector's own
 page, linked from each section.
 
+## Capability map
+
+The Quickstart owns the basic DataStream jobs, while these pages add the feature-specific worked
+cases.
+The map highlights the strengths that distinguish each service role; the Worked cases table below
+says which advanced cases this section currently contains.
+
+| Connector pages | Primary role | DataStream paths | Table paths |
+|---|---|---|---|
+| BigQuery: [Quickstart]({{< relref "docs/quickstart/bigquery" >}}), [Examples]({{< relref "docs/examples/bigquery" >}}), [DataStream]({{< relref "docs/connectors/datastream/bigquery" >}}), [Table]({{< relref "docs/connectors/table/bigquery" >}}) | Analytics warehouse | Split bounded reads; dynamic table destinations; at-least-once or exactly-once service writes; CDC on the at-least-once default stream, Experimental ([#706]({{< param BookRepo >}}/issues/706)) | Bounded scan pushdown; insert sink; keyed CDC sink, Experimental ([#706]({{< param BookRepo >}}/issues/706)); sink-writable CDC sequence inputs |
+| Cloud Pub/Sub: [Quickstart]({{< relref "docs/quickstart/pubsub" >}}), [Examples]({{< relref "docs/examples/pubsub" >}}), [DataStream]({{< relref "docs/connectors/datastream/pubsub" >}}), [Table]({{< relref "docs/connectors/table/pubsub" >}}) | Messaging | Subscription splits; dynamic topic destinations; ordering | Format-provided source changelog; readable and writable message metadata |
+| Cloud Tasks: [Quickstart]({{< relref "docs/quickstart/cloudtasks" >}}), [Examples]({{< relref "docs/examples/cloudtasks" >}}), [DataStream]({{< relref "docs/connectors/datastream/cloudtasks" >}}), [Table]({{< relref "docs/connectors/table/cloudtasks" >}}) | Task delivery | Dynamic queue destinations; HTTP and App Engine targets | HTTP or App Engine sink; writable task and request metadata |
+| Bigtable: [Quickstart]({{< relref "docs/quickstart/bigtable" >}}), [Examples]({{< relref "docs/examples/bigtable" >}}), [DataStream]({{< relref "docs/connectors/datastream/bigtable" >}}), [Table]({{< relref "docs/connectors/table/bigtable" >}}) | Wide-column store | Row-range splits; dynamic table destinations; Change Streams | Scan pushdown; lookup modes and caching; keyed CDC-to-upsert composition |
+| Spanner: [Quickstart]({{< relref "docs/quickstart/spanner" >}}), [Examples]({{< relref "docs/examples/spanner" >}}), [DataStream]({{< relref "docs/connectors/datastream/spanner" >}}), [Table]({{< relref "docs/connectors/table/spanner" >}}) | Relational database | Partitioned snapshots and queries; mutation table routing; Change Streams | Scan pushdown; lookup modes and caching; keyed CDC-to-upsert composition |
+
+The Bigtable and Spanner Table paths describe compatible changelog shapes, not a stronger
+replication guarantee; see the [Table capability map]({{< relref "docs/connectors/table" >}}) for
+the endpoint caveat.
+
+## Worked cases
+
 | Page | Covers |
 |---|---|
 | [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) | The shared resolver contract, per-destination resources, idle eviction, auto-creation and Pub/Sub ordering across all five sinks |
