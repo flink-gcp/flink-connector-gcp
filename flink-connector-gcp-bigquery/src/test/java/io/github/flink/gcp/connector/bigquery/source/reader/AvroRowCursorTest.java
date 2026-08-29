@@ -22,6 +22,7 @@ import org.apache.avro.Schema;
 import org.apache.avro.io.BinaryDecoder;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -39,6 +40,34 @@ class AvroRowCursorTest {
         assertThat(cursor.next().get("name")).hasToString("row-1");
         assertThat(cursor.next().get("name")).hasToString("row-2");
         assertThat(cursor.hasNext()).isFalse();
+    }
+
+    @Test
+    void reportsTheExactSerializedBytesConsumedByEachRow() throws Exception {
+        List<org.apache.avro.generic.GenericRecord> rows = TestRows.rows(3);
+        rows.get(0).put("name", "x");
+        rows.get(1).put("name", "x".repeat(64));
+        rows.get(2).put("name", "end");
+        AvroRowCursor cursor = new AvroRowCursor(TestRows.SCHEMA, null);
+        cursor.reset(TestRows.block(rows));
+
+        long total = 0;
+        List<Long> rowBytes = new ArrayList<>();
+        for (org.apache.avro.generic.GenericRecord row : rows) {
+            cursor.next();
+            long expected =
+                    TestRows.block(Collections.singletonList(row))
+                            .getAvroRows()
+                            .getSerializedBinaryRows()
+                            .size();
+            assertThat(cursor.lastRowBytes()).isEqualTo(expected);
+            total += cursor.lastRowBytes();
+            rowBytes.add(cursor.lastRowBytes());
+        }
+
+        assertThat(rowBytes).doesNotHaveDuplicates();
+        assertThat(total)
+                .isEqualTo(TestRows.block(rows).getAvroRows().getSerializedBinaryRows().size());
     }
 
     @Test
@@ -85,6 +114,12 @@ class AvroRowCursorTest {
         cursor.reset(TestRows.block(TestRows.rows(1)));
 
         assertThat(cursor.next().getSchema()).isEqualTo(readerSchema);
+        assertThat(cursor.lastRowBytes())
+                .isEqualTo(
+                        TestRows.block(TestRows.rows(1))
+                                .getAvroRows()
+                                .getSerializedBinaryRows()
+                                .size());
     }
 
     @Test

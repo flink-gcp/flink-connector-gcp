@@ -105,6 +105,7 @@ public class BigQueryStorageReadSource<T>
                         new BigQuerySplitReader(
                                 opener,
                                 config.getMaxRecordsPerFetch(),
+                                config.getMaxBytesPerFetch(),
                                 deserializer.getReaderSchema(),
                                 metrics);
         return new BigQuerySourceReader<>(

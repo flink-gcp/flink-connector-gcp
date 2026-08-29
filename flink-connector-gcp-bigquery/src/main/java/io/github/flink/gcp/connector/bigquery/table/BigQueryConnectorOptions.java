@@ -254,6 +254,15 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "The most decoded rows one source fetch hands to the task thread.");
 
+    /** The target serialized Avro bytes one source fetch hands to the task thread. */
+    public static final ConfigOption<MemorySize> SCAN_MAX_BYTES_PER_FETCH =
+            ConfigOptions.key("scan.max-bytes-per-fetch")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The target serialized Avro bytes one source fetch hands to the task"
+                                    + " thread.");
+
     /** The maximum consecutive Storage Read attempts without progress. */
     public static final ConfigOption<Integer> SCAN_RETRY_MAX_ATTEMPTS =
             ConfigOptions.key("scan.retry.max-attempts")

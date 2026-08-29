@@ -215,6 +215,7 @@ class BigQueryDynamicSourceTest {
         varied.put("maxStreamCount", args -> args.maxStreamCount = 7);
         varied.put("preferredMinStreamCount", args -> args.preferredMinStreamCount = 3);
         varied.put("maxRecordsPerFetch", args -> args.maxRecordsPerFetch = 200);
+        varied.put("maxBytesPerFetch", args -> args.maxBytesPerFetch = 4096L);
         varied.put("retryMaxAttempts", args -> args.retryMaxAttempts = 9);
         varied.put("serviceAccountKeyFile", args -> args.serviceAccountKeyFile = "/key.json");
         varied.put("emulatorEndpoint", args -> args.emulatorEndpoint = "localhost:1");
@@ -252,6 +253,7 @@ class BigQueryDynamicSourceTest {
         @Nullable Integer maxStreamCount;
         @Nullable Integer preferredMinStreamCount;
         @Nullable Integer maxRecordsPerFetch;
+        @Nullable Long maxBytesPerFetch;
         @Nullable Integer retryMaxAttempts;
         @Nullable String serviceAccountKeyFile;
         @Nullable String emulatorEndpoint;
@@ -273,6 +275,7 @@ class BigQueryDynamicSourceTest {
                     .maxStreamCount(maxStreamCount)
                     .preferredMinStreamCount(preferredMinStreamCount)
                     .maxRecordsPerFetch(maxRecordsPerFetch)
+                    .maxBytesPerFetch(maxBytesPerFetch)
                     .retryMaxAttempts(retryMaxAttempts)
                     .serviceAccountKeyFile(serviceAccountKeyFile)
                     .emulatorEndpoint(emulatorEndpoint)

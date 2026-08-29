@@ -59,6 +59,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     private final int maxStreamCount;
     private final int preferredMinStreamCount;
     private final int maxRecordsPerFetch;
+    private final long maxBytesPerFetch;
     private final ReadSessionCreatorFactory sessionCreatorFactory;
     private final RowStreamOpener rowStreamOpener;
 
@@ -78,6 +79,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         this.maxStreamCount = builder.maxStreamCount;
         this.preferredMinStreamCount = builder.preferredMinStreamCount;
         this.maxRecordsPerFetch = builder.maxRecordsPerFetch;
+        this.maxBytesPerFetch = builder.maxBytesPerFetch;
         this.sessionCreatorFactory = builder.sessionCreatorFactory;
         this.rowStreamOpener = builder.rowStreamOpener;
     }
@@ -208,6 +210,11 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         return maxRecordsPerFetch;
     }
 
+    /** Returns the target serialized Avro bytes one fetch hands to the task thread. */
+    public long getMaxBytesPerFetch() {
+        return maxBytesPerFetch;
+    }
+
     /**
      * Returns the factory the source mints one session creator per enumerator from.
      *
@@ -225,8 +232,8 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     }
 
     /**
-     * Collects what {@link BigQuerySourceBuilder#build()} resolved, so that seventeen values reach
-     * the configuration by name rather than by position.
+     * Collects what {@link BigQuerySourceBuilder#build()} resolved, so that its values reach the
+     * configuration by name rather than by position.
      *
      * <p>Validation stays where the message belongs, in {@code BigQuerySourceBuilder}: every check
      * there names a <em>user-facing</em> setter, and restating one here would either duplicate that
@@ -252,6 +259,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         private int maxStreamCount;
         private int preferredMinStreamCount;
         private int maxRecordsPerFetch;
+        private long maxBytesPerFetch;
         private ReadSessionCreatorFactory sessionCreatorFactory;
         private RowStreamOpener rowStreamOpener;
 
@@ -347,6 +355,12 @@ public final class BigQuerySourceConfig<T> implements Serializable {
             return this;
         }
 
+        /** Sets the target serialized Avro bytes one fetch hands to the task thread. */
+        Builder<T> maxBytesPerFetch(long maxBytesPerFetch) {
+            this.maxBytesPerFetch = maxBytesPerFetch;
+            return this;
+        }
+
         /** Sets the factory minting the seam that creates the read session. */
         Builder<T> sessionCreatorFactory(ReadSessionCreatorFactory sessionCreatorFactory) {
             this.sessionCreatorFactory = sessionCreatorFactory;
@@ -378,6 +392,10 @@ public final class BigQuerySourceConfig<T> implements Serializable {
                     maxRecordsPerFetch > 0,
                     "maxRecordsPerFetch must be positive: %s",
                     maxRecordsPerFetch);
+            Preconditions.checkArgument(
+                    maxBytesPerFetch > 0,
+                    "maxBytesPerFetch must be positive: %s",
+                    maxBytesPerFetch);
             return new BigQuerySourceConfig<>(this);
         }
     }

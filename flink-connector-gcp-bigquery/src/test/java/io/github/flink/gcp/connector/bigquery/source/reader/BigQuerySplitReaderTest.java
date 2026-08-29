@@ -84,6 +84,69 @@ class BigQuerySplitReaderTest {
     }
 
     @Test
+    void capsAOneBlockResponseBySerializedBytesWithoutLosingTheDeferredRow() throws Exception {
+        List<GenericRecord> sourceRows = TestRows.rows(4);
+        long twoRows = serializedBytes(sourceRows.subList(0, 2));
+        BigQuerySplitReader reader = reader(opener(4, 4), 100, twoRows);
+        reader.handleSplitsChanges(addition(split(0)));
+
+        List<Integer> batchSizes = new ArrayList<>();
+        List<GenericRecord> rows = new ArrayList<>();
+        drain(reader, rows, batchSizes);
+
+        assertThat(batchSizes).startsWith(2, 2);
+        assertThat(names(rows)).containsExactly("row-0", "row-1", "row-2", "row-3");
+    }
+
+    @Test
+    void countsEachVariableWidthRowAtItsOwnSerializedSize() throws Exception {
+        List<GenericRecord> sourceRows = TestRows.rows(3);
+        sourceRows.get(0).put("name", "x");
+        sourceRows.get(1).put("name", "x".repeat(64));
+        sourceRows.get(2).put("name", "end");
+        long firstRow = serializedBytes(sourceRows.subList(0, 1));
+        long secondRow = serializedBytes(sourceRows.subList(1, 2));
+        BigQuerySplitReader reader =
+                reader(oneBlockOpener(TestRows.block(sourceRows)), 100, firstRow + secondRow - 1);
+        reader.handleSplitsChanges(addition(split(0)));
+
+        List<Integer> batchSizes = new ArrayList<>();
+        List<GenericRecord> rows = new ArrayList<>();
+        drain(reader, rows, batchSizes);
+
+        assertThat(batchSizes).startsWith(1, 1, 1);
+        assertThat(names(rows)).containsExactly("x", "x".repeat(64), "end");
+    }
+
+    @Test
+    void countsTheByteBudgetAcrossResponseBlocks() throws Exception {
+        List<GenericRecord> sourceRows = TestRows.rows(5);
+        long threeRows = serializedBytes(sourceRows.subList(0, 3));
+        BigQuerySplitReader reader = reader(opener(5, 2), 100, threeRows);
+        reader.handleSplitsChanges(addition(split(0)));
+
+        List<Integer> batchSizes = new ArrayList<>();
+        List<GenericRecord> rows = new ArrayList<>();
+        drain(reader, rows, batchSizes);
+
+        assertThat(batchSizes).startsWith(3, 2);
+        assertThat(names(rows)).containsExactly("row-0", "row-1", "row-2", "row-3", "row-4");
+    }
+
+    @Test
+    void emitsARowLargerThanTheByteTargetByItself() throws Exception {
+        BigQuerySplitReader reader = reader(opener(3, 3), 100, 1);
+        reader.handleSplitsChanges(addition(split(0)));
+
+        List<Integer> batchSizes = new ArrayList<>();
+        List<GenericRecord> rows = new ArrayList<>();
+        drain(reader, rows, batchSizes);
+
+        assertThat(batchSizes).startsWith(1, 1, 1);
+        assertThat(names(rows)).containsExactly("row-0", "row-1", "row-2");
+    }
+
+    @Test
     void reportsTheSplitFinishedInTheFetchThatReachesTheEnd() throws Exception {
         BigQuerySplitReader reader = reader(opener(2, 10), 100);
         reader.handleSplitsChanges(addition(split(0)));
@@ -145,11 +208,28 @@ class BigQuerySplitReaderTest {
     }
 
     @Test
+    void discardsADeferredRowBeforeReopeningAtTheDeliveredOffset() throws Exception {
+        long oneRow = serializedBytes(TestRows.rows(1));
+        BigQuerySplitReader reader = reader(opener(4, 4), 100, oneRow + 1);
+        reader.handleSplitsChanges(addition(split(0)));
+
+        RecordsWithSplitIds<GenericRecord> first = reader.fetch();
+        assertThat(names(collectInto(first))).containsExactly("row-0");
+
+        reader.wakeUp();
+        List<GenericRecord> rest = drain(reader);
+
+        assertThat(ScriptedRowStreamOpener.offsets(testId())).containsExactly(0L, 1L);
+        assertThat(names(rest)).containsExactly("row-1", "row-2", "row-3");
+    }
+
+    @Test
     void handsOverWhatItDecodedWhenAWakeUpCancelsACallInFlight() throws Exception {
         // The other half of wakeUp(): the call is already in flight when it lands, so next() throws
         // and the batch decoded so far still has to reach the task thread.
         WakingOpener opener = new WakingOpener();
-        BigQuerySplitReader reader = new BigQuerySplitReader(opener, 100, null, metrics.metrics());
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(opener, 100, Long.MAX_VALUE, null, metrics.metrics());
         opener.wakeOn(reader);
         reader.handleSplitsChanges(addition(split(0)));
 
@@ -197,7 +277,8 @@ class BigQuerySplitReaderTest {
                     @Override
                     public void close() {}
                 };
-        BigQuerySplitReader reader = new BigQuerySplitReader(failing, 10, null, metrics.metrics());
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(failing, 10, Long.MAX_VALUE, null, metrics.metrics());
         reader.handleSplitsChanges(addition(split(7)));
 
         assertThatThrownBy(reader::fetch)
@@ -225,7 +306,8 @@ class BigQuerySplitReaderTest {
         // before the call exists, so it finds no stream to cancel. Without the re-check that
         // follows the open, the fetch below would block on a call nothing will ever interrupt.
         WakeOnOpenOpener opener = new WakeOnOpenOpener();
-        BigQuerySplitReader reader = new BigQuerySplitReader(opener, 100, null, metrics.metrics());
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(opener, 100, Long.MAX_VALUE, null, metrics.metrics());
         opener.wakeOn(reader);
         reader.handleSplitsChanges(addition(split(0)));
 
@@ -242,6 +324,7 @@ class BigQuerySplitReaderTest {
                 new BigQuerySplitReader(
                         throwingOpener(() -> new StatusRuntimeException(Status.UNAVAILABLE)),
                         10,
+                        Long.MAX_VALUE,
                         null,
                         metrics.metrics());
         reader.handleSplitsChanges(addition(split(7)));
@@ -257,6 +340,7 @@ class BigQuerySplitReaderTest {
                 new BigQuerySplitReader(
                         throwingOpener(() -> new IllegalStateException("boom")),
                         10,
+                        Long.MAX_VALUE,
                         null,
                         metrics.metrics());
         reader.handleSplitsChanges(addition(split(7, Instant.now().minusSeconds(60))));
@@ -275,6 +359,7 @@ class BigQuerySplitReaderTest {
                 new BigQuerySplitReader(
                         throwingOpener(() -> new IllegalStateException("boom")),
                         10,
+                        Long.MAX_VALUE,
                         null,
                         metrics.metrics());
         reader.handleSplitsChanges(addition(split(7, Instant.now().plusSeconds(3600))));
@@ -300,7 +385,8 @@ class BigQuerySplitReaderTest {
                             }
                             throw new IllegalStateException("boom");
                         });
-        BigQuerySplitReader reader = new BigQuerySplitReader(opener, 10, null, metrics.metrics());
+        BigQuerySplitReader reader =
+                new BigQuerySplitReader(opener, 10, Long.MAX_VALUE, null, metrics.metrics());
         reader.handleSplitsChanges(addition(split(0)));
 
         // Throwing is what discards the batch — there is no partial batch to inspect, because a
@@ -489,7 +575,44 @@ class BigQuerySplitReaderTest {
     }
 
     private BigQuerySplitReader reader(ScriptedRowStreamOpener opener, int maxRecordsPerFetch) {
-        return new BigQuerySplitReader(opener, maxRecordsPerFetch, null, metrics.metrics());
+        return reader(opener, maxRecordsPerFetch, Long.MAX_VALUE);
+    }
+
+    private BigQuerySplitReader reader(
+            RowStreamOpener opener, int maxRecordsPerFetch, long maxBytesPerFetch) {
+        return new BigQuerySplitReader(
+                opener, maxRecordsPerFetch, maxBytesPerFetch, null, metrics.metrics());
+    }
+
+    private static RowStreamOpener oneBlockOpener(ReadRowsResponse response) {
+        return new RowStreamOpener() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public RowStream open(String streamName, long offset) {
+                return new RowStream() {
+                    private boolean delivered;
+
+                    @Override
+                    public ReadRowsResponse next() {
+                        if (delivered) {
+                            return null;
+                        }
+                        delivered = true;
+                        return response;
+                    }
+
+                    @Override
+                    public void cancel() {}
+
+                    @Override
+                    public void close() {}
+                };
+            }
+
+            @Override
+            public void close() {}
+        };
     }
 
     private static ScriptedRowStreamOpener opener(int rowCount, int blockSize) {
@@ -543,5 +666,9 @@ class BigQuerySplitReaderTest {
         List<String> names = new ArrayList<>(rows.size());
         rows.forEach(row -> names.add(String.valueOf(row.get("name"))));
         return names;
+    }
+
+    private static long serializedBytes(List<GenericRecord> rows) {
+        return TestRows.block(rows).getAvroRows().getSerializedBinaryRows().size();
     }
 }

@@ -1925,6 +1925,41 @@ This source follows session creation with `ReadRows`, so its use can still incur
 Because BigQuery stores columns separately, a job that reads a wide table to use two of its columns
 meters the rest as bytes read unless it says so with [`selectedFields`](#push-down).
 
+### Fetch memory
+
+Each fetch stops at the first of two independent limits:
+
+- [`maxRecordsPerFetch`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) defaults
+  to 10,000 rows and bounds small-row batches and checkpoint cadence;
+- [`maxBytesPerFetch`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) defaults to
+  8 MiB of serialized Avro rows and bounds batches whose rows are wide or variable-width.
+
+The byte value is a target, not a hard heap limit.
+The reader decodes the row that determines whether it fits, keeps that one row for the next fetch,
+and always emits a row larger than the target by itself so it cannot enter a zero-progress loop.
+Serialized bytes are also not the decoded Java object's heap size.
+
+There are two larger scopes around the batch.
+`AvroRowCursor` retains the current Storage Read response block, which can carry about 128 MiB,
+while it resumes the block between fetches.
+Flink can retain up to `(source.reader.element.queue.capacity + 2)` fetched batches around the task
+thread; that queue capacity is 2 by default, so the default target represents up to about 32 MiB of
+serialized rows per active source reader in those batches, plus one deferred row and the response
+block.
+An oversized row can raise one batch above that estimate, and decoded objects can occupy more heap
+than their serialized form.
+Source parallelism multiplies the per-reader envelope, and several source subtasks in one
+TaskManager share that JVM's heap.
+
+Use [`selectedFields`](#push-down) to avoid transferring columns the job does not need and
+[`rowRestriction`](#push-down) to remove rows before the read session sends them.
+Table API projection pushdown maps retained top-level columns to `selectedFields`.
+SQL predicate pushdown is not implemented; `scan.row-restriction` is the explicit BigQuery-native
+filter surface.
+No batch-size metric is registered because measuring decoded heap on the per-row path would itself
+distort the allocation this guard is meant to contain; the existing `bytesRead` metric reports
+response bytes received instead.
+
 ### Splits, offsets and recovery
 
 A **split is one `ReadStream` of the read session, plus the number of rows already consumed from it**.

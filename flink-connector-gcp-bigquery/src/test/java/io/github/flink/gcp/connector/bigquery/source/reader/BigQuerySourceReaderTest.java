@@ -169,7 +169,7 @@ class BigQuerySourceReaderTest {
         ScriptedRowStreamOpener opener =
                 ScriptedRowStreamOpener.singleStream(openerId, STREAM, ROW_COUNT, 3);
         Supplier<SplitReader<GenericRecord, ReadStreamSplit>> splitReaderSupplier =
-                () -> new BigQuerySplitReader(opener, 2, null, metrics.metrics());
+                () -> new BigQuerySplitReader(opener, 2, Long.MAX_VALUE, null, metrics.metrics());
         return new BigQuerySourceReader<>(
                 splitReaderSupplier,
                 new BigQueryRecordEmitter<>(nameDeserializer(), metrics.metrics()),

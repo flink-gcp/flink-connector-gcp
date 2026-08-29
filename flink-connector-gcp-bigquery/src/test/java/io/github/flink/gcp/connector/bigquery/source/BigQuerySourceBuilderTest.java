@@ -70,6 +70,7 @@ class BigQuerySourceBuilderTest {
         // comparing it against itself would pass for any value — and the reference page states
         // 10000, which nothing else pins.
         assertThat(config.getMaxRecordsPerFetch()).isEqualTo(10_000);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(8L * 1024 * 1024);
     }
 
     @Test
@@ -119,6 +120,19 @@ class BigQuerySourceBuilderTest {
         assertThatThrownBy(() -> builder().maxRecordsPerFetch(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxRecordsPerFetch must be positive");
+        assertThatThrownBy(() -> builder().maxBytesPerFetch(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxBytesPerFetch must be positive");
+    }
+
+    @Test
+    void carriesBothFetchCapsIntoTheReaderConfiguration() {
+        BigQuerySourceConfig<GenericRecord> config =
+                TestSources.config(
+                        builder -> builder.maxRecordsPerFetch(123).maxBytesPerFetch(4L * 1024));
+
+        assertThat(config.getMaxRecordsPerFetch()).isEqualTo(123);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(4L * 1024);
     }
 
     @Test

@@ -21,6 +21,7 @@ import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
@@ -127,6 +128,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SCAN_MAX_STREAM_COUNT,
                         BigQueryConnectorOptions.SCAN_PREFERRED_MIN_STREAM_COUNT,
                         BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
+                        BigQueryConnectorOptions.SCAN_MAX_BYTES_PER_FETCH,
                         BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
@@ -424,6 +426,10 @@ public class BigQueryDynamicTableFactory
                                 .orElse(null))
                 .maxRecordsPerFetch(
                         config.getOptional(BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH)
+                                .orElse(null))
+                .maxBytesPerFetch(
+                        config.getOptional(BigQueryConnectorOptions.SCAN_MAX_BYTES_PER_FETCH)
+                                .map(MemorySize::getBytes)
                                 .orElse(null))
                 .retryMaxAttempts(
                         config.getOptional(BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS)

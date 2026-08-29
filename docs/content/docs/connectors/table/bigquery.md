@@ -208,6 +208,7 @@ advertised; use `scan.row-restriction` when a BigQuery-native server-side predic
 | `scan.max-stream-count` | Integer | `maxStreamCount(...)` |
 | `scan.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |
 | `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch(...)` |
+| `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` |
 | `scan.retry.max-attempts` | Integer | `retryMaxAttempts(...)` |
 | `scan.parallelism` | Integer | The bounded source's parallelism (Flink's own option) |
 
