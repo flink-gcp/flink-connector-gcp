@@ -58,13 +58,25 @@ public interface TopicPublisher extends AutoCloseable {
 
     /**
      * Asks the publisher to shut down without waiting for it, so a writer owning several publishers
-     * can ask every one before it waits on any: the waits then overlap, and the whole close costs
-     * one shutdown timeout however many topics the writer wrote to. Idempotent, and implied by
-     * {@link #close()} when it was not called — a publisher closed on its own needs no two calls.
+     * can ask every one before it waits on any: the waits then overlap, and the whole release costs
+     * one shutdown timeout however many publishers it covers. Idempotent, and implied by {@link
+     * #close()} when it was not called — a publisher closed on its own needs no two calls.
      *
      * <p>Starting the shutdown is what starts the timeout {@link #close()} then waits out.
      */
     void shutdown();
+
+    /**
+     * Whether the completed close left publisher shutdown work or resources alive. Production
+     * publishers report this so running-task eviction can fail before opening a replacement and
+     * accumulating abandoned resources. Test publishers that complete teardown synchronously need
+     * not override it.
+     *
+     * @return whether shutdown was abandoned
+     */
+    default boolean wasShutdownIncomplete() {
+        return false;
+    }
 
     /**
      * Completes the shutdown {@link #shutdown()} started, waiting a bounded time for termination

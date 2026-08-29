@@ -62,6 +62,7 @@ final class FakePublisherFactory implements PublisherFactory {
                     "Execution cancelled because executing previous runnable failed.");
 
     final Map<TopicDestination, FakeTopicPublisher> publishers = new LinkedHashMap<>();
+    final List<FakeTopicPublisher> createdPublishers = new ArrayList<>();
     private final ArrayDeque<ApiFuture<String>> scriptedFutures = new ArrayDeque<>();
     int createCalls;
 
@@ -83,6 +84,7 @@ final class FakePublisherFactory implements PublisherFactory {
         createCalls++;
         FakeTopicPublisher publisher = new FakeTopicPublisher(this, destination);
         publishers.put(destination, publisher);
+        createdPublishers.add(publisher);
         return publisher;
     }
 
@@ -110,6 +112,9 @@ final class FakePublisherFactory implements PublisherFactory {
 
         /** The same, for the shutdown half of the teardown. */
         Throwable shutdownFailure;
+
+        /** Whether close will report that the fake's shutdown remained incomplete. */
+        boolean shutdownIncomplete;
 
         private FakeTopicPublisher(FakePublisherFactory factory, TopicDestination destination) {
             this.factory = factory;
@@ -173,11 +178,18 @@ final class FakePublisherFactory implements PublisherFactory {
         }
 
         @Override
-        public void close() {
+        public boolean wasShutdownIncomplete() {
+            // Production learns this outcome during close. Keeping the fake's result hidden until
+            // then makes the tests reject an implementation that snapshots it before teardown.
+            return closeCalls > 0 && shutdownIncomplete;
+        }
+
+        @Override
+        public void close() throws Exception {
             closeCalls++;
             factory.teardownCalls.add("close:" + destination);
             if (closeFailure != null) {
-                ExceptionUtils.rethrow(closeFailure);
+                ExceptionUtils.rethrowException(closeFailure);
             }
         }
     }

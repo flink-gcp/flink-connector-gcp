@@ -31,6 +31,7 @@ import com.google.api.core.ApiFutures;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.FailedMessage;
@@ -43,17 +44,21 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.LongSupplier;
 
 /**
  * At-least-once writer publishing records to dynamic per-record Pub/Sub topic destinations.
  *
- * <p>A destination is resolved per record, so the writer holds one publisher per topic it has seen.
- * Backpressure is mailbox-based; publish failures arrive on the client library's threads and are
- * surfaced on the task thread; and a topic that turns out not to exist is repaired when a publish
- * reports it, rather than checked for beforehand.
+ * <p>A destination is resolved per record, so the writer holds one publisher per active topic. The
+ * active set is bounded and least-recently-used publishers are released only after their publishes
+ * and repair debt are drained. Backpressure is mailbox-based; publish failures arrive on the client
+ * library's threads and are surfaced on the task thread; and a topic that turns out not to exist is
+ * repaired when a publish reports it, rather than checked for beforehand.
  *
  * <h2>Threading model</h2>
  *
@@ -188,9 +193,16 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     private final FailureHandler<? super FailedMessage> failedMessageHandler;
     private final PubSubWriterMetrics metrics;
     private final TopicRepairer repairer;
+    private final int maxActivePublishers;
+    private final long destinationIdleTimeoutNanos;
+    private final LongSupplier nanoClock;
 
-    /** Lazily populated per-topic publisher state; touched only on the task thread. */
-    private final Map<TopicDestination, DestinationState> states = new HashMap<>();
+    /** Lazily populated publisher state in least-recently-used order; task-thread-only. */
+    private final Map<TopicDestination, DestinationState> states =
+            new LinkedHashMap<>(16, 0.75f, true);
+
+    /** Mirror of {@code states.size()} that a reporter thread can read without walking the map. */
+    private volatile int activePublishers;
 
     /**
      * Messages held for a destination's next repair, across every destination. A plain counter
@@ -241,7 +253,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 topicAdmin,
                 mailboxExecutor,
                 metricGroup,
-                config.getPublisherOptions().toRecoverySchedule());
+                config.getPublisherOptions().toRecoverySchedule(),
+                System::nanoTime);
     }
 
     /**
@@ -257,10 +270,31 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             MailboxExecutor mailboxExecutor,
             SinkWriterMetricGroup metricGroup,
             RetrySchedule recoverySchedule) {
+        this(
+                config,
+                publisherFactory,
+                topicAdmin,
+                mailboxExecutor,
+                metricGroup,
+                recoverySchedule,
+                System::nanoTime);
+    }
+
+    /** Creates the writer with explicit recovery timing and monotonic clock for tests. */
+    @VisibleForTesting
+    PubSubWriter(
+            PubSubSinkConfig<T> config,
+            PublisherFactory publisherFactory,
+            TopicAdmin topicAdmin,
+            MailboxExecutor mailboxExecutor,
+            SinkWriterMetricGroup metricGroup,
+            RetrySchedule recoverySchedule,
+            LongSupplier nanoClock) {
         this.config = config;
         this.publisherFactory = publisherFactory;
         this.topicAdmin = topicAdmin;
         this.mailboxExecutor = mailboxExecutor;
+        this.nanoClock = nanoClock;
         PubSubPublisherOptions options = config.getPublisherOptions();
         // Re-checked for the deserialization reason InFlightTracker's own preconditions give,
         // though the failure mode is milder: a zero — which an options instance serialized before
@@ -277,6 +311,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                                 == PubSubPublisherOptions.UNBOUNDED,
                 "maxConsecutiveRejections must be positive or -1 (unbounded)");
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
+        Preconditions.checkArgument(
+                options.getMaxActivePublishers() > 0, "maxActivePublishers must be positive");
+        this.maxActivePublishers = options.getMaxActivePublishers();
+        OptionChecks.checkPositive(options.getDestinationIdleTimeout(), "destinationIdleTimeout");
+        this.destinationIdleTimeoutNanos =
+                OptionChecks.checkExpressibleInNanos(
+                                options.getDestinationIdleTimeout(), "destinationIdleTimeout")
+                        .toNanos();
         // Eagerly, not lazily: the tracker carries the preconditions on both caps and on the
         // progress budget, and those have to fail where the writer is built rather than at the
         // first record.
@@ -293,7 +335,8 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.metrics.bindWriterState(
                 (Gauge<Integer>) this::getInFlightMessages,
                 (Gauge<Long>) this::getInFlightBytes,
-                (Gauge<Integer>) this::getParkedMessages);
+                (Gauge<Integer>) this::getParkedMessages,
+                (Gauge<Integer>) this::getActivePublishers);
         this.repairer =
                 new TopicRepairer(
                         topicAdmin,
@@ -352,22 +395,14 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     @Override
     public void flush(boolean endOfInput) throws IOException, InterruptedException {
         checkAsyncError();
-        // Loop: the final drain can process a failure mail that owes a repair rather than setting
-        // asyncError — a NOT_FOUND that parks messages, or a message-level rejection the handler
-        // drops, leaving its ordering key paused with nothing parked at all. Returning then would
-        // complete a checkpoint with unpublished messages, or with a key no later publish for it
-        // could get past. This loop is what makes "a completed checkpoint leaves neither" true.
-        do {
-            if (repairNeeded) {
-                repairPendingTopics();
-            }
-            sendWhatIsStillBatched();
-            inFlight.drainToEmpty();
-        } while (repairNeeded);
+        drainPublishersAndRepair();
         // After the drain, never before it: the failures that reach the handler are discovered by
         // the drain, so flushing first would checkpoint past dead letters the drain is about to
         // produce.
         failedMessageHandler.flush();
+        if (!endOfInput) {
+            evictIdlePublishers();
+        }
     }
 
     @Override
@@ -400,14 +435,19 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             Closers.closeAll(closeables);
         } finally {
             states.clear();
+            activePublishers = 0;
             // Dropped with the writer, so the gauge must not keep reporting them.
             parkedMessages = 0;
         }
     }
 
-    private DestinationState stateFor(TopicDestination destination) throws IOException {
+    private DestinationState stateFor(TopicDestination destination)
+            throws IOException, InterruptedException {
         DestinationState state = states.get(destination);
         if (state == null) {
+            if (states.size() >= maxActivePublishers) {
+                evictForCapacity();
+            }
             TopicPublisher publisher;
             try {
                 publisher = publisherFactory.create(destination);
@@ -415,10 +455,157 @@ public class PubSubWriter<T> implements SinkWriter<T> {
                 throw new IOException(
                         "Failed to create a Pub/Sub publisher for topic " + destination + ".", e);
             }
-            state = new DestinationState(destination, publisher, metrics.forTopic(destination));
+            state =
+                    new DestinationState(
+                            destination,
+                            publisher,
+                            metrics.forTopic(destination),
+                            nanoClock.getAsLong());
             states.put(destination, state);
+            activePublishers++;
         }
         return state;
+    }
+
+    private void evictForCapacity() throws IOException, InterruptedException {
+        DestinationState evicted = removeOldestEvictable();
+        if (evicted == null) {
+            drainPublishersAndRepair();
+            evicted = removeOldestEvictable();
+        }
+        if (evicted == null) {
+            throw new IOException(
+                    "The Pub/Sub writer reached maxActivePublishers("
+                            + maxActivePublishers
+                            + ") but no publisher was clean after draining; this is an internal"
+                            + " lifecycle invariant failure.");
+        }
+        releasePublishers(List.of(evicted), "capacity eviction");
+        metrics.capacityEviction();
+    }
+
+    private DestinationState removeOldestEvictable() {
+        Iterator<Map.Entry<TopicDestination, DestinationState>> entries =
+                states.entrySet().iterator();
+        while (entries.hasNext()) {
+            DestinationState candidate = entries.next().getValue();
+            if (isEvictable(candidate)) {
+                entries.remove();
+                activePublishers--;
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private boolean isEvictable(DestinationState state) {
+        return state.inFlightPublishes == 0
+                && state.pendingRetries.isEmpty()
+                && state.keysToResume.isEmpty()
+                && !state.topicMissing
+                && !state.isolationNeeded
+                && state.repairCause == null;
+    }
+
+    private void evictIdlePublishers() throws IOException, InterruptedException {
+        long now = nanoClock.getAsLong();
+        List<DestinationState> evicted = new ArrayList<>();
+        Iterator<Map.Entry<TopicDestination, DestinationState>> entries =
+                states.entrySet().iterator();
+        while (entries.hasNext()) {
+            DestinationState candidate = entries.next().getValue();
+            if (isEvictable(candidate)
+                    && now - candidate.lastAccessNanos > destinationIdleTimeoutNanos) {
+                entries.remove();
+                activePublishers--;
+                evicted.add(candidate);
+            }
+        }
+        releasePublishers(evicted, "idle eviction");
+        for (int i = 0; i < evicted.size(); i++) {
+            metrics.idleEviction();
+        }
+    }
+
+    /** Releases a batch in two phases so every shutdown interval overlaps. */
+    private void releasePublishers(List<DestinationState> released, String reason)
+            throws IOException, InterruptedException {
+        if (released.isEmpty()) {
+            return;
+        }
+        List<AutoCloseable> closeables = new ArrayList<>(released.size() * 2);
+        for (DestinationState state : released) {
+            closeables.add(state.publisher::shutdown);
+        }
+        for (DestinationState state : released) {
+            closeables.add(state.publisher);
+        }
+        Exception releaseFailure = null;
+        try {
+            Closers.closeAll(closeables);
+        } catch (Exception e) {
+            Optional<InterruptedException> interrupted = findInterrupted(e);
+            if (interrupted.isPresent()) {
+                Thread.currentThread().interrupt();
+                if (interrupted.get() == e) {
+                    throw interrupted.get();
+                }
+                // Closers keeps later failures suppressed on the first. Re-throwing only that
+                // nested interrupt would erase the primary failure and its other suppressed
+                // entries, while suppressing the primary back onto the same interrupt would make
+                // a cycle. A fresh interruption preserves the complete collected failure tree.
+                InterruptedException propagated =
+                        new InterruptedException(interrupted.get().getMessage());
+                propagated.addSuppressed(e);
+                throw propagated;
+            }
+            releaseFailure = e;
+        }
+        List<TopicDestination> abandoned =
+                released.stream()
+                        .filter(state -> state.publisher.wasShutdownIncomplete())
+                        .map(state -> state.destination)
+                        .collect(java.util.stream.Collectors.toList());
+        if (!abandoned.isEmpty()) {
+            IOException failure =
+                    new IOException(
+                            "Pub/Sub publisher shutdown did not finish during "
+                                    + reason
+                                    + " for "
+                                    + abandoned
+                                    + ". The writer will not open replacement publishers and"
+                                    + " accumulate resources; raise"
+                                    + " PubSubPublisherOptions.builder().shutdownTimeout(...)"
+                                    + " (sink.shutdown-timeout in Table API) or correct the"
+                                    + " destination failures.");
+            if (releaseFailure != null) {
+                failure.addSuppressed(releaseFailure);
+            }
+            throw failure;
+        }
+        if (releaseFailure != null) {
+            throw new IOException(
+                    "Failed to release Pub/Sub publishers during "
+                            + reason
+                            + ". The writer will not open replacement publishers because the"
+                            + " released resources may still be live.",
+                    releaseFailure);
+        }
+    }
+
+    /**
+     * Finds a task-thread interrupt reported first or directly suppressed behind another failure.
+     */
+    private static Optional<InterruptedException> findInterrupted(Exception failure) {
+        if (failure instanceof InterruptedException) {
+            return Optional.of((InterruptedException) failure);
+        }
+        for (Throwable suppressed : failure.getSuppressed()) {
+            if (suppressed instanceof InterruptedException) {
+                return Optional.of((InterruptedException) suppressed);
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -455,8 +642,10 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         }
         // Counted only once the publish is accepted: a synchronous throw registers no callback, so
         // nothing would ever release it.
+        state.inFlightPublishes++;
         inFlight.admit(serializedSize);
         if (firstAttempt) {
+            state.lastAccessNanos = nanoClock.getAsLong();
             metrics.messagePublished(state.metrics, serializedSize);
         }
         ApiFutures.addCallback(
@@ -526,6 +715,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
             int serializedSize,
             boolean soloVerdict,
             Throwable throwable) {
+        state.inFlightPublishes--;
         inFlight.release(serializedSize);
         PubSubErrorClassifier.Kind kind = PubSubErrorClassifier.classify(throwable);
         boolean batchedRejection = kind == PubSubErrorClassifier.Kind.MESSAGE_LEVEL && !soloVerdict;
@@ -721,6 +911,22 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     }
 
     /**
+     * Drains all accepted publishes and resolves every repair debt without flushing the handler.
+     * The final drain can process a failure mail that owes a repair rather than setting {@code
+     * asyncError}, so the loop is what keeps a checkpoint from leaving unpublished messages or a
+     * paused ordering key behind.
+     */
+    private void drainPublishersAndRepair() throws IOException, InterruptedException {
+        do {
+            if (repairNeeded) {
+                repairPendingTopics();
+            }
+            sendWhatIsStillBatched();
+            inFlight.drainToEmpty();
+        } while (repairNeeded);
+    }
+
+    /**
      * Whether a missing topic may be repaired by creating it. Gates the {@code NOT_FOUND} parking
      * branch and that one only: since #215 the disposition does not gate parking at all — a cascade
      * is parked under {@code CREATE_NEVER} too, including one behind a message the handler dropped,
@@ -759,6 +965,22 @@ public class PubSubWriter<T> implements SinkWriter<T> {
     @VisibleForTesting
     int getParkedMessages() {
         return parkedMessages;
+    }
+
+    @VisibleForTesting
+    int getActivePublishers() {
+        return activePublishers;
+    }
+
+    @VisibleForTesting
+    DestinationState getDestinationState(TopicDestination destination) {
+        // states is access ordered. A test observation must not change the next capacity victim.
+        for (Map.Entry<TopicDestination, DestinationState> entry : states.entrySet()) {
+            if (entry.getKey().equals(destination)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     /**
@@ -823,6 +1045,7 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         /** The success mail: runs on the task thread. */
         @Override
         public void run() {
+            state.inFlightPublishes--;
             inFlight.release(serializedSize);
             // A published message is evidence the stream is not wholly broken, whichever request
             // shape or destination carried it — a solo republish included — so the

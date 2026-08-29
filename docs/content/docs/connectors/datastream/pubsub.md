@@ -209,17 +209,41 @@ Two bounded ways the byte cap is exceeded, both deliberate:
 
 ## Publisher lifecycle
 
-Publishers are created lazily per destination topic, owned by the writer, and shut down in the
-writer's `close()`. This deviates from the vendored
+Publishers are created lazily per destination topic and owned by the writer.
+One writer retains at most `maxActivePublishers` publishers (100 by default), and a successful
+non-terminal checkpoint flush releases clean publishers whose destination has been unused for
+strictly longer than `destinationIdleTimeout` (1 hour by default).
+A later record for a released destination creates a new publisher transparently.
+This deviates from the vendored
 upstream, which caches one `Publisher` per topic JVM-wide and shuts them down only in a JVM
 shutdown hook: writer ownership gives a deterministic lifecycle and no cross-job leakage in
 shared TaskManagers. The tradeoff: several subtasks on one TaskManager publishing to the same
 topic each hold their own `Publisher` (own batcher, own channel) instead of sharing one —
 acceptable at moderate parallelism; gRPC channels are multiplexed inside the SDK.
 
-The close runs in two phases. Every publisher is asked to shut down, and only then is any of them
-waited on, so the waits overlap: a close costs one `shutdownTimeout` (30 s by default) however many
-topics the writer wrote to, rather than one per topic. That matters with dynamic destinations,
+The capacity bound is safe rather than lossy.
+When a new destination reaches the cap, the writer first releases the least-recently-used publisher
+that has no accepted publish or repair debt.
+If every publisher still has work, the write backpressures while the writer flushes and drains all
+publishes and completes any repair, then releases the least-recently-used publisher.
+It never discards an in-flight message, a parked retry, or a paused ordering key to make room.
+The replacement publisher is not opened until the selected publisher finishes its bounded
+shutdown.
+The pinned SDK can strand its internal shutdown counter after an ordering-key cascade even after
+this connector has repaired and drained the destination.
+If shutdown work or resources are still alive when `shutdownTimeout` expires, the writer fails the
+running task before opening a replacement, so destination churn cannot accumulate abandoned
+threads and transport resources behind the active-publisher cap.
+A shutdown or close exception fails the running eviction for the same reason: the writer cannot
+establish that the old publisher's resources are safe to replace.
+Idle eviction uses the same clean-state test and runs only after `flush(false)` has successfully
+drained the publishers and the failed-message handler; `flush(true)` leaves teardown to `close()`.
+
+Every publisher release runs in two phases, including capacity and idle eviction.
+Every selected publisher is asked to shut down, and only then is any of them waited on, so the waits
+overlap: a release costs one `shutdownTimeout` (30 s by default) however many publishers it covers,
+rather than one per topic.
+That matters with dynamic destinations,
 where seven sequential 30 s waits would exceed Flink's `task.cancellation.timeout` (180 s) and make
 a cancelling task a fatal TaskManager error. On a task failure or a clean shutdown that watchdog
 does not run, and an over-long close merely delays the task.
@@ -254,11 +278,15 @@ timeout to each background resource in turn rather than sharing one deadline acr
 awaiting on the task thread would cost a multiple of `shutdownTimeout` instead of `shutdownTimeout`.
 
 The residue is honest, logged and counted: a publisher whose shutdown never returns leaves that
-thread and the client's executors behind until the JVM exits, and the job continues. The thread is
-named after both the topic and the task thread that created it (`… for Sink: Writer (2/4)#1`), so a
-thread dump says which subtask left it. On a job that restarts repeatedly against a Pub/Sub outage
-this residue accumulates once per attempt, which is the cost of not hanging the task instead — and
-the [`publisherShutdownsAbandoned`](#sink-metrics) counter is what makes the overruns visible
+thread and the client's executors behind until the JVM exits. At final writer close the job's
+teardown continues; during capacity or idle eviction the running task fails before it opens a
+replacement. The thread is named after both the topic and the task thread that created it (`… for
+Sink: Writer (2/4)#1`), so a thread dump says which subtask left it.
+On a job that restarts repeatedly against a Pub/Sub outage this residue accumulates once per
+attempt.
+A release-eligible publisher whose teardown overruns during capacity or idle eviction can also add
+residue while the attempt is still running — and the
+[`publisherShutdownsAbandoned`](#sink-metrics) counter makes the overruns visible
 without reading logs. What a teardown still in flight holds is worth knowing when reading that
 number:
 the publisher's own scheduled executor (`5 × availableProcessors` threads, no core timeout), its
@@ -274,18 +302,22 @@ own and is closed after the sink's, so it spends a second budget of the same sha
 bounds the sink's publishers and that one bounds the queue's; keep the **sum** under
 `task.cancellation.timeout`.
 
-Both of those budgets are spent at *close*. The waits a running job makes for the same queue — at
-each checkpoint barrier, and whenever the queue's in-flight bound fills — have a budget of their
-own, `flushTimeout`, described under
+The dead-letter queue's shutdown budget is spent at *close*.
+The sink publisher budget is also spent when capacity or idle eviction releases publishers while a
+job is running; an overrun there fails the task before the writer opens a replacement.
+The waits a running job makes for the dead-letter queue — at each checkpoint barrier, and whenever
+the queue's in-flight bound fills — have a budget of their own, `flushTimeout`, described under
 [Dead-lettering to a Pub/Sub topic](#dead-lettering-to-a-pubsub-topic).
 
 ### What a running job can spend, and `publishProgressTimeout`
 
-The sink itself makes two waits on the task thread, and both are on the same thing — a publish
-completing. `write` waits when the in-flight caps are full, which is ordinary backpressure; `flush`
-waits at every checkpoint barrier until *nothing* is in flight, which is the checkpoint's sync
-phase. Neither is bounded by the caps: those bound how many publishes are outstanding, not how long
-one takes.
+The sink waits for publishes to complete on the task thread at the in-flight admission gate and in
+drains for checkpoints, capacity eviction, failure repair, and per-message isolation.
+None is bounded by the caps: those bound how many publishes or publishers are outstanding, not how
+long one takes.
+`publishProgressTimeout` covers every one of these publish-completion waits; the publisher-release
+join that capacity or idle eviction can add is instead bounded by `shutdownTimeout`, as described
+above.
 
 What bounds them is `publishProgressTimeout` (600 s by default), and what it bounds is a **stall,
 not a slow topic**. The budget restarts at every completion, so a publisher that keeps answering
@@ -309,11 +341,12 @@ checkpoint timeout, as the dead-letter queue's `flushTimeout` does by defaulting
 Where the two stop being interchangeable is `execution.checkpointing.tolerable-failed-checkpoints`:
 raise it above `0` and the checkpoint timeout stops failing anything, leaving this budget alone.
 
-Which of the two waits a stalled sink is parked in is not something an operator gets to choose — it
-depends only on whether the in-flight caps fill before the checkpoint barrier arrives. Measured on a
-job at 5000 records/s with a 1 s checkpoint interval: at the default `maxInFlightMessages` of 1000
-the task thread was parked in `write`, and only with a cap large enough for the barrier to arrive
-first was it parked in `flush`. That is why one budget covers both.
+Which publish-completion path a stalled sink is parked in is not something an operator gets to
+choose — it depends on which gate, checkpoint, or recovery step first needs a completion.
+Measured before capacity eviction existed, on a job at 5000 records/s with a 1 s checkpoint
+interval: at the default `maxInFlightMessages` of 1000 the task thread was parked in `write`, and
+only with a cap large enough for the barrier to arrive first was it parked in `flush`.
+Capacity and recovery drains spend the same progress budget for the same reason.
 
 One interaction it deliberately does not leave to you: a message counts against the in-flight caps
 from the moment the publisher accepts it, which is before it goes anywhere, so at the cap every
@@ -328,14 +361,17 @@ attempt (up to `recoveryMaxAttempts`, 10 by default) and an isolation pass one p
 and a parked batch can hold about twice `maxInFlightMessages`, so that second multiplier is the
 larger of the two. Those drains are sequential. Size `publishProgressTimeout` against how long a
 publish takes when the topic is healthy, which for most jobs is milliseconds; the 600 s default is
-not that number, it is the retry budget an unhealthy one spends before the client gives up.
+not that number, it is the retry budget an unhealthy one spends before the client gives up. After a
+successful drain and failed-message-handler flush, idle eviction can add one concurrent
+`shutdownTimeout` interval; that release is not another publish-progress budget.
 
-It also bounds the sink's *own* waits and nothing else on the task thread. A `DestinationResolver`,
-a serializer, a `FailureHandler` or a `DeadLetterQueue` you supply runs on that thread too — inside
-the wait, in the handler's case — and this budget cannot bound code it is executing. The built-in
+It bounds the sink's publish-completion waits and nothing else on the task thread. In particular, it
+does not bound the publisher-release join described above. A `DestinationResolver`, a serializer, a
+`FailureHandler` or a `DeadLetterQueue` you supply runs on that thread too — inside the wait, in the
+handler's case — and this budget cannot bound code it is executing. The built-in
 `PubSubDeadLetterQueue` bounds itself with `flushTimeout`; a handler of your own must not block
-indefinitely. Topic auto-creation's `createTopic` call is outside it too, bounded by the client's
-own settings.
+indefinitely. Topic auto-creation's `createTopic` call is outside it too, bounded by the client's own
+settings.
 
 **A wait that has stopped making progress says so** — a `WARN` naming Pub/Sub, the wait it is in and
 how many publishes are outstanding, once a tenth of the budget has passed with nothing completing
@@ -768,7 +804,10 @@ Registered on the sink writer's metric group, one set per subtask:
 | `inFlightMessages` | gauge | publishes not yet acknowledged |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedMessages` | gauge | messages held for a destination's next republish — after a missing topic, after an ordering key was paused by a dropped message, or a batch awaiting the one-message-per-request republish that confirms a rejection |
-| `publisherShutdownsAbandoned` | counter | **sink** publisher closes that overran their shutdown budget. **Not this subtask's, and not this attempt's** — see below. A dead-letter queue's are [counted apart](#dead-letter-metrics) |
+| `activePublishers` | gauge | publishers currently retained by this writer, bounded by `maxActivePublishers` |
+| `capacityEvictions` | counter | publishers released to admit a new destination at `maxActivePublishers` |
+| `idleEvictions` | counter | publishers released after exceeding `destinationIdleTimeout` at a successful non-terminal flush |
+| `publisherShutdownsAbandoned` | counter | **sink** publisher closes that overran their shutdown budget. An eviction-time overrun is visible during the running attempt; a final-close overrun is ordinarily first visible from a later attempt. A dead-letter queue's are [counted apart](#dead-letter-metrics) |
 | `topicsCreated` | counter | completed topic-creation repairs under `CREATE_IF_NEEDED` (see below) |
 | `errorClass.CODE.errors` | counter | failed publishes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `destination.TOPIC.recordsSend`, `destination.TOPIC.sendErrors` | counter | the same two counts per topic, **only** with `perDestinationMetrics(true)` |
@@ -782,13 +821,15 @@ rather than wire volume — a record republished three times moved three times i
 network. Retry volume is what `errorClass.CODE.errors` measures, and it measures it per status code.
 
 **`publisherShutdownsAbandoned` reports a whole JVM, not the subtask reading it.** Its value is a
-process-wide total, so every subtask sharing a TaskManager returns the same number. That is
-deliberate: the quantity is what accumulates *across* restart attempts, and a per-attempt figure
-could never be observed — a writer's metric group is unregistered as its task is cleaned up, in the
-same instant the close that abandoned the teardown ran. (Measured, not assumed: a probe with a
-reporter at 10 ms, a thousand times Flink's 10 s default, scraped ~90 times per run and never saw a
-close-time counter above zero.) So a teardown this attempt gives up on is reported by the *next*
-attempt's writers, and the value grows while the job keeps restarting against an outage.
+process-wide total, so every subtask sharing a TaskManager returns the same number.
+An overrun during capacity or idle eviction increments the count while the writer's metric group is
+registered, so the running attempt can report it immediately.
+A final-close overrun is ordinarily first reported by a later attempt because the metric group is
+unregistered as its task is cleaned up in the same instant.
+That close-time invisibility is measured rather than assumed: a probe with a reporter at 10 ms, a
+thousand times Flink's 10 s default, scraped about 90 times per run and never saw a close-time
+counter above zero.
+Process-wide storage preserves both the live-eviction signal and residue across restart attempts.
 
 **Aggregating it.** Never sum the raw series — that multiplies one JVM's count by the subtasks on
 it. De-duplicate within a TaskManager first, then sum across them; in PromQL,
@@ -867,8 +908,9 @@ one per genuinely invalid message.
 **`perDestinationMetrics` is off by default, and should stay off for dynamic destinations.** Flink
 cannot unregister a metric, so every topic the job has ever written to keeps its counters for the
 lifetime of the task.
-The writer also retains each topic's publisher until it closes; there is no sink-side destination eviction or rebuild.
-Switch the metrics on when the topic set is small and known; the option is in
+The publisher cache is independently bounded and can rebuild a destination, but metric rows remain
+registered because Flink exposes no unregister operation.
+Switch the metrics on when the historical topic set is small and known; the option is in
 [`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
 
 `currentSendTime` is deliberately **not** set. The SDK batches publishes and completes their futures

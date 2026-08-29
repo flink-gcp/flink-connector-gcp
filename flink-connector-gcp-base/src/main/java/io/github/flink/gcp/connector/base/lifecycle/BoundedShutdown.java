@@ -29,6 +29,7 @@ import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
@@ -101,7 +102,10 @@ import java.util.concurrent.atomic.LongAdder;
  *       never happens again — publication, not confinement. A write added after the thread starts
  *       would be a data race.
  *   <li>{@code abandoned} is written by the calling thread and read by the shutdown thread with no
- *       synchronisation edge between them, so it genuinely needs {@code volatile}.
+ *       synchronisation edge between them, so it genuinely needs {@code volatile}. {@code
+ *       terminationIncomplete} is written by both threads: the shutdown thread when the client's
+ *       wait reports live resources, and the calling thread when {@code close()} gives up. It is
+ *       read after close, so it needs {@code volatile} too.
  *   <li>{@code failure} is written by the shutdown thread and read by {@link #close()} only after
  *       {@code thread.isAlive()} has returned false, which is itself a happens-before edge (JLS
  *       17.4.5), so a plain field would suffice. It is {@code volatile} as belt and braces, since
@@ -125,6 +129,7 @@ public final class BoundedShutdown implements AutoCloseable {
     @Nullable private final Runnable release;
     private final Duration timeout;
     private final LongAdder abandonedCount;
+    private final AtomicBoolean incompleteCounted = new AtomicBoolean();
 
     @Nullable private Thread thread;
     private long deadlineNanos;
@@ -132,6 +137,11 @@ public final class BoundedShutdown implements AutoCloseable {
 
     /** Set once {@link #close()} has stopped waiting, so a later failure knows to report itself. */
     private volatile boolean abandoned;
+
+    /**
+     * Set when shutdown leaves work or resources alive, either reported or after close gives up.
+     */
+    private volatile boolean terminationIncomplete;
 
     /**
      * Set by the first {@link #close()}, so a second one does nothing. {@code AutoCloseable}
@@ -161,15 +171,16 @@ public final class BoundedShutdown implements AutoCloseable {
      * @param timeout the whole budget, measured from {@link #start()}; at most {@code
      *     Duration.ofNanos(Long.MAX_VALUE)}, which is checked — a non-positive one is not, and
      *     gives up at once, the callers' own setters being where positivity is refused
-     * @param abandonedCount incremented once whenever {@link #close()} gives up, so the owner can
-     *     report the residue. <b>Supplied by the caller rather than held here, and that is the
-     *     design</b>: the count has to outlive the task to be observable at all (measured — a
-     *     reporter at 10 ms never sees a metric a writer only touches in {@code close()}), so it is
-     *     process-wide wherever it lives. Keeping it here would make one number out of every client
-     *     this class ever serves, and a metric named for one of them — {@code
-     *     publisherShutdownsAbandoned} — would silently include the rest. The nearest such client
-     *     is not another connector but the Pub/Sub <em>source</em>, whose subscriber teardown has
-     *     the same shape. Each owner passing its own keeps the names true by construction
+     * @param abandonedCount incremented once whenever {@link #close()} gives up or the client's
+     *     termination wait reports resources still alive, so the owner can report the residue.
+     *     <b>Supplied by the caller rather than held here, and that is the design</b>: the count
+     *     has to outlive the task to be observable at all (measured — a reporter at 10 ms never
+     *     sees a metric a writer only touches in {@code close()}), so it is process-wide wherever
+     *     it lives. Keeping it here would make one number out of every client this class ever
+     *     serves, and a metric named for one of them — {@code publisherShutdownsAbandoned} — would
+     *     silently include the rest. The nearest such client is not another connector but the
+     *     Pub/Sub <em>source</em>, whose subscriber teardown has the same shape. Each owner passing
+     *     its own keeps the names true by construction
      */
     public BoundedShutdown(
             Runnable shutdown,
@@ -212,6 +223,19 @@ public final class BoundedShutdown implements AutoCloseable {
     @VisibleForTesting
     public LongAdder abandonedCounter() {
         return abandonedCount;
+    }
+
+    /**
+     * Whether shutdown left work or resources alive after its budget.
+     *
+     * <p>Meaningful after {@code close()} returns. This is true both when {@code close()} stopped
+     * waiting for the shutdown thread and when the client's bounded termination wait returned
+     * {@code false}. A running-task owner uses it to stop before opening a replacement for a client
+     * whose resources may still be live; final teardown can keep the existing log-and-report
+     * behavior.
+     */
+    public boolean wasIncomplete() {
+        return abandoned || terminationIncomplete;
     }
 
     /**
@@ -260,6 +284,7 @@ public final class BoundedShutdown implements AutoCloseable {
             shutdown.run();
             long remainingNanos = remainingNanos();
             if (!awaitTermination.await(remainingNanos, TimeUnit.NANOSECONDS)) {
+                recordIncomplete();
                 LOG.warn(
                         "The client for {} shut down but its resources did not terminate within the"
                                 + " {} of its {} shutdown budget that were left; they may leak"
@@ -283,6 +308,13 @@ public final class BoundedShutdown implements AutoCloseable {
         }
     }
 
+    private void recordIncomplete() {
+        terminationIncomplete = true;
+        if (incompleteCounted.compareAndSet(false, true)) {
+            abandonedCount.increment();
+        }
+    }
+
     @Override
     public void close() throws Exception {
         if (closed) {
@@ -299,7 +331,7 @@ public final class BoundedShutdown implements AutoCloseable {
             }
             if (thread.isAlive()) {
                 abandoned = true;
-                abandonedCount.increment();
+                recordIncomplete();
                 // The waited time, not the configured budget: it is shared across every
                 // client the caller owns, so one after another that hung gets none of it and
                 // would otherwise report "did not finish within 30s" having waited nothing —

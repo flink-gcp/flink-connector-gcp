@@ -88,6 +88,10 @@ class PublisherOptionsMapperTest {
                 "recoveryMaxAttempts", PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS);
         SETTER_TO_OPTION.put("shutdownTimeout", PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT);
         SETTER_TO_OPTION.put(
+                "maxActivePublishers", PubSubConnectorOptions.SINK_MAX_ACTIVE_PUBLISHERS);
+        SETTER_TO_OPTION.put(
+                "destinationIdleTimeout", PubSubConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT);
+        SETTER_TO_OPTION.put(
                 "perDestinationMetrics", PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION);
     }
 
@@ -111,6 +115,23 @@ class PublisherOptionsMapperTest {
     void anEmptyConfigProducesExactlyTheConnectorDefaults() {
         assertThat(PublisherOptionsMapper.map(new Configuration()))
                 .isEqualTo(PubSubPublisherOptions.defaults());
+    }
+
+    @Test
+    void rejectsPublisherLifecycleValuesInDdlVocabulary() {
+        Configuration maxActive = new Configuration();
+        maxActive.set(PubSubConnectorOptions.SINK_MAX_ACTIVE_PUBLISHERS, 0);
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(maxActive))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.max-active-publishers' is invalid")
+                .hasMessageNotContaining("Option 'maxActivePublishers'");
+
+        Configuration idle = new Configuration();
+        idle.set(PubSubConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT, Duration.ZERO);
+        assertThatThrownBy(() -> PublisherOptionsMapper.map(idle))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.destination-idle-timeout' is invalid")
+                .hasMessageNotContaining("Option 'destinationIdleTimeout'");
     }
 
     /**
@@ -138,6 +159,8 @@ class PublisherOptionsMapperTest {
         options.put("sink.recovery.max-attempts", "6");
         options.put("sink.publish-progress-timeout", "90 s");
         options.put("sink.shutdown-timeout", "45 s");
+        options.put("sink.max-active-publishers", "31");
+        options.put("sink.destination-idle-timeout", "15 min");
         options.put("sink.metrics.per-destination", "true");
 
         PubSubPublisherOptions mapped = PublisherOptionsMapper.map(Configuration.fromMap(options));
@@ -160,6 +183,8 @@ class PublisherOptionsMapperTest {
         assertThat(mapped.getRecoveryMaxAttempts()).isEqualTo(6);
         assertThat(mapped.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(90));
         assertThat(mapped.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
+        assertThat(mapped.getMaxActivePublishers()).isEqualTo(31);
+        assertThat(mapped.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(15));
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
     }
 

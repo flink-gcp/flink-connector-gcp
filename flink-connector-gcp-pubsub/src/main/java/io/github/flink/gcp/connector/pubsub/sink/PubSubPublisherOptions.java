@@ -60,6 +60,12 @@ public final class PubSubPublisherOptions implements Serializable {
      */
     public static final int DEFAULT_MAX_CONSECUTIVE_REJECTIONS = 100;
 
+    /** The default maximum number of publishers retained by one sink writer subtask. */
+    public static final int DEFAULT_MAX_ACTIVE_PUBLISHERS = 100;
+
+    /** The default time an unused publisher remains active before a checkpoint releases it. */
+    public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
+
     /** {@link Builder#maxConsecutiveRejections(int)} value under which the bound never fires. */
     public static final int UNBOUNDED = -1;
 
@@ -84,6 +90,8 @@ public final class PubSubPublisherOptions implements Serializable {
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
     private final Duration shutdownTimeout;
+    private final int maxActivePublishers;
+    @Nullable private final Duration destinationIdleTimeout;
     private final boolean perDestinationMetrics;
     private final int maxConsecutiveRejections;
 
@@ -107,6 +115,8 @@ public final class PubSubPublisherOptions implements Serializable {
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
         this.shutdownTimeout = builder.shutdownTimeout;
+        this.maxActivePublishers = builder.maxActivePublishers;
+        this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.perDestinationMetrics = builder.perDestinationMetrics;
         this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
     }
@@ -237,9 +247,23 @@ public final class PubSubPublisherOptions implements Serializable {
         return publishProgressTimeout;
     }
 
-    /** Returns how long the writer's close waits for a publisher to shut down. */
+    /** Returns how long one publisher release waits for shutdown. */
     public Duration getShutdownTimeout() {
         return shutdownTimeout;
+    }
+
+    /** Returns the maximum number of publishers retained by one sink writer subtask. */
+    public int getMaxActivePublishers() {
+        // An instance serialized before this field existed carries zero after deserialization.
+        return maxActivePublishers == 0 ? DEFAULT_MAX_ACTIVE_PUBLISHERS : maxActivePublishers;
+    }
+
+    /** Returns how long an unused publisher remains active before a checkpoint releases it. */
+    public Duration getDestinationIdleTimeout() {
+        // An instance serialized before this field existed carries null after deserialization.
+        return destinationIdleTimeout == null
+                ? DEFAULT_DESTINATION_IDLE_TIMEOUT
+                : destinationIdleTimeout;
     }
 
     /** Returns whether the writer registers per-topic send counters. */
@@ -302,6 +326,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && maxInFlightMessages == that.maxInFlightMessages
                 && maxInFlightBytes == that.maxInFlightBytes
+                && getMaxActivePublishers() == that.getMaxActivePublishers()
                 && publishProgressTimeout.equals(that.publishProgressTimeout)
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
@@ -317,7 +342,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 && Objects.equals(retryMaxAttempts, that.retryMaxAttempts)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
-                && shutdownTimeout.equals(that.shutdownTimeout);
+                && shutdownTimeout.equals(that.shutdownTimeout)
+                && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout());
     }
 
     @Override
@@ -342,6 +368,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
                 shutdownTimeout,
+                getMaxActivePublishers(),
+                getDestinationIdleTimeout(),
                 perDestinationMetrics,
                 maxConsecutiveRejections);
     }
@@ -386,6 +414,10 @@ public final class PubSubPublisherOptions implements Serializable {
                 + recoveryMaxAttempts
                 + ", shutdownTimeout="
                 + shutdownTimeout
+                + ", maxActivePublishers="
+                + getMaxActivePublishers()
+                + ", destinationIdleTimeout="
+                + getDestinationIdleTimeout()
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + ", maxConsecutiveRejections="
@@ -417,6 +449,8 @@ public final class PubSubPublisherOptions implements Serializable {
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
         private Duration shutdownTimeout = Duration.ofSeconds(30);
+        private int maxActivePublishers = DEFAULT_MAX_ACTIVE_PUBLISHERS;
+        private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private boolean perDestinationMetrics;
         private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
 
@@ -712,10 +746,10 @@ public final class PubSubPublisherOptions implements Serializable {
          * <p>This bounds a stall, not a slow topic: the budget restarts at every completion, so a
          * topic that keeps answering — however slowly, and however long the wait in total — never
          * spends it, while a publisher that has stopped resolving anything at all fails the job
-         * once. It covers both waits the writer makes on the task thread, the in-flight admission
-         * gate in {@code write} and the drain at a checkpoint, because which of the two a stalled
-         * sink is parked in depends only on whether the in-flight cap fills before the checkpoint
-         * barrier arrives.
+         * once. It covers every publish-completion wait the writer makes on the task thread: the
+         * in-flight admission gate in {@code write}, and drains at a checkpoint, before a capacity
+         * eviction, during failure repair, or during per-message isolation. Which path a stalled
+         * sink is parked in depends on the work that first needs a completion.
          *
          * <p>Without {@code enableMessageOrdering} this rarely fires: a publish gives up at {@code
          * retryTotalTimeout} (600 s by default), which fails the job by itself. With ordering the
@@ -747,16 +781,21 @@ public final class PubSubPublisherOptions implements Serializable {
         }
 
         /**
-         * Sets how long the writer's close waits for one publisher to shut down. Defaults to 30
-         * seconds.
+         * Sets how long one publisher release waits for shutdown. Defaults to 30 seconds. A
+         * capacity eviction can spend this budget in {@code write}, an idle eviction in a
+         * successful non-terminal {@code flush}, and final teardown in {@code close}.
          *
          * <p>The budget is measured from the moment the writer asks the publisher to shut down, and
-         * every publisher it owns is asked before any is waited on, so a close costs this once
-         * however many topics the writer wrote to. Keep it under Flink's {@code
-         * task.cancellation.timeout} (180 s by default), past which a cancelling task is a fatal
-         * TaskManager error — that watchdog covers cancellation only, so on a task failure or a
-         * clean shutdown an over-long close merely delays the task rather than killing the
-         * TaskManager.
+         * every publisher selected by one release is asked before any is waited on, so that release
+         * costs this once however many publishers it covers. Keep it under Flink's {@code
+         * task.cancellation.timeout} (180 s by default) for final close; for running eviction it is
+         * also the maximum task-thread stall caused by one release.
+         *
+         * <p>If a running-task release gives up while publisher shutdown work or resources are
+         * still alive, the writer fails before opening a replacement. The pinned SDK can otherwise
+         * strand its shutdown waiter after an ordering-key cascade, and continuing destination
+         * churn would accumulate abandoned threads and transport resources despite the
+         * active-publisher cap.
          *
          * @param shutdownTimeout the shutdown budget, positive and at most {@code
          *     Duration.ofNanos(Long.MAX_VALUE)}
@@ -765,12 +804,47 @@ public final class PubSubPublisherOptions implements Serializable {
         public Builder shutdownTimeout(Duration shutdownTimeout) {
             OptionChecks.checkPositive(shutdownTimeout, "shutdownTimeout");
             // Expressible in nanoseconds, for the reason publishProgressTimeout is: this budget
-            // reaches BoundedShutdown, which converts it with toNanos() when the writer's close
-            // starts the teardown — so a longer one throws ArithmeticException on a TaskManager,
-            // out of a close, where it reaches Flink's teardown path and not a user's try (#334;
-            // ADR-0068). BoundedShutdown checks it too, for a caller that reaches no setter.
+            // reaches BoundedShutdown, which converts it with toNanos() when any publisher release
+            // starts — so a longer one throws ArithmeticException on a TaskManager rather than at
+            // the user's setter (#334; ADR-0068). BoundedShutdown checks it too, for a caller that
+            // reaches no setter.
             this.shutdownTimeout =
                     OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
+            return this;
+        }
+
+        /**
+         * Caps the publishers retained by one writer subtask. Defaults to {@value
+         * #DEFAULT_MAX_ACTIVE_PUBLISHERS}. When a new destination reaches the cap, the writer
+         * releases the least-recently-used clean publisher; if every publisher still has work, it
+         * drains them first so no message or ordering repair is discarded. The replacement is not
+         * opened until the released publisher finishes its bounded shutdown; if shutdown overruns,
+         * the write fails rather than accumulating abandoned publisher resources.
+         *
+         * @param maxActivePublishers the active publisher cap, positive
+         * @return this builder
+         */
+        public Builder maxActivePublishers(int maxActivePublishers) {
+            Preconditions.checkArgument(
+                    maxActivePublishers > 0, "maxActivePublishers must be positive");
+            this.maxActivePublishers = maxActivePublishers;
+            return this;
+        }
+
+        /**
+         * Sets how long a destination may go unused before a successful non-terminal flush releases
+         * its publisher. Defaults to {@link #DEFAULT_DESTINATION_IDLE_TIMEOUT}. A later record
+         * recreates the publisher transparently.
+         *
+         * @param destinationIdleTimeout the idle timeout, positive and at most {@code
+         *     Duration.ofNanos(Long.MAX_VALUE)}
+         * @return this builder
+         */
+        public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
+            OptionChecks.checkPositive(destinationIdleTimeout, "destinationIdleTimeout");
+            this.destinationIdleTimeout =
+                    OptionChecks.checkExpressibleInNanos(
+                            destinationIdleTimeout, "destinationIdleTimeout");
             return this;
         }
 

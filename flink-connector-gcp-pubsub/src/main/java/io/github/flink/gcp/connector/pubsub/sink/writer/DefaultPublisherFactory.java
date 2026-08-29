@@ -262,6 +262,11 @@ public final class DefaultPublisherFactory implements PublisherFactory {
         }
 
         @Override
+        public boolean wasShutdownIncomplete() {
+            return teardown.wasIncomplete();
+        }
+
+        @Override
         public void close() throws Exception {
             teardown.close();
         }

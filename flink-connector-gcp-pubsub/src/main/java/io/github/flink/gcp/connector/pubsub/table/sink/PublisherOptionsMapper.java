@@ -139,6 +139,14 @@ public final class PublisherOptionsMapper {
                 builder::publishProgressTimeout);
         OptionSetters.apply(
                 config, PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT, builder::shutdownTimeout);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_MAX_ACTIVE_PUBLISHERS,
+                builder::maxActivePublishers);
+        OptionSetters.apply(
+                config,
+                PubSubConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
+                builder::destinationIdleTimeout);
 
         OptionSetters.apply(
                 config,

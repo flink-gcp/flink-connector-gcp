@@ -42,6 +42,14 @@ final class DestinationState {
     final TopicPublisher publisher;
 
     /**
+     * Last successful first-attempt hand-off to this publisher, on the writer's monotonic clock.
+     */
+    long lastAccessNanos;
+
+    /** Publishes accepted by this destination's publisher and not yet completed. */
+    int inFlightPublishes;
+
+    /**
      * Messages awaiting republish — parked for a missing topic, a cascade cancellation, or a
      * request-level rejection awaiting isolation — keyed by publish sequence so the batch is
      * republished in publish order. Sorting matters because the failure mails that park them do not
@@ -100,9 +108,11 @@ final class DestinationState {
     DestinationState(
             TopicDestination destination,
             TopicPublisher publisher,
-            DestinationMetrics.Counters metrics) {
+            DestinationMetrics.Counters metrics,
+            long lastAccessNanos) {
         this.destination = destination;
         this.publisher = publisher;
+        this.lastAccessNanos = lastAccessNanos;
         this.completionDescription = "Complete a Pub/Sub publish to " + destination;
         this.failureDescription = "Fail a Pub/Sub publish to " + destination;
         this.metrics = metrics;

@@ -22,7 +22,9 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.core.ApiFutures;
 import com.google.api.core.SettableApiFuture;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.pubsub.sink.CreateDisposition;
 import io.github.flink.gcp.connector.pubsub.sink.DestinationResolver;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -30,12 +32,16 @@ import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationS
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
+import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -55,11 +61,11 @@ class PubSubWriterTest {
     private static final SinkWriter.Context CONTEXT = TestContexts.NO_OP;
 
     /**
-     * No test in this class triggers a topic-creation repair (that is {@link
-     * PubSubWriterAutoCreationTest}), so the schedule is never consumed — a fast one rather than a
-     * copy of the production defaults, which would drift silently when those change.
+     * The ordering-lifecycle tests can create a missing topic, but script a successful first
+     * republish. One attempt keeps those tests fast and makes an unexpected repeated failure fail
+     * immediately rather than inheriting production backoff values that could drift.
      */
-    private static final RetrySchedule UNUSED_RECOVERY = new RetrySchedule(1, 1, 1, 0);
+    private static final RetrySchedule SINGLE_ATTEMPT_RECOVERY = new RetrySchedule(1, 1, 1, 0);
 
     private final FakePublisherFactory factory = new FakePublisherFactory();
     private final FakeTopicAdmin admin = new FakeTopicAdmin();
@@ -99,7 +105,39 @@ class PubSubWriterTest {
                 admin,
                 mailbox,
                 metrics,
-                UNUSED_RECOVERY);
+                SINGLE_ATTEMPT_RECOVERY);
+    }
+
+    private PubSubWriter<String> newWriter(PubSubPublisherOptions options, AtomicLong nanoClock) {
+        return new PubSubWriter<>(
+                TestSinkConfigs.forResolver(
+                        (element, context) -> TopicDestination.of(PROJECT, element),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema()),
+                        options),
+                factory,
+                admin,
+                mailbox,
+                metrics,
+                SINGLE_ATTEMPT_RECOVERY,
+                nanoClock::get);
+    }
+
+    private PubSubWriter<String> newOrderingLifecycleWriter(
+            PubSubPublisherOptions options, AtomicLong nanoClock) {
+        return new PubSubWriter<>(
+                TestSinkConfigs.forResolver(
+                        (element, context) -> TopicDestination.of(PROJECT, element),
+                        PubSubSerializationSchema.payload(new SimpleStringSchema())
+                                .withOrderingKey(element -> "key"),
+                        options,
+                        FailureHandler.failJob(),
+                        CreateDisposition.CREATE_IF_NEEDED),
+                factory,
+                admin,
+                mailbox,
+                metrics,
+                SINGLE_ATTEMPT_RECOVERY,
+                nanoClock::get);
     }
 
     /** Caps only the message count, leaving the byte cap at its default. */
@@ -431,6 +469,393 @@ class PubSubWriterTest {
     }
 
     @Test
+    void capacityEvictsTheLeastRecentlyUsedCleanPublisher() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(PubSubPublisherOptions.builder().maxActivePublishers(2).build());
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        writer.write("topic-b", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        FakePublisherFactory.FakeTopicPublisher topicB = factory.publishers.get(topic("topic-b"));
+
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        writer.write("topic-c", CONTEXT);
+
+        assertThat(topicA.closeCalls).isZero();
+        assertThat(topicB.shutdownCalls).isEqualTo(1);
+        assertThat(topicB.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isEqualTo(2);
+        assertThat(metrics.counterValue("capacityEvictions")).isEqualTo(1);
+    }
+
+    @Test
+    void capacityDrainsBeforeEvictingWhenEveryPublisherHasWork() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(PubSubPublisherOptions.builder().maxActivePublishers(1).build());
+        SettableApiFuture<String> pending = SettableApiFuture.create();
+        factory.enqueueFuture(pending);
+        writer.write("topic-a", CONTEXT);
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+
+        // Complete on the SDK side but leave the completion mail queued. The state is not clean
+        // until the capacity path drains that mail itself.
+        pending.set("message-a");
+        writer.write("topic-b", CONTEXT);
+
+        assertThat(topicA.flushCalls).isEqualTo(1);
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isEqualTo(1);
+        assertThat(writer.getInFlightMessages()).isEqualTo(1);
+    }
+
+    @Test
+    void idleEvictionIsStrictAndRecreatesThePublisher() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher original = factory.publishers.get(topic("topic-a"));
+
+        nanoClock.set(7);
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+
+        nanoClock.set(17);
+        writer.flush(false);
+        assertThat(original.closeCalls).isZero();
+
+        nanoClock.set(18);
+        writer.flush(false);
+        assertThat(original.shutdownCalls).isEqualTo(1);
+        assertThat(original.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(1);
+
+        writer.write("topic-a", CONTEXT);
+        assertThat(factory.createCalls).isEqualTo(2);
+        assertThat(factory.publishers.get(topic("topic-a"))).isNotSameAs(original);
+    }
+
+    @Test
+    void terminalFlushDoesNotPerformIdleEviction() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher publisher =
+                factory.publishers.get(topic("topic-a"));
+
+        nanoClock.set(11);
+        writer.flush(true);
+
+        assertThat(publisher.closeCalls).isZero();
+        assertThat(writer.getActivePublishers()).isEqualTo(1);
+    }
+
+    @Test
+    void idleEvictionShutsDownEveryPublisherBeforeClosingAny() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+        mailbox.drain();
+
+        nanoClock.set(11);
+        writer.flush(false);
+
+        assertBothShutdownsPrecedeBothCloses();
+    }
+
+    @Test
+    void orderedRootFailureCanBeEvictedAfterRepair() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .enableMessageOrdering(true)
+                        .maxActivePublishers(1)
+                        .destinationIdleTimeout(Duration.ofNanos(10))
+                        .build();
+        PubSubWriter<String> writer = newOrderingLifecycleWriter(options, nanoClock);
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(Status.NOT_FOUND.asRuntimeException()));
+        writer.write("topic-a", CONTEXT);
+
+        nanoClock.set(11);
+        writer.flush(false);
+
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(1);
+
+        writer.write("topic-b", CONTEXT);
+
+        assertThat(writer.getActivePublishers()).isEqualTo(1);
+    }
+
+    @Test
+    void orderedPreBatchCancellationCanBeEvictedAfterRepair() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .enableMessageOrdering(true)
+                        .maxActivePublishers(1)
+                        .destinationIdleTimeout(Duration.ofNanos(10))
+                        .build();
+        PubSubWriter<String> writer = newOrderingLifecycleWriter(options, nanoClock);
+        factory.enqueueFuture(
+                ApiFutures.immediateFailedFuture(Status.NOT_FOUND.asRuntimeException()));
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-a", CONTEXT);
+
+        nanoClock.set(11);
+        writer.flush(false);
+
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(1);
+
+        writer.write("topic-b", CONTEXT);
+
+        assertThat(writer.getActivePublishers()).isEqualTo(1);
+    }
+
+    @Test
+    void abandonedInBatchPublisherFailsEvictionBeforeOpeningAReplacement() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubPublisherOptions options =
+                PubSubPublisherOptions.builder()
+                        .enableMessageOrdering(true)
+                        .maxActivePublishers(1)
+                        .destinationIdleTimeout(Duration.ofNanos(10))
+                        .build();
+        PubSubWriter<String> writer = newOrderingLifecycleWriter(options, nanoClock);
+        SettableApiFuture<String> rootFailure = SettableApiFuture.create();
+        SettableApiFuture<String> batchedCancellation = SettableApiFuture.create();
+        factory.enqueueFuture(rootFailure);
+        factory.enqueueFuture(batchedCancellation);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-a", CONTEXT);
+
+        rootFailure.setException(Status.NOT_FOUND.asRuntimeException());
+        batchedCancellation.setException(
+                new CancellationException(
+                        "Execution cancelled because executing previous runnable failed."));
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        topicA.shutdownIncomplete = true;
+        assertThat(topicA.wasShutdownIncomplete()).isFalse();
+        assertThatThrownBy(() -> writer.write("topic-b", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("shutdown did not finish during capacity eviction")
+                .hasMessageContaining("topic-a")
+                .hasMessageContaining("PubSubPublisherOptions.builder().shutdownTimeout(...)")
+                .hasMessageContaining("sink.shutdown-timeout");
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(topicA.wasShutdownIncomplete()).isTrue();
+        assertThat(factory.createCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(metrics.counterValue("capacityEvictions")).isZero();
+    }
+
+    @Test
+    void inspectingDestinationStateDoesNotRefreshCapacityLruOrder() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(PubSubPublisherOptions.builder().maxActivePublishers(2).build());
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        writer.write("topic-b", CONTEXT);
+        mailbox.drain();
+
+        assertThat(writer.getDestinationState(topic("topic-a"))).isNotNull();
+        writer.write("topic-c", CONTEXT);
+        mailbox.drain();
+
+        assertThat(factory.publishers.get(topic("topic-a")).closeCalls).isEqualTo(1);
+        assertThat(factory.publishers.get(topic("topic-b")).closeCalls).isZero();
+    }
+
+    @Test
+    void publisherSetAndCheckpointScanStayBoundedAfterTenThousandDestinations() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(PubSubPublisherOptions.builder().maxActivePublishers(100).build());
+
+        for (int i = 0; i < 10_000; i++) {
+            writer.write("topic-" + i, CONTEXT);
+            mailbox.drain();
+        }
+
+        assertThat(writer.getActivePublishers()).isEqualTo(100);
+        assertThat(factory.createdPublishers).hasSize(10_000);
+        assertThat(factory.createdPublishers.subList(0, 9_900))
+                .allSatisfy(
+                        publisher -> {
+                            assertThat(publisher.closeCalls).isEqualTo(1);
+                            assertThat(publisher.flushCalls).isZero();
+                        });
+
+        writer.flush(false);
+
+        assertThat(factory.createdPublishers.subList(9_900, 10_000))
+                .allSatisfy(publisher -> assertThat(publisher.flushCalls).isEqualTo(1));
+        assertThat(metrics.counterValue("capacityEvictions")).isEqualTo(9_900);
+    }
+
+    @Test
+    void idleEvictionRethrowsAnInterruptSuppressedBehindAnEarlierFailure() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        writer.write("topic-b", CONTEXT);
+        mailbox.drain();
+        RuntimeException firstCloseFailure = new RuntimeException("first close failed");
+        factory.publishers.get(topic("topic-a")).closeFailure = firstCloseFailure;
+        InterruptedException interrupted = new InterruptedException("task cancelled");
+        factory.publishers.get(topic("topic-b")).closeFailure = interrupted;
+
+        nanoClock.set(11);
+        try {
+            assertThatThrownBy(() -> writer.flush(false))
+                    .isInstanceOf(InterruptedException.class)
+                    .isNotSameAs(interrupted)
+                    .satisfies(
+                            failure -> {
+                                assertThat(failure.getSuppressed())
+                                        .containsExactly(firstCloseFailure);
+                                assertThat(firstCloseFailure.getSuppressed())
+                                        .containsExactly(interrupted);
+                            });
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            // Do not leak the deliberately restored flag into the rest of the test fork.
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void idleEvictionDoesNotTreatACloseFailureCauseAsTaskThreadInterruption() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        topicA.closeFailure =
+                new IOException(
+                        "channel shutdown failed", new InterruptedException("client worker"));
+
+        nanoClock.set(11);
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to release Pub/Sub publishers during idle eviction")
+                .hasCause(topicA.closeFailure);
+
+        assertThat(Thread.currentThread().isInterrupted()).isFalse();
+    }
+
+    @Test
+    void idleEvictionFailsWhenPublisherShutdownIsAbandoned() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        topicA.shutdownIncomplete = true;
+        assertThat(topicA.wasShutdownIncomplete()).isFalse();
+
+        nanoClock.set(11);
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("shutdown did not finish during idle eviction")
+                .hasMessageContaining("topic-a");
+
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(topicA.wasShutdownIncomplete()).isTrue();
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isZero();
+    }
+
+    @Test
+    void capacityEvictionFailsBeforeReplacementWhenCloseFails() throws Exception {
+        PubSubWriter<String> writer =
+                newWriter(PubSubPublisherOptions.builder().maxActivePublishers(1).build());
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        topicA.closeFailure = new RuntimeException("close exploded");
+
+        assertThatThrownBy(() -> writer.write("topic-b", CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(
+                        "Failed to release Pub/Sub publishers during capacity eviction")
+                .hasMessageContaining("will not open replacement publishers")
+                .hasCause(topicA.closeFailure);
+
+        assertThat(topicA.shutdownCalls).isEqualTo(1);
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(factory.createCalls).isEqualTo(1);
+        assertThat(metrics.counterValue("capacityEvictions")).isZero();
+    }
+
+    @Test
+    void idleEvictionFailsWhenShutdownThrows() throws Exception {
+        AtomicLong nanoClock = new AtomicLong();
+        PubSubWriter<String> writer =
+                newWriter(
+                        PubSubPublisherOptions.builder()
+                                .destinationIdleTimeout(Duration.ofNanos(10))
+                                .build(),
+                        nanoClock);
+        writer.write("topic-a", CONTEXT);
+        mailbox.drain();
+        FakePublisherFactory.FakeTopicPublisher topicA = factory.publishers.get(topic("topic-a"));
+        topicA.shutdownFailure = new RuntimeException("shutdown exploded");
+
+        nanoClock.set(11);
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("Failed to release Pub/Sub publishers during idle eviction")
+                .hasCause(topicA.shutdownFailure);
+
+        assertThat(topicA.shutdownCalls).isEqualTo(1);
+        assertThat(topicA.closeCalls).isEqualTo(1);
+        assertThat(writer.getActivePublishers()).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isZero();
+    }
+
+    @Test
     void closeClosesEveryPublisherWithoutFlushing() throws Exception {
         PubSubWriter<String> writer = newWriter();
         writer.write("topic-a", CONTEXT);
@@ -491,9 +916,8 @@ class PubSubWriterTest {
     }
 
     /**
-     * The writer's {@code states} is a {@link java.util.HashMap}, so which topic is torn down first
-     * is unspecified — what is specified, and what this asserts, is that no publisher is waited on
-     * until every one has been asked to stop.
+     * The map's order is an LRU implementation detail; what this asserts is the lifecycle contract:
+     * no publisher is waited on until every one has been asked to stop.
      */
     private void assertBothShutdownsPrecedeBothCloses() {
         assertThat(factory.teardownCalls).hasSize(4);

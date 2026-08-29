@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0007: The publisher teardown is two-phase, and its bound is real
 
 - Status: Accepted
-- Date: 2026-08-06 ([#265]; [#310], [#312], [#311] extended it the same day)
-- Issues: [#265], [#310], [#311], [#312]
+- Date: 2026-08-06 ([#265]; [#310], [#312], [#311] extended it the same day); revised 2026-08-29 ([#1132])
+- Issues: [#265], [#310], [#311], [#312], [#1132]
 - Modules: pubsub (the mechanism, `BoundedShutdown`, lives in `base.lifecycle` — [#312])
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` § Publisher lifecycle
 
@@ -152,13 +152,35 @@ the settings either way. The check is advisory, and that is the whole of it.
   second leaves nothing behind and still increments — the docs say so, having first claimed the
   opposite.
 
+**[#1132]: running-task publisher eviction changes where the bound may be spent and observed.**
+A capacity or idle eviction can run a bounded teardown while the writer metric group is registered,
+so an overrun there is visible from the current attempt; only final-close overruns retain the
+original "next attempt observes it" shape.
+The pinned SDK defect also means that connector state becoming drained does not prove the SDK's
+shutdown counter can reach zero.
+Nor can the connector classify this safely from the publish future: `Publisher.publish()` releases
+its batch lock before incrementing the shutdown waiter and returning, so a concurrent root-failure
+callback can cancel an accepted buffered publish before the caller observes that future.
+An already-complete cancellation can therefore be either that unsafe in-batch race or a safe
+rejection for a key that was already paused.
+Running-task eviction consequently tests the lifecycle outcome instead of guessing its cause.
+It closes a connector-clean publisher with the ordinary bounded teardown and opens no replacement
+until that finishes.
+If the shutdown thread is still alive when the budget expires, or the client's termination wait
+reports resources still alive, the eviction fails the task with an actionable error.
+One publisher may then be abandoned in that attempt, but destination churn cannot repeatedly
+replace it and accumulate resources behind `maxActivePublishers`.
+
 What [#311] asked for and did **not** get, with reasons: **setting the stranded thread's context
 classloader** does not work — the thread's stack holds the `BoundedShutdown` instance, hence its
 class, hence the user classloader, so the retention survives whatever the TCCL is; the narrower
 benefit (avoiding `IllegalStateException: Trying to access closed classloader` from a reflective
 lookup on that thread) cuts both ways, since a `ServiceLoader` lookup for a provider in the job
-jar would then find nothing. And **a cap** on stranded threads was declined: it converts an
-outage into a job failure, which the counter makes unnecessary.
+jar would then find nothing. A cap on stranded threads was originally declined because it would
+turn a close-time outage into a job failure and the counter was sufficient for that close-only
+design. [#1132] adds running-task eviction, where repeatedly abandoning publishers would defeat the
+active-resource bound; the targeted failure above applies only when an actual running-task release
+overruns, not to final close.
 
 **[#312]: `PubSubDeadLetterQueue` uses the same teardown**, which [#265] had deliberately left
 alone on the grounds that its `envelope(...)` sets no ordering key so the leaking cancel branch
@@ -184,10 +206,14 @@ the module's `sources`, and both budgets now carry a `reference/pubsub.md` row.)
 ## Consequences
 
 What remains, logged rather than hidden: a publisher whose shutdown never returns leaves that
-thread and the client's executors until the JVM exits, once per restart attempt during an
-outage. `shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching what was
-hardcoded) for symmetry with `PubSubSubscriberOptions.shutdownTimeout`. [#321] then bounded the
-DLQ's **flush**, a separate budget (ADR-0009).
+thread and the client's executors until the JVM exits.
+At final close that remains a logged residue.
+During running-task eviction the same overrun is visible while the attempt is running and fails the
+task before any replacement publisher opens, so one attempt cannot accumulate the residue through
+destination churn.
+`shutdownTimeout` became a `PubSubPublisherOptions` knob (30 s, matching what was hardcoded) for
+symmetry with `PubSubSubscriberOptions.shutdownTimeout`. [#321] then bounded the DLQ's **flush**, a
+separate budget (ADR-0009).
 
 [#78]: https://github.com/flink-gcp/flink-connector-gcp/issues/78
 [#215]: https://github.com/flink-gcp/flink-connector-gcp/issues/215
@@ -200,4 +226,5 @@ DLQ's **flush**, a separate budget (ADR-0009).
 [#324]: https://github.com/flink-gcp/flink-connector-gcp/issues/324
 [#328]: https://github.com/flink-gcp/flink-connector-gcp/issues/328
 [#329]: https://github.com/flink-gcp/flink-connector-gcp/issues/329
+[#1132]: https://github.com/flink-gcp/flink-connector-gcp/issues/1132
 [ADR-0133]: 0133-a-table-option-value-the-builder-rejects-is-renamed-to-its-option-key.md

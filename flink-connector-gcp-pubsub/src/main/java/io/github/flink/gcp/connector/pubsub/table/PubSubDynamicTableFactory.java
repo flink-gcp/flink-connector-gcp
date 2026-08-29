@@ -136,6 +136,8 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
                         PubSubConnectorOptions.SINK_PUBLISH_PROGRESS_TIMEOUT,
                         PubSubConnectorOptions.SINK_SHUTDOWN_TIMEOUT,
+                        PubSubConnectorOptions.SINK_MAX_ACTIVE_PUBLISHERS,
+                        PubSubConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
                         PubSubConnectorOptions.SINK_METRICS_PER_DESTINATION,
                         FactoryUtil.SINK_PARALLELISM));
     }

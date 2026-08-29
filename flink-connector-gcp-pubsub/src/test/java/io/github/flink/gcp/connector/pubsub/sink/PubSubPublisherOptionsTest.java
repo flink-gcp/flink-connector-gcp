@@ -21,6 +21,7 @@ import org.apache.flink.util.InstantiationUtil;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.List;
 import java.util.function.UnaryOperator;
@@ -62,6 +63,8 @@ class PubSubPublisherOptionsTest {
                 .recoveryMaxAttempts(3)
                 .publishProgressTimeout(Duration.ofSeconds(90))
                 .shutdownTimeout(Duration.ofSeconds(45))
+                .maxActivePublishers(17)
+                .destinationIdleTimeout(Duration.ofMinutes(12))
                 .maxConsecutiveRejections(9)
                 .perDestinationMetrics(true);
     }
@@ -103,6 +106,8 @@ class PubSubPublisherOptionsTest {
         assertThat(defaults.getRecoveryMaxAttempts()).isEqualTo(10);
         assertThat(defaults.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(600));
         assertThat(defaults.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(defaults.getMaxActivePublishers()).isEqualTo(100);
+        assertThat(defaults.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(1));
         assertThat(defaults.getMaxConsecutiveRejections()).isEqualTo(100);
         assertThat(defaults.hasBatchingOverrides()).isFalse();
         assertThat(defaults.hasRetryOverrides()).isFalse();
@@ -158,6 +163,8 @@ class PubSubPublisherOptionsTest {
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(3);
         assertThat(options.getPublishProgressTimeout()).isEqualTo(Duration.ofSeconds(90));
         assertThat(options.getShutdownTimeout()).isEqualTo(Duration.ofSeconds(45));
+        assertThat(options.getMaxActivePublishers()).isEqualTo(17);
+        assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(12));
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(9);
         assertThat(options.isPerDestinationMetrics()).isTrue();
         assertThat(options.hasBatchingOverrides()).isTrue();
@@ -236,6 +243,12 @@ class PubSubPublisherOptionsTest {
         assertThatThrownBy(() -> builder.shutdownTimeout(Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("shutdownTimeout");
+        assertThatThrownBy(() -> builder.maxActivePublishers(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxActivePublishers");
+        assertThatThrownBy(() -> builder.destinationIdleTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("destinationIdleTimeout");
     }
 
     @Test
@@ -415,6 +428,18 @@ class PubSubPublisherOptionsTest {
     }
 
     @Test
+    void rejectsAnIdleTimeoutTooLargeForNanoseconds() {
+        PubSubPublisherOptions.Builder builder = PubSubPublisherOptions.builder();
+        Duration expressible = Duration.ofNanos(Long.MAX_VALUE);
+
+        assertThatThrownBy(() -> builder.destinationIdleTimeout(expressible.plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("destinationIdleTimeout must be at most");
+        assertThat(builder.destinationIdleTimeout(expressible).build().getDestinationIdleTimeout())
+                .isEqualTo(expressible);
+    }
+
+    @Test
     void equalsAndHashCode() {
         assertThat(fullyPopulated())
                 .isEqualTo(fullyPopulated())
@@ -472,6 +497,10 @@ class PubSubPublisherOptionsTest {
                 .isNotEqualTo(fullyPopulated());
         assertThat(variedBy(builder -> builder.shutdownTimeout(Duration.ofSeconds(46))))
                 .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.maxActivePublishers(18)))
+                .isNotEqualTo(fullyPopulated());
+        assertThat(variedBy(builder -> builder.destinationIdleTimeout(Duration.ofMinutes(13))))
+                .isNotEqualTo(fullyPopulated());
 
         // The two knobs ordering forbids, varied from the sibling instance that carries them.
         assertThat(boundedRetriesBuilder().retryTotalTimeout(Duration.ofSeconds(121)).build())
@@ -490,6 +519,25 @@ class PubSubPublisherOptionsTest {
 
             assertThat(copy).isEqualTo(options);
         }
+    }
+
+    @Test
+    void serializedInstancesPredatingLifecycleFieldsUseCurrentDefaults() throws Exception {
+        PubSubPublisherOptions legacyShape = PubSubPublisherOptions.builder().build();
+        setField(legacyShape, "maxActivePublishers", 0);
+        setField(legacyShape, "destinationIdleTimeout", null);
+
+        byte[] bytes = InstantiationUtil.serializeObject(legacyShape);
+        PubSubPublisherOptions copy =
+                InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
+
+        assertThat(copy.getMaxActivePublishers()).isEqualTo(100);
+        assertThat(copy.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(1));
+        assertThat(copy).isEqualTo(PubSubPublisherOptions.defaults());
+        assertThat(copy).hasSameHashCodeAs(PubSubPublisherOptions.defaults());
+        assertThat(PubSubPublisherOptions.defaults())
+                .as("the shared defaults() singleton was not the thing forged")
+                .isEqualTo(PubSubPublisherOptions.builder().build());
     }
 
     /**
@@ -570,5 +618,12 @@ class PubSubPublisherOptionsTest {
     private static PubSubPublisherOptions variedBy(
             UnaryOperator<PubSubPublisherOptions.Builder> variation) {
         return variation.apply(fullyPopulatedBuilder()).build();
+    }
+
+    private static void setField(PubSubPublisherOptions options, String name, Object value)
+            throws ReflectiveOperationException {
+        Field field = PubSubPublisherOptions.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(options, value);
     }
 }

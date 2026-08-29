@@ -61,7 +61,10 @@ The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations"
 A lambda is fine where the destination set is small: `TopicDestination` is pure identity, so the allocation is a few fields.
 Cache it as the [BigQuery example]({{< relref "docs/examples/bigquery" >}}#a-table-per-day) does when the resolver is doing real work to produce the name.
 
-Each distinct topic gets its own SDK publisher, owned by the writer and closed with it.
+Each active topic gets its own SDK publisher, owned by the writer.
+The writer can release a clean publisher after its idle timeout or as the least-recently-used entry at the active-publisher limit, and recreates it if that topic receives another record.
+If bounded shutdown does not finish, the writer fails before opening a replacement; the [publisher lifecycle guide]({{< relref "docs/connectors/datastream/pubsub" >}}#publisher-lifecycle) explains this resource guard.
+Publishers still active when the writer closes are closed with it.
 `enableMessageOrdering(true)` is required because the writer rejects a serialized ordering key while ordering is disabled.
 The `keyBy` call routes one customer's records to one sink subtask, and the resolver must keep that customer on one topic.
 Pub/Sub preserves a separate sequence when the same key moves to another topic or writer subtask.

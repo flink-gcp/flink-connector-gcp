@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0052: The Pub/Sub sink's mailbox waits are bounded on progress, not on the call
 
 - Status: Accepted
-- Date: 2026-08-07; revised by [#755] (2026-08-16)
-- Issues: [#333], [#755]
+- Date: 2026-08-07; revised by [#755] (2026-08-16), [#1132] (2026-08-29)
+- Issues: [#333], [#755], [#1132]
 - Modules: pubsub
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (the progress-timeout
   section); `docs/content/docs/reference/pubsub.md` for the knob
@@ -147,12 +147,16 @@ Measured 2026-08-07 against an unreachable endpoint, and every number decided so
 ## Consequences
 
 **What the budget does not cover, stated because the wording invites the opposite reading.** It
-bounds the two waits the writer makes through the tracker and nothing else on the task thread: a user
-`DestinationResolver`, serializer, `FailureHandler` or `DeadLetterQueue` runs there too — a handler
-inside the wait itself, via a mailbox mail — and the task thread cannot bound code it is executing.
-The built-in `PubSubDeadLetterQueue` bounds itself (`flushTimeout`), so the exposure is a
-user-supplied one; the docs page says so, and the `FailureHandler` contract is where a duration
-obligation would belong if one is ever added. `topicAdmin.createTopic` is outside it as well.
+bounds every publish-completion wait the writer makes through the tracker and nothing else on the
+task thread: admission and drains for checkpoints, capacity eviction, failure repair, and
+per-message isolation. [#1132] added the capacity drain and a running-task publisher-release join
+during capacity and idle eviction; the join is bounded separately by `shutdownTimeout`. A user
+`DestinationResolver`, serializer,
+`FailureHandler` or `DeadLetterQueue` runs on the task thread too — a handler inside the wait itself,
+via a mailbox mail — and the task thread cannot bound code it is executing. The built-in
+`PubSubDeadLetterQueue` bounds itself (`flushTimeout`), so the exposure is a user-supplied one; the
+docs page says so, and the `FailureHandler` contract is where a duration obligation would belong if
+one is ever added. `topicAdmin.createTopic` is outside it as well.
 
 **The default races Flink's own, and that was accepted rather than missed.** 600 s is also
 `execution.checkpointing.timeout`'s default, so at stock settings the checkpoint timeout is what an
@@ -190,3 +194,4 @@ abandons in-flight publishes; this one does not.
 
 [#333]: https://github.com/flink-gcp/flink-connector-gcp/issues/333
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
+[#1132]: https://github.com/flink-gcp/flink-connector-gcp/issues/1132
