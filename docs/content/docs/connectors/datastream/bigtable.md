@@ -161,11 +161,31 @@ to the [failed-mutation policy](#failed-mutation-policy).
 What a destination costs is a **bulk mutation batcher of its own**, because the client binds one to
 one table. Under those batchers the sink keeps one client per (project, instance), shared by every
 table of that instance, so a resolver spreading records over many tables of one instance multiplies
-batchers rather than channel pools. A batcher is dropped once its table has gone
-`writerOptions(...).destinationIdleTimeout(...)` without a mutation — one hour by default, swept at
-the end of a checkpoint's flush when the batcher is already empty — and rebuilt transparently if
-that table is written to again. So a resolver's *cardinality* is a sink resource decision, not only
-a routing one.
+batchers rather than channel pools.
+
+A batcher is dropped once its table has gone
+`writerOptions(...).destinationIdleTimeout(...)` without a mutation — one hour by default, swept
+at the end of a checkpoint's flush when the batcher is already empty — and rebuilt transparently
+if that table is written to again.
+The factory releases the client when that sweep removes the instance's last live table; removing
+one of several sibling tables leaves their shared client open.
+
+Each writer subtask also keeps at most
+`writerOptions(...).maxActiveInstances(...)` open-or-closing instance clients — 16 by default.
+When a record names another instance at capacity, the writer sends and waits for all outstanding
+mutations, then evicts the least recently used instance and its table batchers.
+Client close normally runs on daemon reapers, so an idle sweep does not wait for the SDK's final
+metrics export, but the closing client keeps its capacity slot; creation waits interruptibly if
+every slot is still open or closing.
+If the runtime refuses to schedule a reaper task, the factory closes that client synchronously to
+avoid leaking it, so that exceptional sweep can wait for the export before reporting the
+scheduling failure.
+An ordinary scheduling exception is logged as close hygiene; an `Error` still fails the task or
+reaches Flink's JVM-fatal handling.
+A later record for that instance rebuilds its client and batcher transparently.
+This capacity is per subtask, and many tables in one fixed instance still consume one slot.
+So a resolver's *instance cardinality* is bounded even during a burst shorter than the idle
+timeout.
 
 The in-flight bounds are the writer's, summed across every destination rather than split among
 them: `maxInFlightEntries` and `maxInFlightBytes` mean the same thing whether the sink writes one
@@ -830,6 +850,9 @@ Registered on the sink writer's metric group, one set per subtask:
 | `inFlightEntries` | gauge | entries the service has not acknowledged, against `maxInFlightEntries` |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedEntries` | gauge | entries held for [the isolation pass](#error-handling) or the [auto-creation repair](#table-auto-creation) |
+| `activeClients` | gauge | active instance slots currently tracked by this writer subtask, against `maxActiveInstances` |
+| `capacityEvictions` | counter | instance slots removed from the tracked set after the active-instance capacity selected the least recently used instance |
+| `idleEvictions` | counter | instance slots removed from the tracked set after the idle sweep evicted their last live table |
 | `errorClass.CODE.errors` | counter | failed mutations by status code, `CODE` being a gRPC status name or `UNCLASSIFIED` |
 | `tablesCreated` | counter | tables the [auto-creation repair](#table-auto-creation) created, declared families included |
 | `columnFamiliesAdded` | counter | families the repair added to an already-existing table |

@@ -44,6 +44,7 @@ class BigtableWriterOptionsTest {
         assertThat(options.getRecoveryInitialBackoff()).isEqualTo(Duration.ofMillis(500));
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(10));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(10);
+        assertThat(options.getMaxActiveInstances()).isEqualTo(16);
         assertThat(options).isEqualTo(BigtableWriterOptions.builder().build());
     }
 
@@ -56,6 +57,7 @@ class BigtableWriterOptionsTest {
                         .maxInFlightEntries(7)
                         .maxInFlightBytes(4096)
                         .maxConsecutiveRejections(5)
+                        .maxActiveInstances(3)
                         .build();
 
         assertThat(options.getBatchElementCountThreshold()).isEqualTo(50L);
@@ -63,11 +65,13 @@ class BigtableWriterOptionsTest {
         assertThat(options.getMaxInFlightEntries()).isEqualTo(7);
         assertThat(options.getMaxInFlightBytes()).isEqualTo(4096L);
         assertThat(options.getMaxConsecutiveRejections()).isEqualTo(5);
+        assertThat(options.getMaxActiveInstances()).isEqualTo(3);
         assertThat(options.toString())
                 .contains(
                         "batchElementCountThreshold=50",
                         "maxInFlightEntries=7",
-                        "maxConsecutiveRejections=5");
+                        "maxConsecutiveRejections=5",
+                        "maxActiveInstances=3");
     }
 
     @Test
@@ -135,6 +139,27 @@ class BigtableWriterOptionsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> builder.maxInFlightBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder.maxActiveInstances(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxActiveInstances must be positive");
+    }
+
+    @Test
+    void anAbsentMaxActiveInstancesFieldUsesTheNewDefault() throws Exception {
+        BigtableWriterOptions restored = BigtableWriterOptions.builder().build();
+        java.lang.reflect.Field field =
+                BigtableWriterOptions.class.getDeclaredField("maxActiveInstances");
+        field.setAccessible(true);
+        // Java deserialization bypasses the constructor and leaves a field absent from an older
+        // stream at its JVM default. Set the options object itself to that state rather than the
+        // builder, which an old stream never contained.
+        field.set(restored, 0);
+
+        assertThat(restored.getMaxActiveInstances()).isEqualTo(16);
+        assertThat(restored)
+                .isEqualTo(BigtableWriterOptions.defaults())
+                .hasSameHashCodeAs(BigtableWriterOptions.defaults());
+        assertThat(restored.toString()).isEqualTo(BigtableWriterOptions.defaults().toString());
     }
 
     @Test

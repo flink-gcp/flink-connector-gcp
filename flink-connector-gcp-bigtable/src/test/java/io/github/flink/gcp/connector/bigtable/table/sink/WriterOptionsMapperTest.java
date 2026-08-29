@@ -60,6 +60,7 @@ class WriterOptionsMapperTest {
                                 "sink.recovery.max-backoff", "20s",
                                 "sink.recovery.max-attempts", "4",
                                 "sink.destination-idle-timeout", "30min",
+                                "sink.max-active-instances", "7",
                                 "sink.metrics.per-destination", "true"));
 
         assertThat(options.getBatchElementCountThreshold()).isEqualTo(500L);
@@ -71,6 +72,7 @@ class WriterOptionsMapperTest {
         assertThat(options.getRecoveryMaxBackoff()).isEqualTo(Duration.ofSeconds(20));
         assertThat(options.getRecoveryMaxAttempts()).isEqualTo(4);
         assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
+        assertThat(options.getMaxActiveInstances()).isEqualTo(7);
         assertThat(options.isPerDestinationMetrics()).isTrue();
     }
 
@@ -114,5 +116,13 @@ class WriterOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'sink.in-flight.max-entries' is invalid")
                 .hasMessageContaining("maxInFlightEntries must be positive");
+
+        assertThatThrownBy(
+                        () ->
+                                WriterOptionsMapper.map(
+                                        configuration("sink.max-active-instances", "0")))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.max-active-instances' is invalid")
+                .hasMessageContaining("maxActiveInstances must be positive");
     }
 }

@@ -191,10 +191,13 @@ final class FakeMutationBatcher implements MutationBatcher {
     }
 
     @Override
-    public void close() {
+    public void close() throws Exception {
         closeCalls++;
         events.add("close " + destination.getTable());
         if (closeFailure != null) {
+            if (closeFailure instanceof Exception) {
+                throw (Exception) closeFailure;
+            }
             ExceptionUtils.rethrow(closeFailure);
         }
     }

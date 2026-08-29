@@ -162,6 +162,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
                         BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
                         BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
+                        BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES,
                         BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION,
                         FactoryUtil.SINK_PARALLELISM));
     }

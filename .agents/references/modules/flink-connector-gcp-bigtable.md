@@ -5,7 +5,7 @@ Module-scoped guidance, read when working in this module. Repository-wide rules
 This file holds the rules a session must follow; each decision's record — context, evidence,
 declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
-## Sink design (`docs/adr/0041`, `0042`, `0074`)
+## Sink design (`docs/adr/0041`, `0042`, `0074`, `0145`)
 
 - Implemented, never adopted or vendored; the serializer SPI keeps
   `BaseRowMutationSerializer`'s shape, and null = skip is `docs/adr/0001`'s contract.
@@ -26,13 +26,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   same `recovery*`-vs-`retry*` line the BigQuery options draw. `TableDestination` sits at the
   module root and `appProfileId` is a builder option, not part of it.
 - **Per-record destinations are a batcher pool over a client per (project, instance)**
-  (`docs/adr/0074`): `table(...)` is sugar for a `FixedDestinationResolver` and the two setters are
-  last-writer-wins; **resolve runs before serialize** (`FailedMutation` checkNotNulls its
-  destination) with the null-skip still ahead of the pool; a `null` destination fails the write and
-  is never routed; **no `instanceof` fast path**. The in-flight bounds stay **writer-global** —
+  (`docs/adr/0074`; client lifetime superseded by `docs/adr/0145`): `table(...)` is sugar for a
+  `FixedDestinationResolver` and the two setters are last-writer-wins; **resolve runs before
+  serialize** (`FailedMutation` checkNotNulls its destination) with the null-skip still ahead of
+  the pool; a `null` destination fails the write and is never routed; **no `instanceof` fast
+  path**. The in-flight bounds stay **writer-global** —
   that is what keeps `drainInFlight()` meaning "the writer is empty" and the park bound one number.
-  The adapter holds **no client**: the factory owns and closes them, or the first batcher to close
-  kills its instance's siblings invisibly. `close()` is one `Closers` list, every `shutdown()`
+  The adapter holds **no client**: the factory owns them, reference-counts successful batcher
+  creations, and closes a client after its last table is safely evicted; otherwise the first
+  batcher to close kills its instance's siblings invisibly. Each writer subtask holds at most
+  `maxActiveInstances` open-or-closing clients. Last-table release normally moves SDK close to
+  bounded daemon reapers; if the runtime refuses the handoff, it closes synchronously to avoid a
+  leak. The permit survives until physical close, so a creation at limit waits interruptibly
+  rather than growing a close queue. The writer safely drains before evicting the least recently
+  used instance at capacity. `close()` is one `Closers` list, every `shutdown()`
   before any `close()`; the isolation pass's opening `sendOutstanding()` covers **every** live
   batcher, and missing one either hangs the task thread or trips the tripwire on a healthy stream.
 - **`INVALID_ARGUMENT` alone is routed, `FAILED_PRECONDITION` deliberately not** — cite gRPC's
@@ -140,9 +147,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   working); the idle time is read **after** `tryYield` comes back empty, never before; and the park
   interval is set by mail latency, not by the warning threshold.
 - Progress is stamped on the **gax callback thread**, on failure as well as success — a failure is
-  the client answering. `lastCompletionNanos` is the only field of this writer not confined to the
-  task thread. The warning is rate-limited **writer-wide**, never per wait: one `flush()` can make a
-  whole `maxInFlightEntries` of them.
+  the client answering. `lastCompletionNanos` and the metric reporter's `activeClients` mirror are
+  the two volatile cross-thread signals. Ordinary gauges also sample scalar task-thread state, but
+  no reporter receives the mutable access-order map. The warning is rate-limited
+  **writer-wide**, never per wait: one `flush()` can make a whole `maxInFlightEntries` of them.
 - `awaitCapacity()` sends every live batcher once per wait; `drainInFlight()` does not, because its
   callers send immediately before.
 
@@ -174,6 +182,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `statusCode` reports the chain's outermost classifiable status; `close()` zeroes the
   gauge-backing counters **before** `Closers.closeAll`; every failure reaching the writer is
   counted except a batched row-level rejection, whose place `parkedEntries` takes.
+  `activeClients` gauges the bounded instance set; `capacityEvictions` and `idleEvictions`
+  count logical client removals, not table-batcher removals.
 
 ## Scan source (`docs/adr/0080`, `0083`)
 

@@ -99,6 +99,9 @@ class BigtableMutateRowsSinkTest {
         }
 
         @Override
+        public void release(TableDestination destination) {}
+
+        @Override
         public void close() {
             closes++;
         }

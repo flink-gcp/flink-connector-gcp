@@ -21,6 +21,7 @@ import org.apache.flink.util.function.ThrowingRunnable;
 
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.batching.Batcher;
 import com.google.api.gax.batching.BatchingException;
 import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.core.NoCredentialsProvider;
@@ -36,10 +37,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -378,6 +388,274 @@ class DefaultMutationBatcherFactoryTest {
         } finally {
             factory.close();
         }
+    }
+
+    @Test
+    void releasesAnInstanceClientAfterItsLastTableBatcher() throws Exception {
+        DefaultMutationBatcherFactory factory =
+                factory(null, BigtableWriterOptions.defaults(), "localhost:1");
+        TableDestination events = TableDestination.of("p", "i", "events");
+        BigtableDataClient client = factory.client(TABLE);
+        MutationBatcher ordersBatcher = factory.create(TABLE);
+        MutationBatcher eventsBatcher = factory.create(events);
+
+        ordersBatcher.close();
+        factory.release(TABLE);
+
+        assertThat(factory.activeClientCount()).isEqualTo(1);
+        Batcher<RowMutationEntry, Void> sibling =
+                client.newBulkMutationBatcher(TableId.of("still-alive"));
+        sibling.close();
+
+        eventsBatcher.close();
+        factory.release(events);
+        factory.awaitReleasedClients();
+
+        assertThat(factory.activeClientCount()).isZero();
+        assertThatThrownBy(() -> client.newBulkMutationBatcher(TableId.of("closed")))
+                .isInstanceOf(RejectedExecutionException.class);
+
+        MutationBatcher rebuiltBatcher = factory.create(TABLE);
+        BigtableDataClient rebuilt = factory.client(TABLE);
+        assertThat(rebuilt).isNotSameAs(client);
+        rebuiltBatcher.close();
+        factory.release(TABLE);
+        factory.close();
+    }
+
+    @Test
+    void reapsOffThreadButKeepsTheSlotUntilPhysicalCloseFinishes() throws Exception {
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(1);
+        CountDownLatch closeStarted = new CountDownLatch(1);
+        CountDownLatch allowClose = new CountDownLatch(1);
+        CountDownLatch contenderStarted = new CountDownLatch(1);
+        ExecutorService contender = Executors.newSingleThreadExecutor();
+        reaper.acquireSlot();
+        try {
+            reaper.closeEventually(
+                    () -> {
+                        closeStarted.countDown();
+                        allowClose.await();
+                    },
+                    "scripted client");
+
+            assertThat(closeStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(reaper.availableSlots()).isZero();
+            Future<?> waitingForSlot =
+                    contender.submit(
+                            () -> {
+                                contenderStarted.countDown();
+                                reaper.acquireSlot();
+                                reaper.releaseUnusedSlot();
+                                return null;
+                            });
+
+            assertThat(contenderStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(waitingForSlot.isDone()).isFalse();
+            allowClose.countDown();
+            waitingForSlot.get(5, TimeUnit.SECONDS);
+        } finally {
+            allowClose.countDown();
+            contender.shutdownNow();
+            reaper.closeAll(Collections.emptyList());
+        }
+    }
+
+    @Test
+    void letsAFatalHygieneCloseFailureReachTheReaperUncaughtHandler() throws Exception {
+        AtomicReference<Throwable> uncaught = new AtomicReference<>();
+        CountDownLatch observed = new CountDownLatch(1);
+        Thread taskThread = Thread.currentThread();
+        Thread.UncaughtExceptionHandler original = taskThread.getUncaughtExceptionHandler();
+        DefaultMutationBatcherFactory.ClientReaper reaper;
+        try {
+            taskThread.setUncaughtExceptionHandler(
+                    (ignored, failure) -> {
+                        uncaught.set(failure);
+                        observed.countDown();
+                    });
+            reaper = new DefaultMutationBatcherFactory.ClientReaper(1);
+        } finally {
+            taskThread.setUncaughtExceptionHandler(original);
+        }
+        AssertionError fatal = new AssertionError("fatal client close");
+        reaper.acquireSlot();
+        try {
+            reaper.closeEventually(
+                    () -> {
+                        throw fatal;
+                    },
+                    "scripted client");
+
+            assertThat(observed.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(uncaught.get()).isSameAs(fatal);
+        } finally {
+            reaper.closeAll(Collections.emptyList());
+        }
+    }
+
+    @Test
+    void closesSynchronouslyAndReturnsTheSlotWhenSchedulingFails() throws Exception {
+        SecurityException rejected = new SecurityException("reaper thread rejected");
+        ThreadFactory rejectingThreads =
+                ignored -> {
+                    throw rejected;
+                };
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(1, rejectingThreads);
+        List<String> events = new ArrayList<>();
+        reaper.acquireSlot();
+        try {
+            assertThatThrownBy(
+                            () ->
+                                    reaper.closeEventually(
+                                            () -> events.add("close"), "scripted client"))
+                    .isSameAs(rejected);
+            assertThat(events).containsExactly("close");
+        } finally {
+            reaper.closeAll(Collections.emptyList());
+        }
+    }
+
+    @Test
+    void synchronousFallbackKeepsAFatalSchedulingFailureAboveANonfatalCloseError()
+            throws Exception {
+        OutOfMemoryError fatal = new OutOfMemoryError("reaper thread allocation failed");
+        NoClassDefFoundError closeFailure = new NoClassDefFoundError("client close failed");
+        ThreadFactory rejectingThreads =
+                ignored -> {
+                    throw fatal;
+                };
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(1, rejectingThreads);
+        reaper.acquireSlot();
+        try {
+            assertThatThrownBy(
+                            () ->
+                                    reaper.closeEventually(
+                                            () -> {
+                                                throw closeFailure;
+                                            },
+                                            "scripted client"))
+                    .isSameAs(fatal)
+                    .satisfies(
+                            failure -> assertThat(failure.getSuppressed()).contains(closeFailure));
+        } finally {
+            reaper.closeAll(Collections.emptyList());
+        }
+    }
+
+    @Test
+    void closesEveryActiveClientWhenSchedulingFails() throws Exception {
+        ThreadFactory rejectingThreads =
+                ignored -> {
+                    throw new SecurityException("reaper thread rejected");
+                };
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(2, rejectingThreads);
+        List<String> events = new ArrayList<>();
+        reaper.acquireSlot();
+        reaper.acquireSlot();
+
+        assertThatThrownBy(
+                        () ->
+                                reaper.closeAll(
+                                        List.of(
+                                                () -> events.add("first close"),
+                                                () -> events.add("second close"))))
+                .isInstanceOf(SecurityException.class)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).hasSize(1));
+        assertThat(events).containsExactly("first close", "second close");
+    }
+
+    @Test
+    void terminalCloseKeepsAFatalSchedulingFailureAboveInterruption() throws Exception {
+        OutOfMemoryError fatal = new OutOfMemoryError("reaper thread allocation failed");
+        ThreadFactory rejectingThreads =
+                ignored -> {
+                    throw fatal;
+                };
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(1, rejectingThreads);
+        reaper.acquireSlot();
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> reaper.closeAll(List.of(() -> {})))
+                    .isSameAs(fatal)
+                    .satisfies(
+                            failure ->
+                                    assertThat(failure.getSuppressed())
+                                            .anyMatch(InterruptedException.class::isInstance));
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void terminalCloseKeepsALaterFatalClientFailureAboveANonfatalError() throws Exception {
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(2);
+        NoClassDefFoundError first = new NoClassDefFoundError("first client close failed");
+        OutOfMemoryError fatal = new OutOfMemoryError("second client close failed");
+        reaper.acquireSlot();
+        reaper.acquireSlot();
+
+        assertThatThrownBy(
+                        () ->
+                                reaper.closeAll(
+                                        List.of(
+                                                () -> {
+                                                    throw first;
+                                                },
+                                                () -> {
+                                                    throw fatal;
+                                                })))
+                .isSameAs(fatal)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(first));
+    }
+
+    @Test
+    void terminalCloseCanPrioritizeAClientFailureWhoseSuppressedGraphIsCyclic() throws Exception {
+        DefaultMutationBatcherFactory.ClientReaper reaper =
+                new DefaultMutationBatcherFactory.ClientReaper(2);
+        IOException first = new IOException("first client close failed");
+        NoClassDefFoundError later = new NoClassDefFoundError("second client close failed");
+        first.addSuppressed(later);
+        later.addSuppressed(first);
+        reaper.acquireSlot();
+        reaper.acquireSlot();
+
+        assertThatThrownBy(
+                        () ->
+                                reaper.closeAll(
+                                        List.of(
+                                                () -> {
+                                                    throw first;
+                                                },
+                                                () -> {
+                                                    throw later;
+                                                })))
+                .isSameAs(later);
+    }
+
+    @Test
+    void aFirstBatcherCreationFailureDoesNotRetainAnOrphanClient() throws Exception {
+        DefaultMutationBatcherFactory factory =
+                factory(null, BigtableWriterOptions.defaults(), "localhost:1");
+        BigtableDataClient unusable = factory.client(TABLE);
+        unusable.close();
+
+        assertThatThrownBy(() -> factory.create(TABLE))
+                .isInstanceOf(RejectedExecutionException.class);
+        assertThat(factory.activeClientCount()).isZero();
+
+        MutationBatcher rebuilt = factory.create(TABLE);
+        assertThat(factory.client(TABLE)).isNotSameAs(unusable);
+        rebuilt.close();
+        factory.release(TABLE);
+        factory.close();
     }
 
     @Test

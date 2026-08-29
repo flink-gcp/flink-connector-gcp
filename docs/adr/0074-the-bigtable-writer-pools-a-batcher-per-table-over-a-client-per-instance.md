@@ -16,7 +16,7 @@ limitations under the License.
 
 # ADR-0074: The Bigtable writer pools a batcher per table over a client per instance
 
-- Status: Accepted
+- Status: Superseded by ADR-0145
 - Date: 2026-08-09, revised by [#436] (2026-08-10, the flow controller's figures)
 - Issues: [#232], [#436]
 - Modules: bigtable (`sink`, `sink.writer`)

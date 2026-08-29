@@ -93,6 +93,10 @@ public final class WriterOptionsMapper {
                 builder::destinationIdleTimeout);
         OptionSetters.apply(
                 config,
+                BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES,
+                builder::maxActiveInstances);
+        OptionSetters.apply(
+                config,
                 BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
 

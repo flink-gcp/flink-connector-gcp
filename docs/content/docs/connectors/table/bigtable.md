@@ -719,6 +719,7 @@ DataStream builder.
 | `sink.recovery.max-backoff` | Duration | `BigtableWriterOptions.recoveryMaxBackoff(...)` |
 | `sink.recovery.max-attempts` | Integer | `BigtableWriterOptions.recoveryMaxAttempts(...)` |
 | `sink.destination-idle-timeout` | Duration | `BigtableWriterOptions.destinationIdleTimeout(...)` |
+| `sink.max-active-instances` | Integer | `BigtableWriterOptions.maxActiveInstances(...)`. **Inert from SQL**: one DDL sink names one instance, so every valid positive cap already contains it. It exists so the DDL surface stays one key per writer knob |
 | `sink.metrics.per-destination` | Boolean | `BigtableWriterOptions.perDestinationMetrics(...)` |
 | `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
 

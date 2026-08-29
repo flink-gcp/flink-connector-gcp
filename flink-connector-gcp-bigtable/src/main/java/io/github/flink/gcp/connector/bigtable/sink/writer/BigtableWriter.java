@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.function.ThrowingRunnable;
 
@@ -43,11 +44,15 @@ import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -56,6 +61,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -64,24 +70,27 @@ import java.util.stream.Collectors;
  *
  * <h2>Threading model</h2>
  *
- * <p>All mutable state — the destination pool, the in-flight counters and the captured asynchronous
- * error — is touched only on the task thread, with one deliberate exception named below. Mutation
- * completion callbacks do not mutate state directly; they re-dispatch onto the {@link
- * MailboxExecutor}, whose mails run on the task thread inside the writer's own waits. This is the
- * model the Pub/Sub sink's writer uses.
+ * <p>All logical state changes — the destination pool, the in-flight counters and the captured
+ * asynchronous error — happen on the task thread. Metric gauges may sample scalar snapshots from a
+ * reporter thread, but receive no mutable collection. Mutation completion callbacks do not mutate
+ * logical state directly; they re-dispatch onto the {@link MailboxExecutor}, whose mails run on the
+ * task thread inside the writer's own waits. This is the model the Pub/Sub sink's writer uses.
  *
- * <p>The exception is {@code lastCompletionNanos}, stamped by the completion callback on the gax
- * thread so that a wait can tell a stalled client from a busy task thread. The waits themselves run
- * {@link MailboxExecutor#tryYield()} and park rather than calling {@link MailboxExecutor#yield()},
- * which is what lets them notice a stall at all — and which is why they read the interrupt flag
- * themselves ({@code docs/adr/0078}).
+ * <p>Two cross-thread signals require fresh visibility: {@code activeClients} is a volatile mirror
+ * of the task-thread-only instance map for the metric reporter, and {@code lastCompletionNanos} is
+ * stamped by the completion callback on the gax thread so that a wait can tell a stalled client
+ * from a busy task thread. The waits themselves run {@link MailboxExecutor#tryYield()} and park
+ * rather than calling {@link MailboxExecutor#yield()}, which is what lets them notice a stall at
+ * all — and which is why they read the interrupt flag themselves ({@code docs/adr/0078}).
  *
  * <h2>Destinations</h2>
  *
  * <p>A bulk mutation batcher is bound to one table, so the writer holds one per destination, built
  * on the first record routed there and dropped once the destination has been idle for {@code
  * BigtableWriterOptions.destinationIdleTimeout}. Under those batchers sits one client per (project,
- * instance), which the {@link MutationBatcherFactory} owns and shares.
+ * instance), which the {@link MutationBatcherFactory} owns and shares. One writer holds at most
+ * {@code BigtableWriterOptions.maxActiveInstances}; opening another safely drains outstanding
+ * mutations and evicts the least recently used instance.
  *
  * <p>The destination is resolved <em>before</em> the record is serialized, which is what lets a
  * record the serializer rejects be reported against the table it was headed for; the null-skip
@@ -241,6 +250,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final int maxInFlightEntries;
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
+    private final int maxActiveInstances;
     private final long destinationIdleTimeoutNanos;
     private final long stallWarnAfterNanos;
     private final LongSupplier nanoClock;
@@ -256,6 +266,17 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * so an eviction sweep visits tables in the order they were first written to.
      */
     private final Map<TableDestination, DestinationState> states = new LinkedHashMap<>();
+
+    /**
+     * Tables grouped by instance, in least-recently-used instance order.
+     *
+     * <p>The access-order map is task-thread-only. {@code activeClients} mirrors its size for the
+     * metric reporter thread, which must not walk a concurrently mutating map.
+     */
+    private final Map<String, Set<TableDestination>> instanceDestinations =
+            new LinkedHashMap<>(16, 0.75f, true);
+
+    private volatile int activeClients;
 
     /** Number of entries not yet acknowledged; touched only on the task thread. */
     private int inFlightEntries;
@@ -333,11 +354,11 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * it stamped on the task thread instead, a mailbox busy with unrelated work would look like a
      * stalled client.
      *
-     * <p>The one field of this writer not confined to the task thread, hence {@code volatile}: a
-     * monotonic timestamp rather than logical state, so a reader wants the freshest value and
-     * nothing is derived from reading it together with anything else. Initialised at construction
-     * so it is always a real clock reading — the zero default is not one, and it is only ever
-     * compared to another reading as a difference.
+     * <p>This callback-owned cross-thread field is {@code volatile}: it is a monotonic timestamp
+     * rather than logical state, so a reader wants the freshest value and nothing is derived from
+     * reading it together with anything else. Initialised at construction so it is always a real
+     * clock reading — the zero default is not one, and it is only ever compared to another reading
+     * as a difference.
      */
     private volatile long lastCompletionNanos;
 
@@ -412,11 +433,15 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // awaitCapacity predicate with nothing in flight, and no completion can arrive to end it
         // — so it is a silent permanent park, not a rejected configuration. Fail where the
         // invariant is relied on rather than trusting that every options instance came from the
-        // builder, which Java deserialization does not run.
+        // builder, which Java deserialization does not run. maxActiveInstances is the exception
+        // for zero: its getter maps a field absent from an older stream to the new default, while
+        // this check still rejects a corrupt negative value.
         Preconditions.checkArgument(
                 options.getMaxInFlightEntries() > 0, "maxInFlightEntries must be positive");
         Preconditions.checkArgument(
                 options.getMaxInFlightBytes() > 0, "maxInFlightBytes must be positive");
+        Preconditions.checkArgument(
+                options.getMaxActiveInstances() > 0, "maxActiveInstances must be positive");
         // Re-checked for the same deserialization reason, though the failure mode is milder: a
         // zero would fail the job on the first confirmed rejection, silently overriding the
         // handler the user configured, rather than hanging anything.
@@ -434,6 +459,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.maxInFlightEntries = options.getMaxInFlightEntries();
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
+        this.maxActiveInstances = options.getMaxActiveInstances();
         // The setter bounds this at what a nanosecond clock can express (ADR-0068), which is what
         // keeps its own "set a very large duration to never evict" instruction from throwing here
         // — on a TaskManager, as the job starts, naming neither the knob nor the value. Unlike the
@@ -451,7 +477,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.failedMutationHandler = config.getFailedMutationHandler();
         this.metrics = new BigtableWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         this.metrics.bindWriterState(
-                this::getInFlightEntries, this::getInFlightBytes, this::getParkedEntries);
+                this::getInFlightEntries,
+                this::getInFlightBytes,
+                this::getParkedEntries,
+                this::getActiveClients);
     }
 
     @Override
@@ -529,23 +558,56 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * here retries the creation. The failure is thrown at the caller rather than routed: a client
      * that cannot be built is a configuration or credentials failure, not a bad record.
      */
-    private DestinationState stateFor(TableDestination destination) throws IOException {
+    private DestinationState stateFor(TableDestination destination)
+            throws IOException, InterruptedException {
         DestinationState state = states.get(destination);
-        if (state == null) {
-            MutationBatcher batcher;
-            try {
-                batcher = batcherFactory.create(destination);
-            } catch (IOException | RuntimeException e) {
-                throw new IOException(
-                        "Failed to create a Bigtable mutation batcher for table "
-                                + destination
-                                + ".",
-                        e);
-            }
-            state = new DestinationState(destination, batcher, nanoClock.getAsLong());
-            states.put(destination, state);
+        if (state != null) {
+            // This access-ordered map owns the instance LRU. Touching any of its tables makes the
+            // shared instance recent even though the destination state itself was already found.
+            instanceDestinations.get(state.instanceKey);
+            return state;
         }
+        String instanceKey = instanceKey(destination);
+        Set<TableDestination> destinations = instanceDestinations.get(instanceKey);
+        if (destinations == null) {
+            ensureInstanceCapacity();
+        }
+        MutationBatcher batcher;
+        try {
+            batcher = batcherFactory.create(destination);
+        } catch (IOException | RuntimeException e) {
+            throw new IOException(
+                    "Failed to create a Bigtable mutation batcher for table " + destination + ".",
+                    e);
+        }
+        state = new DestinationState(destination, instanceKey, batcher, nanoClock.getAsLong());
+        states.put(destination, state);
+        if (destinations == null) {
+            destinations = new LinkedHashSet<>();
+            instanceDestinations.put(instanceKey, destinations);
+            activeClients = instanceDestinations.size();
+        }
+        destinations.add(destination);
         return state;
+    }
+
+    private void ensureInstanceCapacity() throws IOException, InterruptedException {
+        if (instanceDestinations.size() < maxActiveInstances) {
+            return;
+        }
+        if (inFlightEntries > 0) {
+            sendEveryBatcher();
+            drainInFlight();
+        }
+        if (inFlightEntries != 0) {
+            throw new IOException(
+                    "Cannot evict a Bigtable instance client while mutations are still in flight.");
+        }
+        Map.Entry<String, Set<TableDestination>> eldest =
+                instanceDestinations.entrySet().iterator().next();
+        List<DestinationState> evicted = removeInstance(eldest.getKey(), eldest.getValue());
+        metrics.capacityEviction();
+        closeEvicted(evicted, "least-recently-used Bigtable instance " + eldest.getKey());
     }
 
     /**
@@ -845,13 +907,15 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * unbounded close acceptable on the task thread at all. Correctness is unaffected — an evicted
      * table that receives a mutation again rebuilds its batcher transparently.
      *
-     * <p>The shared client is <em>not</em> closed with it: it belongs to the factory and to the
-     * other tables of the same instance.
+     * <p>The factory releases the shared client when the last live table of its instance is
+     * evicted. A partial eviction leaves the client available to sibling tables.
      */
-    private void evictIdleDestinations() {
+    private void evictIdleDestinations() throws InterruptedException {
         long now = nanoClock.getAsLong();
         Iterator<Map.Entry<TableDestination, DestinationState>> iterator =
                 states.entrySet().iterator();
+        List<DestinationState> evicted = new ArrayList<>();
+        Map<String, Set<TableDestination>> evictedByInstance = new LinkedHashMap<>();
         while (iterator.hasNext()) {
             Map.Entry<TableDestination, DestinationState> entry = iterator.next();
             DestinationState state = entry.getValue();
@@ -859,18 +923,189 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 continue;
             }
             iterator.remove();
-            try {
-                state.batcher.close();
-            } catch (Exception e) {
-                // Hygiene must never fail a checkpoint; the batcher is abandoned either way.
-                LOG.warn(
-                        "Failed to close the batcher of idle Bigtable table {}", entry.getKey(), e);
-            }
+            evictedByInstance
+                    .computeIfAbsent(state.instanceKey, ignored -> new LinkedHashSet<>())
+                    .add(state.destination);
+            evicted.add(state);
             LOG.info(
                     "Evicted Bigtable table {} after {} without mutations",
                     entry.getKey(),
                     Duration.ofNanos(now - state.lastAccessNanos));
         }
+        Iterator<Map.Entry<String, Set<TableDestination>>> instanceIterator =
+                instanceDestinations.entrySet().iterator();
+        while (instanceIterator.hasNext()) {
+            Map.Entry<String, Set<TableDestination>> entry = instanceIterator.next();
+            Set<TableDestination> removed = evictedByInstance.remove(entry.getKey());
+            if (removed == null) {
+                continue;
+            }
+            for (TableDestination destination : removed) {
+                if (!entry.getValue().remove(destination)) {
+                    throw new IllegalStateException(
+                            "Bigtable instance bookkeeping lost table " + destination + ".");
+                }
+            }
+            if (entry.getValue().isEmpty()) {
+                instanceIterator.remove();
+                metrics.idleEviction();
+            }
+        }
+        if (!evictedByInstance.isEmpty()) {
+            throw new IllegalStateException(
+                    "Bigtable instance bookkeeping lost "
+                            + evictedByInstance.size()
+                            + " instance(s).");
+        }
+        activeClients = instanceDestinations.size();
+        closeEvicted(evicted, "idle Bigtable destinations");
+    }
+
+    private List<DestinationState> removeInstance(
+            String instanceKey, Set<TableDestination> destinations) {
+        instanceDestinations.remove(instanceKey);
+        activeClients = instanceDestinations.size();
+        List<DestinationState> removed = new ArrayList<>(destinations.size());
+        for (TableDestination destination : destinations) {
+            DestinationState state = states.remove(destination);
+            if (state == null) {
+                throw new IllegalStateException(
+                        "Bigtable instance bookkeeping lost table " + destination + ".");
+            }
+            removed.add(state);
+        }
+        return removed;
+    }
+
+    private void closeEvicted(List<DestinationState> evicted, String reason)
+            throws InterruptedException {
+        if (evicted.isEmpty()) {
+            return;
+        }
+        List<AutoCloseable> closeables = new ArrayList<>(evicted.size() * 3);
+        for (DestinationState state : evicted) {
+            closeables.add(state.batcher::shutdown);
+        }
+        for (DestinationState state : evicted) {
+            closeables.add(state.batcher);
+        }
+        for (DestinationState state : evicted) {
+            closeables.add(() -> batcherFactory.release(state.destination));
+        }
+        try {
+            Closers.closeAll(closeables);
+        } catch (Throwable failure) {
+            InterruptedException interrupted = interruptedIn(failure);
+            if (interrupted != null) {
+                Thread.currentThread().interrupt();
+            }
+            Error fatal = fatalErrorIn(failure);
+            if (fatal != null) {
+                throw preserveCollectedFailure(fatal, failure);
+            }
+            if (interrupted != null) {
+                if (interrupted == failure) {
+                    throw interrupted;
+                }
+                InterruptedException reported = new InterruptedException(interrupted.getMessage());
+                reported.initCause(failure);
+                throw reported;
+            }
+            Error error = errorIn(failure);
+            if (error != null) {
+                throw preserveCollectedFailure(error, failure);
+            }
+            LOG.warn(
+                    "Failed to release one or more resources while evicting {}; the logical state"
+                            + " was removed and will be recreated on the next matching record.",
+                    reason,
+                    failure);
+        }
+    }
+
+    @Nullable
+    private static InterruptedException interruptedIn(Throwable failure) {
+        return (InterruptedException)
+                firstMatching(failure, InterruptedException.class::isInstance);
+    }
+
+    @Nullable
+    private static Error errorIn(Throwable failure) {
+        return (Error) firstMatching(failure, Error.class::isInstance);
+    }
+
+    @Nullable
+    private static Error fatalErrorIn(Throwable failure) {
+        return (Error)
+                firstMatching(
+                        failure,
+                        candidate ->
+                                candidate instanceof Error
+                                        && ExceptionUtils.isJvmFatalOrOutOfMemoryError(candidate));
+    }
+
+    @Nullable
+    private static Throwable firstMatching(Throwable failure, Predicate<Throwable> matches) {
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Deque<Throwable> pending = new ArrayDeque<>();
+        pending.add(failure);
+        while (!pending.isEmpty()) {
+            Throwable candidate = pending.removeFirst();
+            if (!visited.add(candidate)) {
+                continue;
+            }
+            if (matches.test(candidate)) {
+                return candidate;
+            }
+            Throwable[] suppressed = candidate.getSuppressed();
+            for (int i = suppressed.length - 1; i >= 0; i--) {
+                pending.addFirst(suppressed[i]);
+            }
+            if (candidate.getCause() != null) {
+                pending.addFirst(candidate.getCause());
+            }
+        }
+        return null;
+    }
+
+    private static void rethrowTerminalCloseFailure(Throwable failure) throws Exception {
+        InterruptedException interrupted = interruptedIn(failure);
+        if (interrupted != null) {
+            Thread.currentThread().interrupt();
+        }
+        Error fatal = fatalErrorIn(failure);
+        if (fatal != null) {
+            throw preserveCollectedFailure(fatal, failure);
+        }
+        if (interrupted != null) {
+            if (interrupted == failure) {
+                throw interrupted;
+            }
+            InterruptedException reported = new InterruptedException(interrupted.getMessage());
+            reported.initCause(failure);
+            throw reported;
+        }
+        Error error = errorIn(failure);
+        if (error != null) {
+            throw preserveCollectedFailure(error, failure);
+        }
+        ExceptionUtils.rethrowException(failure);
+    }
+
+    private static Error preserveCollectedFailure(Error selected, Throwable collected) {
+        if (selected == collected) {
+            return selected;
+        }
+        for (Throwable suppressed : selected.getSuppressed()) {
+            if (suppressed == collected) {
+                return selected;
+            }
+        }
+        // Closers made selected reachable from collected; the reverse link is intentional. Java's
+        // stack-trace renderer detects the cycle after printing both failures, while throwing the
+        // selected Error at top level lets Flink retain its JVM-fatal handling.
+        selected.addSuppressed(collected);
+        return selected;
     }
 
     @Override
@@ -893,6 +1128,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // covers — no checkpoint completed with them parked, so the restart replays those records.
         inFlightEntries = 0;
         inFlightBytes = 0;
+        activeClients = 0;
         pendingIsolation.clear();
         pendingRepair.clear();
         tablesMissing.clear();
@@ -921,8 +1157,11 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         closeables.add(failedMutationHandler::close);
         try {
             Closers.closeAll(closeables);
+        } catch (Throwable failure) {
+            rethrowTerminalCloseFailure(failure);
         } finally {
             states.clear();
+            instanceDestinations.clear();
         }
     }
 
@@ -1332,6 +1571,11 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         return pendingIsolation.size() + pendingRepair.size();
     }
 
+    @VisibleForTesting
+    int getActiveClients() {
+        return activeClients;
+    }
+
     /** A mutation held for the isolation pass or the repair, with the table it belongs to. */
     private static final class ParkedMutation {
 
@@ -1351,6 +1595,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     private final class DestinationState {
 
         private final TableDestination destination;
+        private final String instanceKey;
         private final MutationBatcher batcher;
         private final DestinationMetrics.Counters metrics;
         private final String completionDescription;
@@ -1364,8 +1609,12 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         private long lastAccessNanos;
 
         private DestinationState(
-                TableDestination destination, MutationBatcher batcher, long createdNanos) {
+                TableDestination destination,
+                String instanceKey,
+                MutationBatcher batcher,
+                long createdNanos) {
             this.destination = destination;
+            this.instanceKey = instanceKey;
             this.batcher = batcher;
             // Resolved once per destination, not per record: the handle is stable, and composing
             // the table's name per record is what DestinationMetrics exists to avoid.
@@ -1374,6 +1623,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             this.failureDescription = "Fail a Bigtable mutation of " + destination;
             this.lastAccessNanos = createdNanos;
         }
+    }
+
+    private static String instanceKey(TableDestination destination) {
+        return destination.getProject() + "/" + destination.getInstance();
     }
 
     /**
