@@ -75,9 +75,9 @@ green; use the clean-state procedures in that guide for such changes.
 - Before adding or changing a public Javadoc code block, or for a Javadoc-specific
   `just check-doc-snippets` failure, use `$maintain-javadoc-examples`. Runnable blocks map to exact
   compiled backing regions; abbreviated blocks are visibly classified and explain their omission.
-- Before adding or changing an SQL block in an examples or quickstart page, changing the
-  `sql-snippet` shortcode or a tagged SQL source, or responding to an SQL snippet validation
-  failure, use `$maintain-doc-sql-snippets`.
+- Before adding or changing an SQL block in an examples, quickstart, or Table connector reference
+  page, changing the `sql-snippet` shortcode or a tagged SQL source, or responding to an SQL
+  snippet validation failure, use `$maintain-doc-sql-snippets`.
 - A Javadoc reference to a method carries its parameter list: `{@link Type#member(ParamType)}`.
   Without one it binds a same-named field first and renders no anchor, which the javadoc build does
   not report. Only a public or protected field is linkable at all; where the sentence means

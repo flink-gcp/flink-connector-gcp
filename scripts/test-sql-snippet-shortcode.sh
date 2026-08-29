@@ -196,6 +196,9 @@ expect_failure raw-sql-fence \
 expect_failure raw-sql-fence-descendant \
     'SQL fences in /fixture/child must use sql-snippet' \
     'source-backed region'
+expect_failure raw-sql-fence-table-reference \
+    'SQL fences in /docs/connectors/table/example must use sql-snippet' \
+    'source-backed region'
 expect_failure_with_config missing-boundary-config \
     'hugo.toml,hugo-empty-source-backed-paths.toml' \
     'sql-snippet page /fixture must be inside Site.Params.SourceBackedSqlPaths'

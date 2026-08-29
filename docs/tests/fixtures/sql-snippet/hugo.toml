@@ -16,7 +16,7 @@ title = "sql-snippet shortcode fixtures"
 disableKinds = ["404", "home", "RSS", "robotsTXT", "section", "sitemap", "taxonomy", "term"]
 
 [params]
-  SourceBackedSqlPaths = ["/fixture"]
+  SourceBackedSqlPaths = ["/fixture", "/docs/connectors/table"]
 
 [markup]
   [markup.highlight]

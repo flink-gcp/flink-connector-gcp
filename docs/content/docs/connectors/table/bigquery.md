@@ -32,38 +32,11 @@ status is in the module README.
 connector. There is no `format` option: a BigQuery row is structured and the DDL schema *is* the
 schema, so the connector supplies its own `RowData` converter and serializer.
 
-```sql
-CREATE TABLE events (
-  id STRING,
-  amount BIGINT,
-  event_ts TIMESTAMP_LTZ(6),
-  attributes ROW<source STRING, version INT>
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'events'
-);
-
-INSERT INTO events
-SELECT id, amount, event_ts, ROW(source, version) FROM staged_events;
-
-SELECT id, amount FROM events WHERE amount > 0;
-```
+{{< sql-snippet file="flink/BigQueryTableReference.sql" tag="overview" >}}
 
 A query source needs a billing project but no `dataset` or `table`:
 
-```sql
-CREATE TABLE recent_events (
-  id STRING,
-  amount BIGINT
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'scan.query' = 'SELECT id, amount FROM `analytics.events` WHERE event_date = CURRENT_DATE()',
-  'scan.query-location' = 'US'
-);
-```
+{{< sql-snippet file="flink/BigQueryTableReference.sql" tag="query-source" >}}
 
 ## Getting the connector onto the classpath
 
@@ -334,26 +307,7 @@ project any ordering value a reader needs into an ordinary column as well.
 The formatted route is immediately usable when the query can construct or forward a valid
 sequence:
 
-```sql
-CREATE TABLE current_orders (
-  id STRING NOT NULL,
-  amount BIGINT,
-  sequence STRING METADATA FROM 'change-sequence-number',
-  PRIMARY KEY (id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigquery',
-  'project' = 'my-project',
-  'dataset' = 'analytics',
-  'table' = 'current_orders',
-  'sink.cdc.enabled' = 'true',
-  'sink.create-disposition' = 'create-if-needed',
-  'sink.cdc.max-staleness' = '10 min',
-  'sink.cdc.table-reconciliation' = 'reconcile'
-);
-
-INSERT INTO current_orders
-SELECT id, amount, formatted_sequence FROM ordered_changes;
-```
+{{< sql-snippet file="flink/BigQueryTableReference.sql" tag="formatted-cdc-sequence" >}}
 
 Flink's Debezium JSON format exposes connector-specific ordering fields through
 `value.source.properties` when it is used as a value format, while its Debezium Avro format does

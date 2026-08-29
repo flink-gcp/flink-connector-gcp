@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0144: Documentation SQL renders one tested source region
 
 - Status: Accepted
-- Date: 2026-08-24
-- Issue: [#1097](https://github.com/flink-gcp/flink-connector-gcp/issues/1097)
+- Date: 2026-08-24; revised by [#1126](https://github.com/flink-gcp/flink-connector-gcp/issues/1126) (2026-08-29)
+- Issues: [#1097](https://github.com/flink-gcp/flink-connector-gcp/issues/1097),
+  [#1126](https://github.com/flink-gcp/flink-connector-gcp/issues/1126)
 - Modules: all (documentation tooling), spanner
 - Current behavior: [SQL snippet maintenance skill](../../.agents/skills/maintain-doc-sql-snippets/SKILL.md),
   [`sql-snippet` shortcode](../layouts/_shortcodes/sql-snippet.html),
@@ -37,8 +38,9 @@ The implementation inventory on 2026-08-24 found 29 complete SQL examples in the
 quickstart pages: 27 Flink SQL regions and two GoogleSQL regions.
 It also found 32 SQL fences in connector Table API reference pages.
 Those reference fences mix complete connector DDL and queries, partial option or schema fragments,
-and intentionally invalid examples, so they do not share one executable boundary with the examples
-and quickstarts.
+and intentionally invalid examples.
+Issue #1126 classified them as 27 complete positive examples, four partial fragments, and one
+intentionally invalid example so each form could receive an honest validation boundary.
 
 The repository's decision policy requires pricing a plain test before adding a custom checker.
 The current Table API factories already expose the failure boundary through Flink's parser and
@@ -47,8 +49,9 @@ emulator.
 
 ## Decision
 
-Every code block declared with the `sql` language under `docs/content/docs/examples/` and
-`docs/content/docs/quickstart/` renders one exact tagged region from a `.sql` test resource.
+Every code block declared with the `sql` language under `docs/content/docs/examples/`,
+`docs/content/docs/quickstart/`, and `docs/content/docs/connectors/table/` renders one exact tagged
+region from a `.sql` test resource.
 Unlabeled, indented, or differently labeled code is not classified as SQL by this boundary.
 The marker syntax is:
 
@@ -79,8 +82,8 @@ It neither submits a Flink job nor calls GCP.
 
 The shortcode emits an empty hidden marker beside each rendered SQL region.
 After Hugo builds a clean production destination, the same test reads markers only from the
-generated examples and quickstart paths and owns a two-way inventory between rendered examples and
-all SQL source regions.
+generated examples, quickstart, and Table connector reference paths and owns a two-way inventory
+between rendered examples and all SQL source regions.
 Each source region renders exactly once across that covered scope; a second page gets its own named
 region even when the statements are intentionally identical, so a duplicate marker cannot hide an
 additional rendered example from the inventory.
@@ -94,6 +97,20 @@ of each inventory identity so equal filenames and tags in different modules cann
 other.
 CDC sink scenarios register an upsert changelog stream with update and delete rows instead of an
 append-only placeholder view, so planning exercises the sink's changelog negotiation.
+
+Complete Table connector reference regions reach the same catalog or planner boundary as complete
+examples elsewhere in the site.
+Session commands with no catalog or planner operation reach the parser boundary and carry a
+command-specific assertion; the `ADD JAR` examples assert the exact connector artifact path they
+publish.
+Partial regions remain partial in the rendered source and receive only a test-side enclosure:
+option fragments are placed inside complete connector DDL, expressions inside a minimal query, and
+source DDL receives a follow-up query when connector discovery requires it.
+The Bigtable application-watermark fragment stops after catalog creation because its documented
+boundary is the computed-column and watermark DDL; forcing a query would add an unrelated planner
+contract to that fragment.
+The intentionally invalid Pub/Sub updating query supplies the sink's full schema before asserting
+the connector's changelog rejection, so an earlier column-count failure cannot satisfy the test.
 
 GoogleSQL resources live in the Spanner module.
 `SpannerDocumentationSqlITCase` creates each documented schema and executes its seed statements
@@ -124,6 +141,14 @@ Both GoogleSQL regions created their schemas against the emulator, and the accou
 inserted the row the example describes.
 The SQL synthetic fixture suite also passed its valid render and independent marker-failure cases.
 
+On 2026-08-29, all 32 Table connector reference regions passed their classified boundaries against
+the current reactor: 27 complete positive examples, four enclosed fragments, and one negative
+example with its documented connector diagnostic.
+Together with the earlier examples and quickstarts, the validation inventory contained 59 Flink SQL
+regions in 47 named scenarios.
+The production-site inventory and raw-fence guard were expanded to the Table connector reference
+path, so every region still renders exactly once and a new ordinary SQL fence fails the docs build.
+
 ## Alternatives declined
 
 **Add a static Markdown-to-test checker.**
@@ -147,11 +172,13 @@ The module's testing policy records known emulator deviations.
 The emulator is useful for executing these GoogleSQL examples but cannot establish production
 service semantics.
 
-**Cover every SQL fence in the documentation immediately.**
+**Cover every SQL fence in the documentation without classifying its boundary.**
 The 32 Table API reference fences mix complete connector DDL and queries, partial option or schema
 fragments, and intentionally invalid examples.
-Expanding source-backed validation to them requires a separate classification decision that assigns
-an honest executable or negative-test boundary to each form.
+Treating them all as complete positive programs would either publish invented context or let a
+green parse-only check without a command-specific oracle overstate what was validated.
+They were therefore migrated only after Issue #1126 assigned an executable, enclosed-fragment, or
+negative-test boundary to each region.
 
 **Keep SQL in both Markdown and test resources.**
 Either copy could change while the other check remained green.
@@ -159,8 +186,8 @@ Rendering the tested region removes that second source of truth.
 
 ## Consequences
 
-Changing executable SQL guidance in an examples or quickstart page means changing its tagged test
-resource and the named scenario or emulator assertion together.
+Changing SQL guidance in an examples, quickstart, or Table connector reference page means changing
+its tagged test resource and the named scenario or emulator assertion together.
 A connector Table API change that invalidates one of those examples fails the docs workflow before
 the site is published.
 
@@ -168,6 +195,6 @@ The docs-validation module gains planner-only test dependencies but remains behi
 `docs-snippets` profile and cannot be deployed.
 The GoogleSQL boundary adds a Docker-backed Spanner emulator test to the docs workflow.
 
-The table-reference fences remain explicitly outside this decision.
-A future expansion must classify their mixed forms and record how each complete, partial, or
-intentionally invalid block earns an honest validation claim.
+Table connector reference fragments incur a small amount of test-only enclosure code.
+That code must remain minimal and must not turn a partial rendered example into a claim that its
+surrounding invented statement is user guidance.

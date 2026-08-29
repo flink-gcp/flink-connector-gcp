@@ -25,33 +25,13 @@ limitations under the License.
 The `spanner` connector reads bounded Table API and SQL scans, emits unbounded Change Streams changelogs, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
 It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/spanner" >}}), so partitioning, snapshot, batching, retry, delivery, metrics, and failure behavior remain the same.
 
-```sql
-CREATE TABLE orders (
-  order_id BIGINT,
-  customer STRING,
-  total DECIMAL(38, 9),
-  updated_at TIMESTAMP_LTZ(9),
-  PRIMARY KEY (order_id) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'table' = 'orders'
-);
-
-INSERT INTO orders SELECT order_id, customer, total, updated_at FROM staged_orders;
-
-SELECT customer, total FROM orders;
-```
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="overview" >}}
 
 Use `flink-sql-connector-gcp-spanner`, the relocated SQL uber-jar, for SQL deployments.
 Place `flink-sql-connector-gcp-spanner-<version>.jar` in Flink's `lib/` before starting the cluster,
 or load it for one SQL Client session:
 
-```sql
-ADD JAR '/path/to/flink-sql-connector-gcp-spanner-0.1.0-SNAPSHOT.jar';
-```
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="add-jar" >}}
 
 The artifact bundles the connector and its runtime dependencies while leaving Flink APIs provided
 by the cluster. Its bundled packages are relocated so it can coexist with other connector jars and
@@ -88,21 +68,7 @@ The connector removes SQL quoting after decoding each component because Spanner'
 The bounded scan resolves those decoded names through `INFORMATION_SCHEMA`, while sink mutations and lookup reads leave final name validation to the Spanner API.
 Quote a reserved word when it is used as the schema, the first component of the qualified name.
 
-```sql
-CREATE TABLE sales_orders (
-  order_id BIGINT,
-  total DECIMAL(38, 9),
-  PRIMARY KEY (order_id) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'schema' = 'sales',
-  'table' = 'orders',
-  'scan.index' = 'orders_by_total'
-);
-```
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="named-schema" >}}
 
 ## Mutation behavior
 
@@ -193,29 +159,7 @@ A table written to may still carry the bounded-scan and lookup options it is als
 For an update, the complete new row is copied and each reported old value replaces its new value to reconstruct the before row.
 `upsert` accepts `NEW_ROW` and `NEW_ROW_AND_OLD_VALUES`, requires a declared primary key, and emits `INSERT`, `UPDATE_AFTER`, and key-only `DELETE` rows.
 
-```sql
-CREATE TABLE order_changes (
-  order_id BIGINT,
-  customer STRING,
-  status STRING,
-  commit_timestamp TIMESTAMP_LTZ(3) METADATA FROM 'commit-timestamp' VIRTUAL,
-  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
-  server_transaction_id STRING METADATA FROM 'server-transaction-id' VIRTUAL,
-  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
-  WATERMARK FOR commit_timestamp AS SOURCE_WATERMARK(),
-  PRIMARY KEY (order_id) NOT ENFORCED
-) WITH (
-  'connector' = 'spanner',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'database' = 'orders-db',
-  'table' = 'orders',
-  'scan.mode' = 'change-stream',
-  'scan.change-stream.name' = 'order_changes',
-  'scan.change-stream.changelog-mode' = 'upsert',
-  'scan.startup.mode' = 'latest'
-);
-```
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="change-stream" >}}
 
 The source exposes the stable scalar identity, transaction, and record fields listed in the [Spanner metadata reference]({{< relref "docs/reference/spanner" >}}#table-change-stream-readable-metadata).
 The vocabulary follows Debezium's Spanner source metadata where it represents the same Spanner field, with hyphenated keys matching this connector's SQL conventions.
@@ -252,14 +196,7 @@ Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this opti
 
 UUID, JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
 
-```sql
-WITH (
-  'schema.uuid-field-paths' = 'id;related_ids',
-  'schema.json-field-paths' = 'metadata;payloads',
-  'schema.proto-type-names' = 'event:example.events.Event',
-  'schema.enum-type-names' = 'status:example.events.Status'
-)
-```
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="schema-markers" >}}
 
 UUID and JSON fields use `STRING`, PROTO fields use `BYTES`, and ENUM fields use `BIGINT` in the Flink schema.
 The UUID marker maps `STRING` and `ARRAY<STRING>` carriers to native UUID columns in both dialects, including primary-key columns and composite lookup keys.

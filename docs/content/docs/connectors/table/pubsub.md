@@ -33,43 +33,9 @@ the option keys below are declared by `PubSubConnectorOptions` — `format`, `si
 both it and the DataStream types the options map onto are in the
 [Java API reference]({{< param ApiDocsURL >}}).
 
-```sql
-CREATE TABLE orders (
-  order_id STRING,
-  amount   INT,
-  attrs    MAP<STRING, STRING> METADATA FROM 'attributes',
-  okey     STRING             METADATA FROM 'ordering-key'
-) WITH (
-  'connector' = 'pubsub',
-  'project'   = 'my-project',
-  'topic'     = 'orders',
-  'format'    = 'json',
-  'sink.message-ordering.enabled' = 'true'
-);
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="sink-overview" >}}
 
-INSERT INTO orders
-SELECT order_id, amount, MAP['source', 'sql'], customer_id FROM staged_orders;
-```
-
-```sql
-CREATE TABLE incoming_orders (
-  order_id     STRING,
-  amount       INT,
-  message_id   STRING          METADATA FROM 'message-id'   VIRTUAL,
-  publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
-  attrs        MAP<STRING, STRING> METADATA FROM 'attributes' VIRTUAL,
-  WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
-) WITH (
-  'connector'    = 'pubsub',
-  'project'      = 'my-project',
-  'subscription' = 'orders-sub',
-  'format'       = 'json'
-);
-
-SELECT window_start, COUNT(*)
-FROM TABLE(TUMBLE(TABLE incoming_orders, DESCRIPTOR(publish_time), INTERVAL '1' MINUTE))
-GROUP BY window_start;
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="source-overview" >}}
 
 ## Getting the connector onto the classpath
 
@@ -168,10 +134,7 @@ a stream against audit logs or Cloud Asset Inventory.
 Pub/Sub publishes no URL or self-link of its own, so there is nothing else to expose. Google's two
 other spellings are string operations on this one:
 
-```sql
-'//pubsub.googleapis.com/'        || subscription  -- full resource name (IAM, Asset Inventory)
-'https://pubsub.googleapis.com/v1/' || subscription  -- resource URI
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="subscription-resource-spellings" >}}
 
 Note this does **not** equal the `subscription` option, which is the bare id resolved against
 `project`. `WHERE subscription = 'orders-sub'` will not match; compare against the resource name, or
@@ -324,19 +287,7 @@ Byte-valued options are written the Flink way — `'sink.in-flight.max-bytes' = 
 `scan.startup.mode` decides where the source begins. Only the default,
 `continue-from-subscription`, leaves the subscription alone; every other value **seeks**.
 
-```sql
-CREATE TABLE orders (
-  id STRING,
-  amount INT
-) WITH (
-  'connector' = 'pubsub',
-  'project' = 'my-project',
-  'subscription' = 'orders-sub',
-  'format' = 'json',
-  'scan.startup.mode' = 'timestamp',
-  'scan.startup.timestamp-millis' = '1735689600000'
-);
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="timestamp-start-position" >}}
 
 A Pub/Sub subscription has no offset a reader resumes from: its position *is* server state, shared
 by every consumer.
@@ -381,44 +332,17 @@ which topic to consume is the whole question.
 
 For one subscription, use one prefixed map entry:
 
-```sql
-CREATE TABLE orders (
-  id STRING
-) WITH (
-  'connector' = 'pubsub',
-  'project' = 'my-project',
-  'subscription' = 'orders-sub',
-  'format' = 'json',
-  'scan.auto-create.topics.orders-sub' = 'orders',
-  'scan.auto-create.ack-deadline' = '60 s',
-  'scan.auto-create.retain-acked-messages' = 'true'
-);
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="single-subscription-auto-creation" >}}
 
 For several subscriptions, give each one its own entry under the same option prefix:
 
-```sql
-CREATE TABLE events (
-  id STRING
-) WITH (
-  'connector' = 'pubsub',
-  'project' = 'my-project',
-  'subscription' = 'orders-sub;refunds-sub',
-  'format' = 'json',
-  'scan.auto-create.topics.orders-sub' = 'orders',
-  'scan.auto-create.topics.refunds-sub' = 'refunds',
-  'scan.auto-create.ack-deadline' = '60 s'
-);
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="multiple-subscription-auto-creation" >}}
 
 The prefixed form above is recommended because each DDL line names one subscription-to-topic
 binding.
 Flink also accepts the whole map in one option:
 
-```sql
-'subscription' = 'orders-sub;refunds-sub',
-'scan.auto-create.topics' = 'orders-sub:orders,refunds-sub:refunds'
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="packed-subscription-map" >}}
 
 These options use different separators.
 Flink splits the `subscription` list on `;`, but splits packed map entries on `,` and each entry's
@@ -493,10 +417,7 @@ extra shuffle rather than treating it as a bucket count.
 Pub/Sub has no way to express a retraction, so an updating query is rejected when the job is
 planned rather than publishing its `-U` and `-D` rows as ordinary messages:
 
-```sql
-INSERT INTO orders SELECT id, COUNT(*) FROM staged GROUP BY id
--- Table sink ... doesn't support consuming update changes
-```
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="updating-query-rejected" >}}
 
 ## Design decisions
 

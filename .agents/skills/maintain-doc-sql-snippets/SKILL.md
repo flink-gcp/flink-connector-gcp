@@ -1,6 +1,6 @@
 ---
 name: maintain-doc-sql-snippets
-description: "Maintain source-backed SQL examples in docs/content/docs/examples and docs/content/docs/quickstart. Use when adding or editing a code block labeled sql in those directories, changing the sql-snippet shortcode or tagged .sql resources, updating connector Table API behavior used by an example, or responding to just check-doc-sql-snippets, DocumentationSqlPlanTest, SpannerDocumentationSqlITCase, or Hugo SQL marker failures."
+description: "Maintain source-backed SQL examples in docs/content/docs/examples, docs/content/docs/quickstart, and docs/content/docs/connectors/table. Use when adding or editing a code block labeled sql in those directories, changing the sql-snippet shortcode or tagged .sql resources, updating connector Table API behavior used by an example, or responding to just check-doc-sql-snippets, DocumentationSqlPlanTest, SpannerDocumentationSqlITCase, or Hugo SQL marker failures."
 ---
 
 # Maintain SQL documentation snippets
@@ -16,15 +16,20 @@ Classify the SQL before editing it.
   and seed statements execute against the pinned Spanner emulator in
   `SpannerDocumentationSqlITCase`. Emulator acceptance proves this example boundary, not service
   behavior.
-- This contract covers `docs/content/docs/examples/` and `docs/content/docs/quickstart/`.
-  The 32 connector-reference blocks mix complete connector DDL and queries, partial option or
-  schema fragments, and intentionally invalid examples; they remain ordinary fences until an ADR
-  classifies and expands those validation boundaries.
+- This contract covers `docs/content/docs/examples/`, `docs/content/docs/quickstart/`, and
+  `docs/content/docs/connectors/table/`.
+- Classify a Table connector reference region as a complete positive example, a partial fragment,
+  or an intentionally invalid example. A complete example reaches its documented command, catalog
+  or planner boundary. When a session command has no catalog or planner operation, parse it and
+  assert the exact command-specific value it publishes. A fragment gets the smallest test-only
+  enclosure that makes its displayed SQL meaningful without publishing invented context. A
+  negative example must pass earlier validation and fail with the documented diagnostic.
 - Hugo's generic `render-codeblock.html` hook rejects ordinary SQL fences in the covered paths. Do not
   replace that parser-backed boundary with a source-text fence parser.
 - The inventory reads hidden `sql-snippet` marker elements from the built production HTML. Keep
   the clean `just docs` build before the planner test, and keep the inventory scoped to generated
-  examples and quickstarts; do not infer rendered shortcode usage from Markdown text.
+  examples, quickstarts, and Table connector references; do not infer rendered shortcode usage
+  from Markdown text.
 - A source region renders exactly once across those paths. Give a second rendered example its own
   named region even when its SQL is identical, so the rendered inventory still counts both.
 - Do not duplicate executable SQL in Markdown. The tagged resource is the source Hugo renders and
@@ -56,13 +61,25 @@ published and must be correct user guidance.
 For Flink SQL, add the region to one named `Scenario` in `DocumentationSqlPlanTest`. Group regions
 that form one catalog state in execution order. Supply only minimal temporary views needed to
 stand in for an upstream example. Do not mock a connector factory or replace documented option
-keys merely to get a plan. The inventory test requires every Flink region to be planned exactly
-once and every rendered shortcode in the built production site to resolve to one region.
+keys merely to get a plan. The inventory test requires every Flink region to have exactly one
+validation boundary and every rendered shortcode in the built production site to resolve to one
+region.
 
 Use a batch `TableEnvironment` when a region sets `execution.runtime-mode` to `batch`. Other `SET`
 operations are parsed and applied to the test configuration. Query and modify operations must reach
 planner translation; parsing DDL alone misses connector discovery, option validation and lookup-key
 requirements.
+
+For a partial Table reference region, keep its enclosure in the validation harness rather than the
+rendered resource. Validate an option fragment inside a complete connector DDL, validate standalone
+expressions in a minimal query, and add a follow-up query when a source DDL otherwise stops before
+connector discovery. A catalog-only enclosure is acceptable when the displayed construct is a DDL
+fragment and forcing a query would exercise an unrelated planner limitation. Name the boundary in
+the scenario so the narrower claim remains visible.
+
+For an intentionally invalid region, assert both the object involved and the stable connector
+diagnostic. Shape the preceding SQL so column-count, type, and catalog checks succeed first; a
+failure at an earlier generic boundary does not validate the documented rejection.
 
 For GoogleSQL, add an emulator assertion that creates the documented schema and executes any seed
 statement. Extend the source-region inventory in the same test so a region cannot be rendered but

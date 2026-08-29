@@ -38,26 +38,7 @@ row and `value.format` decodes it.
 A column family is a *column name*, so it has to be a legal SQL identifier — a reserved word such as
 `identity` needs backticks, or a different name.
 
-```sql
-CREATE TABLE profiles (
-  rowkey STRING,
-  profile ROW<name STRING, email STRING>,
-  usage ROW<requests BIGINT, last_seen TIMESTAMP_LTZ(3)>,
-  PRIMARY KEY (rowkey) NOT ENFORCED
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profiles',
-  'sink.insert-only-input-mode' = 'insert-only'
-);
-
-INSERT INTO profiles
-SELECT user_id, ROW(name, email), ROW(requests, last_seen) FROM staged_profiles;
-
--- A bounded scan of the same table; only the families the query reads leave the server.
-SELECT rowkey, profile FROM profiles;
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="overview" >}}
 
 ## Getting the connector onto the classpath
 
@@ -243,43 +224,7 @@ planned, rather than writing to the table as an ordinary sink and discarding the
 Its physical envelope has exactly the `row_key` and `entries` columns; this example also selects
 all optional metadata as virtual columns:
 
-```sql
-CREATE TABLE profile_mutations (
-  row_key BYTES,
-  entries ARRAY<ROW<
-    entry_index INT,
-    kind STRING,
-    family STRING,
-    qualifier ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
-    `timestamp` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
-    `value` ROW<value_type STRING, bytes_value BYTES, long_value BIGINT>,
-    delete_range ROW<
-      start_bound STRING,
-      start_micros BIGINT,
-      end_bound STRING,
-      end_micros BIGINT
-    >
-  >>,
-  mutation_type STRING NOT NULL
-    METADATA FROM 'mutation-type' VIRTUAL,
-  source_cluster_id STRING
-    METADATA FROM 'source-cluster-id' VIRTUAL,
-  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL
-    METADATA FROM 'commit-timestamp' VIRTUAL,
-  tie_breaker INT NOT NULL
-    METADATA FROM 'tie-breaker' VIRTUAL,
-  estimated_low_watermark TIMESTAMP_LTZ(9) NOT NULL
-    METADATA FROM 'estimated-low-watermark' VIRTUAL
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profiles',
-  'scan.mode' = 'change-stream',
-  'scan.change-stream.changelog-mode' = 'envelope',
-  'scan.app-profile-id' = 'single-cluster-profile'
-);
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="change-stream-envelope" >}}
 
 The source emits one `INSERT` row per Bigtable mutation.
 `entries` retains the service order, and `entry_index` is its zero-based position in that list.
@@ -321,29 +266,7 @@ job fails with that subtype's class name before emitting an incomplete mutation.
 
 `UNNEST` expands the ordered entry array for relational processing:
 
-```sql
-SELECT
-  row_key,
-  mutation_type,
-  commit_timestamp,
-  entry_index,
-  kind,
-  family,
-  qualifier,
-  entry_timestamp,
-  entry_value,
-  delete_range
-FROM profile_mutations
-CROSS JOIN UNNEST(entries) AS entry_table(
-  entry_index,
-  kind,
-  family,
-  qualifier,
-  entry_timestamp,
-  entry_value,
-  delete_range
-);
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="unnest-change-stream-entries" >}}
 
 SQL result rows have no implicit arrival order.
 `entry_index` carries each entry's original zero-based service position through the expansion, so a
@@ -367,31 +290,7 @@ row. Set `decode.trailing-bytes = 'reject'` here unless the table's keys are kno
 such a mutation fails the read instead — see
 [what a read produces](#what-a-read-produces).
 
-```sql
-CREATE TABLE current_profiles (
-  name STRING,
-  profile_id STRING NOT NULL,
-  score INT,
-  source_cluster_id STRING
-    METADATA FROM 'source-cluster-id' VIRTUAL,
-  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL
-    METADATA FROM 'commit-timestamp' VIRTUAL,
-  PRIMARY KEY (profile_id) NOT ENFORCED
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profiles',
-  'scan.mode' = 'change-stream',
-  'scan.change-stream.changelog-mode' = 'selected-cell',
-  'scan.app-profile-id' = 'single-cluster-profile',
-  'scan.change-stream.selected-cell.family' = 'state',
-  -- Base64 for the qualifier "current"; an empty qualifier is ''.
-  'scan.change-stream.selected-cell.qualifier-base64' = 'Y3VycmVudA==',
-  'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-a',
-  'value.format' = 'json'
-);
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="selected-cell-upserts" >}}
 
 The source recognizes only this atomic producer protocol:
 
@@ -462,11 +361,7 @@ pushdown, but the Bigtable source does not provide the source-generated watermar
 A DDL can instead declare an ordinary, application-owned watermark expression over commit-time
 metadata:
 
-```sql
-commit_timestamp TIMESTAMP_LTZ(3) NOT NULL
-  METADATA FROM 'commit-timestamp' VIRTUAL,
-WATERMARK FOR commit_timestamp AS commit_timestamp - INTERVAL '5' MINUTE
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="application-watermark" >}}
 
 The five-minute delay is an example policy, not a recommended or service-backed bound.
 Bigtable publishes no finite maximum lateness, and source concurrency can leave partitions queued
@@ -594,12 +489,7 @@ key is interpreted after projection, so the row key may appear anywhere in the D
 may reorder the lookup table's output. Composite keys, nested family fields and predicates that do
 not include row-key equality are rejected when the join is planned.
 
-```sql
-SELECT e.event_id, p.profile.name
-FROM events AS e
-LEFT JOIN profiles FOR SYSTEM_TIME AS OF e.proc_time AS p
-  ON e.user_id = p.rowkey;
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="lookup-join" >}}
 
 By default each input row performs a synchronous Bigtable point read. Set `lookup.async = true`
 for asynchronous point reads. A missing Bigtable row produces no lookup result, so a left join
@@ -893,23 +783,7 @@ The sink exposes writable metadata named `timestamp` with type `TIMESTAMP_LTZ(6)
 One value is applied to every cell written by that row; a delete ignores it because `deleteRow`
 has no cell timestamp.
 
-```sql
-CREATE TABLE profiles_with_event_time (
-  rowkey STRING,
-  profile ROW<name STRING, email STRING>,
-  cell_timestamp TIMESTAMP_LTZ(6) METADATA FROM 'timestamp',
-  PRIMARY KEY (rowkey) NOT ENFORCED
-) WITH (
-  'connector' = 'bigtable',
-  'project' = 'my-project',
-  'instance' = 'my-instance',
-  'table' = 'profiles',
-  'sink.insert-only-input-mode' = 'insert-only'
-);
-
-INSERT INTO profiles_with_event_time
-SELECT user_id, ROW(name, email), event_time FROM staged_profiles;
-```
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="cell-timestamps" >}}
 
 Flink casts the metadata column to the advertised `TIMESTAMP_LTZ(6)` type before the sink runtime
 receives it.

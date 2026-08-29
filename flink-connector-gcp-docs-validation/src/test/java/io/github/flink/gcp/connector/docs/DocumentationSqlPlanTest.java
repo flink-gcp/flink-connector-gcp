@@ -26,6 +26,7 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.operations.ModifyOperation;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.QueryOperation;
@@ -60,9 +61,10 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Planner validation for the Flink SQL regions rendered by the examples and quickstarts. */
-class DocumentationSqlPlanTest {
+/** Planner validation for the Flink SQL regions rendered by the documentation. */
+public class DocumentationSqlPlanTest {
 
     private static final String DOCS_PUBLIC_PROPERTY = "flink.gcp.docs.public";
     private static final Pattern START_MARKER = Pattern.compile("^-- tag::([^\\[]+)\\[\\]$");
@@ -76,11 +78,9 @@ class DocumentationSqlPlanTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("scenarios")
-    void documentedFlinkSqlCanBePlanned(Scenario scenario) {
+    void documentedFlinkSqlMatchesItsValidationContract(Scenario scenario) {
         List<String> regions =
-                scenario.snippets().stream()
-                        .map(DocumentationSqlPlanTest::readRegion)
-                        .collect(Collectors.toList());
+                scenario.steps().stream().map(ValidationStep::sql).collect(Collectors.toList());
         boolean batch = usesBatchRuntimeMode(regions);
         StreamExecutionEnvironment execution = StreamExecutionEnvironment.getExecutionEnvironment();
         StreamTableEnvironment streamTable =
@@ -92,12 +92,22 @@ class DocumentationSqlPlanTest {
         TableEnvironmentInternal table = (TableEnvironmentInternal) streamTable;
         scenario.setups().forEach(setup -> setup.apply(execution, streamTable));
 
-        for (int index = 0; index < scenario.snippets().size(); index++) {
-            Snippet snippet = scenario.snippets().get(index);
-            try {
-                plan(table, regions.get(index));
-            } catch (RuntimeException | AssertionError failure) {
-                throw new AssertionError("Failed to plan " + snippet, failure);
+        for (int index = 0; index < scenario.steps().size(); index++) {
+            ValidationStep step = scenario.steps().get(index);
+            String sql = regions.get(index);
+            if (step.expectedDiagnostics().isEmpty()) {
+                try {
+                    plan(table, sql);
+                } catch (RuntimeException | AssertionError failure) {
+                    throw new AssertionError("Failed to plan " + step.snippet(), failure);
+                }
+            } else {
+                var failure =
+                        assertThatThrownBy(
+                                () -> plan(table, sql),
+                                "%s must fail at its documented boundary",
+                                step.snippet());
+                step.expectedDiagnostics().forEach(failure::hasStackTraceContaining);
             }
         }
     }
@@ -146,7 +156,8 @@ class DocumentationSqlPlanTest {
                 renderedSqlSnippets(
                         List.of(
                                 publicDirectory.resolve("docs/examples"),
-                                publicDirectory.resolve("docs/quickstart")));
+                                publicDirectory.resolve("docs/quickstart"),
+                                publicDirectory.resolve("docs/connectors/table")));
 
         Set<Snippet> flinkRegions =
                 sourceRegions(
@@ -164,25 +175,26 @@ class DocumentationSqlPlanTest {
     }
 
     @Test
-    void everyFlinkRegionIsPlanned() throws IOException {
+    void everyFlinkRegionHasOneValidationBoundary() throws IOException {
         Set<Snippet> flinkRegions =
                 sourceRegions(
                         repositoryRoot()
                                 .resolve(
                                         "flink-connector-gcp-docs-validation/src/test/resources/sql-snippets"),
                         "flink");
-        Set<Snippet> planned = new HashSet<>();
+        Set<Snippet> validated = new HashSet<>();
         scenarios()
-                .flatMap(scenario -> scenario.snippets().stream())
+                .flatMap(scenario -> scenario.steps().stream())
+                .map(ValidationStep::snippet)
                 .forEach(
                         snippet ->
-                                assertThat(planned.add(snippet))
+                                assertThat(validated.add(snippet))
                                         .as(
-                                                "%s appears in more than one planning scenario",
+                                                "%s appears in more than one validation scenario",
                                                 snippet)
                                         .isTrue());
-        assertThat(planned)
-                .as("each Flink SQL source region is planned exactly once")
+        assertThat(validated)
+                .as("each Flink SQL source region has exactly one validation boundary")
                 .containsExactlyInAnyOrderElementsOf(flinkRegions);
     }
 
@@ -246,23 +258,331 @@ class DocumentationSqlPlanTest {
                 scenario("Pub/Sub sink quickstart", snippet("flink/PubSubQuickstart.sql", "sink")),
                 scenario(
                         "Pub/Sub source quickstart",
-                        snippet("flink/PubSubQuickstart.sql", "source")));
+                        snippet("flink/PubSubQuickstart.sql", "source")),
+                scenario(
+                        "BigQuery table reference overview",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_events AS "
+                                        + "SELECT 'event-1' AS id, CAST(1 AS BIGINT) AS amount, "
+                                        + "CAST('2026-01-01 00:00:00.000000' AS TIMESTAMP_LTZ(6)) "
+                                        + "AS event_ts, 'source' AS source, 1 AS version"),
+                        snippet("flink/BigQueryTableReference.sql", "overview")),
+                scenario(
+                        "BigQuery table reference query source",
+                        withFollowup(
+                                "flink/BigQueryTableReference.sql",
+                                "query-source",
+                                "SELECT * FROM recent_events;")),
+                scenario(
+                        "BigQuery table reference formatted CDC sequence",
+                        setup(
+                                "CREATE TEMPORARY VIEW ordered_changes AS "
+                                        + "SELECT 'order-1' AS id, CAST(1 AS BIGINT) AS amount, "
+                                        + "'0000000000000001' AS formatted_sequence"),
+                        snippet("flink/BigQueryTableReference.sql", "formatted-cdc-sequence")),
+                scenario(
+                        "Bigtable table reference overview and lookup join",
+                        List.of(
+                                setup(
+                                        "CREATE TEMPORARY VIEW staged_profiles AS "
+                                                + "SELECT 'user-1' AS user_id, 'Alice' AS name, "
+                                                + "'alice@example.com' AS email, "
+                                                + "CAST(1 AS BIGINT) AS requests, "
+                                                + "CAST('2026-01-01 00:00:00.000' "
+                                                + "AS TIMESTAMP_LTZ(3)) AS last_seen"),
+                                setup(
+                                        "CREATE TABLE events (event_id STRING, user_id STRING, "
+                                                + "proc_time AS PROCTIME()) WITH ("
+                                                + "'connector' = 'datagen', "
+                                                + "'number-of-rows' = '1')")),
+                        snippet("flink/BigtableTableReference.sql", "overview"),
+                        snippet("flink/BigtableTableReference.sql", "lookup-join")),
+                scenario(
+                        "Bigtable table reference change stream envelope",
+                        snippet("flink/BigtableTableReference.sql", "change-stream-envelope"),
+                        snippet(
+                                "flink/BigtableTableReference.sql",
+                                "unnest-change-stream-entries")),
+                scenario(
+                        "Bigtable table reference selected-cell source",
+                        withFollowup(
+                                "flink/BigtableTableReference.sql",
+                                "selected-cell-upserts",
+                                "SELECT * FROM current_profiles;")),
+                scenario(
+                        "Bigtable table reference application watermark fragment",
+                        fragment(
+                                "flink/BigtableTableReference.sql",
+                                "application-watermark",
+                                DocumentationSqlPlanTest::bigtableWatermarkScenario)),
+                scenario(
+                        "Bigtable table reference cell timestamps",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_profiles AS "
+                                        + "SELECT 'user-1' AS user_id, 'Alice' AS name, "
+                                        + "'alice@example.com' AS email, "
+                                        + "CAST('2026-01-01 00:00:00.000000' "
+                                        + "AS TIMESTAMP_LTZ(6)) AS event_time"),
+                        snippet("flink/BigtableTableReference.sql", "cell-timestamps")),
+                scenario(
+                        "Cloud Tasks table reference overview",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_orders AS "
+                                        + "SELECT 'order-1' AS order_id, "
+                                        + "CAST(12.34 AS DECIMAL(12, 2)) AS amount, "
+                                        + "'trace-1' AS trace_id, "
+                                        + "CAST('2026-01-01 00:00:00.000000' "
+                                        + "AS TIMESTAMP_LTZ(6)) AS dispatch_at"),
+                        snippet("flink/CloudTasksTableReference.sql", "overview")),
+                scenario(
+                        "Cloud Tasks table reference ADD JAR",
+                        command(
+                                "flink/CloudTasksTableReference.sql",
+                                "add-jar",
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-0.1.0-SNAPSHOT.jar';")),
+                scenario(
+                        "Cloud Tasks table reference form values",
+                        snippet("flink/CloudTasksTableReference.sql", "repeated-form-values"),
+                        snippet(
+                                "flink/CloudTasksTableReference.sql",
+                                "null-and-empty-form-values")),
+                scenario(
+                        "Cloud Tasks table reference structured form inputs",
+                        List.of(
+                                setup(
+                                        "CREATE TEMPORARY VIEW incoming_orders AS "
+                                                + "SELECT ARRAY['book', 'pen'] AS items, "
+                                                + "CAST(ROW('Alice', '100-0001') AS "
+                                                + "ROW<name STRING, postal_code STRING>) "
+                                                + "AS customer, "
+                                                + "MAP['priority', 'high'] AS attributes"),
+                                function("TO_API_FORM", new ToApiForm())),
+                        snippet("flink/CloudTasksTableReference.sql", "nested-form-names"),
+                        snippet("flink/CloudTasksTableReference.sql", "json-form-field"),
+                        snippet("flink/CloudTasksTableReference.sql", "custom-form-body")),
+                scenario(
+                        "Cloud Tasks table reference GET request",
+                        List.of(
+                                setup(
+                                        "CREATE TEMPORARY VIEW pending_searches AS "
+                                                + "SELECT 'flink connectors' AS query_text"),
+                                DocumentationSqlPlanTest::registerUrlEncodeForFlink1),
+                        snippet("flink/CloudTasksTableReference.sql", "get-request")),
+                scenario(
+                        "Cloud Tasks table reference App Engine target",
+                        snippet("flink/CloudTasksTableReference.sql", "app-engine-target")),
+                scenario(
+                        "Pub/Sub table reference sink and updating-query rejection",
+                        List.of(
+                                setup(
+                                        "CREATE TEMPORARY VIEW staged_orders AS "
+                                                + "SELECT 'order-1' AS order_id, 1 AS amount, "
+                                                + "'customer-1' AS customer_id"),
+                                setup(
+                                        "CREATE TEMPORARY VIEW staged AS "
+                                                + "SELECT 'order-1' AS id")),
+                        snippet("flink/PubSubTableReference.sql", "sink-overview"),
+                        negative(
+                                "flink/PubSubTableReference.sql",
+                                "updating-query-rejected",
+                                "orders",
+                                "doesn't support consuming update changes")),
+                scenario(
+                        "Pub/Sub table reference source",
+                        snippet("flink/PubSubTableReference.sql", "source-overview")),
+                scenario(
+                        "Pub/Sub table reference resource-name expressions",
+                        setup(
+                                "CREATE TEMPORARY VIEW subscription_rows AS "
+                                        + "SELECT 'projects/my-project/subscriptions/orders-sub' "
+                                        + "AS subscription"),
+                        fragment(
+                                "flink/PubSubTableReference.sql",
+                                "subscription-resource-spellings",
+                                DocumentationSqlPlanTest::subscriptionExpressionScenario)),
+                scenario(
+                        "Pub/Sub table reference timestamp start position",
+                        withFollowup(
+                                "flink/PubSubTableReference.sql",
+                                "timestamp-start-position",
+                                "SELECT * FROM orders;")),
+                scenario(
+                        "Pub/Sub table reference single-subscription auto-creation",
+                        withFollowup(
+                                "flink/PubSubTableReference.sql",
+                                "single-subscription-auto-creation",
+                                "SELECT * FROM orders;")),
+                scenario(
+                        "Pub/Sub table reference multi-subscription auto-creation",
+                        withFollowup(
+                                "flink/PubSubTableReference.sql",
+                                "multiple-subscription-auto-creation",
+                                "SELECT * FROM events;")),
+                scenario(
+                        "Pub/Sub table reference packed subscription map fragment",
+                        fragment(
+                                "flink/PubSubTableReference.sql",
+                                "packed-subscription-map",
+                                DocumentationSqlPlanTest::packedPubSubMapScenario)),
+                scenario(
+                        "Spanner table reference overview",
+                        setup(
+                                "CREATE TEMPORARY VIEW staged_orders AS "
+                                        + "SELECT CAST(1 AS BIGINT) AS order_id, "
+                                        + "'Alice' AS customer, "
+                                        + "CAST(12.34 AS DECIMAL(38, 9)) AS total, "
+                                        + "CAST('2026-01-01 00:00:00.000000000' "
+                                        + "AS TIMESTAMP_LTZ(9)) AS updated_at"),
+                        snippet("flink/SpannerTableReference.sql", "overview")),
+                scenario(
+                        "Spanner table reference ADD JAR",
+                        command(
+                                "flink/SpannerTableReference.sql",
+                                "add-jar",
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-0.1.0-SNAPSHOT.jar';")),
+                scenario(
+                        "Spanner table reference named schema",
+                        withFollowup(
+                                "flink/SpannerTableReference.sql",
+                                "named-schema",
+                                "SELECT * FROM sales_orders;")),
+                scenario(
+                        "Spanner table reference change stream",
+                        withFollowup(
+                                "flink/SpannerTableReference.sql",
+                                "change-stream",
+                                "SELECT * FROM order_changes;")),
+                scenario(
+                        "Spanner table reference schema marker fragment",
+                        fragment(
+                                "flink/SpannerTableReference.sql",
+                                "schema-markers",
+                                DocumentationSqlPlanTest::spannerSchemaMarkerScenario)));
     }
 
-    private static Scenario scenario(String name, Snippet... snippets) {
-        return scenario(name, List.of(), snippets);
+    private static Scenario scenario(String name, ValidationStep... steps) {
+        return scenario(name, List.of(), steps);
     }
 
-    private static Scenario scenario(String name, ScenarioSetup setup, Snippet... snippets) {
-        return scenario(name, List.of(setup), snippets);
+    private static Scenario scenario(String name, ScenarioSetup setup, ValidationStep... steps) {
+        return scenario(name, List.of(setup), steps);
     }
 
-    private static Scenario scenario(String name, List<ScenarioSetup> setups, Snippet... snippets) {
-        return new Scenario(name, setups, List.of(snippets));
+    private static Scenario scenario(
+            String name, List<ScenarioSetup> setups, ValidationStep... steps) {
+        return new Scenario(name, setups, List.of(steps));
     }
 
-    private static Snippet snippet(String file, String tag) {
-        return new Snippet(file, tag);
+    private static ValidationStep snippet(String file, String tag) {
+        return new ValidationStep(new Snippet(file, tag), SqlBoundary.IDENTITY, List.of());
+    }
+
+    private static ValidationStep command(String file, String tag, String expectedCommand) {
+        return new ValidationStep(
+                new Snippet(file, tag),
+                region -> {
+                    assertThat(region.strip()).isEqualTo(expectedCommand);
+                    return region;
+                },
+                List.of());
+    }
+
+    private static ValidationStep withFollowup(String file, String tag, String followup) {
+        return fragment(file, tag, region -> region + "\n" + followup);
+    }
+
+    private static ValidationStep fragment(String file, String tag, SqlBoundary boundary) {
+        return new ValidationStep(new Snippet(file, tag), boundary, List.of());
+    }
+
+    private static ValidationStep negative(String file, String tag, String... expectedDiagnostics) {
+        return new ValidationStep(
+                new Snippet(file, tag), SqlBoundary.IDENTITY, List.of(expectedDiagnostics));
+    }
+
+    private static ScenarioSetup setup(String sql) {
+        return (execution, table) -> plan((TableEnvironmentInternal) table, sql);
+    }
+
+    private static ScenarioSetup function(String name, ScalarFunction function) {
+        return (execution, table) -> table.createTemporarySystemFunction(name, function);
+    }
+
+    private static void registerUrlEncodeForFlink1(
+            StreamExecutionEnvironment execution, StreamTableEnvironment table) {
+        if ("flink1".equals(System.getProperty("flink.compat"))) {
+            table.createTemporarySystemFunction("URL_ENCODE", new UrlEncode());
+        }
+        table.explainSql("SELECT URL_ENCODE('flink connectors')");
+    }
+
+    private static String bigtableWatermarkScenario(String region) {
+        return "CREATE TABLE watermarked_changes (\n"
+                + "  name STRING,\n"
+                + "  profile_id STRING NOT NULL,\n"
+                + region
+                + ",\n"
+                + "  PRIMARY KEY (profile_id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'bigtable',\n"
+                + "  'project' = 'my-project',\n"
+                + "  'instance' = 'my-instance',\n"
+                + "  'table' = 'profiles',\n"
+                + "  'scan.mode' = 'change-stream',\n"
+                + "  'scan.change-stream.changelog-mode' = 'selected-cell',\n"
+                + "  'scan.app-profile-id' = 'single-cluster-profile',\n"
+                + "  'scan.change-stream.selected-cell.family' = 'state',\n"
+                + "  'scan.change-stream.selected-cell.qualifier-base64' = 'Y3VycmVudA==',\n"
+                + "  'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-a',\n"
+                + "  'value.format' = 'json'\n"
+                + ");";
+    }
+
+    private static String subscriptionExpressionScenario(String region) {
+        return Stream.of(region.split("\\R"))
+                .filter(line -> !line.isBlank())
+                .map(
+                        line -> {
+                            int comment = line.indexOf("--");
+                            String expression = comment < 0 ? line : line.substring(0, comment);
+                            return "SELECT "
+                                    + expression.stripTrailing()
+                                    + " FROM subscription_rows;";
+                        })
+                .collect(Collectors.joining("\n"));
+    }
+
+    private static String packedPubSubMapScenario(String region) {
+        return "CREATE TABLE packed_subscriptions (id STRING) WITH (\n"
+                + "  'connector' = 'pubsub',\n"
+                + "  'project' = 'my-project',\n"
+                + "  'format' = 'json',\n"
+                + region
+                + "\n);\n"
+                + "SELECT * FROM packed_subscriptions;";
+    }
+
+    private static String spannerSchemaMarkerScenario(String region) {
+        String requiredOptions =
+                "WITH (\n"
+                        + "  'connector' = 'spanner',\n"
+                        + "  'project' = 'my-project',\n"
+                        + "  'instance' = 'my-instance',\n"
+                        + "  'database' = 'orders-db',\n"
+                        + "  'table' = 'schema_values',\n";
+        String options =
+                region.replaceFirst("WITH \\(\\R", Matcher.quoteReplacement(requiredOptions));
+        return "CREATE TABLE schema_values (\n"
+                + "  id STRING,\n"
+                + "  related_ids ARRAY<STRING>,\n"
+                + "  metadata STRING,\n"
+                + "  payloads ARRAY<STRING>,\n"
+                + "  event BYTES,\n"
+                + "  status BIGINT\n"
+                + ") "
+                + options
+                + ";\n"
+                + "SELECT * FROM schema_values;";
     }
 
     private static ScenarioSetup upsertView(String name) {
@@ -560,20 +880,20 @@ class DocumentationSqlPlanTest {
     private static final class Scenario {
         private final String name;
         private final List<ScenarioSetup> setups;
-        private final List<Snippet> snippets;
+        private final List<ValidationStep> steps;
 
-        private Scenario(String name, List<ScenarioSetup> setups, List<Snippet> snippets) {
+        private Scenario(String name, List<ScenarioSetup> setups, List<ValidationStep> steps) {
             this.name = name;
             this.setups = setups;
-            this.snippets = snippets;
+            this.steps = steps;
         }
 
         private List<ScenarioSetup> setups() {
             return setups;
         }
 
-        private List<Snippet> snippets() {
-            return snippets;
+        private List<ValidationStep> steps() {
+            return steps;
         }
 
         @Override
@@ -582,8 +902,52 @@ class DocumentationSqlPlanTest {
         }
     }
 
+    private static final class ValidationStep {
+        private final Snippet snippet;
+        private final SqlBoundary boundary;
+        private final List<String> expectedDiagnostics;
+
+        private ValidationStep(
+                Snippet snippet, SqlBoundary boundary, List<String> expectedDiagnostics) {
+            this.snippet = snippet;
+            this.boundary = boundary;
+            this.expectedDiagnostics = expectedDiagnostics;
+        }
+
+        private Snippet snippet() {
+            return snippet;
+        }
+
+        private String sql() {
+            return boundary.enclose(readRegion(snippet));
+        }
+
+        private List<String> expectedDiagnostics() {
+            return expectedDiagnostics;
+        }
+    }
+
+    @FunctionalInterface
+    private interface SqlBoundary {
+        SqlBoundary IDENTITY = region -> region;
+
+        String enclose(String region);
+    }
+
     @FunctionalInterface
     private interface ScenarioSetup {
         void apply(StreamExecutionEnvironment execution, StreamTableEnvironment table);
+    }
+
+    public static final class ToApiForm extends ScalarFunction {
+        public String eval(String[] items, Map<String, String> attributes) {
+            return "";
+        }
+    }
+
+    public static final class UrlEncode extends ScalarFunction {
+        public String eval(String value) {
+            return value;
+        }
     }
 }
