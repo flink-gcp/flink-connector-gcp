@@ -33,8 +33,9 @@ import java.io.Serializable;
  *
  * <p>A batcher is bound to one table, so the writer holds one per destination. What sits under them
  * is the implementation's business: the production one shares a client across the tables of an
- * instance, which is why closing a batcher cannot be what releases it and this factory is {@link
- * AutoCloseable} in its own right.
+ * instance. Closing one batcher therefore cannot release the shared client by itself; the writer
+ * follows it with {@link #release(TableDestination)}, and this factory remains {@link
+ * AutoCloseable} for anything still held when the writer closes.
  */
 @Internal
 public interface MutationBatcherFactory extends Serializable, AutoCloseable {
@@ -45,11 +46,24 @@ public interface MutationBatcherFactory extends Serializable, AutoCloseable {
      * @param destination the table the batcher writes to
      * @return the batcher, owned by the caller
      * @throws IOException if the client cannot be created
+     * @throws InterruptedException if the caller is interrupted while waiting for a client slot
      */
-    MutationBatcher create(TableDestination destination) throws IOException;
+    MutationBatcher create(TableDestination destination) throws IOException, InterruptedException;
 
     /**
-     * Releases what this factory holds behind the batchers it created — the shared clients.
+     * Releases the factory's ownership associated with one successfully created batcher.
+     *
+     * <p>The caller closes that batcher before invoking this method. Production implementations may
+     * keep an instance client alive while sibling tables still use it and close it when the last
+     * table releases its batcher.
+     *
+     * @param destination the table whose batcher was closed
+     * @throws Exception if the shared resource cannot be released
+     */
+    void release(TableDestination destination) throws Exception;
+
+    /**
+     * Releases anything still held behind the batchers it created — the shared clients.
      *
      * <p>Called after every batcher it created has been closed, so an implementation may assume
      * nothing is still writing through them. An implementation holding nothing does nothing.

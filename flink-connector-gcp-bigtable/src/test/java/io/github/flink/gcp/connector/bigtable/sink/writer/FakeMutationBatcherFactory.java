@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.writer;
 
+import org.apache.flink.util.ExceptionUtils;
+
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import java.io.IOException;
@@ -51,10 +53,15 @@ final class FakeMutationBatcherFactory implements MutationBatcherFactory {
     /** Teardown events across every batcher, plus this factory's own close. */
     final List<String> events = new ArrayList<>();
 
+    /** Tables whose closed batchers the writer released, in call order. */
+    final List<TableDestination> released = new ArrayList<>();
+
     /** Failures the next {@link #create} calls throw, one each, until empty. */
     final Deque<IOException> createFailures = new ArrayDeque<>();
 
     int closeCalls;
+    Throwable releaseFailure;
+    Throwable closeFailure;
 
     /**
      * Registers (or returns) the batcher for a table, so a test can script it before it is used.
@@ -75,8 +82,20 @@ final class FakeMutationBatcherFactory implements MutationBatcherFactory {
     }
 
     @Override
-    public void close() {
+    public void release(TableDestination destination) throws Exception {
+        released.add(destination);
+        events.add("release:" + destination);
+        if (releaseFailure != null) {
+            ExceptionUtils.rethrowException(releaseFailure);
+        }
+    }
+
+    @Override
+    public void close() throws Exception {
         closeCalls++;
         events.add("factory");
+        if (closeFailure != null) {
+            ExceptionUtils.rethrowException(closeFailure);
+        }
     }
 }

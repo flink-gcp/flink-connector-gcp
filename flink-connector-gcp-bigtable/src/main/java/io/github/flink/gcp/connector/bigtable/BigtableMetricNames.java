@@ -42,6 +42,9 @@ public final class BigtableMetricNames {
     public static final String IN_FLIGHT_ENTRIES = "inFlightEntries";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_ENTRIES = "parkedEntries";
+    public static final String ACTIVE_CLIENTS = "activeClients";
+    public static final String CAPACITY_EVICTIONS = "capacityEvictions";
+    public static final String IDLE_EVICTIONS = "idleEvictions";
 
     /** Registered by the sink writer and by the source readers, on their own groups. */
     public static final String RECORDS_SKIPPED = "recordsSkipped";

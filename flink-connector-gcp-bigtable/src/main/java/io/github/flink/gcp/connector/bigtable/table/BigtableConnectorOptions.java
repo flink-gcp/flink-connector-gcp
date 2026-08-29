@@ -652,6 +652,26 @@ public final class BigtableConnectorOptions {
                             "How long a table's batcher is kept after its last write before the"
                                     + " writer closes it.");
 
+    /**
+     * Caps the open-or-closing Bigtable instance clients held by one writer subtask. At capacity
+     * the writer safely drains outstanding mutations and evicts the least recently used instance.
+     * Client creation waits interruptibly until physical close frees a slot. A Table sink names one
+     * instance, so every positive value is inert there; the key preserves one-to-one parity with
+     * the writer options.
+     */
+    public static final ConfigOption<Integer> SINK_MAX_ACTIVE_INSTANCES =
+            ConfigOptions.key("sink.max-active-instances")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Caps the open-or-closing Bigtable instance clients held by one writer"
+                                    + " subtask. At capacity the writer safely drains outstanding"
+                                    + " mutations and evicts the least recently used instance."
+                                    + " Client creation waits interruptibly until physical close"
+                                    + " frees a slot. A Table sink names one instance, so every"
+                                    + " positive value is inert there; the key preserves one-to-one"
+                                    + " parity with the writer options.");
+
     /** Whether the writer also reports its counters per destination table. */
     public static final ConfigOption<Boolean> SINK_METRICS_PER_DESTINATION =
             ConfigOptions.key("sink.metrics.per-destination")

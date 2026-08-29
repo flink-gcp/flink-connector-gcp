@@ -83,6 +83,7 @@ class BigtableOptionParityTest {
         map.put("recoveryMaxBackoff", BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF);
         map.put("recoveryMaxAttempts", BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS);
         map.put("destinationIdleTimeout", BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT);
+        map.put("maxActiveInstances", BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES);
         map.put("perDestinationMetrics", BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION);
         return Collections.unmodifiableMap(map);
     }

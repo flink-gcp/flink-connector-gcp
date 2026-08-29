@@ -65,6 +65,8 @@ final class BigtableWriterMetrics {
     private final Counter recordsSkipped;
     private final Counter tablesCreated;
     private final Counter columnFamiliesAdded;
+    private final Counter capacityEvictions;
+    private final Counter idleEvictions;
     private final ErrorClassCounters errorClasses;
     private final DestinationMetrics destinations;
 
@@ -84,6 +86,8 @@ final class BigtableWriterMetrics {
         this.recordsSkipped = metricGroup.counter(BigtableMetricNames.RECORDS_SKIPPED);
         this.tablesCreated = metricGroup.counter(BigtableMetricNames.TABLES_CREATED);
         this.columnFamiliesAdded = metricGroup.counter(BigtableMetricNames.COLUMN_FAMILIES_ADDED);
+        this.capacityEvictions = metricGroup.counter(BigtableMetricNames.CAPACITY_EVICTIONS);
+        this.idleEvictions = metricGroup.counter(BigtableMetricNames.IDLE_EVICTIONS);
         this.errorClasses = new ErrorClassCounters(metricGroup);
     }
 
@@ -95,11 +99,13 @@ final class BigtableWriterMetrics {
      * @param inFlightEntries entries the service has not acknowledged
      * @param inFlightBytes their serialized size, against {@code maxInFlightBytes}
      * @param parkedEntries entries held for the isolation pass or the auto-creation repair
+     * @param activeClients active instance slots currently tracked by the writer
      */
     void bindWriterState(
             Gauge<Integer> inFlightEntries,
             Gauge<Long> inFlightBytes,
-            Gauge<Integer> parkedEntries) {
+            Gauge<Integer> parkedEntries,
+            Gauge<Integer> activeClients) {
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_ENTRIES, inFlightEntries);
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
         // Nothing else reports the parks: an entry waiting for its solo verdict or for a repair
@@ -109,6 +115,17 @@ final class BigtableWriterMetrics {
         // often it catches the writer mid-isolation or mid-repair, which is what the throughput
         // cost of either looks like (#239).
         metricGroup.gauge(BigtableMetricNames.PARKED_ENTRIES, parkedEntries);
+        metricGroup.gauge(BigtableMetricNames.ACTIVE_CLIENTS, activeClients);
+    }
+
+    /** Counts one instance client removed because the configured capacity was full. */
+    void capacityEviction() {
+        capacityEvictions.inc();
+    }
+
+    /** Counts one instance client removed after its last table became idle. */
+    void idleEviction() {
+        idleEvictions.inc();
     }
 
     /**

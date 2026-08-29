@@ -57,6 +57,10 @@ class BigtableWriterTest {
 
     private static final TableDestination TABLE = TableDestination.of("p", "i", "orders");
     private static final TableDestination OTHER_TABLE = TableDestination.of("p", "i", "events");
+    private static final TableDestination SECOND_INSTANCE =
+            TableDestination.of("p", "second", "orders");
+    private static final TableDestination THIRD_INSTANCE =
+            TableDestination.of("p", "third", "orders");
 
     /**
      * A stall-warning threshold no test here reaches: these classes drive the writer's own clock
@@ -752,12 +756,165 @@ class BigtableWriterTest {
 
         assertThat(factory.batcherFor(TABLE).closeCalls).isEqualTo(1);
         assertThat(factory.batcherFor(OTHER_TABLE).closeCalls).isZero();
-        // The client behind it is not closed with it: it belongs to the factory and to the tables
-        // of the same instance that are still live.
+        assertThat(factory.released).containsExactly(TABLE);
+        assertThat(metricGroup.counterValue("idleEvictions")).isZero();
+        assertThat(activeClients(writer)).isEqualTo(1);
+        // The instance client remains active while the sibling table is still live.
         assertThat(factory.closeCalls).isZero();
 
         writer.write("orders/row-4", TestContexts.NO_OP);
         assertThat(factory.created).containsExactly(TABLE, OTHER_TABLE, TABLE);
+    }
+
+    @Test
+    void countsAnIdleInstanceEvictionOnlyAfterItsLastTableIsGone() throws Exception {
+        MutableClock clock = new MutableClock();
+        SinkWriter<String> writer =
+                multiTableWriter(
+                        BigtableWriterOptions.builder()
+                                .destinationIdleTimeout(Duration.ofMinutes(10))
+                                .build(),
+                        failJob(),
+                        clock);
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        clock.advance(Duration.ofMinutes(11));
+
+        writer.flush(false);
+
+        assertThat(factory.released).containsExactly(TABLE, OTHER_TABLE);
+        assertThat(metricGroup.counterValue("idleEvictions")).isEqualTo(1);
+        assertThat(activeClients(writer)).isZero();
+        assertThat(metricGroup.<Integer>gaugeValue("activeClients")).isZero();
+    }
+
+    @Test
+    void manyTablesInOneInstanceConsumeOneCapacitySlot() throws Exception {
+        SinkWriter<String> writer =
+                multiTableWriter(
+                        BigtableWriterOptions.builder().maxActiveInstances(1).build(),
+                        failJob(),
+                        System::nanoTime);
+
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+
+        assertThat(factory.released).isEmpty();
+        assertThat(metricGroup.counterValue("capacityEvictions")).isZero();
+        assertThat(activeClients(writer)).isEqualTo(1);
+    }
+
+    @Test
+    void drainsAndEvictsTheLeastRecentlyUsedInstanceAtCapacity() throws Exception {
+        SinkWriter<String> writer = instanceWriter(2);
+        writer.write("first/row-1", TestContexts.NO_OP);
+        writer.write("second/row-2", TestContexts.NO_OP);
+        // Touch the first instance, making the second one least recently used.
+        writer.write("first/row-3", TestContexts.NO_OP);
+
+        writer.write("third/row-4", TestContexts.NO_OP);
+
+        assertThat(inFlight(writer)).isEqualTo(1);
+        assertThat(factory.released).containsExactly(SECOND_INSTANCE);
+        assertThat(factory.batcherFor(SECOND_INSTANCE).shutdownCalls).isEqualTo(1);
+        assertThat(factory.batcherFor(SECOND_INSTANCE).closeCalls).isEqualTo(1);
+        assertThat(factory.batcherFor(TABLE).sentRowKeys())
+                .containsExactly(List.of("first/row-1", "first/row-3"));
+        assertThat(factory.batcherFor(SECOND_INSTANCE).sentRowKeys())
+                .containsExactly(List.of("second/row-2"));
+        assertThat(metricGroup.counterValue("capacityEvictions")).isEqualTo(1);
+        assertThat(activeClients(writer)).isEqualTo(2);
+        assertThat(metricGroup.<Integer>gaugeValue("activeClients")).isEqualTo(2);
+    }
+
+    @Test
+    void capacityEvictionAttemptsEveryReleaseAndDoesNotFailForHygieneCloseFailures()
+            throws Exception {
+        SinkWriter<String> writer = instanceWriter(1);
+        writer.write("first/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        factory.batcherFor(TABLE).closeFailure = new IllegalStateException("batcher close");
+        factory.releaseFailure = new IllegalStateException("client close");
+
+        writer.write("second/row-3", TestContexts.NO_OP);
+
+        assertThat(factory.batcherFor(TABLE).closeCalls).isEqualTo(1);
+        assertThat(factory.batcherFor(OTHER_TABLE).closeCalls).isEqualTo(1);
+        assertThat(factory.released).containsExactly(TABLE, OTHER_TABLE);
+        assertThat(factory.created).containsExactly(TABLE, OTHER_TABLE, SECOND_INSTANCE);
+        assertThat(activeClients(writer)).isEqualTo(1);
+        assertThat(metricGroup.counterValue("capacityEvictions")).isEqualTo(1);
+    }
+
+    @Test
+    void capacityEvictionPropagatesAndRestoresADirectInterruption() throws Exception {
+        SinkWriter<String> writer = instanceWriter(1);
+        writer.write("first/row-1", TestContexts.NO_OP);
+        InterruptedException interrupted = new InterruptedException("cancelled batcher close");
+        factory.batcherFor(TABLE).closeFailure = interrupted;
+
+        try {
+            assertThatThrownBy(() -> writer.write("second/row-2", TestContexts.NO_OP))
+                    .isSameAs(interrupted);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void capacityEvictionFindsAnInterruptionSuppressedByAnEarlierCloseFailure() throws Exception {
+        SinkWriter<String> writer = instanceWriter(1);
+        writer.write("orders/row-1", TestContexts.NO_OP);
+        writer.write("events/row-2", TestContexts.NO_OP);
+        IllegalStateException first = new IllegalStateException("first batcher close failed");
+        InterruptedException interrupted = new InterruptedException("later release interrupted");
+        factory.batcherFor(TABLE).closeFailure = first;
+        factory.releaseFailure = interrupted;
+
+        try {
+            assertThatThrownBy(() -> writer.write("second/row-3", TestContexts.NO_OP))
+                    .isInstanceOf(InterruptedException.class)
+                    .hasMessage("later release interrupted")
+                    .hasCause(first);
+            assertThat(first.getSuppressed()).contains(interrupted);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+            assertThat(factory.released).containsExactly(TABLE, OTHER_TABLE);
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void capacityEvictionKeepsAFatalReleaseFailureAboveAnEarlierInterruption() throws Exception {
+        SinkWriter<String> writer = instanceWriter(1);
+        writer.write("first/row-1", TestContexts.NO_OP);
+        InterruptedException interrupted = new InterruptedException("batcher close interrupted");
+        OutOfMemoryError fatal = new OutOfMemoryError("client reaper allocation failed");
+        factory.batcherFor(TABLE).closeFailure = interrupted;
+        factory.releaseFailure = fatal;
+
+        try {
+            assertThatThrownBy(() -> writer.write("second/row-2", TestContexts.NO_OP))
+                    .isSameAs(fatal);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    @Test
+    void capacityEvictionFindsAFatalReleaseFailureBelowAnEarlierNonfatalError() throws Exception {
+        SinkWriter<String> writer = instanceWriter(1);
+        writer.write("first/row-1", TestContexts.NO_OP);
+        NoClassDefFoundError first = new NoClassDefFoundError("batcher close failed");
+        OutOfMemoryError fatal = new OutOfMemoryError("client reaper allocation failed");
+        factory.batcherFor(TABLE).closeFailure = first;
+        factory.releaseFailure = fatal;
+
+        assertThatThrownBy(() -> writer.write("second/row-2", TestContexts.NO_OP))
+                .isSameAs(fatal)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(first));
     }
 
     @Test
@@ -853,6 +1010,38 @@ class BigtableWriterTest {
     }
 
     @Test
+    void terminalCloseFindsAFatalFactoryFailureBelowAnEarlierNonfatalError() throws Exception {
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults());
+        writer.write("row-1", TestContexts.NO_OP);
+        NoClassDefFoundError first = new NoClassDefFoundError("batcher close failed");
+        OutOfMemoryError fatal = new OutOfMemoryError("factory close failed");
+        batcher.closeFailure = first;
+        factory.closeFailure = fatal;
+
+        assertThatThrownBy(writer::close)
+                .isSameAs(fatal)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(first));
+        // The first close makes the diagnostic graph cyclic: fatal -> first -> fatal. Flink may
+        // close a failed operator again while tearing it down, and that traversal must not replace
+        // the original failure with StackOverflowError.
+        assertThatThrownBy(writer::close).isSameAs(fatal);
+    }
+
+    @Test
+    void terminalClosePreservesAnEarlierFailureWhenEscalatingANonfatalError() throws Exception {
+        SinkWriter<String> writer = writer(BigtableWriterOptions.defaults());
+        writer.write("row-1", TestContexts.NO_OP);
+        IOException first = new IOException("batcher close failed");
+        NoClassDefFoundError later = new NoClassDefFoundError("factory close failed");
+        batcher.closeFailure = first;
+        factory.closeFailure = later;
+
+        assertThatThrownBy(writer::close)
+                .isSameAs(later)
+                .satisfies(failure -> assertThat(failure.getSuppressed()).contains(first));
+    }
+
+    @Test
     void wrapsASynchronousBatcherFailure() {
         SinkWriter<String> writer = writer(BigtableWriterOptions.defaults());
         batcher.addFailure = new IllegalStateException("batcher is closed");
@@ -917,6 +1106,32 @@ class BigtableWriterTest {
         return sink.createWriter(factory, new FakeTableAdmin(), mailbox, metricGroup);
     }
 
+    private SinkWriter<String> instanceWriter(int maxActiveInstances) {
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .destinationResolver(
+                                        (element, context) -> {
+                                            if (element.startsWith("events/")) {
+                                                return OTHER_TABLE;
+                                            }
+                                            if (element.startsWith("second/")) {
+                                                return SECOND_INSTANCE;
+                                            }
+                                            if (element.startsWith("third/")) {
+                                                return THIRD_INSTANCE;
+                                            }
+                                            return TABLE;
+                                        })
+                                .serializer(serializer())
+                                .writerOptions(
+                                        BigtableWriterOptions.builder()
+                                                .maxActiveInstances(maxActiveInstances)
+                                                .build())
+                                .build();
+        return sink.createWriter(factory, new FakeTableAdmin(), mailbox, metricGroup);
+    }
+
     private static BigtableSerializationSchema<String> serializer() {
         return (element, context) -> entry(element);
     }
@@ -946,6 +1161,11 @@ class BigtableWriterTest {
     @SuppressWarnings("unchecked")
     private static int parked(SinkWriter<String> writer) {
         return ((BigtableWriter<String>) writer).getParkedEntries();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static int activeClients(SinkWriter<String> writer) {
+        return ((BigtableWriter<String>) writer).getActiveClients();
     }
 
     private static String rowKey(RowMutationEntry entry) {

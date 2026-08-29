@@ -113,6 +113,9 @@ public final class BigtableWriterOptions implements Serializable {
      */
     public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofHours(1);
 
+    /** Default maximum number of open-or-closing clients held by one writer subtask. */
+    public static final int DEFAULT_MAX_ACTIVE_INSTANCES = 16;
+
     /**
      * The client's own flow-control budget for the bulk-mutation path: 20,000 accumulated entries
      * and 100 MiB, blocking, neither settable through its public API ({@code
@@ -168,6 +171,7 @@ public final class BigtableWriterOptions implements Serializable {
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
     private final Duration destinationIdleTimeout;
+    private final int maxActiveInstances;
     private final boolean perDestinationMetrics;
 
     private BigtableWriterOptions(Builder builder) {
@@ -180,6 +184,7 @@ public final class BigtableWriterOptions implements Serializable {
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
+        this.maxActiveInstances = builder.maxActiveInstances;
         this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
@@ -197,8 +202,9 @@ public final class BigtableWriterOptions implements Serializable {
      * entries, at most 64 MiB of them, a job failure after {@value
      * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
      * policy, a table auto-creation recovery budget of 500 ms doubling to 10 s over at most 10
-     * attempts, an idle table's batcher dropped after {@link #DEFAULT_DESTINATION_IDLE_TIMEOUT},
-     * and no per-table counters.
+     * attempts, an idle table's batcher dropped after {@link #DEFAULT_DESTINATION_IDLE_TIMEOUT}, at
+     * most {@value #DEFAULT_MAX_ACTIVE_INSTANCES} active instance clients per subtask, and no
+     * per-table counters.
      *
      * @return the default options
      */
@@ -256,6 +262,15 @@ public final class BigtableWriterOptions implements Serializable {
         return destinationIdleTimeout;
     }
 
+    /**
+     * Returns the maximum number of Bigtable instance clients held by one writer subtask.
+     *
+     * <p>The zero fallback preserves the default for options serialized before this field existed.
+     */
+    public int getMaxActiveInstances() {
+        return maxActiveInstances == 0 ? DEFAULT_MAX_ACTIVE_INSTANCES : maxActiveInstances;
+    }
+
     /** Returns whether per-table counters are registered beside the writer's totals. */
     public boolean isPerDestinationMetrics() {
         return perDestinationMetrics;
@@ -288,6 +303,7 @@ public final class BigtableWriterOptions implements Serializable {
                 && maxInFlightBytes == that.maxInFlightBytes
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
+                && getMaxActiveInstances() == that.getMaxActiveInstances()
                 && perDestinationMetrics == that.perDestinationMetrics
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
                 && Objects.equals(batchRequestByteThreshold, that.batchRequestByteThreshold)
@@ -308,6 +324,7 @@ public final class BigtableWriterOptions implements Serializable {
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
                 destinationIdleTimeout,
+                getMaxActiveInstances(),
                 perDestinationMetrics);
     }
 
@@ -331,6 +348,8 @@ public final class BigtableWriterOptions implements Serializable {
                 + recoveryMaxAttempts
                 + ", destinationIdleTimeout="
                 + destinationIdleTimeout
+                + ", maxActiveInstances="
+                + getMaxActiveInstances()
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + "}";
@@ -349,6 +368,7 @@ public final class BigtableWriterOptions implements Serializable {
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
+        private int maxActiveInstances = DEFAULT_MAX_ACTIVE_INSTANCES;
         private boolean perDestinationMetrics;
 
         private Builder() {}
@@ -519,8 +539,9 @@ public final class BigtableWriterOptions implements Serializable {
          * {@code Duration.ofNanos(Long.MAX_VALUE)}, about 292 years, which is as long as the
          * writer's nanosecond clock can express.
          *
-         * <p>A client is not evicted with the table: the sink holds one per (project, instance),
-         * shared by that instance's tables, and it is released when the sink closes.
+         * <p>The sink holds one client per (project, instance), shared by that instance's tables.
+         * Evicting one table releases its ownership of that client; the client closes when the
+         * instance's last table is evicted.
          *
          * @param destinationIdleTimeout the idle timeout, positive and at most {@code
          *     Duration.ofNanos(Long.MAX_VALUE)}
@@ -535,6 +556,25 @@ public final class BigtableWriterOptions implements Serializable {
             this.destinationIdleTimeout =
                     OptionChecks.checkExpressibleInNanos(
                             destinationIdleTimeout, "destinationIdleTimeout");
+            return this;
+        }
+
+        /**
+         * Caps the open-or-closing Bigtable instance clients held by one writer subtask. When a new
+         * instance would exceed the cap, the writer safely drains outstanding work and evicts the
+         * least recently used instance. Client close normally runs off the task thread, but keeps
+         * its slot until physical shutdown finishes; creation waits interruptibly when every slot
+         * remains occupied. If the runtime refuses the handoff, close falls back to the task thread
+         * to avoid a resource leak. A later record for that instance recreates its client
+         * transparently. Defaults to {@value #DEFAULT_MAX_ACTIVE_INSTANCES}.
+         *
+         * @param maxActiveInstances the instance-client cap, positive
+         * @return this builder
+         */
+        public Builder maxActiveInstances(int maxActiveInstances) {
+            Preconditions.checkArgument(
+                    maxActiveInstances > 0, "maxActiveInstances must be positive");
+            this.maxActiveInstances = maxActiveInstances;
             return this;
         }
 

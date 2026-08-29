@@ -64,7 +64,11 @@ overwrites a cell or adds a version to it; see
 
 **A destination costs a batcher.** The client binds a bulk mutation batcher to one table, so the
 writer holds one per table a resolver names, over a client shared by the tables of an instance; an
-idle table's batcher is dropped after `destinationIdleTimeout`. The in-flight bounds below are the
+idle table's batcher is dropped after `destinationIdleTimeout`, and the client normally starts
+closing on a daemon reaper when its last live table is gone. If the runtime refuses that handoff,
+the factory closes the client on the task thread to avoid leaking it. `maxActiveInstances` bounds
+open and closing clients held by each writer subtask; a physical close keeps its slot, so client
+creation waits interruptibly when every slot is still occupied. The in-flight bounds below are the
 writer's, summed across destinations rather than split among them. See
 [Per-record destinations]({{< relref "docs/connectors/datastream/bigtable" >}}#per-record-destinations).
 
@@ -84,6 +88,7 @@ setting options at all.
 | `recoveryMaxBackoff` | 10 s | Its backoff cap; must be at least the initial backoff |
 | `recoveryMaxAttempts` | 10 | Its attempt cap, after which the job fails with the incident's cause. One repair covers every table an incident left missing and shares this budget across them; a post-ensure missing-family response for an undeclared, absent family fails immediately instead |
 | `destinationIdleTimeout` | 1 h | How long a table may go without mutations before the writer drops its batcher. Swept at the end of a checkpoint's flush; an evicted table rebuilds transparently. To never evict, set a very large duration — up to `Duration.ofNanos(Long.MAX_VALUE)` |
+| `maxActiveInstances` | 16 | Caps open-or-closing instance clients per writer subtask. At capacity the writer drains outstanding mutations and evicts the least recently used instance; client creation waits interruptibly until physical close frees the slot. Many tables sharing one instance consume one slot |
 | `perDestinationMetrics` | `false` | Registers per-table `recordsSend` and `sendErrors` counters beside the writer's totals. Off by default: Flink cannot unregister a metric, so with a resolver every table the job writes to keeps a row in the registry for the task's lifetime. See [Metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) |
 
 **Every count in this table counts entries, not mutations.** An entry is one `RowMutationEntry` —
