@@ -1617,8 +1617,10 @@ set so high that only `flush` can drive delivery, which must also drain the in-f
 across repeated write/flush cycles on one writer). A MiniCluster streaming integration test
 drives the sink exclusively through the public builder with `emulatorEndpoint(...)`, dynamic
 destinations and topic auto-creation under real 1-second checkpoints, asserting complete
-delivery. All of these integration tests run in PR CI without cloud credentials; the sink's one
-credential-gated class is part of the real-GCP suite described below.
+delivery.
+All of these integration tests run in PR CI without cloud credentials.
+The sink's credential-gated classes cover the batch-rejection and publisher-lifecycle outcomes in
+the real-GCP suite described below.
 
 On the source side, unit tests cover the split-assignment plan (table-driven over subscription ×
 parallelism combinations: every subscription covered, every subtask busy under `NONE`, exactly one
@@ -1708,7 +1710,8 @@ leave it green
 "a paused split is a state jobs actually reach" would be an argument from reading Flink's source
 rather than a measurement.
 
-A **real-GCP gated suite** covers what the emulator cannot, gated on `PUBSUB_IT_PROJECT`
+A **real-GCP gated suite** complements the credential-free coverage with service-specific
+properties and selected production SDK/service acceptance, gated on `PUBSUB_IT_PROJECT`
 (application-default credentials; skipped when unset, keeping `./mvnw verify` credential-free, and
 never selected by an ordinary build even when it is set, because of the `@Tag("gated")` these
 classes carry — running the suite is opt-in per command, through `just e2e`,
@@ -1720,11 +1723,14 @@ provisions), seek-to-timestamp on an ordering-enabled subscription, the create-o
 (retention, expiration, filter) persisting on the service, prompt redelivery after a nack-on-close
 (an observed-behaviour bound, deliberately not a contract), the subscription admin's
 permission-denied messages, exercised by impersonating a deliberately unauthorized service account
-(`e2e-no-pubsub`, provisioned with no Pub/Sub role), and — on the sink side — the batch-rejection
-outcome the confirmed-solo routing above rests on ([#303]({{< param BookRepo >}}/issues/303)):
-a valid message co-batched with an invalid one is published rather than dropped, exactly the
-invalid one reaches a dropping handler, and the flush completes. Topics and subscriptions are
-created under
+(`e2e-no-pubsub`, provisioned with no Pub/Sub role).
+On the sink side, the suite covers the batch-rejection outcome the confirmed-solo routing above
+rests on ([#303]({{< param BookRepo >}}/issues/303)): a valid message co-batched with an invalid one
+is published rather than dropped, exactly the invalid one reaches a dropping handler, and the flush
+completes.
+It also capacity-evicts a safely drained publisher, lazily recreates it, and verifies that both
+subscriptions receive every accepted record ([#1156]({{< param BookRepo >}}/issues/1156)).
+Topics and subscriptions are created under
 per-run UUID-suffixed names and deleted afterwards. For local runs, put `PUBSUB_IT_PROJECT` in the
 uncommitted `.env` at the repository root (in a git worktree, run `just worktree-env` once to make it
 reachable there) — and note the IAM tests impersonate `e2e-no-pubsub`,
