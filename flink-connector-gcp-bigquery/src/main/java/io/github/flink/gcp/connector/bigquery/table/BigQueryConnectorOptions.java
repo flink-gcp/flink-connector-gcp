@@ -863,6 +863,62 @@ public final class BigQueryConnectorOptions {
                                     + " about 8 MiB per file.");
 
     /**
+     * The maximum number of destination files each writer subtask holds open. Opening another
+     * destination finishes and evicts the least recently used file.
+     */
+    public static final ConfigOption<Integer> SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS =
+            ConfigOptions.key("sink.file-loads.max-open-destinations")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum number of destination files each writer subtask holds"
+                                    + " open. Opening another destination finishes and evicts the"
+                                    + " least recently used file.");
+
+    /**
+     * The maximum number of staging files each writer subtask retains for the next commit,
+     * including files that are still open. It must be at least
+     * sink.file-loads.max-open-destinations. Reaching the limit fails the task before another file
+     * is opened.
+     */
+    public static final ConfigOption<Integer> SINK_FILE_LOADS_MAX_PENDING_FILES =
+            ConfigOptions.key("sink.file-loads.max-pending-files")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum number of staging files each writer subtask retains for"
+                                    + " the next commit, including files that are still open."
+                                    + " It must be at least"
+                                    + " sink.file-loads.max-open-destinations."
+                                    + " Reaching the limit fails the task before another file is"
+                                    + " opened.");
+
+    /**
+     * How long an inactive destination file remains open before the writer finishes it and releases
+     * its conversion state.
+     */
+    public static final ConfigOption<Duration> SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT =
+            ConfigOptions.key("sink.file-loads.destination-idle-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long an inactive destination file remains open before the writer"
+                                    + " finishes it and releases its conversion state.");
+
+    /**
+     * The largest serialized protobuf row accepted by the staging writer. Larger rows are routed to
+     * the configured failure handler before a destination file is opened.
+     */
+    public static final ConfigOption<MemorySize> SINK_FILE_LOADS_MAX_SERIALIZED_ROW_BYTES =
+            ConfigOptions.key("sink.file-loads.max-serialized-row-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The largest serialized protobuf row accepted by the staging writer."
+                                    + " Larger rows are routed to the configured failure handler"
+                                    + " before a destination file is opened.");
+
+    /**
      * The file format rows are staged in before loading. Avro is the recommended value; Parquet is
      * opt-in, needs dependencies this connector does not ship, cannot carry a JSON column (such a
      * destination falls back to Avro), and loads several times more slowly below 256 MiB of input

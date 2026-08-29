@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
+import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
@@ -41,6 +42,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.apache.avro.file.DataFileReader;
@@ -271,14 +273,29 @@ class FileLoadsWriterTest {
 
     private static FileLoadsWriter<TestRow> writer(
             BigQuerySinkConfig<TestRow> config, StagingStorage storage, FileLoadsOptions options) {
+        return writer(
+                config,
+                storage,
+                options,
+                new ManualProcessingTimeService(),
+                TestSinkWriterMetricGroup.create());
+    }
+
+    private static FileLoadsWriter<TestRow> writer(
+            BigQuerySinkConfig<TestRow> config,
+            StagingStorage storage,
+            FileLoadsOptions options,
+            ProcessingTimeService timers,
+            TestSinkWriterMetricGroup metrics) {
         return new FileLoadsWriter<>(
                 config,
                 options,
                 storage,
-                TestSinkWriterMetricGroup.create(),
+                metrics,
                 "0123456789abcdef0123456789abcdef",
                 3,
-                1);
+                1,
+                timers);
     }
 
     private static FileLoadsWriter<TestRow> writer(
@@ -293,7 +310,8 @@ class FileLoadsWriterTest {
                 TestSinkWriterMetricGroup.create(),
                 "0123456789abcdef0123456789abcdef",
                 3,
-                1);
+                1,
+                new ManualProcessingTimeService());
     }
 
     private static List<GenericRecord> readAvro(byte[] bytes) throws IOException {
@@ -304,6 +322,25 @@ class FileLoadsWriterTest {
             reader.forEach(records::add);
         }
         return records;
+    }
+
+    @Test
+    void rejectsAMissingProcessingTimeService() {
+        assertThatThrownBy(
+                        () ->
+                                new FileLoadsWriter<>(
+                                        config(FailureHandler.failJob()),
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://bucket/prefix")
+                                                .build(),
+                                        new InMemoryStagingStorage(),
+                                        TestSinkWriterMetricGroup.create(),
+                                        "0123456789abcdef0123456789abcdef",
+                                        3,
+                                        1,
+                                        null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("timerService");
     }
 
     @Test
@@ -335,7 +372,8 @@ class FileLoadsWriterTest {
                         metrics,
                         "0123456789abcdef0123456789abcdef",
                         3,
-                        1);
+                        1,
+                        new ManualProcessingTimeService());
 
         writer.write(new TestRow("ignored", "record", 1L), CONTEXT);
 
@@ -375,7 +413,8 @@ class FileLoadsWriterTest {
                         metrics,
                         "0123456789abcdef0123456789abcdef",
                         3,
-                        1);
+                        1,
+                        new ManualProcessingTimeService());
 
         assertThatThrownBy(() -> writer.write(new TestRow("ignored", "record", 1L), CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -415,7 +454,8 @@ class FileLoadsWriterTest {
                         metrics,
                         "0123456789abcdef0123456789abcdef",
                         3,
-                        1);
+                        1,
+                        new ManualProcessingTimeService());
 
         assertThatThrownBy(() -> writer.write(new TestRow("ignored", "record", 1L), CONTEXT))
                 .isInstanceOf(IOException.class)
@@ -456,7 +496,8 @@ class FileLoadsWriterTest {
                         metrics,
                         "0123456789abcdef0123456789abcdef",
                         3,
-                        1);
+                        1,
+                        new ManualProcessingTimeService());
 
         assertThatThrownBy(() -> writer.write(new TestRow("ignored", "record", 1L), CONTEXT))
                 .isInstanceOf(IllegalStateException.class)
@@ -529,7 +570,8 @@ class FileLoadsWriterTest {
                         TestSinkWriterMetricGroup.create(),
                         "0123456789abcdef0123456789abcdef",
                         3,
-                        1);
+                        1,
+                        new ManualProcessingTimeService());
 
         writer.write(new TestRow("t", "a", 1L), CONTEXT);
         FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
@@ -537,6 +579,39 @@ class FileLoadsWriterTest {
 
         assertThat(committable.getFormat()).isEqualTo(StagingFormat.AVRO);
         assertThat(committable.getUri()).endsWith(".avro");
+    }
+
+    @Test
+    void jsonFallbackWarningIsBoundedAcrossDestinationReactivation() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                new FileLoadsWriter<>(
+                        config(FailureHandler.failJob(), SCHEMA_WITH_JSON),
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .stagingFormat(StagingFormat.PARQUET)
+                                .parquetCompression(ParquetCompression.ZSTD)
+                                .maxOpenDestinations(1)
+                                .build(),
+                        storage,
+                        TestSinkWriterMetricGroup.create(),
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1,
+                        new ManualProcessingTimeService());
+
+        try (LogCapture capture = LogCapture.of(FileLoadsWriter.class);
+                writer) {
+            writer.write(new TestRow("a", "row", 1L), CONTEXT);
+            writer.write(new TestRow("b", "row", 2L), CONTEXT);
+            writer.write(new TestRow("a", "row", 3L), CONTEXT);
+
+            assertThat(capture.getMessages())
+                    .filteredOn(message -> message.contains("later fallback destinations"))
+                    .singleElement()
+                    .asString()
+                    .contains("p.d.a");
+        }
     }
 
     @Test
@@ -553,7 +628,8 @@ class FileLoadsWriterTest {
                         TestSinkWriterMetricGroup.create(),
                         "0123456789abcdef0123456789abcdef",
                         3,
-                        1);
+                        1,
+                        new ManualProcessingTimeService());
 
         writer.write(new TestRow("t", "a", 1L), CONTEXT);
         FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
@@ -945,6 +1021,243 @@ class FileLoadsWriterTest {
                 .satisfies(e -> assertThat(e.getSuppressed()).containsExactly(clientTeardown));
         assertThat(handler.closed).isTrue();
         assertThat(storage.getCloseCount()).isEqualTo(1);
+    }
+
+    @Test
+    void capacityFinishesTheLeastRecentlyUsedDestinationAndReopenUsesANewUri() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxOpenDestinations(2)
+                                .build(),
+                        new ManualProcessingTimeService(),
+                        metrics);
+
+        writer.write(new TestRow("a", "a1", 1L), CONTEXT);
+        writer.write(new TestRow("b", "b1", 1L), CONTEXT);
+        writer.write(new TestRow("a", "a2", 2L), CONTEXT);
+        writer.write(new TestRow("c", "c1", 1L), CONTEXT);
+
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(2);
+        assertThat(metrics.counterValue("capacityEvictions")).isEqualTo(1);
+        assertThat(storage.getObjects().keySet()).singleElement().asString().contains("/p.d.b/");
+
+        writer.write(new TestRow("b", "b2", 2L), CONTEXT);
+        Collection<FileLoadsCommittable> committables = writer.prepareCommit();
+
+        assertThat(committables).hasSize(4);
+        assertThat(committables).extracting(FileLoadsCommittable::getUri).doesNotHaveDuplicates();
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isZero();
+        assertThat(metrics.counterValue("destinationActivations")).isEqualTo(4);
+        assertThat(metrics.counterValue("capacityEvictions")).isEqualTo(2);
+    }
+
+    @Test
+    void invalidNewDestinationDoesNotEvictAHealthyActiveDestination() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.logAndDrop()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxOpenDestinations(1)
+                                .build(),
+                        new ManualProcessingTimeService(),
+                        metrics);
+
+        writer.write(new TestRow("a", "valid", 1L), CONTEXT);
+        writer.write(new TestRow("b", "invalid", 1L, false, true), CONTEXT);
+
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(1);
+        assertThat(metrics.counterValue("capacityEvictions")).isZero();
+        assertThat(storage.getObjects()).isEmpty();
+        assertThat(writer.prepareCommit())
+                .singleElement()
+                .extracting(FileLoadsCommittable::getDestination)
+                .isEqualTo(TableDestination.of("p", "d", "a"));
+    }
+
+    @Test
+    void defaultCapacityBoundsTheActiveDestinationGauge() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        new ManualProcessingTimeService(),
+                        metrics);
+
+        for (int i = 0; i < 17; i++) {
+            writer.write(new TestRow("t" + i, "row", (long) i), CONTEXT);
+        }
+
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(16);
+        assertThat(metrics.counterValue("capacityEvictions")).isEqualTo(1);
+        assertThat(writer.prepareCommit()).hasSize(17);
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isZero();
+    }
+
+    @Test
+    void pendingFileLimitFailsBeforeDestinationChurnCanRetainAnotherFile() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxOpenDestinations(2)
+                                .maxPendingFiles(3)
+                                .build(),
+                        new ManualProcessingTimeService(),
+                        metrics);
+
+        writer.write(new TestRow("a", "row", 1L), CONTEXT);
+        writer.write(new TestRow("b", "row", 2L), CONTEXT);
+        writer.write(new TestRow("c", "row", 3L), CONTEXT);
+
+        assertThatThrownBy(() -> writer.write(new TestRow("d", "row", 4L), CONTEXT))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("reached maxPendingFiles=3");
+        assertThat(metrics.<Integer>gaugeValue("pendingFiles")).isEqualTo(3);
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(2);
+        assertThat(metrics.counterValue("capacityEvictions")).isEqualTo(1);
+        assertThat(writer.prepareCommit()).hasSize(3);
+        assertThat(metrics.<Integer>gaugeValue("pendingFiles")).isZero();
+    }
+
+    @Test
+    void idleTimeoutFinishesAtTheBoundaryAndRearmsUntilClose() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        ManualProcessingTimeService timers = new ManualProcessingTimeService();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .destinationIdleTimeout(java.time.Duration.ofMinutes(1))
+                                .build(),
+                        timers,
+                        metrics);
+
+        writer.write(new TestRow("a", "a1", 1L), CONTEXT);
+        timers.advanceTo(59_999);
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(1);
+
+        timers.advanceTo(60_000);
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(1);
+        assertThat(storage.getObjects()).hasSize(1);
+
+        writer.write(new TestRow("b", "b1", 1L), CONTEXT);
+        timers.advanceTo(120_000);
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(2);
+        writer.close();
+        timers.advanceTo(180_000);
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(2);
+    }
+
+    @Test
+    void aRecentWriteRefreshesTheIdleDeadline() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        ManualProcessingTimeService timers = new ManualProcessingTimeService();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .destinationIdleTimeout(java.time.Duration.ofMinutes(1))
+                                .build(),
+                        timers,
+                        metrics);
+
+        writer.write(new TestRow("a", "a1", 1L), CONTEXT);
+        timers.advanceTo(30_000);
+        writer.write(new TestRow("a", "a2", 2L), CONTEXT);
+        timers.advanceTo(60_000);
+
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(1);
+        assertThat(metrics.counterValue("idleEvictions")).isZero();
+
+        timers.advanceTo(90_000);
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isZero();
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(1);
+    }
+
+    @Test
+    void maximumIdleTimeoutCannotOverflowTheTimerDeadline() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        ManualProcessingTimeService timers = new ManualProcessingTimeService();
+        timers.advanceTo(1);
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .destinationIdleTimeout(java.time.Duration.ofMillis(Long.MAX_VALUE))
+                                .build(),
+                        timers,
+                        metrics);
+
+        writer.write(new TestRow("a", "a1", 1L), CONTEXT);
+
+        assertThat(timers.registeredTimerCount()).isZero();
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isEqualTo(1);
+    }
+
+    @Test
+    void serializedRowLimitAcceptsTheBoundaryAndRoutesTheNextByte() throws Exception {
+        TestRow row = new TestRow("a", "row", 1L);
+        int serializedSize = new TestRowSerializer(SCHEMA).serialize(row).size();
+
+        InMemoryStagingStorage acceptedStorage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> accepted =
+                writer(
+                        config(FailureHandler.failJob()),
+                        acceptedStorage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxSerializedRowBytes(serializedSize)
+                                .build());
+        accepted.write(row, CONTEXT);
+        assertThat(accepted.prepareCommit()).hasSize(1);
+
+        CollectingHandler handler = new CollectingHandler();
+        InMemoryStagingStorage rejectedStorage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> rejected =
+                writer(
+                        config(handler),
+                        rejectedStorage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxSerializedRowBytes(serializedSize - 1L)
+                                .build());
+        rejected.write(row, CONTEXT);
+
+        assertThat(handler.rows)
+                .singleElement()
+                .extracting(BigQueryFailure::getErrorMessage)
+                .asString()
+                .contains("exceeding the configured")
+                .contains((serializedSize - 1L) + "-byte");
+        assertThat(rejected.prepareCommit()).isEmpty();
+        assertThat(rejectedStorage.getObjects()).isEmpty();
     }
 
     @Test

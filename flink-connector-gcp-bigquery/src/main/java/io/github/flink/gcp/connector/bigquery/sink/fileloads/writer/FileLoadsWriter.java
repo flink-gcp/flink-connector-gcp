@@ -17,9 +17,11 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.operators.ProcessingTimeService;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.groups.SinkWriterMetricGroup;
+import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -46,7 +48,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -59,30 +62,32 @@ import java.util.UUID;
  * checkpoint in streaming execution.
  *
  * <p>Rows never accumulate on the heap: a record the serializer converts is appended to a file
- * writer that streams into a GCS resumable upload, so memory use is proportional to the number of
- * concurrently open destinations rather than to the data volume or job length. What one open
- * destination costs depends on the format: Avro holds one upload chunk plus one unflushed block,
- * while Parquet buffers a whole row group, sized from {@code maxStagingFileBytes} for the
- * correctness reason {@code ParquetStagedFileWriter} records — so a task manager is sized for the
- * format in use. In streaming execution the inter-checkpoint buffer therefore <em>is</em> GCS.
- * Files are rolled at {@link FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load
- * throughput and bounded by the per-load-job URI cap — see that option's default for both.
+ * writer that streams into a GCS resumable upload. Bulk row data is therefore proportional to the
+ * number of concurrently open destinations rather than to the data volume or job length, while the
+ * much smaller file metadata retained until the next commit is separately bounded by {@link
+ * FileLoadsOptions#getMaxPendingFiles()}. What one open destination costs depends on the format:
+ * Avro holds one upload chunk plus one unflushed block, while Parquet buffers a whole row group,
+ * sized from {@code maxStagingFileBytes} for the correctness reason {@code ParquetStagedFileWriter}
+ * records — so a task manager is sized for the format in use. In streaming execution the
+ * inter-checkpoint bulk-data buffer therefore <em>is</em> GCS. Files are rolled at {@link
+ * FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load throughput and bounded by the
+ * per-load-job URI cap — see that option's default for both.
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
  * load jobs only ever reference the URIs carried by committables, which are emitted only from
- * {@link #prepareCommit()}. The per-destination state (and with it the monotonic file sequence) is
- * kept for the writer's lifetime — never reset between checkpoints — so a later checkpoint's file
- * cannot reuse an earlier checkpoint's URI; the cost is a few KB of conversion state per distinct
- * destination.
+ * {@link #prepareCommit()}. A writer-global monotonic sequence makes every object name unique even
+ * when a destination is evicted and reopened or a checkpoint clears all active state.
  *
  * <p>Serialization and row-conversion failures are row-level and routed to the configured {@link
  * io.github.flink.gcp.connector.base.failure.FailureHandler}; staging I/O failures fail the job.
  * There is no row-level policy at load time — a BigQuery load job is all-or-nothing. A record the
  * serializer skips by returning {@code null} is neither: it reaches no staging file and no handler.
  *
- * <p>The schema per destination is captured when its first record arrives and cached for the
- * writer's lifetime; mid-run serializer schema changes are only picked up after a restart.
+ * <p>Only destinations with an open staging file retain their descriptor, Avro schema and
+ * converter. The least recently used file is finished before the configured active-destination
+ * limit is exceeded; inactive files are also finished after the configured timeout. A destination
+ * that returns later rebuilds that state from the serializer's current schema.
  *
  * @param <T> type of the records written
  */
@@ -99,12 +104,25 @@ public final class FileLoadsWriter<T>
     private final String pathPrefix;
     private final String filePrefix;
     private final long maxStagingFileBytes;
+    private final int maxOpenDestinations;
+    private final int maxPendingFiles;
+    private final long destinationIdleTimeoutMillis;
+    private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
     private final ParquetCompression parquetCompression;
+    private final ProcessingTimeService timerService;
     private final FileLoadsWriterMetrics metrics;
 
-    private final Map<TableDestination, DestinationState> destinations = new HashMap<>();
+    /** Active destinations in least-recently-used to most-recently-used order. */
+    private final Map<TableDestination, DestinationState> destinations =
+            new LinkedHashMap<>(16, 0.75f, true);
+
     private final List<FileLoadsCommittable> finishedFiles = new ArrayList<>();
+    private long nextFileSequence;
+    private long nextIdleSweepTimestamp = Long.MAX_VALUE;
+    private boolean capacityWarningLogged;
+    private boolean formatFallbackWarningLogged;
+    private boolean closed;
 
     /**
      * Creates a writer.
@@ -116,6 +134,7 @@ public final class FileLoadsWriter<T>
      * @param flinkJobId the Flink job id (hex), scoping this run's staging directory
      * @param subtaskIndex the subtask index
      * @param attemptNumber the attempt number
+     * @param timerService the processing-time service that drives idle-destination eviction
      */
     public FileLoadsWriter(
             BigQuerySinkConfig<T> config,
@@ -124,7 +143,8 @@ public final class FileLoadsWriter<T>
             SinkWriterMetricGroup metricGroup,
             String flinkJobId,
             int subtaskIndex,
-            int attemptNumber) {
+            int attemptNumber,
+            ProcessingTimeService timerService) {
         this.config = config;
         this.storage = storage;
         this.flinkJobId = flinkJobId;
@@ -136,12 +156,52 @@ public final class FileLoadsWriter<T>
                         + "-"
                         + UUID.randomUUID().toString().substring(0, 8);
         this.maxStagingFileBytes = options.getMaxStagingFileBytes();
+        this.maxOpenDestinations = options.getMaxOpenDestinations();
+        this.maxPendingFiles = options.getMaxPendingFiles();
+        this.destinationIdleTimeoutMillis = options.getDestinationIdleTimeout().toMillis();
+        this.maxSerializedRowBytes = options.getMaxSerializedRowBytes();
         this.stagingFormat = options.getStagingFormat();
         this.parquetCompression = options.getParquetCompression();
+        this.timerService =
+                Preconditions.checkNotNull(timerService, "timerService must not be null");
         this.metrics = new FileLoadsWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         // The map is the task thread's; a reporter thread sampling it can see a size mid-update,
         // which is what "best-effort" means for a gauge over live writer state.
-        this.metrics.bindWriterState((Gauge<Integer>) destinations::size);
+        this.metrics.bindWriterState(
+                (Gauge<Integer>) destinations::size, (Gauge<Integer>) this::pendingFileCount);
+    }
+
+    /** Finds the next active destination deadline after an idle sweep changed the active set. */
+    private void scheduleNextIdleSweep() {
+        long earliestDeadline = Long.MAX_VALUE;
+        for (DestinationState state : destinations.values()) {
+            earliestDeadline = Math.min(earliestDeadline, idleDeadline(state.lastAccessMillis));
+        }
+        scheduleIdleSweep(earliestDeadline);
+    }
+
+    /** Arms one idle deadline on Flink's mailbox task thread if it precedes the current timer. */
+    private void scheduleIdleSweep(long deadline) {
+        if (deadline >= nextIdleSweepTimestamp) {
+            return;
+        }
+        nextIdleSweepTimestamp = deadline;
+        timerService.registerTimer(
+                deadline,
+                timestamp -> {
+                    if (closed) {
+                        return;
+                    }
+                    nextIdleSweepTimestamp = Long.MAX_VALUE;
+                    evictIdleDestinations(timestamp);
+                    scheduleNextIdleSweep();
+                });
+    }
+
+    private long idleDeadline(long lastAccessMillis) {
+        return lastAccessMillis > Long.MAX_VALUE - destinationIdleTimeoutMillis
+                ? Long.MAX_VALUE
+                : lastAccessMillis + destinationIdleTimeoutMillis;
     }
 
     @Override
@@ -186,7 +246,25 @@ public final class FileLoadsWriter<T>
             metrics.recordSkipped();
             return;
         }
-        DestinationState state = stateFor(destination);
+        if (rowBytes.size() > maxSerializedRowBytes) {
+            metrics.recordFailed(metrics.forTable(destination));
+            config.getFailureHandler()
+                    .handle(
+                            FailedRow.of(
+                                    destination,
+                                    rowBytes,
+                                    "A serialized row for "
+                                            + destination
+                                            + " is "
+                                            + rowBytes.size()
+                                            + " bytes, exceeding the configured "
+                                            + maxSerializedRowBytes
+                                            + "-byte FILE_LOADS limit",
+                                    null));
+            return;
+        }
+        DestinationState state = stateForConversion(destination);
+        boolean newlyActive = !destinations.containsKey(destination);
         GenericRecord record;
         try {
             DynamicMessage row = DynamicMessage.parseFrom(state.descriptor, rowBytes);
@@ -216,16 +294,24 @@ public final class FileLoadsWriter<T>
             return;
         }
         // From here on, failures are staging I/O errors and fail the job.
-        if (state.file == null) {
+        if (newlyActive) {
+            ensurePendingFileCapacity();
+            evictForCapacity();
             state.file = openFile(destination, state);
+            state.lastAccessMillis = currentProcessingTime();
+            destinations.put(destination, state);
+            metrics.destinationActivated();
         }
         state.file.append(record);
+        state.lastAccessMillis = currentProcessingTime();
+        scheduleIdleSweep(idleDeadline(state.lastAccessMillis));
         // The staging file is this write path's hand-off, so the record counts here — the bytes
         // cannot, since a record has no encoded size of its own: it is compressed into an Avro
         // block or a Parquet row group, and only the finished file has a size to count.
         metrics.recordStaged(metrics.forTable(destination));
         if (state.file.bytesWritten() >= maxStagingFileBytes) {
             finishFile(state);
+            destinations.remove(destination);
         }
     }
 
@@ -240,33 +326,35 @@ public final class FileLoadsWriter<T>
 
     @Override
     public Collection<FileLoadsCommittable> prepareCommit() throws IOException {
-        for (DestinationState state : destinations.values()) {
-            if (state.file != null) {
-                finishFile(state);
-            }
+        int activeDestinations = destinations.size();
+        Iterator<DestinationState> iterator = destinations.values().iterator();
+        while (iterator.hasNext()) {
+            DestinationState state = iterator.next();
+            finishFile(state);
+            iterator.remove();
         }
         List<FileLoadsCommittable> committables = new ArrayList<>(finishedFiles);
         finishedFiles.clear();
-        LOG.info("Staged {} files for {} destinations", committables.size(), destinations.size());
+        LOG.info("Staged {} files for {} destinations", committables.size(), activeDestinations);
         return committables;
     }
 
     @Override
     public void close() throws Exception {
+        closed = true;
         // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
         // too, even when aborting a staged file throws.
         List<AutoCloseable> closeables = new ArrayList<>();
         for (DestinationState state : destinations.values()) {
-            if (state.file != null) {
-                StagedFileWriter file = state.file;
-                state.file = null;
-                closeables.add(file::abort);
-            }
+            StagedFileWriter file = state.file;
+            state.file = null;
+            closeables.add(file::abort);
         }
         // The map backs the openDestinations gauge, which a reporter may still sample between this
         // call and the metric group's own close; the conversion state is dead once the files are
         // aborted. Cleared after the loop above has taken every open file.
         destinations.clear();
+        finishedFiles.clear();
         closeables.add(config.getFailureHandler()::close);
         // The staging client goes last because Closers.closeAll reports the *first* failure and
         // suppresses the rest onto it: whatever an abort or the handler has to say outranks a
@@ -283,7 +371,8 @@ public final class FileLoadsWriter<T>
         metrics.fileFinished(committable.getByteCount());
     }
 
-    private DestinationState stateFor(TableDestination destination) {
+    /** Returns active conversion state or builds detached state that retains nothing on failure. */
+    private DestinationState stateForConversion(TableDestination destination) {
         DestinationState state = destinations.get(destination);
         if (state == null) {
             TableSchema tableSchema = config.getTableSchema(destination);
@@ -295,13 +384,79 @@ public final class FileLoadsWriter<T>
                             avroSchema,
                             new ProtoToAvroConverter(tableSchema, descriptor, avroSchema),
                             formatFor(destination, tableSchema));
-            destinations.put(destination, state);
         }
         return state;
     }
 
+    /** Finishes and removes the least recently used destination before opening another one. */
+    private void evictForCapacity() throws IOException {
+        if (destinations.size() < maxOpenDestinations) {
+            return;
+        }
+        Iterator<Map.Entry<TableDestination, DestinationState>> iterator =
+                destinations.entrySet().iterator();
+        Map.Entry<TableDestination, DestinationState> eldest = iterator.next();
+        finishFile(eldest.getValue());
+        iterator.remove();
+        metrics.capacityEvicted();
+        if (!capacityWarningLogged) {
+            capacityWarningLogged = true;
+            LOG.warn(
+                    "FILE_LOADS writer reached maxOpenDestinations={}; least-recently-used"
+                            + " destination files will be finished. Increase the limit only after"
+                            + " accounting for each active file's upload and format buffers.",
+                    maxOpenDestinations);
+        }
+    }
+
+    /** Finishes destinations that have received no record for at least the configured timeout. */
+    private void evictIdleDestinations(long now) throws IOException {
+        Iterator<Map.Entry<TableDestination, DestinationState>> iterator =
+                destinations.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<TableDestination, DestinationState> entry = iterator.next();
+            DestinationState state = entry.getValue();
+            if (now - state.lastAccessMillis < destinationIdleTimeoutMillis) {
+                continue;
+            }
+            finishFile(state);
+            iterator.remove();
+            metrics.idleEvicted();
+        }
+    }
+
+    private long currentProcessingTime() {
+        return timerService.getCurrentProcessingTime();
+    }
+
+    private int pendingFileCount() {
+        return Math.addExact(finishedFiles.size(), destinations.size());
+    }
+
+    /**
+     * Refuses the next file before changing active state, keeping the next commit's retained file
+     * descriptors bounded even when destination churn repeatedly triggers LRU eviction.
+     */
+    private void ensurePendingFileCapacity() throws IOException {
+        if (pendingFileCount() < maxPendingFiles) {
+            return;
+        }
+        throw new IOException(
+                "FILE_LOADS writer reached maxPendingFiles="
+                        + maxPendingFiles
+                        + " before the next commit; reduce destination churn, commit more often,"
+                        + " or raise the limit only after accounting for retained file metadata");
+    }
+
     private StagedFileWriter openFile(TableDestination destination, DestinationState state)
             throws IOException {
+        final long sequence;
+        try {
+            sequence = nextFileSequence;
+            nextFileSequence = Math.incrementExact(nextFileSequence);
+        } catch (ArithmeticException e) {
+            throw new IOException("FILE_LOADS staging-file sequence exhausted", e);
+        }
         String uri =
                 pathPrefix
                         + "/"
@@ -309,7 +464,7 @@ public final class FileLoadsWriter<T>
                         + "/"
                         + filePrefix
                         + "-"
-                        + state.fileSequence++
+                        + sequence
                         + state.format.getExtension();
         return StagedFileWriter.open(
                 state.format,
@@ -333,17 +488,21 @@ public final class FileLoadsWriter<T>
      * place that works: with a per-record destination resolver the full set of schemas is not known
      * when the job graph is built.
      *
-     * <p>Logged once per destination, because a user who asked for Parquet and silently got Avro
-     * for one table has no other way to find out.
+     * <p>Logged once per writer, naming the first destination encountered. Remembering every
+     * destination ever seen would reintroduce unbounded state, while logging every reactivation
+     * under capacity churn can flood the TaskManager log.
      */
     private StagingFormat formatFor(TableDestination destination, TableSchema tableSchema) {
         if (stagingFormat != StagingFormat.PARQUET || !hasJsonColumn(tableSchema.getFieldsList())) {
             return stagingFormat;
         }
-        LOG.info(
-                "Staging {} as Avro rather than Parquet: its schema names a JSON column, which a"
-                        + " Parquet load job rejects whatever the file contains.",
-                destination);
+        if (!formatFallbackWarningLogged) {
+            formatFallbackWarningLogged = true;
+            LOG.warn(
+                    "Staging {} as Avro rather than Parquet because its schema names a JSON column;"
+                            + " later fallback destinations are not logged by this writer.",
+                    destination);
+        }
         return StagingFormat.AVRO;
     }
 
@@ -367,7 +526,7 @@ public final class FileLoadsWriter<T>
         private final ProtoToAvroConverter converter;
         private final StagingFormat format;
         private StagedFileWriter file;
-        private int fileSequence;
+        private long lastAccessMillis;
 
         DestinationState(
                 Descriptors.Descriptor descriptor,

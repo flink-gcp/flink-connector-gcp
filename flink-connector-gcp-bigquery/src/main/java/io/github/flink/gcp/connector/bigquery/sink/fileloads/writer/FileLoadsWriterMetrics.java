@@ -55,6 +55,9 @@ final class FileLoadsWriterMetrics {
     private final Counter numRecordsSendErrors;
     private final Counter recordsSkipped;
     private final Counter filesStaged;
+    private final Counter destinationActivations;
+    private final Counter capacityEvictions;
+    private final Counter idleEvictions;
     private final DestinationMetrics destinations;
 
     /**
@@ -70,6 +73,10 @@ final class FileLoadsWriterMetrics {
         this.numRecordsSendErrors = metricGroup.getNumRecordsSendErrorsCounter();
         this.recordsSkipped = metricGroup.counter(BigQueryMetricNames.RECORDS_SKIPPED);
         this.filesStaged = metricGroup.counter(BigQueryMetricNames.FILES_STAGED);
+        this.destinationActivations =
+                metricGroup.counter(BigQueryMetricNames.DESTINATION_ACTIVATIONS);
+        this.capacityEvictions = metricGroup.counter(BigQueryMetricNames.CAPACITY_EVICTIONS);
+        this.idleEvictions = metricGroup.counter(BigQueryMetricNames.IDLE_EVICTIONS);
         this.destinations = DestinationMetrics.of(metricGroup, perDestinationMetrics);
     }
 
@@ -77,10 +84,12 @@ final class FileLoadsWriterMetrics {
      * Registers the gauge reading the writer's own map. Separate from the constructor because the
      * writer is built with these metrics and cannot exist yet when they are created.
      *
-     * @param openDestinations destinations holding conversion state
+     * @param openDestinations destinations with a currently open staging file
+     * @param pendingFiles finished and open files retained for the next commit
      */
-    void bindWriterState(Gauge<Integer> openDestinations) {
+    void bindWriterState(Gauge<Integer> openDestinations, Gauge<Integer> pendingFiles) {
         metricGroup.gauge(BigQueryMetricNames.OPEN_DESTINATIONS, openDestinations);
+        metricGroup.gauge(BigQueryMetricNames.PENDING_FILES, pendingFiles);
     }
 
     /**
@@ -111,6 +120,21 @@ final class FileLoadsWriterMetrics {
     void fileFinished(long bytes) {
         filesStaged.inc();
         numBytesSend.inc(bytes);
+    }
+
+    /** Counts one transition from an inactive destination to an open staging file. */
+    void destinationActivated() {
+        destinationActivations.inc();
+    }
+
+    /** Counts one least-recently-used destination evicted to enforce the active limit. */
+    void capacityEvicted() {
+        capacityEvictions.inc();
+    }
+
+    /** Counts one destination whose staging file was finished after its idle timeout. */
+    void idleEvicted() {
+        idleEvictions.inc();
     }
 
     /**

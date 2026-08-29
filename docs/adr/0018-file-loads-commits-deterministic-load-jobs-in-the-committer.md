@@ -21,8 +21,9 @@ limitations under the License.
   2026-08-01 ([#198]); revised by [#337] (2026-08-08); conflict handler revised by [#380]
   (2026-08-08); load-job grouping refined by [#284] (2026-08-08); job locations revised by
   [#491] (2026-08-10); streaming overflow revised by [#72] (2026-08-13); hierarchical overflow
-  revised by [#598] (2026-08-13); data-only replacement revised by [#646] (2026-08-14)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646]
+  revised by [#598] (2026-08-13); data-only replacement revised by [#646] (2026-08-14);
+  writer lifecycle revised by [#1128] (2026-08-28)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -116,6 +117,26 @@ limitations under the License.
   at graph construction: interval < `minCheckpointInterval` (default 2 min) errors, < 5 min
   warns (1,500 load jobs/table/day, with an overflow copy still consuming one destination-table
   modification), plus a runtime cadence warning in the committer.
+- **Writer resources follow a bounded active-destination lifecycle** ([#1128]).
+  Each writer subtask keeps descriptor, Avro schema, converter and staging resources only for
+  destinations with an open file.
+  `maxOpenDestinations` defaults to 16 and finishes the least recently used file before opening a
+  new destination; `destinationIdleTimeout` defaults to one minute and finishes inactive files on
+  the mailbox task thread; a checkpoint finishes and clears every remaining active state.
+  Files finished by eviction or rolling remain as small committables until that checkpoint;
+  `maxPendingFiles` defaults to 10,000, counts finished and open files together, and fails the
+  task before opening another file when reached.
+  This second bound prevents LRU churn from replacing bounded active buffers with unbounded
+  committable metadata; `pendingFiles` exposes proximity to it.
+  Conversion of a new destination's first row precedes capacity eviction, so a poison row cannot
+  churn a healthy file.
+  Reopening rebuilds conversion state and uses a writer-global monotonic sequence under the
+  attempt-specific random prefix, avoiding URI reuse across eviction and checkpoints.
+  `maxSerializedRowBytes` defaults to 15,000,000 bytes and routes a larger serialized protobuf row
+  to the failure policy before parsing and Avro conversion.
+  The active limit is tunable because heap availability and destination locality are workload
+  properties; the 4 MiB GCS upload chunk remains internal because multiplying it by the active
+  limit already exposes the workload axis without another coupled knob.
 - **Committer schedules are knobs** ([#198]): `loadJobPoll*` and `schemaReconcile*` on
   `FileLoadsOptions`, mapped by `toLoadJobPollSchedule()` / `toSchemaReconcileSchedule()`. Both
   pass the [#54] workload-versus-service test that kept the default-stream schema-wait schedule
@@ -248,3 +269,4 @@ are the ones this record's decisions rest on:
 [#598]: https://github.com/flink-gcp/flink-connector-gcp/issues/598
 [#646]: https://github.com/flink-gcp/flink-connector-gcp/issues/646
 [#1096]: https://github.com/flink-gcp/flink-connector-gcp/issues/1096
+[#1128]: https://github.com/flink-gcp/flink-connector-gcp/issues/1128

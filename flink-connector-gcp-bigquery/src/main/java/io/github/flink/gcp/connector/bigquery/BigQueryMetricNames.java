@@ -50,6 +50,10 @@ public final class BigQueryMetricNames {
 
     // Registered by the FILE_LOADS writer (FileLoadsWriterMetrics) and its committer.
     public static final String FILES_STAGED = "filesStaged";
+    public static final String DESTINATION_ACTIVATIONS = "destinationActivations";
+    public static final String CAPACITY_EVICTIONS = "capacityEvictions";
+    public static final String IDLE_EVICTIONS = "idleEvictions";
+    public static final String PENDING_FILES = "pendingFiles";
     public static final String LOAD_JOBS_SUBMITTED = "loadJobsSubmitted";
 
     // Registered by the default-stream and FILE_LOADS writers, which hold per-destination state.

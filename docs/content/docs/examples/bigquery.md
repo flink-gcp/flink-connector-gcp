@@ -433,7 +433,10 @@ This resolver caches one destination per UTC day and falls back to the record's 
 
 Two things need planning when a resolver keeps producing new destinations.
 The default-stream and buffered-stream methods hold one writer per active destination, so `DefaultStreamOptions` and `BufferedStreamOptions` expose `destinationIdleTimeout` (one hour by default) to bound that local state.
-FILE_LOADS has no destination idle timeout and retains each destination's conversion state until the writer closes, although it finishes the open staging file at every commit preparation.
+FILE_LOADS bounds each writer subtask to `maxOpenDestinations` active files (16 by default), finishes the least recently used file when that capacity is reached, and also finishes a file after `destinationIdleTimeout` (one minute by default).
+It retains at most `maxPendingFiles` finished and open files for the next commit (10,000 by
+default), failing before another file is opened if churn reaches that bound.
+A checkpoint finishes every remaining file and releases its conversion state.
 Every new table is also created on its first record under the default create disposition, so [table auto-creation](#table-auto-creation) applies to every day this produces, not only the first.
 
 ## Exactly-once

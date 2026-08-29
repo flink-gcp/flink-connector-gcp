@@ -1398,13 +1398,18 @@ FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write met
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
 `WRITE_TRUNCATE` for batch reloads that replace the table schema, `WRITE_TRUNCATE_DATA` for batch
 reloads that preserve schema and constraints, or `WRITE_EMPTY`), `tempDataset`, the streaming guard
-`minCheckpointInterval`, and the committer's two backoff schedules (`loadJobPoll*` for job
-completion polling, `schemaReconcile*` for the etag-race reconcile) — all described below.
+`minCheckpointInterval`, the writer-memory bounds (`maxOpenDestinations`,
+`destinationIdleTimeout`, `maxSerializedRowBytes`), and the committer's two backoff schedules
+(`loadJobPoll*` for job completion polling, `schemaReconcile*` for the etag-race reconcile) — all
+described below.
 
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
-stream them straight to per-destination GCS objects — rows never accumulate on the heap, so memory
-use is ~5 MiB per open destination regardless of data volume; in streaming the inter-checkpoint
-buffer *is* GCS. Files roll at `maxStagingFileBytes` (16 MiB, discussed below). The pre-commit
+stream them straight to per-destination GCS objects.
+The writer does not retain all rows until a checkpoint; the bounded active file set and the
+staging format's buffers determine writer heap, and in streaming the inter-checkpoint buffer *is*
+GCS.
+Files roll at `maxStagingFileBytes` (16 MiB, discussed below).
+The pre-commit
 topology routes every subtask's
 committables to a single committer subtask (in streaming through a stage that stamps each
 committable with its checkpoint id), and that committer — the actual commit — groups the staged
@@ -1451,6 +1456,60 @@ topology, where the [#14]({{< param BookRepo >}}/issues/14) batch implementation
 in Flink's committer state until their loads succeed, and the final batch of a streaming job is
 committed during task shutdown's final-checkpoint wait — records emitted to a post-commit
 topology at that point are not guaranteed to be processed before the job terminates.
+
+**Active-destination memory.** Each writer subtask holds at most `maxOpenDestinations` destination
+files, 16 by default.
+The bound is per subtask, so a sink at parallelism `P` can have up to `16 × P` open files across
+the job when records are distributed that way.
+Opening destination 17 finishes and evicts the least recently used file; a destination with no
+record for `destinationIdleTimeout` (1 minute by default) is also finished and released.
+A checkpoint finishes every remaining file and clears the active conversion states.
+Returning to an evicted destination transparently rebuilds its descriptor, schema and converter,
+and a writer-global sequence keeps the new object URI distinct.
+Finished and open files awaiting that checkpoint are together bounded by `maxPendingFiles`
+(10,000 by default).
+It must be at least `maxOpenDestinations`, because every open file also counts as pending.
+If destination churn or size-based rolls reach that limit, the task fails before opening another
+file instead of retaining an unbounded committable list.
+
+The default comes from boundary measurements at revision `b8a4eb3`, not from a claim that every
+JVM has the same footprint.
+With real GCS, Avro/Zstandard, a `JSON` column and one 1 KiB row per destination under `-Xmx512m`,
+the open-writer heap delta was 7.7 MiB at one destination, 53.5 MiB at 10, and 257.2 MiB at 50.
+An isolated production-writer probe that touched one 4 MiB upload chunk per open object reached
+about 255 MiB at 50 and raised `OutOfMemoryError` at 100 under the same heap.
+Without the modeled GCS chunk, Avro writer and conversion state measured about 92–93 KiB per active
+destination.
+The implementation's `-Xmx256m` regression probe sends 1,000 distinct destinations while the
+default keeps exactly 16 active and completes all 1,000 files.
+
+Use `16 × 4 MiB = 64 MiB` of upload chunks per subtask as the Avro baseline, then leave room for
+Avro blocks, schemas, rows in conversion, the GCS client and the rest of the task.
+Raising the option to 32 makes that baseline about 128 MiB per subtask.
+These are sizing baselines, not heap guarantees.
+Parquet additionally buffers a row group sized from `maxStagingFileBytes` per active destination,
+so its rough upper planning term is `maxOpenDestinations × maxStagingFileBytes` plus upload chunks
+and ordinary task overhead.
+Raise the active limit only when `capacityEvictions` shows material churn and the TaskManager has
+measured headroom; lower it when heap is tighter.
+Use the `pendingFiles` gauge to distinguish harmless active-writer churn from a checkpoint that is
+approaching `maxPendingFiles`.
+For streaming jobs, a shorter checkpoint interval drains pending files more often; for batch jobs,
+raise `maxOpenDestinations` to reduce churn or raise `maxPendingFiles` only with measured heap
+headroom.
+Finishing an LRU file runs on the task thread, so sustained churn naturally backpressures the
+writer and produces smaller staging files.
+This option does not increase checkpoint-time load-job concurrency: committables still enter the
+single committer described above.
+
+**Serialized row memory.** `maxSerializedRowBytes` rejects a serialized protobuf row before
+`DynamicMessage` parsing and Avro conversion, where the previous path transiently held several
+representations of a large row.
+The 15,000,000-byte default leaves 1,000,000 bytes below BigQuery's
+[16 MB Avro block limit](https://cloud.google.com/bigquery/quotas#load_jobs), but protobuf and Avro
+encodings are not byte-for-byte equivalent.
+A schema whose Avro representation expands substantially may need a lower value.
+An oversized row follows the configured failure policy and never opens a destination file.
 
 **Execution modes.** The mode must be explicit: `AUTOMATIC` is rejected when the job graph is
 built, because were it to resolve to streaming with checkpointing disabled, no trigger would ever
@@ -2246,8 +2305,12 @@ part of this write method's surface.
 | `numBytesSend` | counter (Flink standard) | bytes of the staging files finished so far |
 | `numRecordsSendErrors` | counter (Flink standard) | explicit routing failures and records routed to the failure handler |
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed, and not broken down per table |
-| `openDestinations` | gauge | destinations holding conversion state |
+| `openDestinations` | gauge | destination files currently open; bounded per writer subtask by `maxOpenDestinations` |
+| `pendingFiles` | gauge | finished and open staging files retained for the next commit; bounded per writer subtask by `maxPendingFiles` |
 | `filesStaged` | counter | staging files finished (rolled at `maxStagingFileBytes`, and at every commit) |
+| `destinationActivations` | counter | transitions from an inactive destination to an open staging file, including reopen after eviction or checkpoint |
+| `capacityEvictions` | counter | least-recently-used files finished to enforce `maxOpenDestinations` |
+| `idleEvictions` | counter | files finished after `destinationIdleTimeout` without a record |
 | `destination.TABLE.recordsSend`, `destination.TABLE.sendErrors` | counter | the same two counts per table, **only** with `perDestinationMetrics(true)` |
 
 There is deliberately **no `errorClass` on the FILE_LOADS writer**: it makes no per-record request,

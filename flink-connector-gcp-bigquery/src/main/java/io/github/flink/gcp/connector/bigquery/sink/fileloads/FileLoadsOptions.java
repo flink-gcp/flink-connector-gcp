@@ -119,6 +119,25 @@ public final class FileLoadsOptions implements Serializable {
      */
     public static final long DEFAULT_MAX_STAGING_FILE_BYTES = 16L * 1024 * 1024;
 
+    /** Default for {@link Builder#maxOpenDestinations(int)}. */
+    public static final int DEFAULT_MAX_OPEN_DESTINATIONS = 16;
+
+    /** Default for {@link Builder#maxPendingFiles(int)}. */
+    public static final int DEFAULT_MAX_PENDING_FILES = 10_000;
+
+    /** Default for {@link Builder#destinationIdleTimeout(Duration)}. */
+    public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofMinutes(1);
+
+    /**
+     * Default for {@link Builder#maxSerializedRowBytes(long)}.
+     *
+     * <p>The limit is applied to the serialized protobuf before it is converted to Avro. The
+     * 15,000,000-byte default leaves headroom below BigQuery's 16,000,000-byte Avro block limit,
+     * but protobuf and Avro encodings are not byte-for-byte equivalent; schemas whose Avro
+     * representation expands substantially may need a lower value.
+     */
+    public static final long DEFAULT_MAX_SERIALIZED_ROW_BYTES = 15_000_000L;
+
     /** Default for {@link Builder#stagingFormat(StagingFormat)}. */
     public static final StagingFormat DEFAULT_STAGING_FORMAT = StagingFormat.AVRO;
 
@@ -130,6 +149,10 @@ public final class FileLoadsOptions implements Serializable {
     private final WriteDisposition writeDisposition;
     private final Duration minCheckpointInterval;
     private final long maxStagingFileBytes;
+    private final int maxOpenDestinations;
+    private final int maxPendingFiles;
+    @Nullable private final Duration destinationIdleTimeout;
+    private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
     private final ParquetCompression parquetCompression;
     private final Duration loadJobPollInitialBackoff;
@@ -150,6 +173,10 @@ public final class FileLoadsOptions implements Serializable {
         this.writeDisposition = builder.writeDisposition;
         this.minCheckpointInterval = builder.minCheckpointInterval;
         this.maxStagingFileBytes = builder.maxStagingFileBytes;
+        this.maxOpenDestinations = builder.maxOpenDestinations;
+        this.maxPendingFiles = builder.maxPendingFiles;
+        this.destinationIdleTimeout = builder.destinationIdleTimeout;
+        this.maxSerializedRowBytes = builder.maxSerializedRowBytes;
         this.stagingFormat = builder.stagingFormat;
         this.parquetCompression =
                 builder.parquetCompression == null
@@ -197,6 +224,30 @@ public final class FileLoadsOptions implements Serializable {
     /** Returns the size at which an open staging file is finished and the next one opened. */
     public long getMaxStagingFileBytes() {
         return maxStagingFileBytes;
+    }
+
+    /** Returns the maximum number of destination files held open by each writer subtask. */
+    public int getMaxOpenDestinations() {
+        return maxOpenDestinations == 0 ? DEFAULT_MAX_OPEN_DESTINATIONS : maxOpenDestinations;
+    }
+
+    /** Returns the maximum staging files retained for the next commit by each writer subtask. */
+    public int getMaxPendingFiles() {
+        return maxPendingFiles == 0 ? DEFAULT_MAX_PENDING_FILES : maxPendingFiles;
+    }
+
+    /** Returns how long an inactive destination file remains open. */
+    public Duration getDestinationIdleTimeout() {
+        return destinationIdleTimeout == null
+                ? DEFAULT_DESTINATION_IDLE_TIMEOUT
+                : destinationIdleTimeout;
+    }
+
+    /** Returns the largest serialized protobuf row accepted by the staging writer. */
+    public long getMaxSerializedRowBytes() {
+        return maxSerializedRowBytes == 0
+                ? DEFAULT_MAX_SERIALIZED_ROW_BYTES
+                : maxSerializedRowBytes;
     }
 
     /**
@@ -279,6 +330,10 @@ public final class FileLoadsOptions implements Serializable {
                 && writeDisposition == that.writeDisposition
                 && minCheckpointInterval.equals(that.minCheckpointInterval)
                 && maxStagingFileBytes == that.maxStagingFileBytes
+                && getMaxOpenDestinations() == that.getMaxOpenDestinations()
+                && getMaxPendingFiles() == that.getMaxPendingFiles()
+                && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
+                && getMaxSerializedRowBytes() == that.getMaxSerializedRowBytes()
                 && stagingFormat == that.stagingFormat
                 && parquetCompression == that.parquetCompression
                 && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
@@ -297,6 +352,10 @@ public final class FileLoadsOptions implements Serializable {
                 writeDisposition,
                 minCheckpointInterval,
                 maxStagingFileBytes,
+                getMaxOpenDestinations(),
+                getMaxPendingFiles(),
+                getDestinationIdleTimeout(),
+                getMaxSerializedRowBytes(),
                 stagingFormat,
                 parquetCompression,
                 loadJobPollInitialBackoff,
@@ -319,6 +378,14 @@ public final class FileLoadsOptions implements Serializable {
                 + minCheckpointInterval
                 + ", maxStagingFileBytes="
                 + maxStagingFileBytes
+                + ", maxOpenDestinations="
+                + getMaxOpenDestinations()
+                + ", maxPendingFiles="
+                + getMaxPendingFiles()
+                + ", destinationIdleTimeout="
+                + getDestinationIdleTimeout()
+                + ", maxSerializedRowBytes="
+                + getMaxSerializedRowBytes()
                 + ", stagingFormat="
                 + stagingFormat
                 + ", parquetCompression="
@@ -347,6 +414,10 @@ public final class FileLoadsOptions implements Serializable {
         private WriteDisposition writeDisposition = WriteDisposition.WRITE_APPEND;
         private Duration minCheckpointInterval = DEFAULT_MIN_CHECKPOINT_INTERVAL;
         private long maxStagingFileBytes = DEFAULT_MAX_STAGING_FILE_BYTES;
+        private int maxOpenDestinations = DEFAULT_MAX_OPEN_DESTINATIONS;
+        private int maxPendingFiles = DEFAULT_MAX_PENDING_FILES;
+        private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
+        private long maxSerializedRowBytes = DEFAULT_MAX_SERIALIZED_ROW_BYTES;
         private StagingFormat stagingFormat = DEFAULT_STAGING_FORMAT;
         // Null until set, so build() can tell "explicitly chose the default" from "never
         // touched it" and reject the option under Avro rather than silently ignoring it.
@@ -454,6 +525,73 @@ public final class FileLoadsOptions implements Serializable {
                     "maxStagingFileBytes must be positive: %s",
                     maxStagingFileBytes);
             this.maxStagingFileBytes = maxStagingFileBytes;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of destination files held open by each writer subtask. When a new
+         * destination would exceed the limit, the least recently used file is finished before the
+         * new one is opened. Defaults to {@link FileLoadsOptions#DEFAULT_MAX_OPEN_DESTINATIONS}.
+         *
+         * @param maxOpenDestinations the per-subtask active-destination limit, positive
+         * @return this builder
+         */
+        public Builder maxOpenDestinations(int maxOpenDestinations) {
+            Preconditions.checkArgument(
+                    maxOpenDestinations > 0,
+                    "maxOpenDestinations must be positive: %s",
+                    maxOpenDestinations);
+            this.maxOpenDestinations = maxOpenDestinations;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of staging files each writer subtask may retain for the next
+         * commit, including files that are still open. Reaching the limit fails the task before
+         * opening another file, rather than allowing destination churn or size-based rolls to grow
+         * heap without bound. The limit must be at least {@code maxOpenDestinations}. Defaults to
+         * {@link FileLoadsOptions#DEFAULT_MAX_PENDING_FILES}.
+         *
+         * @param maxPendingFiles the per-subtask pending-file limit, positive and at least the
+         *     configured maximum open destinations
+         * @return this builder
+         */
+        public Builder maxPendingFiles(int maxPendingFiles) {
+            Preconditions.checkArgument(
+                    maxPendingFiles > 0, "maxPendingFiles must be positive: %s", maxPendingFiles);
+            this.maxPendingFiles = maxPendingFiles;
+            return this;
+        }
+
+        /**
+         * Sets how long an inactive destination file remains open before it is finished and its
+         * conversion state is released. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_DESTINATION_IDLE_TIMEOUT}.
+         *
+         * @param destinationIdleTimeout the idle timeout, at least 1 ms
+         * @return this builder
+         */
+        public Builder destinationIdleTimeout(Duration destinationIdleTimeout) {
+            this.destinationIdleTimeout =
+                    OptionChecks.checkAtLeastOneMilli(
+                            destinationIdleTimeout, "destinationIdleTimeout");
+            return this;
+        }
+
+        /**
+         * Sets the largest serialized protobuf row accepted by the staging writer. Larger rows are
+         * routed to the configured failure handler before conversion state or a staging file is
+         * created. Defaults to {@link FileLoadsOptions#DEFAULT_MAX_SERIALIZED_ROW_BYTES}.
+         *
+         * @param maxSerializedRowBytes the serialized row limit in bytes, positive
+         * @return this builder
+         */
+        public Builder maxSerializedRowBytes(long maxSerializedRowBytes) {
+            Preconditions.checkArgument(
+                    maxSerializedRowBytes > 0,
+                    "maxSerializedRowBytes must be positive: %s",
+                    maxSerializedRowBytes);
+            this.maxSerializedRowBytes = maxSerializedRowBytes;
             return this;
         }
 
@@ -596,6 +734,11 @@ public final class FileLoadsOptions implements Serializable {
         public FileLoadsOptions build() {
             Preconditions.checkState(
                     stagingPath != null, "stagingPath is required: set stagingPath(\"gs://...\").");
+            Preconditions.checkState(
+                    maxPendingFiles >= maxOpenDestinations,
+                    "maxPendingFiles must be >= maxOpenDestinations: %s < %s",
+                    maxPendingFiles,
+                    maxOpenDestinations);
             Preconditions.checkState(
                     loadJobPollMaxBackoff.compareTo(loadJobPollInitialBackoff) >= 0,
                     "loadJobPollMaxBackoff must be >= loadJobPollInitialBackoff: %s < %s",
