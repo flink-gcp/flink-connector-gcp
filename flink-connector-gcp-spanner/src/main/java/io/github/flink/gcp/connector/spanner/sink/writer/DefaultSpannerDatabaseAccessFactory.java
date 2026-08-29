@@ -28,6 +28,7 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
@@ -81,10 +82,20 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
         return create(SpannerClients.open(database, settings()));
     }
 
-    /** Builds settings exposed for verifying the writer's credential injection. */
+    /** Builds the writer's client settings, exposed for verifying its runtime configuration. */
     @VisibleForTesting
     SpannerOptions settings() {
-        return SpannerClients.settings(database, emulatorEndpoint, credentialsOverride);
+        SpannerOptions.Builder settings =
+                SpannerClients.settings(database, emulatorEndpoint, credentialsOverride)
+                        .toBuilder();
+        // Re-check at the TaskManager boundary: a Java-serialized options instance can bypass the
+        // public builder, and a positive sub-millisecond value becomes the SDK's zero sentinel.
+        settings.getSpannerStubSettingsBuilder()
+                .batchWriteSettings()
+                .setSimpleTimeoutNoRetriesDuration(
+                        OptionChecks.checkAtLeastOneMilli(
+                                writerOptions.getBatchWriteTimeout(), "batchWriteTimeout"));
+        return settings.build();
     }
 
     @VisibleForTesting

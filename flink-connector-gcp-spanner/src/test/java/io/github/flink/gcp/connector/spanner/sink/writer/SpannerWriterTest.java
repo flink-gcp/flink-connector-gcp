@@ -385,6 +385,20 @@ class SpannerWriterTest {
     }
 
     @Test
+    void aBatchWriteDeadlineRemainsAConnectorOwnedRetry() throws Exception {
+        access.script(failing(ErrorCode.DEADLINE_EXCEEDED));
+        SinkWriter<String> writer = writer(fastRetries().build());
+
+        writer.write("a", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(access.requests()).hasSize(2);
+        assertThat(metrics.counterValue(SpannerMetricNames.BATCHES_SENT)).isEqualTo(2);
+        assertThat(metrics.counterValue(SpannerMetricNames.MUTATIONS_RETRIED)).isEqualTo(1);
+        assertThat(metrics.counterValue("errorClass", "DEADLINE_EXCEEDED", "errors")).isEqualTo(1);
+    }
+
+    @Test
     void countsEachRecordAsOneSendHoweverOftenItIsRetried() throws Exception {
         access.script(
                 FakeSpannerDatabaseAccess.Response.nothingReported()

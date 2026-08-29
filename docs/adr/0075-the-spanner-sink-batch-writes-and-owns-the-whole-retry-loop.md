@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0075: The Spanner sink batch-writes one mutation per group and owns the whole retry loop
 
 - Status: Accepted
-- Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.119.0; emulator behaviour
+- Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.120.0; emulator behaviour
   measured 2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`); naming revised by
-  [#1053] (2026-08-23)
-- Issues: [#220], [#36], [#1053]
+  [#1053] (2026-08-23); per-attempt timeout revised by [#1134] (2026-08-29)
+- Issues: [#220], [#36], [#1053], [#1134]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § How the sink writes
 
@@ -73,6 +73,12 @@ serializer's to supply.
   multiply the duplicates an at-least-once sink can produce. The budget is the `recovery*` knobs on
   `SpannerWriterOptions`, mapped through `toRecoverySchedule()` and jittered at
   `RetrySchedule.DEFAULT_JITTER_RATIO` like every other schedule here.
+- **Each complete `BatchWrite` attempt has a 30-second default timeout.** The connector applies it
+  only to the data client's `batchWriteSettings` and uses the generated client's no-retry timeout
+  form, so client-library retries cannot multiply the connector's recovery budget. The timeout
+  covers the whole server stream, including a stream that reports some groups and then stalls.
+  The connector then retries only groups whose outcome remains undecided. Reads and administration
+  retain the client library's settings.
 - **The guarantee is at-least-once, and effectively-once when the serializer emits an idempotent
   operation** — `insertOrUpdate`, `replace`, `delete`. A replayed `insert` answers `ALREADY_EXISTS`
   and is routed as a per-mutation failure (ADR-0076). This is documented on the SPI and on the
@@ -90,12 +96,20 @@ serializer's to supply.
   per-destination metrics (their cardinality would be the serializer's to decide).
 - A transient outage longer than the retry budget fails the job rather than dropping anything.
   That is the intended direction: a sink cannot drop what the service never refused.
-- **The budget bounds attempts, not wall clock.** `no_retry_0_params` gives batch write a one-hour
-  total timeout (read in 6.119.0) and this sink sets no deadline of its own, so the worst case is
-  `recoveryMaxAttempts` hours of a blocked task thread and no completing checkpoint. Documented on the
-  knob rather than capped here: a shorter deadline is a real option, but picking one for every
-  workload is not something this connector can do from a default, and no measurement yet says what
-  it should be.
+- **The attempt timeout and retry schedule together bound the write loop.** With the defaults, ten
+  30-second attempts and nine maximally jittered backoffs take at most 369.375 seconds for one
+  invocation. That is not an end-to-end checkpoint guarantee: a record-triggered synchronous flush
+  may already be running when a checkpoint barrier reaches the sink, and the checkpoint flush may
+  invoke the loop again. Operators size the attempt timeout and recovery schedule so those writes,
+  processing, alignment, other operators, and checkpoint transport fit within the checkpoint
+  timeout. Larger batches or service load may require a longer attempt timeout and a recomputed
+  combined budget.
+- A 2026-08-29 same-window real-service comparison on a temporary 100-PU Standard regional
+  instance found timeout/control throughput ratios of 104.6%, 98.4%, and 101.6%, with p95 latency
+  ratios of 0.96, 1.04, and 0.98. The service-wide absolute rate varied between repetitions, so
+  the evidence supports no relative regression against the concurrent control, not an absolute
+  throughput claim. A preceding serial comparison varied by more than 10% within each arm and was
+  treated as inconclusive. Both temporary instances and their databases were deleted.
 - Because the writer sees its own retries, `mutationsRetried` and the transient half of
   `errorClass.*.errors` mean something here that they cannot mean on the sibling sinks, where the
   SDK absorbs the same work. ADR-0076 and the metrics section of the docs page say so where a
@@ -118,3 +132,4 @@ serializer's to supply.
 [#36]: https://github.com/flink-gcp/flink-connector-gcp/issues/36
 [#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
+[#1134]: https://github.com/flink-gcp/flink-connector-gcp/issues/1134

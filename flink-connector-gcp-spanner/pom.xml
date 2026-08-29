@@ -140,6 +140,27 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- A controllable BatchWrite service whose stream can remain open until the
+                 configured GAX deadline ends it. Version managed by the libraries BOM. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-inprocess</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- StreamObserver on the in-process BatchWrite service. Test scope, as above.
+                 Version managed by the libraries BOM. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <!-- SpannerGrpc and its service base for the controllable in-process BatchWrite
+                 service. Test scope; version managed by the libraries BOM. -->
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>grpc-google-cloud-spanner-v1</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <!-- SpannerEmulatorContainer. -->
             <groupId>org.testcontainers</groupId>
             <artifactId>gcloud</artifactId>

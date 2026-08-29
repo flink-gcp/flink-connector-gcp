@@ -31,6 +31,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `no_retry_0_codes`; `runWithSessionRetry` recovers only a lost session). The retry loop and its
   knobs are the connector's, the Cloud Tasks shape rather than the Bigtable one. Recheck on a
   client upgrade.
+- **The connector gives only the data client's `BatchWrite` RPC a 30-second default timeout.**
+  It covers the complete server stream, including one that reports some groups and then stalls.
+  The generated client setting has no retries; `SpannerWriter` owns retries of undecided groups.
+  Reads and admin RPCs keep their client-library settings. Revalidated against
+  google-cloud-spanner 6.120.0 for `docs/adr/0075`.
 - **Batch write has no replay protection**, so idempotence is the serializer's to supply; it is
   documented on the SPI and on the sink, never enforced.
 - `SpannerDatabaseAccess` holds its three operations as functional values over the `Spanner`

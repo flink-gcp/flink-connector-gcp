@@ -63,7 +63,7 @@ import java.util.Objects;
  *
  * <p>Unlike every other Google client this project builds on, the Spanner client does <em>not</em>
  * retry the RPC this sink writes with: {@code SpannerStubSettings} configures {@code batchWrite}
- * with an empty retryable-code set (checked against google-cloud-spanner 6.119.0), and the only
+ * with an empty retryable-code set (checked against google-cloud-spanner 6.120.0), and the only
  * retry around it re-creates a lost session. So the sink owns the whole retry loop — the Cloud
  * Tasks shape rather than the Bigtable one — and these knobs budget it.
  *
@@ -89,6 +89,8 @@ public final class SpannerWriterOptions implements Serializable {
 
     /** The default {@link Builder#maxBatchBytes(long)}: Beam's value, 1 MiB. */
     public static final long DEFAULT_MAX_BATCH_BYTES = 1024L * 1024;
+
+    private static final Duration DEFAULT_BATCH_WRITE_TIMEOUT = Duration.ofSeconds(30);
 
     /**
      * The largest {@link Builder#maxBatchCells(int)} this connector accepts: 80,000, the only
@@ -148,6 +150,7 @@ public final class SpannerWriterOptions implements Serializable {
     private final long maxBatchBytes;
     @Nullable private final Duration maxCommitDelay;
     @Nullable private final SpannerRpcPriority rpcPriority;
+    @Nullable private final Duration batchWriteTimeout;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
@@ -158,6 +161,7 @@ public final class SpannerWriterOptions implements Serializable {
         this.maxBatchBytes = builder.maxBatchBytes;
         this.maxCommitDelay = builder.maxCommitDelay;
         this.rpcPriority = builder.rpcPriority;
+        this.batchWriteTimeout = builder.batchWriteTimeout;
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
@@ -175,8 +179,8 @@ public final class SpannerWriterOptions implements Serializable {
     /**
      * Returns the default options: at most {@value #DEFAULT_MAX_BATCH_CELLS} mutation cells,
      * {@value #DEFAULT_MAX_BATCH_MUTATIONS} mutations and 1 MiB per batch write request, the
-     * service's own commit delay and priority, and a recovery budget of 500 ms doubling to 10 s
-     * over at most 10 attempts.
+     * service's own commit delay and priority, a 30 s timeout for one complete batch write attempt,
+     * and a recovery budget of 500 ms doubling to 10 s over at most 10 attempts.
      *
      * @return the default options
      */
@@ -209,6 +213,13 @@ public final class SpannerWriterOptions implements Serializable {
     @Nullable
     public SpannerRpcPriority getRpcPriority() {
         return rpcPriority;
+    }
+
+    /** Returns the timeout for one complete batch write attempt. */
+    public Duration getBatchWriteTimeout() {
+        // A form serialized before this field existed restores it as null. Keep that form equal to
+        // what an untouched builder produces rather than passing an unbounded attempt to the SDK.
+        return batchWriteTimeout == null ? DEFAULT_BATCH_WRITE_TIMEOUT : batchWriteTimeout;
     }
 
     /** Returns the first backoff of the writer's retry loop. */
@@ -255,6 +266,7 @@ public final class SpannerWriterOptions implements Serializable {
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(maxCommitDelay, that.maxCommitDelay)
                 && rpcPriority == that.rpcPriority
+                && getBatchWriteTimeout().equals(that.getBatchWriteTimeout())
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
     }
@@ -267,6 +279,7 @@ public final class SpannerWriterOptions implements Serializable {
                 maxBatchBytes,
                 maxCommitDelay,
                 rpcPriority,
+                getBatchWriteTimeout(),
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts);
@@ -284,6 +297,8 @@ public final class SpannerWriterOptions implements Serializable {
                 + maxCommitDelay
                 + ", rpcPriority="
                 + rpcPriority
+                + ", batchWriteTimeout="
+                + getBatchWriteTimeout()
                 + ", recoveryInitialBackoff="
                 + recoveryInitialBackoff
                 + ", recoveryMaxBackoff="
@@ -302,6 +317,7 @@ public final class SpannerWriterOptions implements Serializable {
         private long maxBatchBytes = DEFAULT_MAX_BATCH_BYTES;
         @Nullable private Duration maxCommitDelay;
         @Nullable private SpannerRpcPriority rpcPriority;
+        private Duration batchWriteTimeout = DEFAULT_BATCH_WRITE_TIMEOUT;
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
@@ -417,6 +433,22 @@ public final class SpannerWriterOptions implements Serializable {
         public Builder rpcPriority(SpannerRpcPriority rpcPriority) {
             this.rpcPriority =
                     Preconditions.checkNotNull(rpcPriority, "rpcPriority must not be null");
+            return this;
+        }
+
+        /**
+         * Sets the timeout for one complete batch write attempt. Defaults to 30 s.
+         *
+         * <p>The timeout covers the whole server stream, including a stream that returns some group
+         * statuses and then stops making progress. The Spanner client still performs one RPC
+         * attempt; the connector's {@code recovery*} settings own every retry.
+         *
+         * @param batchWriteTimeout the per-attempt timeout, at least 1 ms
+         * @return this builder
+         */
+        public Builder batchWriteTimeout(Duration batchWriteTimeout) {
+            this.batchWriteTimeout =
+                    OptionChecks.checkAtLeastOneMilli(batchWriteTimeout, "batchWriteTimeout");
             return this;
         }
 

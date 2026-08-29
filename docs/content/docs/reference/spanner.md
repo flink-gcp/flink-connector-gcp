@@ -100,6 +100,7 @@ decides how large a request grows**. The reasoning is under
 
 | Option | Default | What it does |
 |---|---|---|
+| `batchWriteTimeout` | `30s` | Bounds one complete `BatchWrite` RPC attempt, including a response stream that reports some groups and then stalls. At least 1 ms. Raise it when larger batches or service load make valid attempts approach the bound, then recompute the retry budget against the checkpoint timeout. This connector, rather than the client library, decides whether to retry the mutations that remain undecided |
 | `maxCommitDelay` | *unset ⇒ the service's own handling* | How long Spanner may delay a commit to group it with others, trading latency for throughput. Between zero and 500 ms, which is what the service accepts. Not rounded to milliseconds — the client forwards seconds and nanoseconds unchanged |
 | `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it. `LOW` is what a backfill that must not disturb serving traffic wants |
 
@@ -112,7 +113,7 @@ whole batch.
 |---|---|---|
 | `recoveryInitialBackoff` | `500ms` | The first backoff, at least 1 ms |
 | `recoveryMaxBackoff` | `10s` | The backoff cap, at least `recoveryInitialBackoff` |
-| `recoveryMaxAttempts` | `10` | Attempts before the job fails. Exhausting the budget fails the job — a sink cannot drop what the service never refused. Note the wall-clock worst case: the client library gives a batch write a one-hour total timeout and this sink sets no deadline of its own, so a wedged request blocks the task thread — and therefore checkpointing — for up to an hour per attempt |
+| `recoveryMaxAttempts` | `10` | Attempts before the job fails. Exhausting the budget fails the job — a sink cannot drop what the service never refused. `batchWriteTimeout` bounds each attempt; the recovery schedule bounds how many attempts the connector makes and the delays between them |
 
 ## `SpannerSource.builder()`
 

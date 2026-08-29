@@ -51,6 +51,10 @@ public final class WriterOptionsMapper {
                 config, SpannerConnectorOptions.SINK_RPC_PRIORITY, builder::rpcPriority);
         OptionSetters.apply(
                 config,
+                SpannerConnectorOptions.SINK_BATCH_WRITE_TIMEOUT,
+                builder::batchWriteTimeout);
+        OptionSetters.apply(
+                config,
                 SpannerConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                 builder::recoveryInitialBackoff);
         OptionSetters.apply(

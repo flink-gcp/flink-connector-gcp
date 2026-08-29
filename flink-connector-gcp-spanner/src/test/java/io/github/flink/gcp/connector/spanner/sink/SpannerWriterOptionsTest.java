@@ -16,11 +16,14 @@
 
 package io.github.flink.gcp.connector.spanner.sink;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,6 +42,7 @@ class SpannerWriterOptionsTest {
         // Unset, so the service's own handling stays in place rather than being restated here.
         assertThat(options.getMaxCommitDelay()).isNull();
         assertThat(options.getRpcPriority()).isNull();
+        assertThat(options.getBatchWriteTimeout()).isEqualTo(Duration.ofSeconds(30));
     }
 
     @Test
@@ -255,6 +259,42 @@ class SpannerWriterOptionsTest {
     }
 
     @Test
+    void rejectsBatchWriteTimeoutsBelowAMillisecondBecauseGaxUsesMilliseconds() {
+        assertThatThrownBy(
+                        () ->
+                                SpannerWriterOptions.builder()
+                                        .batchWriteTimeout(Duration.ofNanos(999_999)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("batchWriteTimeout")
+                .hasMessageContaining("at least 1 millisecond");
+    }
+
+    @Test
+    void serializesACustomBatchWriteTimeout() throws Exception {
+        SpannerWriterOptions options =
+                SpannerWriterOptions.builder().batchWriteTimeout(Duration.ofSeconds(17)).build();
+
+        assertThat(InstantiationUtil.clone(options)).isEqualTo(options);
+        assertThat(InstantiationUtil.clone(options).getBatchWriteTimeout())
+                .isEqualTo(Duration.ofSeconds(17));
+    }
+
+    @Test
+    void anOlderSerializedFormWithoutTheTimeoutUsesTheNewDefault() throws Exception {
+        SpannerWriterOptions options = SpannerWriterOptions.builder().build();
+        Field timeout = SpannerWriterOptions.class.getDeclaredField("batchWriteTimeout");
+        timeout.setAccessible(true);
+        timeout.set(options, null);
+
+        SpannerWriterOptions restored = InstantiationUtil.clone(options);
+
+        assertThat(restored.getBatchWriteTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(restored)
+                .isEqualTo(SpannerWriterOptions.defaults())
+                .hasSameHashCodeAs(SpannerWriterOptions.defaults());
+    }
+
+    @Test
     void rejectsABackoffCapBelowTheFirstBackoff() {
         assertThatThrownBy(
                         () ->
@@ -279,6 +319,8 @@ class SpannerWriterOptionsTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerWriterOptions.builder().rpcPriority(null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().batchWriteTimeout(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -290,6 +332,7 @@ class SpannerWriterOptionsTest {
                         .maxBatchBytes(33)
                         .maxCommitDelay(Duration.ofMillis(44))
                         .rpcPriority(SpannerRpcPriority.LOW)
+                        .batchWriteTimeout(Duration.ofMillis(77))
                         .recoveryInitialBackoff(Duration.ofMillis(55))
                         .recoveryMaxBackoff(Duration.ofMillis(66))
                         .recoveryMaxAttempts(7)
@@ -302,6 +345,7 @@ class SpannerWriterOptionsTest {
                 .contains("maxBatchBytes=33")
                 .contains("maxCommitDelay=PT0.044S")
                 .contains("rpcPriority=LOW")
+                .contains("batchWriteTimeout=PT0.077S")
                 .contains("recoveryInitialBackoff=PT0.055S")
                 .contains("recoveryMaxBackoff=PT0.066S")
                 .contains("recoveryMaxAttempts=7");
