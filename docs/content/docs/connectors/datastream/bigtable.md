@@ -556,6 +556,23 @@ numbers. Splitting more finely than a tablet is not something the read path can 
 A restore does **not** sample the table again. Tablets split and merge while a job runs, so a second
 sampling would name different ranges under the split ids the readers are already holding.
 
+### Fetch memory and responsiveness
+
+Each fetch hands at most `maxRowsPerFetch` input rows and targets at most `maxBytesPerFetch` of decoded input content before returning control to Flink.
+The defaults are 1,000 rows and 8 MiB, and the first limit reached ends the batch.
+The byte estimate is measured while the SDK materializes the row and covers its row key, cell values, qualifiers, family names, timestamps, and labels.
+It is a stable input-content estimate rather than an exact measurement of Java retained heap.
+
+If adding the next row would cross the byte target, the reader keeps that one materialized row for the next fetch.
+A row larger than the target is handed over alone so the source always makes progress.
+SDK transport buffers, the one look-ahead row, the element queue's own overhead and capacity for multiple batches, the records produced by the deserializer, and downstream operators remain outside the byte target.
+
+Lower bounds reduce each hand-off and let checkpoints and cancellation be observed sooner, but increase fetch-thread hand-offs.
+Higher bounds can improve throughput for narrow rows at the cost of more queued input per source subtask.
+Each active source subtask has its own independently queued batches, so effective source parallelism can multiply queued input; tune the per-fetch bounds together with the planned split count and the TaskManager memory budget.
+Server-side `filter(...)` shaping is the first memory control to use because excluded cells never reach the SDK; narrower returned rows also consume less of the byte target.
+These controls apply only to the bounded scan source, not to Change Streams.
+
 **How a range is written in a log line or an error.** Both this source and the Change Streams source
 render ranges as `[start, end)`, where `[` and `]` include the key, `(` and `)` exclude it, and `*`
 stands for a bound the range does not have — so `(*, row-9)` is everything below `row-9` and
@@ -648,9 +665,9 @@ a configured `appProfileId` reaches the client, which the gated real-GCP suite a
 - `Query.limit()`, a global row limit. It cannot be partitioned across splits without coordination,
   and the client library says the same thing from the other side by refusing to shard a query that
   carries one.
-- Read-ahead and paging knobs. How many rows one fetch hands to the task thread is a fixed internal
-  bound — a correctness floor that lets a checkpoint land inside a long range — rather than a knob,
-  and turning it into one needs a measurement rather than a preference.
+- A separate transport read-ahead or response-paging control. `maxRowsPerFetch` and
+  `maxBytesPerFetch` bound the connector's materialized hand-off to Flink; they do not configure the
+  Bigtable SDK's transport buffers.
 
 ## Change Streams source
 

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0080: The Bigtable scan source splits by sampled row-key range, and a checkpoint truncates the range
 
 - Status: Accepted
-- Date: 2026-08-09, revised by [#587] (2026-08-13), [#947] (2026-08-17) and [#1012] (2026-08-22)
-- Issues: [#216], [#34], [#248], [#481], [#587], [#910], [#947], [#1012]
+- Date: 2026-08-09, revised by [#587] (2026-08-13), [#947] (2026-08-17), [#1012] (2026-08-22) and [#1139] (2026-08-29)
+- Issues: [#216], [#34], [#248], [#481], [#587], [#910], [#947], [#1012], [#1139]
 - Modules: bigtable (module root, `source`, `source.readrows`, `table`, `sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Source
 
@@ -240,6 +240,44 @@ sink": the *table* sink's empty-mutation refusal is one of the call sites listed
 
 [#1012]: https://github.com/flink-gcp/flink-connector-gcp/issues/1012
 
+### Refinement, [#1139] (2026-08-29): count and decoded bytes bound each fetch hand-off
+
+The original fixed cap of 1,000 rows was enough to return control before a whole range ended, but it was not a memory bound.
+A Bigtable row can contain many cells and versions, and one input row can be tens of MiB while another is a few bytes.
+The fetcher hands materialized SDK `Row` objects to Flink's element queue, so row count alone permits one batch's retained input to vary with the workload.
+
+**Every bounded fetch is now limited by both input-row count and a decoded-content byte target.**
+The public defaults are 1,000 rows and 8 MiB through `maxRowsPerFetch` and `maxBytesPerFetch`; Table API maps `scan.max-rows-per-fetch` and `scan.max-bytes-per-fetch` onto those setters only in bounded mode.
+The first limit reached returns the batch to Flink.
+This is not `Query.limit()`: every configured range is still read completely, and the SDK's refusal to shard a limited query remains relevant.
+
+**The byte estimate is measured while the SDK materializes the row.**
+The custom `RowAdapter` delegates construction to `DefaultRowAdapter` and adds the encoded sizes of the row key, family, qualifier, timestamp, labels, announced cell-value length, and cell values.
+It does not traverse or rebuild the completed `Row`, and the application deserializer still receives the SDK type.
+The estimate is stable decoded input content, not a claim about exact Java retained heap; transport buffers, object headers, application outputs, Flink's queue, and downstream state are separate allocations.
+
+**The target admits one look-ahead row and one oversized row.**
+When the next decoded row would cross a non-empty batch's byte target, the reader keeps that row for the following fetch.
+A row larger than the target is handed over alone, so a valid range cannot livelock.
+If a wake-up cancels the stream while that look-ahead is pending, the reader returns control first, then hands the pending row over and reopens strictly past it; dropping it loses data, while reopening before advancing the delivered key duplicates it.
+
+The default selection compared row caps 64, 256, and 1,000 and byte targets 8, 16, 32, and 64 MiB against the old 1,000-row count-only behavior.
+Each synthetic throughput value was the median after two warm-ups and five measured scans; retained heap was measured after GC while two fetched batches remained held.
+The datasets were 32,768 rows of 1 KiB, one 96 MiB oversized row, and 128 variable-width rows cycling through 1 KiB, 64 KiB, 1 MiB, and 4 MiB.
+The 1,000-row cap kept the narrow-row median at about 1,259 MiB/s, compared with 847 MiB/s at 64 and 1,234 MiB/s at 256.
+At 1,000 rows, 8 MiB was the smallest byte candidate and exceeded the count-only median in all three shapes; on the variable-width shape it reduced held-batch retained heap from about 226 MiB to 21 MiB.
+The 96 MiB row remained about 97 MiB retained under every candidate, which is the expected one-row progress exception rather than a false promise that the target is a hard heap ceiling.
+
+The production client path was then measured against one ephemeral one-node Bigtable instance and a temporary table, with the same two warm-ups and five measured scans per shape for count-only and the selected default.
+The 8 MiB default changed median throughput from 1.18 to 3.62 MiB/s for 1,024 one-KiB rows, 18.78 to 24.39 MiB/s for the 96 MiB row, and 22.07 to 27.04 MiB/s for 32 variable-width rows.
+The variable-width held-batch measurement fell from about 56.6 MiB to 21.3 MiB, and the oversized row completed alone under both settings.
+The instance was deleted in the benchmark's `finally` path, and a live project listing afterwards contained no instance.
+
+The permanent regression is not the throughput benchmark.
+A constrained 192 MiB child-JVM test reads 384 generated 256 KiB rows while holding four batches and pins the default to 31 rows in the largest batch; boundary unit tests separately pin exact-target, look-ahead, oversized-row, cancellation, and reopen behavior.
+
+[#1139]: https://github.com/flink-gcp/flink-connector-gcp/issues/1139
+
 ## Alternatives declined
 
 - **An offset-based split.** `ReadRows` has no row offset; there is nothing to count from.
@@ -272,8 +310,9 @@ sink": the *table* sink's empty-mutation refusal is one of the call sites listed
 - Split planning is exercised by a unit test and by the gated real-GCP suite over a pre-split table,
   and by nothing in between — the emulator models no tablets, so its plans are always one split.
   The failover coverage is scripted for the same reason: one split cannot show a reassignment.
-- The per-fetch row cap is a correctness floor rather than a knob, and is reachable only through a
-  `@VisibleForTesting` setter. Promoting it to a builder option needs a measurement.
+- A fetch hand-off is bounded by public row and byte controls, with the documented one-row and
+  one-look-ahead exceptions. The defaults come from [#1139]'s synthetic and real-service
+  measurements rather than from the old test-only correctness floor.
 
 [#34]: https://github.com/flink-gcp/flink-connector-gcp/issues/34
 [#216]: https://github.com/flink-gcp/flink-connector-gcp/issues/216

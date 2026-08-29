@@ -54,8 +54,21 @@ class BigtableSplitReaderTest {
 
     private BigtableSplitReader reader(
             ScriptedRowStreamOpener opener, int maxRowsPerFetch, @Nullable Filters.Filter filter) {
+        return reader(opener, maxRowsPerFetch, Long.MAX_VALUE, filter);
+    }
+
+    private BigtableSplitReader reader(
+            ScriptedRowStreamOpener opener,
+            int maxRowsPerFetch,
+            long maxBytesPerFetch,
+            @Nullable Filters.Filter filter) {
         return new BigtableSplitReader(
-                TestSources.TABLE, opener, filter, maxRowsPerFetch, metrics.metrics());
+                TestSources.TABLE,
+                opener,
+                filter,
+                maxRowsPerFetch,
+                maxBytesPerFetch,
+                metrics.metrics());
     }
 
     private static RowRangeSplit split(String id, ByteStringRange range) {
@@ -103,6 +116,64 @@ class BigtableSplitReaderTest {
         assertThat(keysOf(reader.fetch())).containsExactly("c", "d");
         assertThat(keysOf(reader.fetch())).containsExactly("e");
         reader.close();
+    }
+
+    @Test
+    void honoursTheByteTargetWithoutDroppingTheLookaheadRow() throws Exception {
+        ScriptedRowStreamOpener opener =
+                ScriptedRowStreamOpener.overMeasuredRows(
+                        "byte-cap",
+                        measured("a", 6),
+                        measured("b", 4),
+                        measured("c", 7),
+                        measured("d", 3));
+        BigtableSplitReader reader = reader(opener, 100, 10, null);
+        reader.handleSplitsChanges(
+                new SplitsAddition<>(
+                        Collections.singletonList(split("0", ByteStringRange.unbounded()))));
+
+        assertThat(keysOf(reader.fetch())).containsExactly("a", "b");
+        assertThat(keysOf(reader.fetch())).containsExactly("c", "d");
+        assertThat(keysOf(reader.fetch())).isEmpty();
+        reader.close();
+    }
+
+    @Test
+    void handsAnOversizedRowOverAloneSoTheRangeMakesProgress() throws Exception {
+        ScriptedRowStreamOpener opener =
+                ScriptedRowStreamOpener.overMeasuredRows(
+                        "oversized", measured("a", 11), measured("b", 1));
+        BigtableSplitReader reader = reader(opener, 100, 10, null);
+        reader.handleSplitsChanges(
+                new SplitsAddition<>(
+                        Collections.singletonList(split("0", ByteStringRange.unbounded()))));
+
+        assertThat(keysOf(reader.fetch())).containsExactly("a");
+        assertThat(keysOf(reader.fetch())).containsExactly("b");
+        reader.close();
+    }
+
+    @Test
+    void preservesAByteBoundaryLookaheadAcrossCancellationAndReopen() throws Exception {
+        ScriptedRowStreamOpener opener =
+                ScriptedRowStreamOpener.overMeasuredRows(
+                        "byte-reopen", measured("a", 6), measured("b", 6), measured("c", 1));
+        BigtableSplitReader reader = reader(opener, 100, 10, null);
+        reader.handleSplitsChanges(
+                new SplitsAddition<>(
+                        Collections.singletonList(split("0", ByteStringRange.unbounded()))));
+
+        assertThat(keysOf(reader.fetch())).containsExactly("a");
+        reader.wakeUp();
+        assertThat(keysOf(reader.fetch())).isEmpty();
+        assertThat(keysOf(reader.fetch())).containsExactly("b");
+        assertThat(keysOf(reader.fetch())).containsExactly("c");
+        assertThat(opener.openedRanges()).containsExactly("(*, *)", "(b, *)");
+        reader.close();
+    }
+
+    private static MeasuredRow measured(String key, long bytes) {
+        return new MeasuredRow(TestRows.row(key), bytes);
     }
 
     @Test

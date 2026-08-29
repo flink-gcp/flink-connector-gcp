@@ -34,7 +34,6 @@ import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource
 import io.github.flink.gcp.connector.bigtable.source.readrows.RowRangeSplit;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.DefaultRowKeySamplerFactory;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySamplerFactory;
-import io.github.flink.gcp.connector.bigtable.source.readrows.reader.BigtableSplitReader;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.DataClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.readrows.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableRowDeserializationSchema;
@@ -57,6 +56,12 @@ import java.util.List;
 @Public
 public class BigtableSourceBuilder<T> {
 
+    /** The default maximum number of rows one fetch hands to Flink's element queue. */
+    public static final int DEFAULT_MAX_ROWS_PER_FETCH = 1000;
+
+    /** The default target maximum estimated bytes one fetch hands to Flink's element queue. */
+    public static final long DEFAULT_MAX_BYTES_PER_FETCH = 8L * 1024 * 1024;
+
     private @Nullable TableDestination table;
     private @Nullable BigtableRowDeserializationSchema<T> deserializer;
     private final List<ByteStringRange> ranges = new ArrayList<>();
@@ -66,7 +71,8 @@ public class BigtableSourceBuilder<T> {
     private @Nullable EmulatorEndpoint emulatorEndpoint;
     private @Nullable RowKeySamplerFactory samplerFactory;
     private @Nullable RowStreamOpener opener;
-    private int maxRowsPerFetch = BigtableSplitReader.DEFAULT_MAX_ROWS_PER_FETCH;
+    private int maxRowsPerFetch = DEFAULT_MAX_ROWS_PER_FETCH;
+    private long maxBytesPerFetch = DEFAULT_MAX_BYTES_PER_FETCH;
 
     BigtableSourceBuilder() {}
 
@@ -275,15 +281,43 @@ public class BigtableSourceBuilder<T> {
     }
 
     /**
-     * Lowers how many rows one fetch hands to the task thread.
+     * Sets the maximum number of input rows one fetch hands to Flink's element queue. Optional;
+     * defaults to {@value #DEFAULT_MAX_ROWS_PER_FETCH}.
      *
-     * <p>Not a public option, and not one because nothing about it is workload-dependent: the
-     * client hands rows over one at a time, so the cap bounds a batch rather than a buffer. Tests
-     * lower it so that a checkpoint can land in the middle of a range that holds only a few rows.
+     * <p>The fetch returns when either this row limit or {@link #maxBytesPerFetch(long)} is
+     * reached. Lower values reduce the source reader's queued memory and the delay before a
+     * checkpoint or cancellation can be observed, at the cost of more fetch hand-offs.
+     *
+     * @param maxRowsPerFetch the positive maximum number of rows per fetch
+     * @return this builder
      */
-    @VisibleForTesting
-    BigtableSourceBuilder<T> maxRowsPerFetch(int maxRowsPerFetch) {
+    public BigtableSourceBuilder<T> maxRowsPerFetch(int maxRowsPerFetch) {
+        Preconditions.checkArgument(
+                maxRowsPerFetch > 0, "maxRowsPerFetch must be positive: %s", maxRowsPerFetch);
         this.maxRowsPerFetch = maxRowsPerFetch;
+        return this;
+    }
+
+    /**
+     * Sets the target maximum estimated bytes one fetch hands to Flink's element queue. Optional;
+     * defaults to {@value #DEFAULT_MAX_BYTES_PER_FETCH} bytes.
+     *
+     * <p>The estimate covers the decoded row key, cell values, and cell metadata measured while the
+     * SDK materialises each row. The next row is held for the following fetch when adding it would
+     * exceed this target. One row larger than the target is still handed over alone so the source
+     * can make progress.
+     *
+     * <p>The fetch returns when either this byte target or {@link #maxRowsPerFetch(int)} is
+     * reached. Lower values reduce the source reader's queued memory, while higher values can
+     * reduce fetch hand-offs for wide rows.
+     *
+     * @param maxBytesPerFetch the positive target maximum estimated bytes per fetch
+     * @return this builder
+     */
+    public BigtableSourceBuilder<T> maxBytesPerFetch(long maxBytesPerFetch) {
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
+        this.maxBytesPerFetch = maxBytesPerFetch;
         return this;
     }
 
@@ -319,7 +353,8 @@ public class BigtableSourceBuilder<T> {
                         opener != null
                                 ? opener
                                 : new DataClientRowStreamOpener(appProfileId, emulatorEndpoint),
-                        maxRowsPerFetch));
+                        maxRowsPerFetch,
+                        maxBytesPerFetch));
     }
 
     /**

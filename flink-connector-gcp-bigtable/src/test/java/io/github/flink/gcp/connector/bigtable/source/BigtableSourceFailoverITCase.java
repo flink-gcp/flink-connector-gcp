@@ -155,9 +155,9 @@ class BigtableSourceFailoverITCase {
                 ScriptedRowKeySampler.Factory.answering(
                         RowKeySample.of(ByteString.copyFromUtf8(BOUNDARY), 1_000L)));
         TestSources.withOpener(builder, opener);
-        // Without a small cap a fetch would not return until a whole range had been
-        // read, so no checkpoint could land mid-range and no resume could be shown.
-        TestSources.withMaxRowsPerFetch(builder, 5);
+        // A small byte target makes the fetch return after five scripted one-byte rows, so a
+        // checkpoint can land mid-range and the restore exercises the byte-boundary path.
+        builder.maxRowsPerFetch(1000).maxBytesPerFetch(5);
         return builder.build();
     }
 

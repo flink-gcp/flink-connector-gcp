@@ -46,8 +46,10 @@ import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
+import io.github.flink.gcp.connector.bigtable.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
@@ -96,6 +98,8 @@ public final class BigtableDynamicSource
     private final String nullStringLiteral;
     private final TrailingBytes trailingBytes;
     @Nullable private final String appProfileId;
+    @Nullable private final Integer maxRowsPerFetch;
+    @Nullable private final Long maxBytesPerFetch;
     @Nullable private final String serviceAccountKeyFile;
     private final List<ByteString> prefixes;
     @Nullable private final ByteString rangeStartClosed;
@@ -120,6 +124,8 @@ public final class BigtableDynamicSource
         this.trailingBytes =
                 Preconditions.checkNotNull(builder.trailingBytes, "trailingBytes must not be null");
         this.appProfileId = builder.appProfileId;
+        this.maxRowsPerFetch = builder.maxRowsPerFetch;
+        this.maxBytesPerFetch = builder.maxBytesPerFetch;
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.prefixes = builder.prefixes;
         this.rangeStartClosed = builder.rangeStartClosed;
@@ -204,6 +210,14 @@ public final class BigtableDynamicSource
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
         }
+        OptionSetters.accept(
+                BigtableConnectorOptions.SCAN_MAX_ROWS_PER_FETCH.key(),
+                maxRowsPerFetch,
+                builder::maxRowsPerFetch);
+        OptionSetters.accept(
+                BigtableConnectorOptions.SCAN_MAX_BYTES_PER_FETCH.key(),
+                maxBytesPerFetch,
+                builder::maxBytesPerFetch);
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
@@ -370,6 +384,8 @@ public final class BigtableDynamicSource
                 .nullStringLiteral(nullStringLiteral)
                 .trailingBytes(trailingBytes)
                 .appProfileId(appProfileId)
+                .maxRowsPerFetch(maxRowsPerFetch)
+                .maxBytesPerFetch(maxBytesPerFetch)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .prefixes(prefixes)
                 .rangeStartClosed(rangeStartClosed)
@@ -403,6 +419,8 @@ public final class BigtableDynamicSource
                 && nullStringLiteral.equals(that.nullStringLiteral)
                 && trailingBytes == that.trailingBytes
                 && Objects.equals(appProfileId, that.appProfileId)
+                && Objects.equals(maxRowsPerFetch, that.maxRowsPerFetch)
+                && Objects.equals(maxBytesPerFetch, that.maxBytesPerFetch)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && prefixes.equals(that.prefixes)
                 && Objects.equals(rangeStartClosed, that.rangeStartClosed)
@@ -424,6 +442,8 @@ public final class BigtableDynamicSource
                 nullStringLiteral,
                 trailingBytes,
                 appProfileId,
+                maxRowsPerFetch,
+                maxBytesPerFetch,
                 serviceAccountKeyFile,
                 prefixes,
                 rangeStartClosed,
@@ -445,6 +465,8 @@ public final class BigtableDynamicSource
         private String nullStringLiteral;
         private TrailingBytes trailingBytes;
         @Nullable private String appProfileId;
+        @Nullable private Integer maxRowsPerFetch;
+        @Nullable private Long maxBytesPerFetch;
         @Nullable private String serviceAccountKeyFile;
         private List<ByteString> prefixes = Collections.emptyList();
         @Nullable private ByteString rangeStartClosed;
@@ -501,6 +523,26 @@ public final class BigtableDynamicSource
          */
         public Builder appProfileId(@Nullable String appProfileId) {
             this.appProfileId = appProfileId;
+            return this;
+        }
+
+        /**
+         * @param maxRowsPerFetch the maximum input rows per fetch, or {@code null} for the source
+         *     default
+         * @return this builder
+         */
+        public Builder maxRowsPerFetch(@Nullable Integer maxRowsPerFetch) {
+            this.maxRowsPerFetch = maxRowsPerFetch;
+            return this;
+        }
+
+        /**
+         * @param maxBytesPerFetch the target maximum estimated bytes per fetch, or {@code null} for
+         *     the source default
+         * @return this builder
+         */
+        public Builder maxBytesPerFetch(@Nullable Long maxBytesPerFetch) {
+            this.maxBytesPerFetch = maxBytesPerFetch;
             return this;
         }
 

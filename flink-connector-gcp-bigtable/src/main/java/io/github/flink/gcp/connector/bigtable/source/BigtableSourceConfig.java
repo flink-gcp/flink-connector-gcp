@@ -66,6 +66,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
     private final RowKeySamplerFactory samplerFactory;
     private final RowStreamOpener opener;
     private final int maxRowsPerFetch;
+    private final long maxBytesPerFetch;
 
     BigtableSourceConfig(
             TableDestination table,
@@ -76,7 +77,8 @@ public final class BigtableSourceConfig<T> implements Serializable {
             @Nullable String serviceAccountKeyFile,
             RowKeySamplerFactory samplerFactory,
             RowStreamOpener opener,
-            int maxRowsPerFetch) {
+            int maxRowsPerFetch,
+            long maxBytesPerFetch) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
@@ -95,6 +97,9 @@ public final class BigtableSourceConfig<T> implements Serializable {
         Preconditions.checkArgument(
                 maxRowsPerFetch > 0, "maxRowsPerFetch must be positive: %s", maxRowsPerFetch);
         this.maxRowsPerFetch = maxRowsPerFetch;
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
+        this.maxBytesPerFetch = maxBytesPerFetch;
     }
 
     /** Returns the table being read. */
@@ -154,5 +159,10 @@ public final class BigtableSourceConfig<T> implements Serializable {
     /** Returns the most rows one fetch hands to the task thread. */
     public int getMaxRowsPerFetch() {
         return maxRowsPerFetch;
+    }
+
+    /** Returns the target maximum estimated bytes one fetch hands to the task thread. */
+    public long getMaxBytesPerFetch() {
+        return maxBytesPerFetch;
     }
 }

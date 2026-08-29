@@ -202,6 +202,33 @@ class BigtableSourceBuilderTest {
     }
 
     @Test
+    void usesMeasuredFetchDefaults() {
+        BigtableSourceConfig<String> config = TestSources.config();
+
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(1000);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(8L * 1024 * 1024);
+    }
+
+    @Test
+    void carriesConfiguredFetchLimits() {
+        BigtableSourceConfig<String> config =
+                TestSources.config(builder -> builder.maxRowsPerFetch(17).maxBytesPerFetch(4096));
+
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(17);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(4096);
+    }
+
+    @Test
+    void rejectsNonPositiveFetchLimitsWhereTheyAreSet() {
+        assertThatThrownBy(() -> minimal().maxRowsPerFetch(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maxRowsPerFetch must be positive: 0");
+        assertThatThrownBy(() -> minimal().maxBytesPerFetch(-1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("maxBytesPerFetch must be positive: -1");
+    }
+
+    @Test
     void serviceAccountKeyFilePropagatesWithoutBeingParsedAtBuildTime() {
         BigtableSourceConfig<String> config =
                 ((io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource<String>)
@@ -319,6 +346,8 @@ class BigtableSourceBuilderTest {
                         .prefix("user")
                         .filter(Filters.FILTERS.family().exactMatch("cf"))
                         .appProfileId("batch-profile")
+                        .maxRowsPerFetch(17)
+                        .maxBytesPerFetch(4096)
                         .build();
 
         Source<String, ?, ?> back =
@@ -326,6 +355,12 @@ class BigtableSourceBuilderTest {
                         InstantiationUtil.serializeObject(source), getClass().getClassLoader());
 
         assertThat(back.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
+        BigtableSourceConfig<?> config =
+                ((io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource<?>)
+                                back)
+                        .getConfig();
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(17);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(4096);
     }
 
     @Test

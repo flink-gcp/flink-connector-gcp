@@ -49,11 +49,9 @@ import java.util.Deque;
  * only arrives after this reader reported the first finished; a queue is kept regardless, because a
  * {@code SplitReader} may be handed several at once.
  *
- * <p>The per-fetch cap is a correctness floor rather than a tuning knob: without it a fetch would
- * not return until a whole range had been read, and no checkpoint could be taken in between. It is
- * a constructor parameter so a test can make it small, and it is seeded from a constant rather than
- * a builder option — the client already hands rows over one at a time, so nothing here is
- * workload-dependent in the way a response-block size would be.
+ * <p>The per-fetch row and byte caps bound how much materialised input the fetcher can hand to
+ * Flink's element queue at once. A single row larger than the byte cap is still handed over alone,
+ * so every valid range can make progress.
  *
  * <p><b>A cancelled stream and an ended stream look the same, and telling them apart is this
  * class's job.</b> Read out of gax 2.82.0 on 2026-08-09: {@code ServerStream.cancel()} sets a flag
@@ -68,21 +66,11 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigtableSplitReader.class);
 
-    /**
-     * The most rows one fetch hands to the task thread, unless a test lowers it.
-     *
-     * <p>A correctness floor rather than tuning: without a cap a fetch would not return until a
-     * whole range had been read, and no checkpoint could be taken in between. It is not a builder
-     * option because nothing about it is workload-dependent — the client hands rows over one at a
-     * time, so this bounds a batch rather than a buffer, and a measurement rather than a preference
-     * is what would turn it into a knob.
-     */
-    public static final int DEFAULT_MAX_ROWS_PER_FETCH = 1000;
-
     private final TableDestination table;
     private final RowStreamOpener opener;
     @Nullable private final Filters.Filter filter;
     private final int maxRowsPerFetch;
+    private final long maxBytesPerFetch;
     private final BigtableSourceReaderMetrics metrics;
 
     private final Deque<RowRangeSplit> queued = new ArrayDeque<>();
@@ -115,6 +103,7 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
      *     readers and closed by the source reader, not here
      * @param filter the server-side filter to apply, or {@code null} for none
      * @param maxRowsPerFetch the most rows one fetch hands to the task thread
+     * @param maxBytesPerFetch the target maximum estimated bytes one fetch hands to the task thread
      * @param metrics the reader's metrics
      */
     public BigtableSplitReader(
@@ -122,13 +111,17 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
             RowStreamOpener opener,
             @Nullable Filters.Filter filter,
             int maxRowsPerFetch,
+            long maxBytesPerFetch,
             BigtableSourceReaderMetrics metrics) {
         Preconditions.checkArgument(
                 maxRowsPerFetch > 0, "maxRowsPerFetch must be positive: %s", maxRowsPerFetch);
+        Preconditions.checkArgument(
+                maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
         this.filter = filter;
         this.maxRowsPerFetch = maxRowsPerFetch;
+        this.maxBytesPerFetch = maxBytesPerFetch;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
     }
 
@@ -161,7 +154,11 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
             finish(batch, range);
             return batch.build();
         }
-        if (range.needsReopen()) {
+        if (range.hasPendingRow() && range.cancelled) {
+            range.wakeUpServed();
+            return batch.build();
+        }
+        if (!range.hasPendingRow() && range.needsReopen()) {
             boolean opened;
             try {
                 opened = range.reopen();
@@ -183,10 +180,12 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
         }
 
         int emitted = 0;
-        while (emitted < maxRowsPerFetch) {
-            Row row;
+        long emittedBytes = 0;
+        while (emitted < maxRowsPerFetch && (emitted == 0 || emittedBytes < maxBytesPerFetch)) {
+            boolean wasPending = range.hasPendingRow();
+            MeasuredRow measuredRow;
             try {
-                row = range.read();
+                measuredRow = range.read();
             } catch (RuntimeException e) {
                 if (range.cancelled) {
                     // A wake-up landed while the fetcher was blocked, and the cancellation came
@@ -203,7 +202,7 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
                                 + ".",
                         e);
             }
-            if (row == null) {
+            if (measuredRow == null) {
                 if (range.cancelled) {
                     range.wakeUpServed();
                     break;
@@ -211,12 +210,28 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
                 finish(batch, range);
                 break;
             }
+            if (emitted > 0 && measuredRow.estimatedBytes() > maxBytesPerFetch - emittedBytes) {
+                range.pendingRow = measuredRow;
+                break;
+            }
+            Row row = measuredRow.row();
             metrics.rowRead();
             batch.add(range.split.splitId(), row);
             emitted++;
+            emittedBytes = saturatedAdd(emittedBytes, measuredRow.estimatedBytes());
             range.deliveredKey = row.getKey();
+            if (wasPending && !range.hasOpenStream()) {
+                // A wake-up cancelled the stream after this row was decoded but before it was
+                // handed over. Reopen past it on the next fetch rather than mistaking the absent
+                // stream for a clean end and dropping the rest of the range.
+                break;
+            }
         }
         return batch.build();
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        return right > Long.MAX_VALUE - left ? Long.MAX_VALUE : left + right;
     }
 
     /** Reports the active range finished and releases its stream. */
@@ -283,6 +298,9 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
          */
         @Nullable private ByteString deliveredKey;
 
+        /** A row decoded to detect a byte boundary but not yet handed to the task thread. */
+        @Nullable private MeasuredRow pendingRow;
+
         /** Volatile for the same reason {@code active} is: {@link #cancel()} reads it. */
         @Nullable private volatile RowStream stream;
 
@@ -305,6 +323,14 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
 
         private boolean needsReopen() {
             return stream == null || cancelled;
+        }
+
+        private boolean hasPendingRow() {
+            return pendingRow != null;
+        }
+
+        private boolean hasOpenStream() {
+            return stream != null;
         }
 
         /**
@@ -352,7 +378,12 @@ public class BigtableSplitReader implements SplitReader<Row, RowRangeSplit> {
         }
 
         @Nullable
-        private Row read() {
+        private MeasuredRow read() {
+            MeasuredRow pending = pendingRow;
+            if (pending != null) {
+                pendingRow = null;
+                return pending;
+            }
             RowStream open = stream;
             return open == null ? null : open.next();
         }
