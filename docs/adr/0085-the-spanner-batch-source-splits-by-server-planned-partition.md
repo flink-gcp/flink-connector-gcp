@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0085: The Spanner batch source splits by server-planned partition, and a partition is the unit of progress
 
 - Status: Accepted
-- Date: 2026-08-10, revised by [#587] (2026-08-13) and [#1053] (2026-08-23)
-- Issues: [#221], [#36], [#224], [#587], [#1053]
+- Date: 2026-08-10, revised by [#587] (2026-08-13), [#1053] (2026-08-23) and
+  [#1140] (2026-08-29)
+- Issues: [#221], [#36], [#224], [#587], [#1053], [#1140]
 - Modules: spanner (`source`, `source.batch`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Source
 
@@ -169,7 +170,7 @@ rather than of Flink: `PullAssignmentSplitEnumerator` assigns only in answer to 
 reader requests only when it holds no partition, so the mid-partition wake-ups a job actually meets
 come from `SplitFetcher.shutdown()`. A shutdown never fetches again, so the re-read is not reached.
 
-**A fetch is bounded by both input rows and estimated decoded logical bytes** (#1140).
+**A fetch is bounded by both input rows and estimated decoded logical bytes** ([#1140]).
 The public builder exposes `maxRowsPerFetch` and `maxBytesPerFetch`, and the Table API maps them only for bounded scans.
 The byte estimate uses UTF-8 or payload length for variable values, stable natural widths for fixed values, and recursive sums for arrays and structs.
 An unrecognized scalar or array element type contributes a 64-byte fallback rather than turning an otherwise readable row into a source failure.
@@ -203,8 +204,19 @@ In independent 192 MiB child JVMs, four retained 12 MiB-targeted variable batche
 Separate 1 GiB JVMs measured 75.8 MiB for two retained 12 MiB batches and 95.1 MiB for two retained 16 MiB batches.
 The 12 MiB target therefore admits one maximum-size cell with ordinary surrounding fields, improves the isolated hand-off rate over 4 MiB, and keeps four measured batches inside the constrained-heap envelope that rejected 16 MiB.
 
-On the narrow real-service workload, 1,000 1-KiB values remain below 12 MiB, so the row hand-off matches the measured 1,000-row arm; that arm did not enable the byte estimator, however, so its CPU cost remains unmeasured against the service.
-The real-service run also did not measure the final 12 MiB target directly, so the evidence makes no end-to-end throughput claim for that exact combination.
+A follow-up real-service run on 2026-08-30 measured the final 12 MiB target directly against 16 MiB and an effectively unbounded target.
+It reused the 100-processing-unit `STANDARD` regional shape in `us-central1`, google-cloud-spanner 6.120.0, the same narrow and variable data shapes, and a 1 GiB JVM.
+Each candidate had two warmups and five measured scans in rotated order, with one service-planned partition and partition planning outside the timed interval.
+The narrow workload reached the 1,000-row cap under every candidate and took five fetches; none of its roughly 1 MiB batches reached a byte target.
+The 12 MiB, 16 MiB, and unbounded labels therefore sampled service noise on the same row-cap and estimator path: their medians were 3.02, 2.99, and 2.97 MiB/s, with measured ranges of 2.84 to 8.04, 1.09 to 7.13, and 2.13 to 3.13 MiB/s.
+The variable workload took 16 fetches at 12 MiB, 11 at 16 MiB, and one unbounded fetch, while its medians were 16.44, 16.24, and 16.25 MiB/s respectively.
+Its measured ranges were 15.56 to 16.55, 13.66 to 19.02, and 15.69 to 19.50 MiB/s, so the run does not establish a throughput advantage for any candidate.
+The absolute medians differed between runs: the earlier run above measured 8.12 MiB/s for narrow rows and 22.03 MiB/s for variable rows at the 1,000-row cap, versus 2.97 and 16.25 MiB/s in the follow-up's unbounded arm.
+The compared arms differ in more than run date: the earlier 1,000-row arm did not execute the byte estimator, while every follow-up arm did.
+The follow-up's narrow range also reached 8.04 MiB/s within one arm, so the cross-run difference isolates neither service drift nor estimator cost.
+Candidate comparisons therefore use the rotated arms within each run, and neither run's absolute rates form a cross-run regression baseline.
+The follow-up's variable-width comparison shows no observable service-throughput penalty from choosing 12 MiB over 16 MiB or unbounded fetches in this single-partition workload, while the retained-heap evidence above still distinguishes 12 MiB from 16 MiB.
+Every follow-up arm executed the byte estimator, including the effectively unbounded arm, so this run does not measure the estimator's CPU cost against a non-estimating service baseline.
 
 **An empty partition is normal, not an error.** The emulator plans one on every run, and a reader
 must finish such a split without complaint — which is also what a restored split whose partition
@@ -300,4 +312,5 @@ against, and an SDK release that moves any of them fails a test at compile time.
 [#452]: https://github.com/flink-gcp/flink-connector-gcp/issues/452
 [#587]: https://github.com/flink-gcp/flink-connector-gcp/issues/587
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
+[#1140]: https://github.com/flink-gcp/flink-connector-gcp/issues/1140
 [Spanner limits]: https://cloud.google.com/spanner/quotas#schema_limits
