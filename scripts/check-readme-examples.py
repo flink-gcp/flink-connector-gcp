@@ -43,6 +43,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from java_ast import JavaSyntaxError
 from java_example_regions import SourceRegion, collect_source_regions
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -624,7 +625,10 @@ def validate() -> tuple[int, int, list[str], bool]:
     if not paths:
         return 0, 0, [f"{README_PATTERN} matched no README files under {ROOT}."], True
 
-    regions, problems = collect_source_regions(SNIPPET_SOURCES, relative)
+    try:
+        regions, problems = collect_source_regions(SNIPPET_SOURCES, relative)
+    except JavaSyntaxError as error:
+        return 0, 0, [str(error)], True
     infrastructure = not SNIPPET_SOURCES.is_dir() or not any(
         SNIPPET_SOURCES.rglob("*.java")
     )

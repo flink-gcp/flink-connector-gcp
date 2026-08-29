@@ -209,6 +209,24 @@ public class GenericOptions<T> {
     }
 
 
+def test_a_qualified_vendor_builder_is_not_a_connector_setter(root, check_option_docs):
+    relative = write_source(
+        root,
+        "conn",
+        "Converter.java",
+        """package io.github.x;
+
+public final class Converter {
+  public Task.Builder convert(RowData value) { return Task.newBuilder(); }
+}
+""",
+    )
+
+    parsed = check_option_docs.parse_java(root / relative)
+
+    assert check_option_docs.builder_setter_names(parsed) == set()
+
+
 COMMENTED_OUT_SETTER = """\
 package io.github.x;
 
@@ -226,8 +244,7 @@ public class AOptions {
 
 
 def test_a_setter_inside_a_comment_is_not_a_declaration(root, check_option_docs):
-    # Indented exactly as a real one, which is what makes it reachable by the
-    # line-anchored pattern: only the comment blanking keeps it out.
+    # Indented exactly as a real one; only a declaration node may count it.
     write_source(root, "conn", "AOptions.java", COMMENTED_OUT_SETTER)
     assert check_option_docs.builder_setters("conn", set(), []) == {
         "AOptions": {"real"}
@@ -522,12 +539,11 @@ def test_an_internal_builder_is_not_reported(root, check_option_docs):
 @pytest.mark.parametrize(
     "elsewhere",
     [
-        # Nested inside the class it would be speaking for. Indentation alone
-        # keeps this one out, since INTERNAL is anchored at a line start.
+        # Nested inside the class it would be speaking for. Its annotation
+        # belongs to the nested declaration, not the first top-level type.
         "  @Internal\n  public static class Nested {}\n",
         # A second top-level type, which Java allows as long as it is not public
-        # — at column 0, where only the *scoping* to the first type's own block
-        # keeps it from being read as that type's annotation.
+        # — its annotation belongs to that declaration, not the first one.
         "}\n\n@Internal\nfinal class Helper {\n",
     ],
 )
@@ -712,8 +728,8 @@ def test_a_package_private_internal_class_is_exempt(
         # A different annotation whose name merely starts with `Internal` — gax's
         # `@InternalApi` is one this repository already sees.
         "@InternalApi\nfinal class Helper {",
-        # A shape TOP_LEVEL_TYPE cannot parse at all (annotation on the same line
-        # as the declaration). Unparseable must mean reported, not exempted.
+        # A different annotation on the same line as the declaration is still
+        # not evidence that the type is @Internal.
         "@Deprecated public final class Helper {",
     ],
 )
@@ -738,8 +754,8 @@ def test_a_class_the_exemption_cannot_confirm_is_reported(
 def test_an_internal_inside_a_string_literal_does_not_exempt(
     root, check_option_docs, capsys
 ):
-    # blank_comments keeps string literals, so an unanchored search would read
-    # this one as the annotation — the guard's only silent-pass direction.
+    # An annotation name inside a string literal is not attached to the type —
+    # the guard's only silent-pass direction.
     write_source(root, "conn", "AOptions.java", options_class("AOptions", "topic"))
     write_source(
         root,
@@ -775,9 +791,8 @@ def test_setters_of_the_same_class_name_in_two_roots_are_merged(
 def test_a_javadoc_between_the_annotation_and_the_declaration_still_exempts(
     root, check_option_docs
 ):
-    # Comments are blanked to blank lines before the guard reads the block, so a
-    # block that only accepted contiguous annotation lines would lose the
-    # annotation to a docstring sitting under it.
+    # The annotation belongs to the declaration even when Javadoc sits between
+    # the two in source order.
     write_source(root, "conn", "AOptions.java", options_class("AOptions", "topic"))
     write_source(
         root,
@@ -932,14 +947,15 @@ def test_a_fenced_example_table_is_not_read(root, check_option_docs, fence):
 
 
 def test_a_comment_marker_inside_a_string_is_not_a_comment(root, check_option_docs):
-    # `"http://…"` carries `//`; naive comment blanking would erase the rest of
-    # the line, taking any declaration sharing it along.
-    blanked = check_option_docs.blank_comments(
-        'String u = "http://e"; ConfigOptions.key("real.key") // gone\n'
+    source = write_source(
+        root,
+        "conn",
+        "ConnectorOptions.java",
+        'class ConnectorOptions { Object x = pair("http://e", '
+        'ConfigOptions.key("real.key")); }\n',
     )
-    assert '"http://e"' in blanked
-    assert '"real.key"' in blanked
-    assert "// gone" not in blanked
+    parsed = check_option_docs.parse_java(root / source)
+    assert check_option_docs.config_option_keys(parsed) == {"real.key"}
 
 
 @pytest.mark.parametrize(

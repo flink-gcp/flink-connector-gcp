@@ -17,7 +17,7 @@
 # The single source of truth for which ITCases are gated on real-GCP
 # credentials: every test class annotated with
 # @EnabledIfEnvironmentVariable(named = "<gate>", ...) for one of the gates in
-# the loop below is one.
+# check-gated-tags.py's E2E_GATES is one.
 # Deriving the list from the gating annotation itself means a newly gated
 # ITCase joins the E2E run automatically — and one added outside the modules
 # the `e2e` recipe builds makes --assert-ran fail until the recipe learns to
@@ -60,20 +60,14 @@
 
 set -euo pipefail
 
-gates=(
-    BQ_IT_PROJECT
-    PUBSUB_IT_PROJECT
-    BIGTABLE_IT_PROJECT
-    SPANNER_IT_PROJECT
-    CLOUDTASKS_IT_PROJECT
-)
-
+# Validate selector arguments before restoring the parser, so a typo reports
+# the usage error even on a machine that has not installed mise yet. This list
+# mirrors check-gated-tags.py's E2E_GATES, which remains the discovery owner.
 known_gate() {
-    local candidate=$1 gate
-    for gate in "${gates[@]}"; do
-        [ "$candidate" != "$gate" ] || return 0
-    done
-    return 1
+    case "$1" in
+        BQ_IT_PROJECT|PUBSUB_IT_PROJECT|BIGTABLE_IT_PROJECT|SPANNER_IT_PROJECT|CLOUDTASKS_IT_PROJECT) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # The E2E suite: every test class gated on one of the variables that workflow
@@ -83,19 +77,38 @@ known_gate() {
 # while the others keep the union non-empty.
 #
 # A function rather than a top-level block: --check-tags is deliberately
-# gate-agnostic (see there) and must not require this particular list to match.
+# gate-agnostic (see there) and must not require every configured E2E gate to match.
 gated_sources() {
-    local only_gate=${1:-} except_gate=${2:-} sources='' gate matched
-    for gate in "${gates[@]}"; do
-        [ -z "$only_gate" ] || [ "$gate" = "$only_gate" ] || continue
-        [ -z "$except_gate" ] || [ "$gate" != "$except_gate" ] || continue
-        matched=$(grep -rl --include='*.java' "named = \"$gate\"" ./*/src/test/java | sort) || {
-            echo "::error::no test class is gated on $gate; the gating annotation moved or the tree layout changed" >&2
-            return 1
-        }
-        sources="$sources$matched"$'\n'
-    done
-    printf '%s' "$sources" | sort -u
+    local only_gate=${1:-} except_gate=${2:-} arguments=(--root "$PWD")
+    [ -z "$only_gate" ] || arguments+=(--for-gate "$only_gate")
+    [ -z "$except_gate" ] || arguments+=(--except-gate "$except_gate")
+    run_tag_checker "${arguments[@]}"
+}
+
+run_tag_checker() {
+    local script_dir repository_root
+    script_dir=$(cd "$(dirname "$0")" && pwd)
+    repository_root=$(cd "$script_dir/.." && pwd)
+    if [ "${UV_RUN_RECURSION_DEPTH:-0}" -gt 0 ] \
+        && [ "${VIRTUAL_ENV:-}" = "$repository_root/.venv" ] \
+        && command -v python3 >/dev/null 2>&1 \
+        && python3 -c 'import tree_sitter, tree_sitter_java' >/dev/null 2>&1; then
+        python3 "$script_dir/check-gated-tags.py" "$@"
+        return
+    fi
+    if ! command -v mise >/dev/null 2>&1; then
+        echo "::error::the locked Tree-sitter parser is unavailable; run through 'just e2e' or 'just check-gated-tags', or install mise" >&2
+        return 2
+    fi
+    if ! mise x -C "$repository_root" uv -- \
+        uv run --project "$repository_root" --locked python \
+        -c 'import tree_sitter, tree_sitter_java'; then
+        echo "::error::could not restore the locked Tree-sitter parser" >&2
+        return 2
+    fi
+    mise x -C "$repository_root" uv -- \
+        uv run --project "$repository_root" --locked python \
+        "$script_dir/check-gated-tags.py" "$@"
 }
 
 print_classes() {
@@ -190,74 +203,8 @@ case "${1:-}" in
             echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2
             exit 2
         }
-        # Deliberately gate-agnostic — any variable, not just the three the E2E
-        # workflow sets: BigQueryDefaultStreamSchemaEvolutionITCase gates on
-        # BQ_IT_SCHEMA_EVOLUTION precisely to stay out of that suite, and at a
-        # measured ~2 hours against the real service it is the class an
-        # ordinary build can least afford to pick up.
-        #
-        # Matching on the annotation's own name and its first argument keeps
-        # the javadoc that discusses it (RealBigQuery, the two Abstract*RealGcp
-        # base classes) out of the result: those write {@code
-        # @EnabledIfEnvironmentVariable} with no argument list. The leading @ is
-        # deliberately not part of the pattern, so this and the gate-by-gate
-        # discovery above agree on what an annotation looks like — a
-        # fully-qualified one would otherwise be discovered and not checked,
-        # which is the direction that costs money.
-        failed=0
-        env_gated=$(grep -rl --include='*.java' 'EnabledIfEnvironmentVariable(named = "' ./*/src/test/java | sort) || {
-            echo "::error::no test class carries @EnabledIfEnvironmentVariable(named = \"…\"); the gating annotation moved or the tree layout changed, and this check would pass vacuously" >&2
-            exit 1
-        }
-        while IFS= read -r src; do
-            if ! grep -q '@Tag("gated")' "$src"; then
-                echo "::error::$src is gated on an environment variable but carries no @Tag(\"gated\"), so any build in a shell where that variable is set runs it — for the real-GCP suites, at the cost of billed resources. Add @Tag(\"gated\") beside the gate, or remove the gate if the class is not part of a gated suite." >&2
-                failed=1
-            fi
-        done <<< "$env_gated"
-        # Kept separate rather than diffed against the list above: a class may
-        # be tagged and not gated, which is the mirror failure and needs its
-        # own message. This side has no javadoc exemption to make — the literal
-        # is short enough to appear in prose — so a class whose *comment*
-        # quotes @Tag("gated") reads as tagged: document the convention in a
-        # AGENTS.md rather than in javadoc, as the base classes do.
-        tagged=$(grep -rl --include='*.java' '@Tag("gated")' ./*/src/test/java | sort) || true
-        if [ -n "$tagged" ]; then
-            while IFS= read -r src; do
-                if ! grep -q 'EnabledIfEnvironmentVariable(named = "' "$src"; then
-                    echo "::error::$src carries @Tag(\"gated\") but no @EnabledIfEnvironmentVariable(named = \"…\"), so nothing runs it: ordinary builds exclude the tag and \`just e2e\` selects classes by the environment gate. Add the gate, or remove the tag." >&2
-                    failed=1
-                fi
-            done <<< "$tagged"
-        fi
-        # The "slow" tag fails in the opposite direction from "gated". Forgetting
-        # "gated" costs money, loudly. Forgetting the lane that runs "slow" costs
-        # nothing and says nothing: the root pom excludes the tag everywhere, no
-        # workflow opts back in, every run stays green, and the coverage is gone.
-        # So what is checked here is that the opt-in exists — and, in the other
-        # direction, that the opt-in is not selecting an empty set.
-        slow_tagged=$(grep -rl --include='*.java' '@Tag("slow")' ./*/src/test/java | sort) || true
-        weekly=.github/workflows/weekly.yaml
-        if [ -n "$slow_tagged" ]; then
-            # Comment lines are stripped first, and the value is anchored: the
-            # explanatory comment beside the flag contains the same literal, and
-            # `=gated,slow` would re-exclude the tag while still matching a bare
-            # substring. Both were verified to defeat the unanchored form.
-            if ! grep -v '^[[:space:]]*#' "$weekly" \
-                | grep -Eq -- '-Dtest\.excluded\.groups=gated([[:space:]]|$)'; then
-                echo "::error::classes carry @Tag(\"slow\") but $weekly no longer passes -Dtest.excluded.groups=gated, so nothing runs them: the root pom excludes the tag and no lane opts back in. Restore the opt-in, or remove the tag from: $(echo "$slow_tagged" | tr '\n' ' ')" >&2
-                failed=1
-            fi
-        elif grep -v '^[[:space:]]*#' "$weekly" \
-            | grep -Eq -- '-Dtest\.excluded\.groups=gated([[:space:]]|$)'; then
-            echo "::error::$weekly opts into the \"slow\" lane but no test class carries @Tag(\"slow\"), so the flag selects nothing and this check would pass vacuously from here on. Drop the flag, or tag the classes it was added for." >&2
-            failed=1
-        fi
-        if [ "$failed" -eq 0 ]; then
-            echo "gated classes carrying both markers: $(printf '%s\n' "$env_gated" | wc -l | tr -d ' ')"
-            echo "slow classes the weekly lane runs: $(printf '%s' "$slow_tagged" | grep -c . || true)"
-        fi
-        exit "$failed"
+        run_tag_checker --root "$PWD" --check
+        exit
         ;;
     *)
         echo "usage: $0 [--require-env | --assert-ran | --for-gate GATE | --except-gate GATE | --check-tags]" >&2

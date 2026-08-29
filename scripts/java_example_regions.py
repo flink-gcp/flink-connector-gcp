@@ -20,6 +20,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from java_ast import JavaSource
+
 START_TAG = re.compile(r"^\s*// tag::(?P<tag>[a-z0-9-]+)\[\]\s*$")
 END_TAG = re.compile(r"^\s*// end::(?P<tag>[a-z0-9-]+)\[\]\s*$")
 ANY_SOURCE_TAG = re.compile(r"^\s*//\s*(?:tag|end)::")
@@ -35,62 +37,6 @@ class SourceRegion:
 
 def line_at(source: str, offset: int) -> int:
     return source.count("\n", 0, offset) + 1
-
-
-def skip_quoted(source: str, start: int, quote: str) -> int:
-    """Return the first offset after a Java string or character literal."""
-    index = start + 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-        elif source[index] == quote:
-            return index + 1
-        else:
-            index += 1
-    return len(source)
-
-
-def skip_text_block(source: str, start: int) -> int:
-    index = start + 3
-    while index < len(source):
-        end = source.find('"""', index)
-        if end < 0:
-            return len(source)
-        backslashes = 0
-        cursor = end - 1
-        while cursor >= 0 and source[cursor] == "\\":
-            backslashes += 1
-            cursor -= 1
-        if backslashes % 2 == 0:
-            return end + 3
-        index = end + 3
-    return len(source)
-
-
-def _line_comments(source: str) -> list[tuple[int, str]]:
-    """Extract Java line comments outside strings, text blocks and block comments."""
-    comments: list[tuple[int, str]] = []
-    index = 0
-    while index < len(source):
-        if source.startswith('"""', index):
-            index = skip_text_block(source, index)
-        elif source[index] == '"':
-            index = skip_quoted(source, index, '"')
-        elif source[index] == "'":
-            index = skip_quoted(source, index, "'")
-        elif source.startswith("//", index):
-            end = source.find("\n", index + 2)
-            if end < 0:
-                end = len(source)
-            line_start = source.rfind("\n", 0, index) + 1
-            comments.append((line_at(source, index), source[line_start:end]))
-            index = end
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            index = len(source) if end < 0 else end + 2
-        else:
-            index += 1
-    return comments
 
 
 def collect_source_regions(
@@ -121,13 +67,17 @@ def collect_source_regions(
             paths_by_name[path.name] = path
 
         source = path.read_text(encoding="utf-8")
+        parsed = JavaSource.parse(relative(path), source)
         lines = source.splitlines()
         markers: dict[str, dict[str, list[int]]] = {}
-        for line_number, comment in _line_comments(source):
-            match = START_TAG.fullmatch(comment)
+        for node in parsed.nodes("line_comment"):
+            line_number = parsed.line(node)
+            comment = parsed.text(node)
+            standalone = lines[line_number - 1].strip() == comment.strip()
+            match = START_TAG.fullmatch(comment) if standalone else None
             kind = "start"
             if match is None:
-                match = END_TAG.fullmatch(comment)
+                match = END_TAG.fullmatch(comment) if standalone else None
                 kind = "end"
             if match is not None:
                 markers.setdefault(match.group("tag"), {"start": [], "end": []})[

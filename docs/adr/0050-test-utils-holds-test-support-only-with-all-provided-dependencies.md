@@ -116,10 +116,10 @@ limitations under the License.
   property). `ShadedJar.of` rejects a prefix containing `_`, which was a pom comment enforced by
   nothing.
 - **Real-GCP gating annotations never move here.** `scripts/e2e-gated-its.sh` discovers the
-  gated suite by grepping the `@EnabledIfEnvironmentVariable` literal on concrete classes under
-  the connector modules — a meta-annotation or base class here would make that grep silently
-  return nothing; the same holds for `@Tag("gated")` ([#245] — `--check-tags` greps both
-  literals).
+  gated suite by parsing `@EnabledIfEnvironmentVariable` on concrete test sources under the
+  connector modules. A meta-annotation or base class here would leave the concrete sources
+  without that annotation; the same holds for `@Tag("gated")` ([#245] — `--check-tags` parses
+  both annotations).
 - **The justfile install lists name this module** — `binary-compat` and `e2e` run goal-only /
   `-pl`-scoped Maven, which cannot resolve a reactor sibling from source ([#181]), so both
   install it into `~/.m2` first. A rename or a new similarly-consumed module must update those

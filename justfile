@@ -86,7 +86,7 @@ verify-flink version *extra:
 #
 # Check the ordinary GitHub-rendered copies of compiled module README examples.
 check-readme-examples:
-    python3 scripts/check-readme-examples.py
+    mise x uv -- uv run --locked scripts/check-readme-examples.py
 
 # The site build lets Hugo decide which SQL shortcodes are actually rendered. The docs-validation
 # module inventories those rendered markers and plans the corresponding Flink SQL regions.
@@ -94,7 +94,7 @@ check-readme-examples:
 # Check and compile source-backed examples and plan Flink SQL regions.
 check-doc-snippets *args:
     just check-readme-examples
-    python3 scripts/check-javadoc-examples.py
+    mise x uv -- uv run --locked scripts/check-javadoc-examples.py
     just docs
     {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation clean
     {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am -Dflink.gcp.docs.public=docs/public {{ args }} test-compile
@@ -155,12 +155,12 @@ ci-maven-args *args:
 
 # pytest over scripts/ (the CI deriver and the CI gate today), through the
 # root uv project (pyproject.toml): uv is pinned in mise.toml like the
-# linters, pytest is pinned in uv.lock, and --locked makes a drifted lockfile
-# fail instead of silently re-resolving. The scripts stay standard-library
-# executables bar check-skill-frontmatter.py, which declares PyYAML in PEP 723
-# metadata of its own and runs through `uv run --no-project`; because the tests
-# load every script by file path, that import has to resolve here too, which is
-# why pyyaml is in the dev group and not in the project's dependencies.
+# linters, pytest and the shared Java parser are pinned in uv.lock, and --locked
+# makes a drifted lockfile fail instead of silently re-resolving.
+# check-skill-frontmatter.py declares PyYAML in PEP 723 metadata of its own and
+# runs through `uv run --no-project`; because the tests load every script by
+# file path, that import has to resolve here too, which is why pyyaml is in the
+# dev group and not in the project's dependencies.
 #
 # Run the scripts/tests suite with pytest.
 test-scripts:
@@ -298,12 +298,12 @@ worktree-env:
 #
 # Run the real-GCP gated ITCases and assert they actually ran.
 e2e:
-    scripts/e2e-gated-its.sh --require-env
+    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --require-env
     {{ mvn }} -pl .,flink-connector-gcp-base,flink-connector-gcp-test-utils -DskipTests -Drat.skip=true install
     {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-cloudtasks,flink-connector-gcp-bigtable,flink-connector-gcp-spanner test-compile
-    scripts/appengine-e2e-fixture.sh run -- {{ mvn }} -pl flink-connector-gcp-cloudtasks surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh --for-gate CLOUDTASKS_IT_PROJECT)"
-    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(scripts/e2e-gated-its.sh --except-gate CLOUDTASKS_IT_PROJECT)"
-    scripts/e2e-gated-its.sh --assert-ran
+    scripts/appengine-e2e-fixture.sh run -- {{ mvn }} -pl flink-connector-gcp-cloudtasks surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(mise x uv -- uv run --locked scripts/e2e-gated-its.sh --for-gate CLOUDTASKS_IT_PROJECT)"
+    {{ mvn }} -pl flink-connector-gcp-bigquery,flink-connector-gcp-pubsub,flink-connector-gcp-bigtable,flink-connector-gcp-spanner surefire:test@integration-tests -Dtest.excluded.groups= -Dtest="$(mise x uv -- uv run --locked scripts/e2e-gated-its.sh --except-gate CLOUDTASKS_IT_PROJECT)"
+    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --assert-ran
 
 # The two markers a gated real-GCP ITCase carries have to stay together: the
 # @EnabledIfEnvironmentVariable the E2E suite is discovered by, and the
@@ -312,11 +312,12 @@ e2e:
 # `just verify` in any shell holding the variable — so the pairing is checked
 # rather than merely documented (issue #245). A verify.yaml job rather than part of
 # `just lint`, whose paths filter would have had to grow to every Java test
-# source; the check needs neither a JDK nor the network.
+# source; the check needs no JDK, and needs no network after uv restores the
+# locked Tree-sitter parser.
 #
 # Does every gated ITCase carry both the environment gate and @Tag("gated")?
 check-gated-tags:
-    scripts/e2e-gated-its.sh --check-tags
+    mise x uv -- uv run --locked scripts/e2e-gated-its.sh --check-tags
 
 # Returns every billed E2E fixture to its idle state (issue #246): stale
 # Bigtable and Spanner instances are deleted, and the fixed Cloud Tasks App
@@ -385,8 +386,8 @@ lint:
 # Through `uv run`, and --no-project so it uses the PEP 723 metadata in the
 # script's own header rather than the repository's uv project: parsing YAML
 # needs a parser the standard library does not have, and keeping that dependency
-# inline leaves the script self-contained and installs one package rather than
-# the test suite's five. That download is also why this is a verify.yaml job and
+# inline leaves the script self-contained rather than installing the root
+# project's dependencies. That download is also why this is a verify.yaml job and
 # not part of `just lint`, which stays offline — check-flink-api-tiers's rule,
 # applied rather than excepted.
 check-skill-frontmatter:
@@ -458,7 +459,7 @@ check-notice-sources:
 #
 # Do the main sources depend only on allowlisted Flink API tiers?
 check-flink-api-tiers:
-    scripts/check-flink-api-tiers.py
+    mise x uv -- uv run --locked scripts/check-flink-api-tiers.py
 
 # Holds docs/content/docs/reference/ to the options the connectors actually
 # take, in both directions: every builder setter and every Table API
@@ -469,13 +470,14 @@ check-flink-api-tiers:
 # The pages are hand-written rather than generated (issue #89): their tables
 # group knobs and carry defaults the sources do not hold, since an unset knob's
 # default belongs to the client library. This is the drift protection that
-# choice would otherwise have cost. Offline and stdlib-only, but a verify.yaml job
-# rather than part of `just lint`, because its inputs include every Java main
-# source, which lint.yaml's paths filter would have had to grow to cover.
+# choice would otherwise have cost. A verify.yaml job rather than part of
+# `just lint`, because its inputs include every Java main source, which
+# lint.yaml's paths filter would have had to grow to cover. It needs no network
+# after uv restores the locked Tree-sitter parser.
 #
 # Is every connector option documented, and every documented option real?
 check-option-docs:
-    scripts/check-option-docs.py
+    mise x uv -- uv run --locked scripts/check-option-docs.py
 
 # Holds the metrics tables on the DataStream pages to what the connectors
 # actually register (issue #296), in both directions: every name in a module's
@@ -485,13 +487,14 @@ check-option-docs:
 # or marked `(Flink standard)`. Mappings and the two base.metrics subgroup
 # sources live in scripts/config/metric-docs.toml. Also holds the mechanical half of
 # the #280 naming rule: no name registered here takes Flink's `num` prefix.
-# Offline and stdlib-only, but a verify.yaml job rather than part of `just lint`,
-# for check-option-docs's reason: its inputs include every Java main source,
-# which lint.yaml's paths filter would have had to grow to cover.
+# A verify.yaml job rather than part of `just lint`, for check-option-docs's
+# reason: its inputs include every Java main source, which lint.yaml's paths
+# filter would have had to grow to cover. It needs no network after uv restores
+# the locked Tree-sitter parser.
 #
 # Is every connector metric documented, and every documented metric real?
 check-metric-docs:
-    scripts/check-metric-docs.py
+    mise x uv -- uv run --locked scripts/check-metric-docs.py
 
 # Fails on a Javadoc member reference written without a parameter list that gets
 # something other than the member it names (issues #897, #930, #931): one
@@ -523,15 +526,16 @@ check-metric-docs:
 # reference cannot drift from the option's runtime description.
 # These failures carry their repairs too — add Javadoc to the named member,
 # make the constant's Javadoc equal its withDescription text — so there is
-# still no allowlist and no curate-* skill. Offline and stdlib-only, but a
-# verify.yaml job rather than part of `just lint`, for check-option-docs's
-# reason: its inputs are every Java main source.
+# still no allowlist and no curate-* skill. A verify.yaml job rather than part
+# of `just lint`, for check-option-docs's reason: its inputs are every Java main
+# source. Tree-sitter and its Java grammar come from the root uv project, shared
+# with `just test-scripts`; after uv restores them, the check needs no network.
 #
 # Does every Javadoc member reference resolve to the member it names, does the
 # tier-annotated surface carry Javadoc, and does every ConfigOption's Javadoc
 # equal its withDescription text?
 check-javadoc-links:
-    scripts/check-javadoc-links.py
+    mise x uv -- uv run --locked scripts/check-javadoc-links.py
 
 # A goal on its own, and the one place in this repository where that is right.
 # The licence-goal rule in AGENTS.md — a goal-only invocation selects the reactor

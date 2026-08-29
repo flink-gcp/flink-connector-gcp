@@ -124,9 +124,9 @@ walks into. Not an allowlist decision:
 ## Exit code 2 — infrastructure, not policy
 
 "declares no `static final String`", "found no registration through it at all", "could not read
-one addGroup segment": the shape the patterns match changed, and every other module's result is
-untrustworthy until the pattern is fixed. Fix the script's patterns or the source's shape; never
-exclude the file to make it pass.
+one addGroup segment": the Java declaration or registration shape changed, and every other
+module's result is untrustworthy until the AST extraction is fixed. Fix the checker or the source's
+shape; never exclude the file to make it pass.
 
 ## What goes to the user
 

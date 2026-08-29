@@ -79,11 +79,11 @@ import java.util.function.Function;
  * and reclaiming that instance is the desired outcome anyway.
  *
  * <p>The {@code @EnabledIfEnvironmentVariable} gate lives on every concrete class, never here:
- * {@code scripts/e2e-gated-its.sh} discovers the suite by grepping for the annotation literal and
+ * {@code scripts/e2e-gated-its.sh} discovers the suite by parsing the annotation on each file and
  * then expects a surefire report per matching file, which an abstract class never produces. The
  * {@code gated} tag beside it (issue #245) has to stay on the concrete classes for the same reason,
- * even though JUnit would inherit it from here: {@code --check-tags} greps both literals per file,
- * so hoisting one leaves the other unpaired.
+ * even though JUnit would inherit it from here: {@code --check-tags} checks both annotations per
+ * file, so hoisting one leaves the other unpaired.
  *
  * <p>The timeout runs in a separate thread because the default mode cannot end a wait that ignores
  * interruption, which is how #951 outlived its own deadline. ADR-0119 records the measurement and

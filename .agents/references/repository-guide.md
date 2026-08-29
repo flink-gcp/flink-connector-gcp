@@ -172,16 +172,19 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   for `check-option-docs`'s reason: its inputs are every Java main source. **The second checker
   with no `curate-*` skill**, on the argument the next entry makes: no allowlist to judge, and the
   failure message carries the whole repair — the parameter list where there is a method to name,
-  `{@code member}` where the sentence means the state itself
+  `{@code member}` where the sentence means the state itself. Java syntax comes from the shared
+  Tree-sitter parser in `scripts/java_ast.py`, installed from the root `uv.lock`; an `ERROR` or
+  `MISSING` node is an infrastructure failure rather than a partial inventory
 - `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
   (#245; ADR-0065 records both failure directions): the `@EnabledIfEnvironmentVariable` the E2E
   suite is *discovered* by, and the `@Tag("gated")` that keeps the class out of every ordinary
   build. `scripts/e2e-gated-its.sh --check-tags`, deliberately **gate-agnostic** so
   `BigQueryDefaultStreamSchemaEvolutionITCase` is covered too. Its own `verify.yaml` job
-  (ADR-0058; its inputs are the Java *test* sources), and it needs no JDK, no Python and no
-  network. **A checker with no `curate-*` skill**, and the exemption is argued rather than
-  an oversight: those skills exist for allowlist judgment — which entry, with what reason — and
-  this check has no allowlist and exactly two mechanical fixes, both named in the failure message
+  (ADR-0058; its inputs are the Java *test* sources), and it needs no JDK or network after uv
+  restores the locked Tree-sitter parser. **A checker with no `curate-*` skill**, and the exemption
+  is argued rather than an oversight: those skills exist for allowlist judgment — which entry,
+  with what reason — and this check has no allowlist and exactly two mechanical fixes, both named
+  in the failure message
 - `just ci-maven-args` — CI's module-selection decision (#243; ADR-0058 carries the design):
   which Maven modules does a change build? The mapping is derived from the poms, never
   configured — the script's docstring is the specification.
@@ -231,7 +234,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   it, and a skill that did not load looks like Claude choosing not to use it. Parses with
   **PyYAML** rather than a hand-rolled approximation (a second, diverging parser is the failure
   this repository has paid for elsewhere), declared in the script's own **PEP 723** header, so the
-  uv project takes no *runtime* dependency and this one script runs as
+  root project does not take PyYAML as a *runtime* dependency and this one script runs as
   `uv run --no-project scripts/…` (pyyaml is in the dev group all the same, because
   `just test-scripts` loads the script by file path). **Where the block ends is measured too**
   (#388): Claude Code closes the frontmatter at the first `---` *anywhere* after the opening line,

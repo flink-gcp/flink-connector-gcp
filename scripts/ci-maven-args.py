@@ -136,9 +136,8 @@ Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
 
 Exit codes: 0 clean, 1 a module pom names an `io.github.flink-gcp` dependency
 that is no reactor module (fix the pom), 2 infrastructure error (unreadable
-pom, malformed input). Standard library only, like its siblings in this
-directory — and nothing newer than any runner image's python3, so CI needs no
-setup-python for it.
+pom, malformed input). Standard library only, and nothing newer than any runner
+image's python3, so CI needs no setup-python for it.
 """
 
 import argparse

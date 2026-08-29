@@ -32,7 +32,7 @@ is useful, complete enough for a reader, or correct at runtime.
 Exit codes: 0 clean, 1 classification or synchronization violation, 2 missing
 input or unreadable source tree.
 
-Standard library only, like the other repository checkers.
+Java comments are classified through the shared Tree-sitter parser.
 """
 
 from __future__ import annotations
@@ -44,12 +44,11 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
+from java_ast import JavaSource, JavaSyntaxError
 from java_example_regions import (
     SourceRegion,
     collect_source_regions,
     line_at,
-    skip_quoted,
-    skip_text_block,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -85,30 +84,16 @@ def relative(path: Path) -> str:
 
 def doc_comments(source: str, path: Path) -> list[LocatedText]:
     """Extract real Java doc comments, ignoring comment-shaped strings."""
-    comments: list[LocatedText] = []
-    index = 0
-    while index < len(source):
-        if source.startswith('"""', index):
-            index = skip_text_block(source, index)
-        elif source[index] == '"':
-            index = skip_quoted(source, index, '"')
-        elif source[index] == "'":
-            index = skip_quoted(source, index, "'")
-        elif source.startswith("//", index):
-            newline = source.find("\n", index + 2)
-            index = len(source) if newline < 0 else newline + 1
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            if end < 0:
-                end = len(source) - 2
-            if source.startswith("/**", index):
-                comments.append(
-                    LocatedText(path, line_at(source, index), source[index + 3 : end])
-                )
-            index = end + 2
-        else:
-            index += 1
-    return comments
+    parsed = JavaSource.parse(relative(path), source)
+    return [
+        LocatedText(
+            path,
+            parsed.line(node),
+            parsed.text(node)[3:-2],
+        )
+        for node in parsed.nodes("block_comment")
+        if parsed.text(node).startswith("/**")
+    ]
 
 
 def normalized_display(body: str) -> str:
@@ -147,7 +132,10 @@ def validate() -> tuple[int, int, list[str], bool]:
             True,
         )
 
-    regions, problems = source_regions()
+    try:
+        regions, problems = source_regions()
+    except JavaSyntaxError as error:
+        return 0, 0, [str(error)], True
     infrastructure = not JAVADOC_SOURCES.is_dir() or not any(
         JAVADOC_SOURCES.rglob("*.java")
     )
@@ -157,7 +145,13 @@ def validate() -> tuple[int, int, list[str], bool]:
 
     for path in paths:
         source = path.read_text(encoding="utf-8")
-        for comment in doc_comments(source, path):
+        try:
+            comments = doc_comments(source, path)
+        except JavaSyntaxError as error:
+            problems.append(str(error))
+            infrastructure = True
+            continue
+        for comment in comments:
             blocks = list(BLOCK.finditer(comment.text))
             markers = list(ANY_MARKER.finditer(comment.text))
             consumed_markers: set[int] = set()

@@ -332,12 +332,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Same reason as the NOTICE check above: the script is stdlib-only but
-      # needs >= 3.11 for tomllib, installed deliberately rather than trusted
-      # from the runner image. Keep in step with mise.toml's python.
+      # Supply the 3.12 interpreter that uv reuses for the locked root project;
+      # the project restores Tree-sitter and its Java grammar below.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          install_args: uv
 
       - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
@@ -352,7 +355,7 @@ jobs:
       - name: Read flink.version
         id: flink_version
         run: |
-          version="$(python3 scripts/check-flink-api-tiers.py --print-flink-version)"
+          version="$(mise x uv -- uv run --locked scripts/check-flink-api-tiers.py --print-flink-version)"
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -404,8 +407,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # uv resolves its own interpreter, so no setup-python here — unlike the
-      # stdlib-only checkers above, this script's dependency comes from uv.
+      # uv resolves its own interpreter, so no setup-python here. This script's
+      # inline dependency is separate from the root uv project the Java-aware
+      # checkers above use.
       - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
         with:
           install_args: uv
@@ -435,10 +439,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # tomllib again; keep in step with mise.toml's python.
+      # Supply the 3.12 interpreter that uv reuses for the locked root project;
+      # the Java parser dependencies come from uv.lock.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          install_args: uv
 
       - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
@@ -469,10 +478,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # tomllib again; keep in step with mise.toml's python.
+      # Supply the 3.12 interpreter that uv reuses for the locked root project;
+      # the Java parser dependencies come from uv.lock.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          install_args: uv
 
       - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
@@ -498,9 +512,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Supply the 3.12 interpreter that uv reuses for the locked root project;
+      # the Java parser dependencies come from uv.lock.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          install_args: uv
 
       - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:
@@ -524,13 +544,17 @@ jobs:
   # inputs are the Java test sources, exactly this workflow's trigger set,
   # while lint.yaml's paths filter would have had to grow to every one of them.
   # Not behind the changes job, like api_tiers and for the same reasons. Needs
-  # no JDK, no Python and no network — it is a grep over the test tree.
+  # no JDK or network after uv has restored the locked Java parser.
   gated_tags:
     name: Check the gated-suite tagging
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          install_args: uv
 
       - uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2.85.13
         with:

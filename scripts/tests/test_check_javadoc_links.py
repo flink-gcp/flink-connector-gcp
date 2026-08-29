@@ -317,12 +317,11 @@ public class Admin {
 def test_a_bracketed_field_initializer_does_not_hide_the_members_below_it(
     tree, check_javadoc_links
 ):
-    """The scan has to walk an initializer, not resume just after its `=`.
+    """An initializer must not hide the declarations that follow it.
 
-    Resuming inside the expression puts the next `)` against a brace depth of
-    zero, and every member declared below it is then read at the wrong depth
-    and dropped — silently, since a checker that indexes nothing reports
-    nothing. Measured on `RowRanges.java`, where it cost 17 methods.
+    The former delimiter scan resumed inside the expression, read every member
+    below it at the wrong depth, and dropped them silently. Measured on
+    `RowRanges.java`, where it cost 17 methods.
     """
     write(
         tree / "Ranges.java",
@@ -417,6 +416,41 @@ public final class Sink {}
     assert "Sink.java:6" in problems[0]
 
 
+def test_package_and_import_whitespace_do_not_hide_a_reference(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "target/Builder.java",
+        """package\tdemo.target;
+
+public class Builder {
+    private Handler handler;
+
+    /** Sets it. */
+    public Builder handler(Handler handler) {
+        this.handler = handler;
+        return this;
+    }
+}
+""",
+    )
+    write(
+        tree / "source/Sink.java",
+        """package demo.source;
+
+import\tdemo.target.Builder;
+
+/** Configured through {@link Builder#handler}. */
+public final class Sink {}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "`Builder#handler(Handler)`" in problems[0]
+
+
 def test_a_type_outside_the_repository_is_left_alone(tree, check_javadoc_links):
     write(
         tree / "Options.java",
@@ -488,6 +522,53 @@ public class Reader {
 
     assert len(problems) == 1
     assert "`#wakeUp(Wakeup)`" in problems[0]
+
+
+def test_a_comment_between_type_javadoc_and_annotations_keeps_its_context(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "Sink.java",
+        """package demo;
+
+/** Configured through {@link #handler}. */
+// The rationale is recorded next to the declaration.
+public final class Sink {
+    private final String handler = "default";
+
+    /** Creates a sink. */
+    public Sink() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "`#handler` resolves to the private field" in problems[0]
+
+
+def test_a_type_javadoc_after_its_annotation_keeps_its_context(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "Sink.java",
+        """package demo;
+
+import org.apache.flink.annotation.Internal;
+
+@Internal
+/** Configured through {@link #handler}. */
+final class Sink {
+    private final String handler = "default";
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "`#handler` resolves to the private field" in problems[0]
 
 
 def test_a_documented_public_field_renders_an_anchor_and_passes(
@@ -652,8 +733,8 @@ def test_a_comment_shaped_string_is_not_read_as_javadoc(tree, check_javadoc_link
     """The string below would be a finding if it were read as a comment.
 
     It names a method this class shadows with a private field of the same
-    name, so a scan that does not skip string literals reports it — the same
-    verdict as the first test here, on prose that is data.
+    name, so treating the literal as a comment reports it — the same verdict
+    as the first test here, on prose that is data.
     """
     write(
         tree / "Message.java",
@@ -735,6 +816,30 @@ public final class Bounds {
 
     assert len(problems) == 1
     assert "public field 'LIMIT' of @Public type 'Bounds'" in problems[0]
+
+
+def test_an_interface_constant_is_an_implicitly_public_field(tree, check_javadoc_links):
+    write(
+        tree / "Clock.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A clock. */
+@Public
+public interface Clock {
+    Clock SYSTEM = () -> 0L;
+
+    /** Reads time. */
+    long millis();
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public field 'SYSTEM' of @Public type 'Clock'" in problems[0]
 
 
 def test_an_override_member_inherits_its_docs_and_is_exempt(tree, check_javadoc_links):
@@ -838,7 +943,7 @@ public class Source {
 def test_an_enum_constant_of_an_in_scope_enum_needs_its_own_javadoc(
     tree, check_javadoc_links
 ):
-    """A comma-separated constant list is one declaration to the scan.
+    """Each entry in a comma-separated constant list is its own syntax node.
 
     Each constant is documented on its own all the same, so the comment above
     the first cannot stand in for the second.
@@ -1058,6 +1163,59 @@ public final class DemoOptions {
     assert "The endpoint to call." in problems[0]
 
 
+def test_a_comment_between_field_modifiers_does_not_hide_a_config_option(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The host to call. */
+    public /* retained rationale */ static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The endpoint to call.");
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "make the Javadoc of 'ENDPOINT' equal" in problems[0]
+
+
+def test_a_visibility_word_inside_a_modifier_comment_does_not_hide_a_member(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "Sink.java",
+        """package demo;
+
+import org.apache.flink.annotation.Public;
+
+/** A sink. */
+@Public
+public final class Sink {
+    /** Creates a sink. */
+    public Sink() {}
+
+    public /* not private */ void send() {}
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "public method 'send()'" in problems[0]
+
+
 def test_multiple_config_options_in_one_declaration_must_be_split(
     tree, check_javadoc_links
 ):
@@ -1185,6 +1343,99 @@ public final class DemoOptions {
     assert counts.options == 1
 
 
+def test_a_config_option_javadoc_equal_to_its_text_block_description_passes(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The endpoint to call. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(\"\"\"
+                            The endpoint to call.
+                            \"\"\");
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.options == 1
+
+
+def test_comments_do_not_hide_a_literal_description(tree, check_javadoc_links):
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The endpoint to call. */
+    public static final ConfigOption<String> ENDPOINT =
+            ConfigOptions.key("endpoint")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            /* kept literal */
+                            ("The endpoint" /* joined */ + " to call."));
+}
+""",
+    )
+
+    counts, problems = check_javadoc_links.check()
+
+    assert problems == []
+    assert counts.options == 1
+
+
+def test_an_uninitialized_second_config_option_declarator_must_be_split(
+    tree, check_javadoc_links
+):
+    write(
+        tree / "DemoOptions.java",
+        """package demo;
+
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.ConfigOptions;
+
+public final class DemoOptions {
+    /** The first option. */
+    public static final ConfigOption<String> FIRST =
+                    ConfigOptions.key("first")
+                            .stringType()
+                            .noDefaultValue()
+                            .withDescription("The first option."),
+            SECOND;
+
+    static {
+        SECOND =
+                ConfigOptions.key("second")
+                        .stringType()
+                        .noDefaultValue()
+                        .withDescription("The second option.");
+    }
+}
+""",
+    )
+
+    problems = audit(check_javadoc_links)
+
+    assert len(problems) == 1
+    assert "ConfigOption declaration starting at 'FIRST'" in problems[0]
+    assert "split each constant into its own declaration" in problems[0]
+
+
 def test_a_parenthesized_literal_description_is_still_compared(
     tree, check_javadoc_links
 ):
@@ -1263,14 +1514,11 @@ def test_a_description_containing_a_semicolon_is_read_to_its_end(
 ):
     """A `;` inside the description is text, not the statement's end.
 
-    Statement ends are found with a string-aware scan, and the fixture makes
-    that load-bearing twice over: the `OPEN` literal's unbalanced `(` would
-    keep a raw scan's depth positive past the real `;`, so `OPEN`'s statement
-    would run on into the `MODE` declaration and `MODE` would never be
-    indexed; and the description's lone `)` before its `;` would end a raw
-    scan inside the literal. The escaped quotes are unescaped the way Java
-    reads them, and the constants below only count if each statement ended
-    where it should.
+    The syntax tree supplies each field boundary. The fixture keeps that
+    load-bearing twice over: `OPEN` carries an unbalanced `(` in its literal,
+    and the description carries a lone `)` before its `;`. The escaped quotes
+    are unescaped the way Java reads them, and the constants below only count
+    if each field remains independent.
     """
     write(
         tree / "DemoOptions.java",
@@ -1303,8 +1551,8 @@ public final class DemoOptions {
     counts, problems = check_javadoc_links.check()
 
     assert problems == []
-    # counts.options == 2 is the load-bearing assertion: a scan that ends a
-    # statement early loses a constant without ever reporting a problem.
+    # counts.options == 2 is the load-bearing assertion: a wrong field boundary
+    # loses a constant without ever reporting a problem.
     assert counts.options == 2
 
 
@@ -1520,13 +1768,7 @@ public interface Listener {
     assert "public method 'value()' of @Public type 'Handler'" in problems[1]
 
 
-def test_a_malformed_unicode_escape_is_kept_literally(tree, check_javadoc_links):
-    """An escape the checker cannot decode is not a crash.
-
-    `\\uZZZZ` would not compile, but the checker also reads trees that do not
-    compile yet; the sequence is kept as written, so the equal pair below
-    still passes instead of tracebacking out of the run.
-    """
+def test_malformed_java_fails_before_inventorying(tree, check_javadoc_links):
     write(
         tree / "DemoOptions.java",
         """package demo;
@@ -1545,10 +1787,8 @@ public final class DemoOptions {
 """,
     )
 
-    counts, problems = check_javadoc_links.check()
-
-    assert problems == []
-    assert counts.options == 1
+    with pytest.raises(check_javadoc_links.JavaSyntaxError):
+        check_javadoc_links.check()
 
 
 def test_a_generic_comma_does_not_mint_a_phantom_member(tree, check_javadoc_links):
@@ -1631,7 +1871,7 @@ public final class DemoOptions {{
 def test_the_first_enum_constants_own_annotation_does_not_hide_its_javadoc(
     tree, check_javadoc_links
 ):
-    """The declaration scan consumes the first constant's annotations.
+    """The first constant's syntax node includes its annotations.
 
     Its Javadoc position is therefore the declaration's own; measuring from
     the constant list instead would put `@Deprecated` inside the gap and
@@ -1726,9 +1966,8 @@ public class Outer {
 def test_a_body_opening_enum_constant_is_still_a_constant(tree, check_javadoc_links):
     """A strategy-pattern constant opens a class body and stays a constant.
 
-    The declaration scan stops at the body's `{`; treating that brace as the
-    list's end would drop every constant, and an undocumented one would pass
-    silently — ADR-0143 says every enum constant.
+    Treating the body's `{` as the list's end would drop every constant, and an
+    undocumented one would pass silently — ADR-0143 says every enum constant.
     """
     write(
         tree / "Rounding.java",

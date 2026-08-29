@@ -36,7 +36,8 @@ Each gated ITCase carries `@Tag("gated")`, which the root pom's `test.excluded.g
 excludes from every surefire execution; **`just e2e` is the only thing that clears it**, with
 `-Dtest.excluded.groups=`. That makes the choice per command instead of per shell, for
 `./mvnw verify` as much as for `just verify`. The environment annotation stays exactly where
-it is (the E2E discovery greps it), so **the two markers must be kept together**, which
+it is (the E2E discovery parses it from each concrete test source), so **the two markers must be
+kept together**, which
 `just check-gated-tags` enforces in both directions — a gate with no tag runs a billed suite
 during any `verify` in a holding shell, a tag with no gate runs nowhere at all, since
 `just e2e` selects by the gate. The check is deliberately **gate-agnostic**, matching the

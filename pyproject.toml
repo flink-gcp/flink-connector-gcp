@@ -16,9 +16,10 @@
 # #247): dependency management for the scripts/tests suite and pytest
 # configuration, nothing more, at the repository root where uv expects a
 # project. The layout is not a Python package's: most code under test lives in
-# scripts/ as executables that are never importable, standard-library-only but
-# for check-skill-frontmatter.py, which declares PyYAML in PEP 723 metadata of
-# its own (hence the dev-group pyyaml below: the suite loads it by path).
+# scripts/ as executables that are never importable. Java-aware checkers share
+# Tree-sitter and its Java grammar here; check-skill-frontmatter.py declares
+# PyYAML in PEP 723 metadata of its own (hence the dev-group pyyaml below: the
+# suite loads it by path).
 # The App Engine fixture is also loaded by path, so this project is never
 # packaged (`package = false`); `testpaths` below is the one layout
 # customisation that needs saying. pytest's constraint is deliberately loose
@@ -30,6 +31,14 @@
 name = "flink-connector-gcp"
 version = "0.0.0"
 requires-python = ">=3.11"
+dependencies = [
+    # 0.26.0 has a Point getter reference-counting regression. The fix is on
+    # upstream's master branch but has not been released, so keep the bound:
+    # https://github.com/tree-sitter/py-tree-sitter/issues/472
+    # https://github.com/tree-sitter/py-tree-sitter/pull/466
+    "tree-sitter>=0.25.2,<0.26",
+    "tree-sitter-java>=0.23.5",
+]
 
 [tool.uv]
 package = false

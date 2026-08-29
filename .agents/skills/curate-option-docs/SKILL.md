@@ -158,9 +158,10 @@ Exit code 2 — infrastructure, not policy. Two causes, and they need opposite f
 
 - **The file is not an options class** (a constant holder that happens to end in `Options`).
   Narrow `SOURCE_GLOBS`, or rename the class.
-- **The builder shape changed** — a setter returning something other than `Builder` or
-  `<Name>Builder<T>`. Then `SETTER` is under-matching *everywhere*, and every other class's result
-  is untrustworthy too. Fix the pattern, do not exclude the file.
+- **The builder shape changed** beyond what `builder_setter_names` recognises: a public, non-static
+  method with no method type parameters and an unqualified return type whose simple name is
+  `Builder` or ends in `Builder`. Then the AST extraction is under-matching *everywhere*, and every
+  other class's result is untrustworthy too. Fix the checker, do not exclude the file.
 
 Never make this one go away by deleting the file from the scan without establishing which it is.
 
