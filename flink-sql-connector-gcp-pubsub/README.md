@@ -5,8 +5,8 @@ The Cloud Pub/Sub connector packaged for SQL users: one jar to drop into Flink's
 and the rest — with every bundled package relocated so it cannot collide with anything else on the
 classpath.
 
-There is no code here. The connector, its options and its behaviour are documented with the
-connector itself:
+There are no production Java sources here. The connector, its options and its behaviour are
+documented with the connector itself:
 
 - [`flink-connector-gcp-pubsub`](../flink-connector-gcp-pubsub/README.md) — the module, and the
   implementation-status tables
@@ -43,8 +43,10 @@ drift — a dependency added, removed or re-licensed upstream cannot ship unreco
 
 ## Provenance and attribution
 
-No code has been copied into this module; it has none. The build follows the shape of Apache
-Flink's own SQL connector modules — `flink-sql-connector-kafka` for the overall module layout and
-the `shade-flink` execution inherited from `flink-connector-parent`, and
+No code has been copied into this module.
+Its Java sources support packaging, NOTICE, and smoke verification only.
+The build follows the shape of Apache Flink's own SQL
+connector modules — `flink-sql-connector-kafka` for the overall module layout and the `shade-flink`
+execution inherited from `flink-connector-parent`, and
 `flink-sql-connector-aws-kinesis-streams` for the NOTICE grouping convention. Those are **design
 references only**; the shade configuration here was written for this project.

@@ -735,8 +735,10 @@ What remains uncovered by the emulator and this App Engine suite:
 
 ## Provenance and attribution
 
-This module is an original implementation. There is no Flink Cloud Tasks connector in Apache Flink,
-in `GoogleCloudPlatform/pubsub` or elsewhere in open source to adapt, so unlike the Pub/Sub module
-nothing is vendored. Its design references the Pub/Sub sink in this repository (the mailbox-based
-in-flight cap, the flush-on-checkpoint stateless writer, the serialization-schema shape) and
-Google's own Cloud Tasks documentation. No source code has been copied into this module.
+This module is an original implementation. No source code has been copied into it.
+
+The mailbox-based in-flight cap, flush-on-checkpoint stateless writer, and serialization-schema
+boundary were designed by comparison with this repository's Pub/Sub sink; issue
+[#23]({{< param BookRepo >}}/issues/23) records that internal design lineage.
+Cloud Tasks-specific request and queue behavior follows Google's Cloud Tasks documentation.
+[ADR-0048]({{< param BookRepo >}}/blob/main/docs/adr/0048-the-cloud-tasks-sink-owns-its-retry-loop-and-never-creates-queues.md) records retry and delivery decisions where generated-client and protocol evidence resolves gaps or conflicts in that documentation.
