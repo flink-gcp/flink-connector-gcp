@@ -41,10 +41,11 @@ import java.util.function.UnaryOperator;
 
 /**
  * Shared harness for the gated integration tests that run against real Cloud Pub/Sub — the
- * properties the emulator cannot verify: ordered dispatch, dead-letter forwarding, seek on an
- * ordering-enabled subscription, retention and expiration settings taking effect, IAM, and the
- * sink's batch-rejection outcome. It is not source-only: sink-side classes extend it from their own
- * packages, which the {@code protected} members exist to allow.
+ * service-specific properties and production SDK/service acceptance that credential-free tests do
+ * not establish: ordered dispatch, dead-letter forwarding, seek on an ordering-enabled
+ * subscription, retention and expiration settings taking effect, IAM, and the sink's
+ * batch-rejection and publisher-lifecycle outcomes. It is not source-only: sink-side classes extend
+ * it from their own packages, which the {@code protected} members exist to allow.
  *
  * <p>Clients authenticate with application-default credentials through the ADC transport of {@link
  * PubSubTestClients}; the project comes from {@code PUBSUB_IT_PROJECT}. Topics and subscriptions
