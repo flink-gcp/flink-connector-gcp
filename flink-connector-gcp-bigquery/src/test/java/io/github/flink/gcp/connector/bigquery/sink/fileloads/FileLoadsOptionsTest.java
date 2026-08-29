@@ -41,6 +41,10 @@ class FileLoadsOptionsTest {
         // constant became: this default is a measured value and moving it is a decision
         // (docs/adr/0070), so it should cost an edit here.
         assertThat(options.getMaxStagingFileBytes()).isEqualTo(16L * 1024 * 1024);
+        assertThat(options.getMaxOpenDestinations()).isEqualTo(16);
+        assertThat(options.getMaxPendingFiles()).isEqualTo(10_000);
+        assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
+        assertThat(options.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
         assertThat(options.getStagingFormat()).isEqualTo(StagingFormat.AVRO);
         assertThat(options.getParquetCompression()).isEqualTo(ParquetCompression.ZSTD);
         assertThat(options.getLoadJobPollInitialBackoff())
@@ -154,6 +158,11 @@ class FileLoadsOptionsTest {
         assertThat(base().schemaReconcileMaxBackoff(Duration.ofMinutes(1)).build())
                 .isNotEqualTo(defaults);
         assertThat(base().schemaReconcileMaxAttempts(3).build()).isNotEqualTo(defaults);
+        assertThat(base().maxOpenDestinations(8).build()).isNotEqualTo(defaults);
+        assertThat(base().maxPendingFiles(20_000).build()).isNotEqualTo(defaults);
+        assertThat(base().destinationIdleTimeout(Duration.ofSeconds(30)).build())
+                .isNotEqualTo(defaults);
+        assertThat(base().maxSerializedRowBytes(12_000_000).build()).isNotEqualTo(defaults);
 
         assertThat(defaults.toString())
                 // The enum renders its DDL spelling here, which is the whole visible cost of
@@ -165,7 +174,11 @@ class FileLoadsOptionsTest {
                 .contains("schemaReconcileInitialBackoff=PT0.5S")
                 .contains("schemaReconcileMaxBackoff=PT10S")
                 .contains("schemaReconcileMaxAttempts=10")
-                .contains("maxStagingFileBytes=16777216");
+                .contains("maxStagingFileBytes=16777216")
+                .contains("maxOpenDestinations=16")
+                .contains("maxPendingFiles=10000")
+                .contains("destinationIdleTimeout=PT1M")
+                .contains("maxSerializedRowBytes=15000000");
     }
 
     private static FileLoadsOptions.Builder base() {
@@ -201,6 +214,66 @@ class FileLoadsOptionsTest {
                 .hasMessageContaining("maxStagingFileBytes");
         assertThatThrownBy(() -> FileLoadsOptions.builder().maxStagingFileBytes(-1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void destinationLifecycleOverridesAreKept() {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .maxOpenDestinations(8)
+                        .maxPendingFiles(5000)
+                        .destinationIdleTimeout(Duration.ofSeconds(30))
+                        .maxSerializedRowBytes(12_000_000)
+                        .build();
+
+        assertThat(options.getMaxOpenDestinations()).isEqualTo(8);
+        assertThat(options.getMaxPendingFiles()).isEqualTo(5000);
+        assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(options.getMaxSerializedRowBytes()).isEqualTo(12_000_000);
+    }
+
+    @Test
+    void absentFieldsFromAnOlderSerializedJobGraphUseTheNewDefaults() throws Exception {
+        FileLoadsOptions.Builder oldBuilder = base();
+        setBuilderField(oldBuilder, "maxOpenDestinations", 0);
+        setBuilderField(oldBuilder, "maxPendingFiles", 0);
+        setBuilderField(oldBuilder, "destinationIdleTimeout", null);
+        setBuilderField(oldBuilder, "maxSerializedRowBytes", 0L);
+        FileLoadsOptions restored = oldBuilder.build();
+        FileLoadsOptions defaults = base().build();
+
+        assertThat(restored.getMaxOpenDestinations()).isEqualTo(16);
+        assertThat(restored.getMaxPendingFiles()).isEqualTo(10_000);
+        assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
+        assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
+        assertThat(restored).isEqualTo(defaults).hasSameHashCodeAs(defaults);
+        assertThat(restored.toString()).isEqualTo(defaults.toString());
+    }
+
+    private static void setBuilderField(FileLoadsOptions.Builder builder, String name, Object value)
+            throws Exception {
+        java.lang.reflect.Field field = FileLoadsOptions.Builder.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(builder, value);
+    }
+
+    @Test
+    void rejectsInvalidDestinationLifecycleOptions() {
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxOpenDestinations(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxOpenDestinations");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxPendingFiles(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxPendingFiles");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().destinationIdleTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("destinationIdleTimeout");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().destinationIdleTimeout(null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxSerializedRowBytes(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxSerializedRowBytes");
     }
 
     @Test
@@ -301,6 +374,19 @@ class FileLoadsOptionsTest {
     }
 
     @Test
+    void pendingFileLimitMustCoverTheOpenDestinationLimit() {
+        assertThatThrownBy(
+                        () ->
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket")
+                                        .maxOpenDestinations(3)
+                                        .maxPendingFiles(2)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("maxPendingFiles must be >= maxOpenDestinations");
+    }
+
+    @Test
     void overridesAreKept() {
         FileLoadsOptions options =
                 FileLoadsOptions.builder()
@@ -345,11 +431,17 @@ class FileLoadsOptionsTest {
                         .stagingPath("gs://bucket")
                         .maxStagingFileBytes(64L * 1024 * 1024)
                         .build();
+        FileLoadsOptions g =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket")
+                        .maxPendingFiles(20_000)
+                        .build();
 
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(c);
         assertThat(a).isNotEqualTo(d);
         assertThat(a).isNotEqualTo(e);
         assertThat(a).isNotEqualTo(f);
+        assertThat(a).isNotEqualTo(g);
     }
 }

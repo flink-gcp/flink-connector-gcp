@@ -44,12 +44,13 @@ import java.util.Optional;
  * is wanted is decided by the write method — which the factory knows — and not by key presence.
  * {@link #presentKeys(ReadableConfig)} survives for the factory's wrong-family check.
  *
- * <p>One rule is owned here rather than left to the builder, because it fires on an <em>absent</em>
- * option, which no setter ever sees: <b>a missing staging path</b>. {@code
+ * <p>Two rules are owned here rather than left to the builder. The first fires on an
+ * <em>absent</em> option, which no setter ever sees: <b>a missing staging path</b>. {@code
  * FileLoadsOptions.build()} rejects it too, but names {@code stagingPath("gs://...")}, a builder
  * method a SQL user cannot call — and this is the one option on the whole table surface that has no
  * default, so its message is all that stands between a DDL and a write method with nowhere to
- * stage.
+ * stage. The second compares two options and therefore names both DDL keys before the builder can
+ * reject the same relationship in Java setter vocabulary.
  */
 @Internal
 public final class FileLoadsOptionsMapper {
@@ -62,6 +63,10 @@ public final class FileLoadsOptionsMapper {
                     BigQueryConnectorOptions.SINK_FILE_LOADS_WRITE_DISPOSITION,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MIN_CHECKPOINT_INTERVAL,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_SERIALIZED_ROW_BYTES,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF,
@@ -128,6 +133,22 @@ public final class FileLoadsOptionsMapper {
                 size -> builder.maxStagingFileBytes(size.getBytes()));
         OptionSetters.apply(
                 config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS,
+                builder::maxOpenDestinations);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES,
+                builder::maxPendingFiles);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT,
+                builder::destinationIdleTimeout);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_SERIALIZED_ROW_BYTES,
+                size -> builder.maxSerializedRowBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT,
                 builder::stagingFormat);
         // Applied unconditionally, so the builder's "only with PARQUET" rule fires for a DDL that
@@ -165,6 +186,22 @@ public final class FileLoadsOptionsMapper {
                 config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
+
+        int maxOpenDestinations =
+                config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS)
+                        .orElse(FileLoadsOptions.DEFAULT_MAX_OPEN_DESTINATIONS);
+        int maxPendingFiles =
+                config.getOptional(BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES)
+                        .orElse(FileLoadsOptions.DEFAULT_MAX_PENDING_FILES);
+        if (maxPendingFiles < maxOpenDestinations) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' (%d) must be at least option '%s' (%d).",
+                            BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES.key(),
+                            maxPendingFiles,
+                            BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS.key(),
+                            maxOpenDestinations));
+        }
 
         return builder.build();
     }

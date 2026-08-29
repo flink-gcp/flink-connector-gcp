@@ -53,7 +53,7 @@ The resolver cache holds names, while the sink creates the client-side resource 
 
 | Sink | Per-record route | Per-destination client-side state | Idle eviction | Auto-creation |
 |---|---|---|---|---|
-| BigQuery | `TableDestination` from `destinationResolver` | A Storage Write API writer on the streaming methods; conversion state and the current staging file on FILE_LOADS | Default and buffered streams only | Supported according to the create disposition |
+| BigQuery | `TableDestination` from `destinationResolver` | A Storage Write API writer on the streaming methods; conversion state and the current staging file on FILE_LOADS | Yes; FILE_LOADS also applies an active-destination capacity | Supported according to the create disposition |
 | Cloud Pub/Sub | `TopicDestination` from `destinationResolver` | One SDK publisher per topic | No; publishers close with the writer | Supported according to the create disposition |
 | Cloud Tasks | `QueueDestination` from `destinationResolver` | None; one client serves every queue | Not needed | Not supported |
 | Bigtable | `TableDestination` from `destinationResolver` | One bulk mutation batcher per table; data clients are shared by project and instance | Yes | Opt-in with a declared table schema |
@@ -66,7 +66,7 @@ The table does not include optional per-destination metrics.
 When enabled on BigQuery's default-stream or FILE_LOADS method, Pub/Sub, Cloud Tasks or Bigtable, Flink cannot unregister those counters, so each seen destination keeps metric registry state for the task lifetime even after writer-state eviction.
 
 BigQuery's default and buffered stream writers drop drained destination state after the configured idle period at the end of a successful non-end-of-input flush.
-FILE_LOADS has no idle timeout and retains each destination's conversion state until the writer closes, although it finishes the open staging file at every commit preparation.
+FILE_LOADS finishes an idle destination file after its configured timeout, finishes the least recently used file before exceeding its active-destination capacity, and finishes every remaining file at a checkpoint.
 
 Bigtable sweeps idle table batchers after a successful non-end-of-input flush and rebuilds one transparently if the table becomes active again.
 Pub/Sub deliberately keeps each topic publisher until the writer closes, while Cloud Tasks and Spanner have no per-routed-destination service client state to evict.

@@ -131,7 +131,8 @@ public class BigQueryFileLoadsSink<T>
                     context.metricGroup(),
                     context.getJobInfo().getJobId().toString(),
                     context.getTaskInfo().getIndexOfThisSubtask(),
-                    context.getTaskInfo().getAttemptNumber());
+                    context.getTaskInfo().getAttemptNumber(),
+                    context.getProcessingTimeService());
         } catch (Throwable e) {
             // The handler is the only thing to release: the staging storage is a field of the sink
             // and opens no client until the writer asks it to. Nothing downstream would close it —

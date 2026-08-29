@@ -173,6 +173,10 @@ where the daily job and destination-table limits that shape `minCheckpointInterv
 | `tempDataset` | the destination's own dataset | Where leaf, intermediate and aggregate temporary tables go when a table's staged files exceed one load job's limits or replacement rows span staging formats. It must share the final destination's BigQuery location |
 | `minCheckpointInterval` | 2 min | Smallest checkpoint interval accepted in streaming; a shorter one is rejected when the graph is built |
 | `maxStagingFileBytes` | 16 MiB | Size at which an open staging file is finished and the next one opened. [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) carries the measurement it comes from and when raising it is worthwhile |
+| `maxOpenDestinations` | 16 | Maximum destination files held open by each writer subtask. Opening another destination finishes and evicts the least recently used file |
+| `maxPendingFiles` | 10,000 | Maximum finished and open staging files retained by each writer subtask for the next commit. It must be at least `maxOpenDestinations`; reaching it fails the task before another file is opened |
+| `destinationIdleTimeout` | 1 min | Time without a record after which an open destination file is finished and its conversion state released |
+| `maxSerializedRowBytes` | 15,000,000 B | Largest serialized protobuf row accepted before Avro conversion. A larger row is routed to the failure handler without opening a destination file |
 | `stagingFormat` | `AVRO` | The file format rows are staged in. `PARQUET` is opt-in and needs dependencies this connector does not ship — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) before selecting it |
 | `parquetCompression` | `ZSTD` | How Parquet staging files are compressed. Rejected under `AVRO`. `NONE` is the only value needing no Hadoop runtime, and stages more bytes than Avro does |
 | `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load, copy, or terminal query job |

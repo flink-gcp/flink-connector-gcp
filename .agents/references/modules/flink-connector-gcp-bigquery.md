@@ -220,6 +220,22 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   from (`docs/adr/0070`). The writer keeps no copy of the value and no test-only constructor takes
   it — it reads the option, so a test configures it the way a user would. Load-time numbers quoted
   anywhere carry their date and sample size; a superseding measurement edits them in place.
+- **The FILE_LOADS writer's expensive destination state is active-only and hard-bounded**
+  (#1128).
+  `maxOpenDestinations` is per writer subtask and finishes the least recently used file before a
+  new one opens; `destinationIdleTimeout` finishes inactive files on processing-time callbacks;
+  every checkpoint finishes and clears the remainder.
+  `maxPendingFiles` separately bounds the finished and open file metadata retained until the next
+  commit; reaching it fails before another file opens, and `pendingFiles` reports the current
+  count.
+  Do not remove this bound when changing eviction: active-file churn otherwise grows the
+  committable list without limit between commits.
+  Conversion succeeds before a new destination can evict a healthy one, and object names use one
+  writer-global monotonic sequence because per-destination sequences cannot survive eviction.
+  `maxSerializedRowBytes` applies to the serializer's protobuf bytes before parsing and Avro
+  conversion; larger rows follow the failure policy without creating state.
+  The documented Avro sizing baseline starts with one 4 MiB GCS chunk per active destination, but
+  Parquet also budgets one `maxStagingFileBytes` row group per active destination.
 
 ## Exactly-once (`docs/adr/0022`)
 

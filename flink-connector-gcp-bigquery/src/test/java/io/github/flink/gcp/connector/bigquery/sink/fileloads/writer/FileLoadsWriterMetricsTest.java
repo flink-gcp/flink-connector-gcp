@@ -56,10 +56,12 @@ class FileLoadsWriterMetricsTest {
         assertThat(counter("numRecordsSend")).isEqualTo(2);
         assertThat(counter("numBytesSend")).isZero();
         assertThat(counter("filesStaged")).isZero();
+        assertThat(this.<Integer>gauge("pendingFiles")).isEqualTo(1);
 
         Collection<FileLoadsCommittable> committables = writer.prepareCommit();
 
         assertThat(committables).hasSize(1);
+        assertThat(this.<Integer>gauge("pendingFiles")).isZero();
         assertThat(counter("filesStaged")).isEqualTo(1);
         assertThat(counter("numBytesSend"))
                 .isEqualTo(committables.iterator().next().getByteCount())
@@ -76,6 +78,9 @@ class FileLoadsWriterMetricsTest {
         Collection<FileLoadsCommittable> committables = writer.prepareCommit();
 
         assertThat(counter("filesStaged")).isEqualTo(2);
+        assertThat(counter("destinationActivations")).isEqualTo(2);
+        assertThat(this.<Integer>gauge("openDestinations")).isZero();
+        assertThat(this.<Integer>gauge("pendingFiles")).isZero();
         assertThat(counter("numRecordsSend")).isEqualTo(2);
         assertThat(counter("numBytesSend"))
                 .isEqualTo(
@@ -142,7 +147,7 @@ class FileLoadsWriterMetricsTest {
     }
 
     @Test
-    void gaugeReportsTheDestinationsHoldingConversionState() throws Exception {
+    void gaugeReportsDestinationsWithOpenStagingFiles() throws Exception {
         FileLoadsWriter<TestRow> writer = writer();
 
         assertThat(this.<Integer>gauge("openDestinations")).isZero();
@@ -184,16 +189,18 @@ class FileLoadsWriterMetricsTest {
     }
 
     @Test
-    void theOpenDestinationsGaugeIsClearedWhenTheWriterIsClosed() throws Exception {
+    void writerStateGaugesAreClearedWhenTheWriterIsClosed() throws Exception {
         FileLoadsWriter<TestRow> writer = writer();
 
         writer.write(new TestRow("t1", "alice", 1L), CONTEXT);
         writer.write(new TestRow("t2", "bob", 2L), CONTEXT);
         assertThat(this.<Integer>gauge("openDestinations")).isEqualTo(2);
+        assertThat(this.<Integer>gauge("pendingFiles")).isEqualTo(2);
 
         writer.close();
 
         assertThat(this.<Integer>gauge("openDestinations")).isZero();
+        assertThat(this.<Integer>gauge("pendingFiles")).isZero();
     }
 
     // ------------------------------------------------------------------
@@ -228,6 +235,7 @@ class FileLoadsWriterMetricsTest {
                 metrics,
                 "0123456789abcdef0123456789abcdef",
                 3,
-                1);
+                1,
+                new ManualProcessingTimeService());
     }
 }

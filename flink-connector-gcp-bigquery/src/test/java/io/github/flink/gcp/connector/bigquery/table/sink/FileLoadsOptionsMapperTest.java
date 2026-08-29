@@ -67,6 +67,17 @@ class FileLoadsOptionsMapperTest {
                 "maxStagingFileBytes",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES);
         SETTER_TO_OPTION.put(
+                "maxOpenDestinations",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS);
+        SETTER_TO_OPTION.put(
+                "maxPendingFiles", BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES);
+        SETTER_TO_OPTION.put(
+                "destinationIdleTimeout",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT);
+        SETTER_TO_OPTION.put(
+                "maxSerializedRowBytes",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_SERIALIZED_ROW_BYTES);
+        SETTER_TO_OPTION.put(
                 "stagingFormat", BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT);
         SETTER_TO_OPTION.put(
                 "parquetCompression", BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION);
@@ -166,6 +177,10 @@ class FileLoadsOptionsMapperTest {
         // A MemorySize key, so the unit suffix is the point: a plain "64" would also parse, and
         // would pass whether or not the mapper converted the value.
         options.put(key("maxStagingFileBytes"), "64 mb");
+        options.put(key("maxOpenDestinations"), "8");
+        options.put(key("maxPendingFiles"), "5000");
+        options.put(key("destinationIdleTimeout"), "30 s");
+        options.put(key("maxSerializedRowBytes"), "12 mb");
         options.put(key("stagingFormat"), "parquet");
         options.put(key("parquetCompression"), "none");
         options.put(key("loadJobPollInitialBackoff"), "2 s");
@@ -182,6 +197,10 @@ class FileLoadsOptionsMapperTest {
         assertThat(mapped.getWriteDisposition()).isEqualTo(WriteDisposition.WRITE_TRUNCATE_DATA);
         assertThat(mapped.getMinCheckpointInterval()).isEqualTo(Duration.ofSeconds(30));
         assertThat(mapped.getMaxStagingFileBytes()).isEqualTo(64L * 1024 * 1024);
+        assertThat(mapped.getMaxOpenDestinations()).isEqualTo(8);
+        assertThat(mapped.getMaxPendingFiles()).isEqualTo(5000);
+        assertThat(mapped.getDestinationIdleTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(mapped.getMaxSerializedRowBytes()).isEqualTo(12L * 1024 * 1024);
         assertThat(mapped.getStagingFormat()).isEqualTo(StagingFormat.PARQUET);
         assertThat(mapped.getParquetCompression()).isEqualTo(ParquetCompression.NONE);
         assertThat(mapped.getLoadJobPollInitialBackoff()).isEqualTo(Duration.ofSeconds(2));
@@ -236,5 +255,47 @@ class FileLoadsOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'sink.file-loads.max-staging-file-bytes' is invalid")
                 .hasMessageContaining("maxStagingFileBytes must be positive");
+    }
+
+    @Test
+    void newLifecycleRejectionsNameTheTableOptionKeys() {
+        Map<String, String> maxOpen = staged();
+        maxOpen.put(key("maxOpenDestinations"), "0");
+        assertThatThrownBy(() -> map(maxOpen))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("maxOpenDestinations") + "' is invalid")
+                .hasMessageContaining("maxOpenDestinations must be positive");
+
+        Map<String, String> maxPending = staged();
+        maxPending.put(key("maxPendingFiles"), "0");
+        assertThatThrownBy(() -> map(maxPending))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("maxPendingFiles") + "' is invalid")
+                .hasMessageContaining("maxPendingFiles must be positive");
+
+        Map<String, String> idle = staged();
+        idle.put(key("destinationIdleTimeout"), "0 ms");
+        assertThatThrownBy(() -> map(idle))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("destinationIdleTimeout") + "' is invalid")
+                .hasMessageContaining("destinationIdleTimeout must be at least 1 millisecond");
+
+        Map<String, String> maxRow = staged();
+        maxRow.put(key("maxSerializedRowBytes"), "0 b");
+        assertThatThrownBy(() -> map(maxRow))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("maxSerializedRowBytes") + "' is invalid")
+                .hasMessageContaining("maxSerializedRowBytes must be positive");
+    }
+
+    @Test
+    void pendingFileBoundNamesBothTableOptionKeys() {
+        Map<String, String> options = staged();
+        options.put(key("maxPendingFiles"), "8");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("maxPendingFiles") + "' (8)")
+                .hasMessageContaining("option '" + key("maxOpenDestinations") + "' (16)");
     }
 }
