@@ -456,6 +456,9 @@ class BigQueryLoadJobRunnerTest {
                 .hasMessageContaining("Failed to look up BigQuery job " + JOB_ID)
                 .hasMessageContaining("polling")
                 .hasCause(unavailable);
+        assertThatThrownBy(() -> runner.awaitJob(JOB_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("was never submitted");
     }
 
     @Test
@@ -499,6 +502,48 @@ class BigQueryLoadJobRunnerTest {
         runner.awaitJob(JOB_ID);
 
         assertThatThrownBy(() -> runner.awaitJob(JOB_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("was never submitted");
+    }
+
+    @Test
+    void anInterruptedAwaitKeepsTheHandleForSerialDrain() throws Exception {
+        client.createdStatus = TestJobs.status(JobStatus.State.RUNNING);
+        client.answering(
+                JobAnswer.absent(), JobAnswer.withStatus(TestJobs.status(JobStatus.State.DONE)));
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitLoad(JOB_ID, loadSpec(List.of()));
+
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(() -> runner.awaitJob(JOB_ID))
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("Interrupted while waiting for BigQuery job " + JOB_ID);
+            assertThat(Thread.currentThread().isInterrupted()).isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+
+        runner.awaitJob(JOB_ID);
+
+        assertThatThrownBy(() -> runner.awaitJob(JOB_ID))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("was never submitted");
+    }
+
+    @Test
+    void aDifferentCommitWorkerCanAwaitTheSubmittedJob() throws Exception {
+        client.answering(JobAnswer.absent());
+        BigQueryLoadJobRunner.SharedJobs sharedJobs = new BigQueryLoadJobRunner.SharedJobs();
+        BigQueryLoadJobRunner submitter =
+                new BigQueryLoadJobRunner(client, LOCATION, FAST, sharedJobs);
+        BigQueryLoadJobRunner awaiter =
+                new BigQueryLoadJobRunner(client, LOCATION, FAST, sharedJobs);
+
+        submitter.submitLoad(JOB_ID, loadSpec(List.of()));
+        awaiter.awaitJob(JOB_ID);
+
+        assertThatThrownBy(() -> submitter.awaitJob(JOB_ID))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("was never submitted");
     }

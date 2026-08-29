@@ -123,8 +123,9 @@ same checkpointed job, removing the second scheduler, batch execution path and c
 recovery procedure.
 
 This consolidation does not create a raw archive.
-Staging objects contain converted BigQuery rows and are deleted best-effort after a successful load,
-so they cannot replay source bytes after a parser or transformation bug is discovered.
+Staging objects contain converted BigQuery rows and are deleted best-effort only after every
+destination load and temporary-table cleanup complete normally, so they cannot replay source bytes
+after a parser or transformation bug is discovered.
 Keep an independent sink for the original records when that replay path is required.
 The `FailureHandler` handles row-level serialization and conversion failures; it cannot identify a
 parser that produced valid but semantically wrong rows.
@@ -1398,8 +1399,9 @@ FILE_LOADS-only settings live in `FileLoadsOptions` (required for this write met
 the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` default,
 `WRITE_TRUNCATE` for batch reloads that replace the table schema, `WRITE_TRUNCATE_DATA` for batch
 reloads that preserve schema and constraints, or `WRITE_EMPTY`), `tempDataset`, the streaming guard
-`minCheckpointInterval`, the writer-memory bounds (`maxOpenDestinations`,
-`destinationIdleTimeout`, `maxSerializedRowBytes`), and the committer's two backoff schedules
+`minCheckpointInterval`, the writer-memory bounds (`maxStagingFileBytes`,
+`maxOpenDestinations`, `maxPendingFiles`, `destinationIdleTimeout`, `maxSerializedRowBytes`), the committer-wide
+`maxConcurrentDestinations`, and the committer's two backoff schedules
 (`loadJobPoll*` for job completion polling, `schemaReconcile*` for the etag-race reconcile) — all
 described below.
 
@@ -1424,10 +1426,47 @@ More than 1,200 partition tables are first reduced through deterministic interme
 The final action is a copy for ordinary dispositions and `WRITE_TRUNCATE`; for
 `WRITE_TRUNCATE_DATA`, it is an aggregate temporary-table copy followed by one terminal query that
 atomically replaces only the destination data.
-Independent load and copy jobs are submitted and awaited in waves of at most 50,000.
+Up to `maxConcurrentDestinations` destination actions execute concurrently (8 by default, at most
+64), while every load, copy level and final action for one destination retains its deterministic
+order.
+Each worker owns one BigQuery REST client.
+Before the worker pool has been needed, a singleton action uses the calling thread; after pool
+initialization, singleton phases reuse a pooled worker and the committer retains at most the
+configured number of clients.
+Every load, copy and query wave is submitted across all destinations before its jobs are awaited.
+This preserves the previous server-side job parallelism while bounding concurrent client calls.
+When an ordinary destination action fails, no new action is dispatched; every job already submitted
+in the wave is awaited, then the lowest destination in plan order is reported as the primary failure
+and the others are suppressed.
+A JVM-fatal failure aborts the current worker action immediately; the coordinator interrupts its
+peers, drains them for at most 30 seconds and then propagates the fatal failure as primary so an
+unbounded peer cannot hide it from Flink.
+Temporary tables and staged objects are cleaned only after every destination succeeds.
+Load and copy waves hold at most 50,000 pending jobs across all destinations.
 Each copy level completes before the next begins: once at end of input in batch, once per completed
 checkpoint in streaming.
-Batch-only interactive terminal queries use waves of at most 1,000.
+Batch-only interactive terminal-query waves hold at most 1,000 pending jobs.
+
+The default of 8 is the resource-conscious starting point for dynamic destinations rather than a
+promise that more threads cannot be faster.
+On 2026-08-29, seven-sample local runs of the destination executor measured 50 destinations with a
+5 ms fake service delay at 359 ms serial and 48 ms with 8 workers; 200 destinations measured
+1,411 ms and 179 ms, and 50 destinations with a 50 ms delay measured 2,796 ms and 390 ms.
+One destination remained on the inline path at a 7 ms median for every configured bound.
+A bounded real-GCP acceptance run on the same date used two writer subtasks and two default
+Avro/Zstandard files per destination, each carrying a native `JSON` column.
+It exercised 10 destinations at concurrency 1, 4, the unset default 8 and 16, then 50 destinations
+at the unset default 8 and 16: 140 load jobs and 280 staged files in total.
+Every destination contained its two distinct rows and matching JSON payload, and the post-run
+sweep found no target table or staging object.
+The end-to-end arm times were 49.917, 26.537, 22.295 and 23.464 seconds for the four 10-destination
+arms, then 84.194 and 80.574 seconds for the two 50-destination arms.
+Those single observations include MiniCluster startup, uploads, the validation query and resource
+deletion, so they validate bounded service operation and the default rather than promising a
+throughput ratio or service SLA.
+Raise the option only after measuring commit duration and the active/queued destination gauges:
+each additional active destination can add a worker thread, a REST client and pending BigQuery
+jobs, while the project and region quotas remain shared with other workloads.
 Before its first load of a run, each destination is
 **reconciled against the live table** through the REST API — a missing table is created (schema
 from the serializer, partitioning/clustering from `tableCreateOptions(...)`; `CREATE_NEVER` fails
@@ -1499,8 +1538,9 @@ raise `maxOpenDestinations` to reduce churn or raise `maxPendingFiles` only with
 headroom.
 Finishing an LRU file runs on the task thread, so sustained churn naturally backpressures the
 writer and produces smaller staging files.
-This option does not increase checkpoint-time load-job concurrency: committables still enter the
-single committer described above.
+This writer-side option does not set checkpoint-time destination concurrency.
+Committables still enter the single committer, whose separate `maxConcurrentDestinations` bound
+controls that work.
 
 **Serialized row memory.** `maxSerializedRowBytes` rejects a serialized protobuf row before
 `DynamicMessage` parsing and Avro conversion, where the previous path transiently held several
@@ -1656,10 +1696,11 @@ the same hierarchy.
 
 The connector builds and validates the complete plan before it reconciles a destination table or
 submits a job. One commit may plan at most 100,000 load jobs and 100,000 copy jobs, matching
-BigQuery's project-wide daily quotas. Independent load and copy jobs run in deterministic waves of
-at most 50,000, matching the per-project, per-region pending-job limit.
-Interactive `WRITE_TRUNCATE_DATA` terminal queries run in waves of at most 1,000, matching their
-per-project, per-region queued-query limit.
+BigQuery's project-wide daily quotas. Each destination retains deterministic load and copy order;
+commit-wide waves keep their combined pending jobs at or below 50,000, matching the
+per-project, per-region limit.
+Interactive `WRITE_TRUNCATE_DATA` terminal queries use a commit-wide 1,000-job wave bound,
+matching their per-project, per-region queued-query limit.
 These checks prove that the plan
 alone fits the published bounds; they cannot reserve quota already consumed by other workloads or
 failed attempts. Increase `maxStagingFileBytes`, reduce the volume per batch/checkpoint, or lengthen
@@ -1671,9 +1712,12 @@ with a default table expiration is recommended so leaf and intermediate tables o
 failures are garbage-collected. Copy jobs support no schema update options and require matching
 schemas, so all leaves are loaded with the same reconciled schema and intermediate copies inherit
 it. The final table stays unchanged if a leaf load, intermediate copy, aggregate copy, or terminal
-query fails. A failed or
-abandoned run retains all temporary tables and staged objects for retry; only a successful final
-action starts best-effort cleanup.
+query fails.
+A load, copy, or query failure before every destination succeeds retains all temporary tables and
+staged objects for retry.
+After every destination succeeds, best-effort temporary-table cleanup begins; interruption can
+leave only a partial set of those tables.
+Staged objects are deleted only after that cleanup completes normally.
 
 Overflow up to 1,200 leaves adds one copy job for an ordinary disposition.
 A larger hierarchy adds one copy for each combined group at each level, plus the final copy, and
@@ -1742,8 +1786,10 @@ whether a run fits one partition no longer decides whether its records load
 against real BigQuery). The first row never comes up anymore for the same reason: with updates
 disabled the provided schema *is* the table's, so no tightening is ever sent.
 
-**Staging cleanup.** Staged files are deleted after a successful load — best-effort; on failure
-they are deliberately kept so a Flink restart retries deterministically. Point `stagingPath` at a
+**Staging cleanup.** Staged files are deleted only after every destination load and
+temporary-table cleanup complete normally — best-effort; on destination execution failure or
+cleanup interruption they are deliberately kept so a Flink restart retries deterministically.
+Point `stagingPath` at a
 **dedicated bucket (separate from checkpoint/savepoint storage) with a lifecycle rule** (for
 example: delete objects after 1–7 days) so orphans from hard failures expire on their own. Size
 the rule's age above the longest outage you intend to recover from: staged files referenced by a
@@ -2450,11 +2496,15 @@ re-commit of an offset BigQuery has already flushed is treated as success there 
 show up as commit duration and as `pendingCommittables` instead. Read the committer's log for the
 retry itself; it names the stream, the attempt and the backoff.
 
-`FILE_LOADS` adds one of its own:
+`FILE_LOADS` adds aggregate commit metrics of its own:
 
 | Metric | Type | Meaning |
 |---|---|---|
 | `loadJobsSubmitted` | counter | BigQuery load jobs submitted by this committer |
+| `queuedCommitDestinations` | gauge | destination actions in the current commit phase that have not started; zero between commit attempts |
+| `activeCommitDestinations` | gauge | destination actions executing in the current commit attempt; bounded by `maxConcurrentDestinations` and cleared when the coordinator returns. Updates from workers belonging to an ended attempt are ignored |
+| `currentCommitDurationMillis` | gauge | elapsed milliseconds of the current non-empty commit attempt; zero while idle |
+| `lastCommitDurationMillis` | gauge | elapsed milliseconds of the most recently completed or failed non-empty commit attempt |
 
 It is what turns "this checkpoint took a while" into "this checkpoint issued *N* load jobs", against
 the daily load-job and destination-table modification limits that shape `minCheckpointInterval`
@@ -2462,7 +2512,8 @@ the daily load-job and destination-table modification limits that shape `minChec
 `WRITE_TRUNCATE_DATA` terminal queries do not appear in this metric. The FILE_LOADS committer runs
 on **one subtask** (its pre-commit
 topology ends in `global()`), so this counter is the whole job's load-job rate rather than one
-subtask's share.
+subtask's share. The four gauges are aggregate too: none carries a destination label, so dynamic
+routing cannot grow metric cardinality.
 
 ### Source metrics
 
@@ -2596,7 +2647,8 @@ notices a finished load sooner at the cost of more `jobs.get` calls against your
 raising it does the reverse.
 
 Only a *lost* etag race consumes a schema-reconcile attempt, and those races do not come from
-this job's parallelism — FILE_LOADS reconciles from a single committer subtask. They come from
+this job's destination parallelism — FILE_LOADS creates one task per distinct destination, never
+two tasks for the same table. They come from
 anything else touching the same table at the same time: a second Flink job, a Storage Write API
 sink writing the same destination, or external tooling. Raise the budget when that describes your
 deployment (BigQuery allows about five metadata updates per table per ten seconds); exhausting it

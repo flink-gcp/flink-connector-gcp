@@ -72,8 +72,8 @@ limitations under the License.
   Dynamic destinations reconcile and reconnect independently.
   `SchemaUnifier` is the common policy across both Storage Write API methods and `FILE_LOADS`.
   The Storage writers share `StorageWriteSchemaReconciler`, while `FILE_LOADS` retains its
-  load-specific orchestration because it must return the schema carried by each load job, memoize
-  it per destination and run write-disposition-specific behavior.
+  load-specific orchestration because it must return the schema carried by each load job, retain
+  it in the destination's commit plan and run write-disposition-specific behavior.
 - BATCH is supported (commit at end of input), streaming requires EXACTLY_ONCE +
   checkpoints-after-tasks-finish; recovery and eviction knobs are builder-configurable via
   `BufferedStreamOptions` with defaults.

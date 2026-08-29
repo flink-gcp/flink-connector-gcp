@@ -26,7 +26,8 @@ import java.io.IOException;
  * Executes BigQuery load, copy and terminal query jobs for the FILE_LOADS orchestration.
  *
  * <p>Submission and completion are split so the orchestrator can submit an independent wave first,
- * let BigQuery run it concurrently server-side, and then wait without managing threads itself.
+ * let BigQuery run it concurrently server-side, and then wait through its bounded destination
+ * workers.
  *
  * <p>Implementations own the exactly-once mechanics behind a caller-chosen <em>deterministic</em>
  * job id: re-submitting an id that already ran must re-attach to (or skip after) the existing
@@ -69,6 +70,9 @@ public interface LoadJobRunner {
 
     /**
      * Waits for a previously submitted job to complete.
+     *
+     * <p>Every runner built for one concurrent committer must share its submitted-job handles, so a
+     * worker may wait for a job another worker submitted in the preceding global wave phase.
      *
      * @param jobId the deterministic job id passed at submission
      * @throws IOException if the job failed

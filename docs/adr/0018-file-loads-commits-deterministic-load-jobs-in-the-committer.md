@@ -22,8 +22,9 @@ limitations under the License.
   (2026-08-08); load-job grouping refined by [#284] (2026-08-08); job locations revised by
   [#491] (2026-08-10); streaming overflow revised by [#72] (2026-08-13); hierarchical overflow
   revised by [#598] (2026-08-13); data-only replacement revised by [#646] (2026-08-14);
-  writer lifecycle revised by [#1128] (2026-08-28)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128]
+  writer lifecycle revised by [#1128] (2026-08-28); destination commit concurrency revised by
+  [#1129] (2026-08-29)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -60,6 +61,54 @@ limitations under the License.
   matching their narrower queued-query limit.
   Cleanup is best-effort on success only; a staging bucket lifecycle rule is the documented
   mitigation for orphans.
+- **Independent destinations commit concurrently under a fixed bound** ([#1129]).
+  The complete plan remains global and side-effect-free, then the single committer dispatches at
+  most `maxConcurrentDestinations` destination actions at once.
+  The default is 8 and the accepted range is 1 through 64.
+  Before the pool has been needed, one destination stays on the calling thread, avoiding a pool
+  hand-off for the fixed-table case; later singleton phases reuse the initialized pool.
+  Each pool thread owns one BigQuery REST client, load-job runner and retrying table admin; REST
+  clients and their mutable caches stay on their owner thread.
+  The workers share only a concurrent submitted-job registry, so a job submitted by one worker can
+  be awaited after the global submission barrier by whichever worker receives that destination
+  action in the wait phase.
+  A bounded reconciliation phase reconciles each destination once, including any reads needed for
+  create-after-miss or lost-etag retries.
+  Each following load, copy-level and final-action wave is submitted across all destinations before
+  its jobs are awaited, so client calls are bounded without reducing BigQuery's server-side job
+  parallelism.
+  The wave sizes hold the combined pending-job count at 50,000 and the interactive-query subset at
+  1,000, so destination concurrency does not multiply the service quota waves.
+  The first observed ordinary failure stops new destination dispatch, but every job already
+  submitted in the wave is awaited before `commit()` returns.
+  A JVM-fatal failure aborts the current worker action immediately; the coordinator interrupts its
+  peers, drains them for at most 30 seconds and then propagates the fatal failure so an unbounded
+  peer cannot hide it from Flink.
+  If the coordinator itself is interrupted, it uses the same bounded cancellation and drain.
+  An interrupt-ignoring daemon worker may outlive `commit()`, and a later JVM-fatal failure is sent
+  first to Flink's fatal-exit handler, with a connector-log fallback if that handler returns.
+  Failures are then ordered by destination plan position: the first is primary and later failures
+  are suppressed, except that a JVM-fatal failure remains primary so Flink can act on it.
+  Temporary-table and staging-object cleanup starts only after every destination succeeds.
+  On 2026-08-29, seven-sample local runs measured 50 destination tasks with a 5 ms fake service
+  delay at 359 ms serial and 48 ms with 8 workers; 200 tasks measured 1,411 ms and 179 ms, and 50
+  tasks with a 50 ms delay measured 2,796 ms and 390 ms.
+  The one-destination median remained 7 ms for every configured bound because it uses the inline
+  path.
+  A bounded real-GCP acceptance run the same day used two writer subtasks, two default Avro/Zstandard
+  files per destination and a native `JSON` column.
+  It exercised 10 destinations at concurrency 1, 4, the unset default 8 and 16, then 50
+  destinations at the unset default 8 and 16: 140 load jobs and 280 staged files in total.
+  Every table contained its two distinct rows and matching JSON payload, and the post-run sweep
+  found no target table or staging object.
+  End-to-end arm times, including MiniCluster startup, uploads, the validation query and resource
+  deletion, were 49.917, 26.537, 22.295 and 23.464 seconds for the four 10-destination arms, then
+  84.194 and 80.574 seconds for the two 50-destination arms.
+  Those single observations validate correctness and bounded service operation rather than a
+  throughput target: network and service variance plus serial harness work make them unsuitable as
+  an SLA or a precise concurrency ratio.
+  Values above 8 remain an operator opt-in because every active destination can add a thread, a
+  REST client and pending service work.
 - **Overflow keeps one deterministic copy hierarchy before its final action** ([#598]). Each load
   partition first lands in an idempotent leaf temporary table. Up to 1,200 leaves feed the final
   copy unchanged. A larger set is grouped in source order into copy jobs of at most 1,200 sources;
@@ -143,8 +192,9 @@ limitations under the License.
   unexposed: completion polling paces the **caller's own** `jobs.get` quota and latency (it
   covers every overflow copy level too), and the etag-race budget absorbs contention from
   **other writers of the same table** — a property of the deployment, not of BigQuery. **It is
-  not about this job's parallelism**: `prepared.global()` means one job has exactly one
-  reconciler. (The first draft said the opposite, transplanting the wording from the
+  not about this job's destination parallelism**: the single committer creates one task and one
+  reconciler per distinct table, never two for the same table. (The first draft said the opposite,
+  transplanting the wording from the
   default-stream path, where the etag loop really is per writer subtask.) **The polling attempt
   cap stays unexposed and hardcoded to `Integer.MAX_VALUE`**: a batch load may legitimately run
   for hours, so any bound a user could set would fail loads that were progressing normally, and
@@ -270,3 +320,4 @@ are the ones this record's decisions rest on:
 [#646]: https://github.com/flink-gcp/flink-connector-gcp/issues/646
 [#1096]: https://github.com/flink-gcp/flink-connector-gcp/issues/1096
 [#1128]: https://github.com/flink-gcp/flink-connector-gcp/issues/1128
+[#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129

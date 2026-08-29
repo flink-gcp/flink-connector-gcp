@@ -19,16 +19,18 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.committer;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.Committer;
-import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.BigQuery;
+import com.google.cloud.bigquery.BigQueryOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
+import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.BigQueryLoadJobRunner;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.DestinationCommitExecutor;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobOrchestrator;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.LoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.StagingStorage;
@@ -61,11 +63,13 @@ import java.util.function.Supplier;
  * restore runs under a new Flink job id.
  *
  * <p>Loads are synchronous: a commit returns only when every load, copy, and terminal query job of
- * its batch has completed. Independent jobs are submitted then awaited in bounded waves, so
- * BigQuery still runs each wave concurrently server-side; a copy level is awaited before its
- * dependent level begins. In streaming execution a slow job therefore delays the next checkpoint —
- * the backpressure mechanism — and a failed job fails the Flink job with every retry input left in
- * place.
+ * its batch has completed. Independent destinations run through a bounded, committer-lifetime
+ * worker pool; each worker owns its BigQuery client. Each commit-wide job wave is submitted across
+ * all destinations before it is awaited, preserving server-side job parallelism while bounding
+ * concurrent client calls. In streaming execution a slow destination therefore delays the next
+ * checkpoint — the backpressure mechanism — and an ordinary destination failure stops new dispatch,
+ * drains every job already submitted in the wave, and fails the Flink job with every retry input
+ * left in place. A JVM-fatal failure aborts its current worker action immediately.
  */
 @Internal
 public final class FileLoadsCommitter implements Committer<FileLoadsCommittable> {
@@ -78,24 +82,22 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
 
     private final FileLoadsOptions options;
     private final StagingStorage storage;
-    private final Supplier<LoadJobRunner> runnerFactory;
-    private final Supplier<TableAdmin> tableAdminFactory;
+    private final DestinationCommitExecutor.WorkerFactory workerFactory;
+    private final DestinationCommitExecutor destinationExecutor;
 
     /**
-     * Load jobs this committer has submitted to BigQuery. The one custom metric of the FILE_LOADS
-     * path's commit side: it is what turns "the checkpoint took a while" into "the checkpoint
-     * issued N load jobs". The overflow path's copy jobs are deliberately not counted because the
-     * name says load jobs.
+     * Metrics for the FILE_LOADS commit side. The load-job counter turns "the checkpoint took a
+     * while" into "the checkpoint issued N load jobs"; the aggregate destination and duration
+     * gauges expose whether that time is queued or active without per-destination cardinality. The
+     * overflow path's copy jobs are deliberately not counted because the counter says load jobs.
      *
      * <p>The framework registers the standard committer metrics ({@code totalCommittables} and
      * friends) itself; nothing here has to.
      */
-    private final Counter loadJobsSubmitted;
+    private final FileLoadsCommitterMetrics metrics;
 
     /** Committer-lifetime collaborators; the clients they hold are expensive to build. */
-    private LoadJobRunner runner;
-
-    private TableAdmin tableAdmin;
+    private DestinationCommitExecutor.Worker testWorker;
 
     private long lastStreamingCommitMillis;
     private long lastQuotaWarnMillis;
@@ -113,29 +115,7 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
             FileLoadsOptions options,
             StagingStorage storage,
             SinkCommitterMetricGroup metricGroup) {
-        this(
-                config,
-                options,
-                storage,
-                metricGroup,
-                () ->
-                        new BigQueryLoadJobRunner(
-                                config.getLocation(),
-                                options.toLoadJobPollSchedule(),
-                                config.getServiceAccountKeyFile()),
-                // Wrapped for the reason the storage writers' admins are (#383): a creation the
-                // per-table metadata quota rate-limits is repeated rather than failing the commit.
-                // This path races less — loads commit on one subtask, so nothing here competes with
-                // itself — but a second job or a restart still can, and leaving it unwrapped would
-                // make "a creation is retried" depend on which write method you picked.
-                //
-                // The reconcile schedule rather than a knob of its own: it is already this write
-                // method's budget for contention on exactly that quota, since the etag race
-                // updateSchema loses is the same per-table budget a creation spends.
-                () ->
-                        new RetryingTableAdmin(
-                                new BigQueryTableAdmin(config.getServiceAccountKeyFile(), null),
-                                options.toSchemaReconcileSchedule()));
+        this(config, options, storage, metricGroup, productionWorkerFactory(config, options));
     }
 
     @VisibleForTesting
@@ -146,12 +126,31 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
             SinkCommitterMetricGroup metricGroup,
             Supplier<LoadJobRunner> runnerFactory,
             Supplier<TableAdmin> tableAdminFactory) {
+        this(
+                config,
+                options,
+                storage,
+                metricGroup,
+                () ->
+                        new DestinationCommitExecutor.Worker(
+                                runnerFactory.get(), tableAdminFactory.get()));
+    }
+
+    @VisibleForTesting
+    FileLoadsCommitter(
+            BigQuerySinkConfig<?> config,
+            FileLoadsOptions options,
+            StagingStorage storage,
+            SinkCommitterMetricGroup metricGroup,
+            DestinationCommitExecutor.WorkerFactory workerFactory) {
         this.config = config;
         this.options = options;
         this.storage = storage;
-        this.loadJobsSubmitted = metricGroup.counter(BigQueryMetricNames.LOAD_JOBS_SUBMITTED);
-        this.runnerFactory = runnerFactory;
-        this.tableAdminFactory = tableAdminFactory;
+        this.metrics = new FileLoadsCommitterMetrics(metricGroup);
+        this.workerFactory = workerFactory;
+        this.destinationExecutor =
+                new DestinationCommitExecutor(
+                        options.getMaxConcurrentDestinations(), workerFactory, metrics);
     }
 
     @Override
@@ -185,23 +184,13 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         new LoadJobOrchestrator(
                         config,
                         options,
-                        runner(),
-                        tableAdmin(),
                         storage,
                         first.getFlinkJobId(),
                         checkpointId,
-                        loadJobsSubmitted)
+                        metrics.loadJobsSubmitted(),
+                        destinationExecutor)
                 .run(committables);
         // Requests left unsignaled are treated as committed.
-    }
-
-    /** Returns the load-job runner wired from this committer's configuration. */
-    @VisibleForTesting
-    LoadJobRunner runner() {
-        if (runner == null) {
-            runner = runnerFactory.get();
-        }
-        return runner;
     }
 
     /**
@@ -213,10 +202,45 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      */
     @VisibleForTesting
     TableAdmin tableAdmin() {
-        if (tableAdmin == null) {
-            tableAdmin = tableAdminFactory.get();
+        return testWorker().tableAdmin();
+    }
+
+    private DestinationCommitExecutor.Worker testWorker() {
+        if (testWorker == null) {
+            try {
+                testWorker = workerFactory.create();
+            } catch (IOException failure) {
+                throw new IllegalStateException("Could not create FILE_LOADS test worker", failure);
+            }
         }
-        return tableAdmin;
+        return testWorker;
+    }
+
+    @VisibleForTesting
+    static DestinationCommitExecutor.WorkerFactory productionWorkerFactory(
+            BigQuerySinkConfig<?> config, FileLoadsOptions options) {
+        BigQueryLoadJobRunner.SharedJobs sharedJobs = new BigQueryLoadJobRunner.SharedJobs();
+        return () -> {
+            BigQuery client =
+                    config.getServiceAccountKeyFile() == null
+                            ? BigQueryOptions.getDefaultInstance().getService()
+                            : BigQueryCredentials.bigQueryOptions(config.getServiceAccountKeyFile())
+                                    .getService();
+            LoadJobRunner runner =
+                    new BigQueryLoadJobRunner(
+                            client,
+                            config.getLocation(),
+                            options.toLoadJobPollSchedule(),
+                            sharedJobs);
+            // Wrapped for the reason the storage writers' admins are (#383). Each worker owns one
+            // client and admin, so SDK clients and table-admin caches never cross worker threads.
+            // Only the concurrent submitted-job registry is shared: the global wait phase may
+            // assign a job to a different worker from the global submission phase.
+            TableAdmin tableAdmin =
+                    new RetryingTableAdmin(
+                            new BigQueryTableAdmin(client), options.toSchemaReconcileSchedule());
+            return new DestinationCommitExecutor.Worker(runner, tableAdmin);
+        };
     }
 
     /**
@@ -245,7 +269,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
     }
 
     /**
-     * Releases the staging client. The committer holds its own instance, not the writer's: the
+     * Shuts down the destination worker pool, then releases the staging client. Worker-pool
+     * shutdown waits up to 30 seconds for an orderly stop and, if needed, another 30 seconds after
+     * interrupting the workers. The committer holds its own staging client, not the writer's: the
      * global exchange that {@code BigQueryFileLoadsSink.addPreCommitTopology} ends with puts the
      * committer in a vertex of its own, so it deserializes its own copy of the sink and builds its
      * own client. The writer closing its copy releases nothing here.
@@ -253,9 +279,11 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
      * <p>The lazily built {@link LoadJobRunner} and {@link TableAdmin} are not released here
      * because neither declares a {@code close()}, and neither has to: {@code
      * com.google.cloud.bigquery.BigQuery}, the client behind both, is not {@code AutoCloseable}.
+     *
+     * @throws Exception if the worker pool or staging client cannot close
      */
     @Override
     public void close() throws Exception {
-        Closers.closeAll(storage::close);
+        Closers.closeAll(destinationExecutor::close, storage::close);
     }
 }

@@ -640,6 +640,9 @@ default, and required by the write method rather than by the connector — and l
 | `sink.file-loads.schema-reconcile.max-attempts` | Integer | `schemaReconcileMaxAttempts(...)` |
 | `sink.file-loads.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` |
 
+A Table API sink has one fixed destination, so it does not expose the DataStream API's
+`maxConcurrentDestinations(...)` control: one destination always uses the committer's inline path.
+
 ## Type mapping
 
 A sink derives the BigQuery column type from the SQL declaration and uses that schema when it

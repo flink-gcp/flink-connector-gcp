@@ -133,7 +133,8 @@ final class CommitPlanner {
             }
         }
 
-        List<PlannedLoad> loads = new ArrayList<>();
+        Map<TableDestination, List<PlannedLoad>> loadsByDestination = new LinkedHashMap<>();
+        int loadJobCount = 0;
         Map<TableDestination, List<TableDestination>> copySources = new LinkedHashMap<>();
         for (DestinationLoad load : destinationLoads) {
             boolean replacementAcrossFormats =
@@ -152,52 +153,53 @@ final class CommitPlanner {
                                     load.format,
                                     formatsPerDestination.get(load.destination) > 1,
                                     partitionIndex);
-                    loads.add(
-                            new PlannedLoad(
-                                    load.destination,
-                                    tempTable,
-                                    load.format,
-                                    uris,
-                                    jobId(
-                                            "flink-bq-load",
-                                            load.destination,
+                    loadsByDestination
+                            .computeIfAbsent(load.destination, unused -> new ArrayList<>())
+                            .add(
+                                    new PlannedLoad(
+                                            tempTable,
+                                            load.format,
                                             uris,
-                                            "p" + partitionIndex),
-                                    JobInfo.CreateDisposition.CREATE_IF_NEEDED,
-                                    JobInfo.WriteDisposition.WRITE_TRUNCATE,
-                                    List.of()));
+                                            jobId(
+                                                    "flink-bq-load",
+                                                    load.destination,
+                                                    uris,
+                                                    "p" + partitionIndex),
+                                            JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                            JobInfo.WriteDisposition.WRITE_TRUNCATE,
+                                            List.of()));
                     copySources
                             .computeIfAbsent(load.destination, unused -> new ArrayList<>())
                             .add(tempTable);
                 } else {
-                    loads.add(
-                            new PlannedLoad(
-                                    load.destination,
-                                    load.destination,
-                                    load.format,
-                                    uris,
-                                    jobId("flink-bq-load", load.destination, uris, null),
-                                    toCreateDisposition(config.getCreateDisposition()),
-                                    toWriteDisposition(options.getWriteDisposition()),
-                                    schemaUpdateOptions()));
+                    loadsByDestination
+                            .computeIfAbsent(load.destination, unused -> new ArrayList<>())
+                            .add(
+                                    new PlannedLoad(
+                                            load.destination,
+                                            load.format,
+                                            uris,
+                                            jobId("flink-bq-load", load.destination, uris, null),
+                                            toCreateDisposition(config.getCreateDisposition()),
+                                            toWriteDisposition(options.getWriteDisposition()),
+                                            schemaUpdateOptions()));
                 }
+                loadJobCount++;
             }
         }
 
-        List<DestinationCopy> copies = new ArrayList<>(copySources.size());
-        int intermediateLevelCount = 0;
         long copyJobCount = 0;
-        for (Map.Entry<TableDestination, List<TableDestination>> entry : copySources.entrySet()) {
-            DestinationCopy copy = planCopy(entry.getKey(), entry.getValue());
-            copies.add(copy);
-            intermediateLevelCount =
-                    Math.max(intermediateLevelCount, copy.intermediateLevels.size());
-            copyJobCount += copy.jobCount();
+        List<DestinationCommitPlan> destinations = new ArrayList<>(loadsByDestination.size());
+        for (Map.Entry<TableDestination, List<PlannedLoad>> entry : loadsByDestination.entrySet()) {
+            List<TableDestination> leafTables = copySources.get(entry.getKey());
+            DestinationCopy copy = leafTables == null ? null : planCopy(entry.getKey(), leafTables);
+            if (copy != null) {
+                copyJobCount += copy.jobCount();
+            }
+            destinations.add(new DestinationCommitPlan(entry.getKey(), entry.getValue(), copy));
         }
-        validateJobCounts(loads.size(), copyJobCount, limits);
-        // Keyed by destination, so its size is the destination count the plan reports.
-        int destinationCount = formatsPerDestination.size();
-        return new CommitPlan(loads, copies, intermediateLevelCount, destinationCount);
+        validateJobCounts(loadJobCount, copyJobCount, limits);
+        return new CommitPlan(destinations);
     }
 
     private DestinationCopy planCopy(

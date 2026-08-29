@@ -55,6 +55,10 @@ public final class BigQueryMetricNames {
     public static final String IDLE_EVICTIONS = "idleEvictions";
     public static final String PENDING_FILES = "pendingFiles";
     public static final String LOAD_JOBS_SUBMITTED = "loadJobsSubmitted";
+    public static final String QUEUED_COMMIT_DESTINATIONS = "queuedCommitDestinations";
+    public static final String ACTIVE_COMMIT_DESTINATIONS = "activeCommitDestinations";
+    public static final String CURRENT_COMMIT_DURATION_MILLIS = "currentCommitDurationMillis";
+    public static final String LAST_COMMIT_DURATION_MILLIS = "lastCommitDurationMillis";
 
     // Registered by the default-stream and FILE_LOADS writers, which hold per-destination state.
     public static final String OPEN_DESTINATIONS = "openDestinations";

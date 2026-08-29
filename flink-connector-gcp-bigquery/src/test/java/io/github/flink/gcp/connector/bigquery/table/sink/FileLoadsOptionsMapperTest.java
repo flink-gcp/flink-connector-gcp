@@ -127,7 +127,14 @@ class FileLoadsOptionsMapperTest {
                         .map(Method::getName)
                         .collect(Collectors.toSet());
 
-        // Both directions: a new knob without an option, and an option whose knob was removed.
+        // Table sinks have one fixed destination, so destination commit concurrency cannot change
+        // their behavior. Keep that DataStream-only knob visible in the reflection result before
+        // excluding it from this mapper's two-way coverage.
+        assertThat(setters).contains("maxConcurrentDestinations");
+        setters.remove("maxConcurrentDestinations");
+
+        // Both directions: a new Table-relevant knob without an option, and an option whose knob
+        // was removed.
         assertThat(setters).isEqualTo(SETTER_TO_OPTION.keySet());
     }
 

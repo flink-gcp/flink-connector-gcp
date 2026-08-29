@@ -48,9 +48,10 @@ limitations under the License.
   into `target/`, so a `just verify` without `clean` then fails on a string no longer in the
   tree.
 - **`TestSinkCommitterMetricGroup`** ([#210]) is the committer sibling, admitted with a
-  **single** consumer (the FILE_LOADS committer's `loadJobsSubmitted` is the repository's only
-  custom committer metric). It registers the framework's five committer counters under the names
-  a **reporter** sees (`totalCommittables` &c., read from `MetricNames` in flink-runtime 2.2.1)
+  **single** consumer (the FILE_LOADS committer's custom metrics are `loadJobsSubmitted`, two
+  aggregate destination-concurrency gauges and two aggregate commit-duration gauges). It registers
+  the framework's five committer counters
+  under the names a **reporter** sees (`totalCommittables` &c., read from `MetricNames` in flink-runtime 2.2.1)
   — *not* the `getNumCommittables*Counter` accessor names; [#210]'s issue text called them
   `numCommittables*`, and a docs page written from that would have named metrics no reporter
   emits.

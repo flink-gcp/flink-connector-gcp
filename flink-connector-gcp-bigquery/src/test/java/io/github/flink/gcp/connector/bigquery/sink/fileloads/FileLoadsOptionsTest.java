@@ -160,6 +160,7 @@ class FileLoadsOptionsTest {
         assertThat(base().schemaReconcileMaxAttempts(3).build()).isNotEqualTo(defaults);
         assertThat(base().maxOpenDestinations(8).build()).isNotEqualTo(defaults);
         assertThat(base().maxPendingFiles(20_000).build()).isNotEqualTo(defaults);
+        assertThat(base().maxConcurrentDestinations(4).build()).isNotEqualTo(defaults);
         assertThat(base().destinationIdleTimeout(Duration.ofSeconds(30)).build())
                 .isNotEqualTo(defaults);
         assertThat(base().maxSerializedRowBytes(12_000_000).build()).isNotEqualTo(defaults);
@@ -177,6 +178,7 @@ class FileLoadsOptionsTest {
                 .contains("maxStagingFileBytes=16777216")
                 .contains("maxOpenDestinations=16")
                 .contains("maxPendingFiles=10000")
+                .contains("maxConcurrentDestinations=8")
                 .contains("destinationIdleTimeout=PT1M")
                 .contains("maxSerializedRowBytes=15000000");
     }
@@ -223,12 +225,14 @@ class FileLoadsOptionsTest {
                         .stagingPath("gs://bucket")
                         .maxOpenDestinations(8)
                         .maxPendingFiles(5000)
+                        .maxConcurrentDestinations(4)
                         .destinationIdleTimeout(Duration.ofSeconds(30))
                         .maxSerializedRowBytes(12_000_000)
                         .build();
 
         assertThat(options.getMaxOpenDestinations()).isEqualTo(8);
         assertThat(options.getMaxPendingFiles()).isEqualTo(5000);
+        assertThat(options.getMaxConcurrentDestinations()).isEqualTo(4);
         assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(options.getMaxSerializedRowBytes()).isEqualTo(12_000_000);
     }
@@ -238,6 +242,7 @@ class FileLoadsOptionsTest {
         FileLoadsOptions.Builder oldBuilder = base();
         setBuilderField(oldBuilder, "maxOpenDestinations", 0);
         setBuilderField(oldBuilder, "maxPendingFiles", 0);
+        setBuilderField(oldBuilder, "maxConcurrentDestinations", 0);
         setBuilderField(oldBuilder, "destinationIdleTimeout", null);
         setBuilderField(oldBuilder, "maxSerializedRowBytes", 0L);
         FileLoadsOptions restored = oldBuilder.build();
@@ -245,6 +250,7 @@ class FileLoadsOptionsTest {
 
         assertThat(restored.getMaxOpenDestinations()).isEqualTo(16);
         assertThat(restored.getMaxPendingFiles()).isEqualTo(10_000);
+        assertThat(restored.getMaxConcurrentDestinations()).isEqualTo(8);
         assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
         assertThat(restored).isEqualTo(defaults).hasSameHashCodeAs(defaults);
@@ -260,12 +266,22 @@ class FileLoadsOptionsTest {
 
     @Test
     void rejectsInvalidDestinationLifecycleOptions() {
+        assertThat(base().maxConcurrentDestinations(1).build().getMaxConcurrentDestinations())
+                .isOne();
+        assertThat(base().maxConcurrentDestinations(64).build().getMaxConcurrentDestinations())
+                .isEqualTo(64);
         assertThatThrownBy(() -> FileLoadsOptions.builder().maxOpenDestinations(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxOpenDestinations");
         assertThatThrownBy(() -> FileLoadsOptions.builder().maxPendingFiles(0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxPendingFiles");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxConcurrentDestinations(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxConcurrentDestinations");
+        assertThatThrownBy(() -> FileLoadsOptions.builder().maxConcurrentDestinations(65))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most 64");
         assertThatThrownBy(() -> FileLoadsOptions.builder().destinationIdleTimeout(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("destinationIdleTimeout");
