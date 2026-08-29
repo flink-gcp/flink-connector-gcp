@@ -1183,6 +1183,8 @@ class BigtableDynamicTableFactoryTest {
                         Map.entry("scan.row-range.start-closed", "a"),
                         Map.entry("scan.row-range.end-open", "z"),
                         Map.entry("scan.row-ranges", "[a,z)"),
+                        Map.entry("scan.max-rows-per-fetch", "100"),
+                        Map.entry("scan.max-bytes-per-fetch", "8 mb"),
                         Map.entry("lookup.async", "true"),
                         Map.entry("lookup.cache", "none"),
                         Map.entry("lookup.max-retries", "4"),
@@ -1280,13 +1282,34 @@ class BigtableDynamicTableFactoryTest {
         options.put("scan.row-range.start-closed", "a");
         options.put("scan.row-range.end-open", "m");
         options.put("scan.row-ranges", "[q,s);[x,z)");
+        options.put("scan.max-rows-per-fetch", "17");
+        options.put("scan.max-bytes-per-fetch", "4 kb");
 
         BigtableSourceConfig<?> config = builtSource(SCHEMA, options);
 
         assertThat(config.getAppProfileId()).isEqualTo("reader-profile");
         assertThat(config.getServiceAccountKeyFile()).isEqualTo("/var/run/secrets/bigtable.json");
+        assertThat(config.getMaxRowsPerFetch()).isEqualTo(17);
+        assertThat(config.getMaxBytesPerFetch()).isEqualTo(4L * 1024);
         assertThat(config.getRanges().stream().map(RowRanges::format).collect(Collectors.toList()))
                 .containsExactly("[a, m)", "[q, s)", "[user, uses)", "[web, wec)", "[x, z)");
+    }
+
+    @Test
+    void namesTheTableKeyAndBuilderContractForInvalidFetchLimits() {
+        Map<String, String> zeroRows = minimalOptions();
+        zeroRows.put("scan.max-rows-per-fetch", "0");
+        assertThatThrownBy(() -> builtSource(SCHEMA, zeroRows))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("scan.max-rows-per-fetch")
+                .hasStackTraceContaining("maxRowsPerFetch must be positive: 0");
+
+        Map<String, String> zeroBytes = minimalOptions();
+        zeroBytes.put("scan.max-bytes-per-fetch", "0 b");
+        assertThatThrownBy(() -> builtSource(SCHEMA, zeroBytes))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("scan.max-bytes-per-fetch")
+                .hasStackTraceContaining("maxBytesPerFetch must be positive: 0");
     }
 
     @Test

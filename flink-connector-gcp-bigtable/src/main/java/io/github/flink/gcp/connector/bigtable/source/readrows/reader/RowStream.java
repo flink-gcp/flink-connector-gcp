@@ -18,8 +18,6 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.reader;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.bigtable.data.v2.models.Row;
-
 import javax.annotation.Nullable;
 
 /**
@@ -43,12 +41,12 @@ import javax.annotation.Nullable;
 public interface RowStream extends AutoCloseable {
 
     /**
-     * Returns the next row, blocking until one arrives.
+     * Returns the next row and its decoded-content byte estimate, blocking until one arrives.
      *
      * @return the next row, or {@code null} once the stream has ended
      */
     @Nullable
-    Row next();
+    MeasuredRow next();
 
     /**
      * Ends the call, cancelling it if it has not been read to the end.

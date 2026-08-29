@@ -20,7 +20,6 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.BoundType;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -82,7 +81,17 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
      * @return the opener
      */
     public static ScriptedRowStreamOpener over(String id, String... keys) {
-        STATES.put(id, new State(java.util.Arrays.asList(keys)));
+        List<MeasuredRow> rows = new ArrayList<>();
+        for (String key : keys) {
+            rows.add(new MeasuredRow(TestRows.row(key), 1));
+        }
+        STATES.put(id, new State(rows));
+        return new ScriptedRowStreamOpener(id);
+    }
+
+    /** Returns an opener over rows carrying explicit measurements, for byte-boundary tests. */
+    static ScriptedRowStreamOpener overMeasuredRows(String id, MeasuredRow... rows) {
+        STATES.put(id, new State(java.util.Arrays.asList(rows)));
         return new ScriptedRowStreamOpener(id);
     }
 
@@ -212,11 +221,11 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         return state;
     }
 
-    private static List<Row> rowsIn(State state, ByteStringRange range) {
-        List<Row> rows = new ArrayList<>();
-        for (String key : state.keys) {
-            if (contains(range, ByteString.copyFromUtf8(key))) {
-                rows.add(TestRows.row(key));
+    private static List<MeasuredRow> rowsIn(State state, ByteStringRange range) {
+        List<MeasuredRow> rows = new ArrayList<>();
+        for (MeasuredRow row : state.rows) {
+            if (contains(range, row.row().getKey())) {
+                rows.add(row);
             }
         }
         return rows;
@@ -239,7 +248,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
     /** The recording and the script, shared by every deserialized copy of one opener. */
     private static final class State {
 
-        private final List<String> keys;
+        private final List<MeasuredRow> rows;
         private final List<String> openedRanges = new CopyOnWriteArrayList<>();
         private final List<Filters.Filter> openedFilters =
                 Collections.synchronizedList(new ArrayList<>());
@@ -258,8 +267,8 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         @Nullable private volatile RuntimeException failNextOpen;
         @Nullable private volatile RuntimeException readFailure;
 
-        private State(List<String> keys) {
-            this.keys = new ArrayList<>(keys);
+        private State(List<MeasuredRow> rows) {
+            this.rows = new ArrayList<>(rows);
         }
     }
 
@@ -267,19 +276,19 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
     private static final class ScriptedStream implements RowStream {
 
         private final State state;
-        private final List<Row> rows;
+        private final List<MeasuredRow> rows;
 
         private int position;
         private volatile boolean closed;
 
-        private ScriptedStream(State state, List<Row> rows) {
+        private ScriptedStream(State state, List<MeasuredRow> rows) {
             this.state = state;
             this.rows = rows;
         }
 
         @Override
         @Nullable
-        public Row next() {
+        public MeasuredRow next() {
             if (closed) {
                 return endOfStream();
             }
@@ -315,7 +324,7 @@ public final class ScriptedRowStreamOpener implements RowStreamOpener {
         }
 
         @Nullable
-        private Row endOfStream() {
+        private MeasuredRow endOfStream() {
             if (state.cancelBehaviour == CancelBehaviour.THROWS) {
                 throw new IllegalStateException("stream cancelled");
             }

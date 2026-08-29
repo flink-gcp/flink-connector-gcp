@@ -635,6 +635,13 @@ source of truth. Lookup options are table-layer or Flink-owned instead. An optio
 DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
 the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
 
+`scan.max-rows-per-fetch` and `scan.max-bytes-per-fetch` bound each bounded scan fetch before it hands decoded input to Flink's element queue.
+The first limit reached ends the fetch; one row larger than the byte target is handed over alone.
+Top-level projection and pushed cell filters can reduce the cells returned before the byte estimate is measured; pushed row-key predicates instead reduce which rows enter the fetch.
+The bounds are per source subtask, so increasing `scan.parallelism` can increase the number of batches queued at once.
+They do not change point lookups or FULL-cache reloads, whose loader and memory ownership are Flink's lookup-cache path rather than the bounded `ScanTableSource` reader.
+They are rejected when `scan.mode = change-stream`.
+
 `scan.mode`, `null-string-literal`, `decode.trailing-bytes`, `scan.row-key-encoding`,
 `lookup.async`, `sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to
 the table layer because they configure its codec, runtime shape or planner contract rather than a
@@ -658,6 +665,8 @@ DataStream builder.
 |---|---|---|
 | `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter. `change-stream` makes the table source-only, so writing to it is rejected |
 | `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
+| `scan.max-rows-per-fetch` | Integer | `maxRowsPerFetch(...)` for bounded scans; unset keeps the builder default of 1,000 rows |
+| `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` for bounded scans; unset keeps the builder default of 8 MiB. The target covers decoded input content and always allows one oversized row to progress |
 | `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
 | `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with every range |
 | `scan.row-range.start-closed` | String | The inclusive decoded start key of the legacy single `rowRange(...)`. Either bound may be given alone |

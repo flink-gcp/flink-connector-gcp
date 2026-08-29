@@ -26,7 +26,6 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
@@ -92,7 +91,8 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
         if (filter != null) {
             query = query.filter(filter);
         }
-        return new ServerRowStream(client.get(table).readRows(query));
+        return new ServerRowStream(
+                client.get(table).readRowsCallable(new MeasuringRowAdapter()).call(query));
     }
 
     @Override
@@ -129,19 +129,19 @@ public final class DataClientRowStreamOpener implements RowStreamOpener {
      */
     private static final class ServerRowStream implements RowStream {
 
-        private final ServerStream<Row> stream;
-        private final Iterator<Row> rows;
+        private final ServerStream<MeasuredRow> stream;
+        private final Iterator<MeasuredRow> rows;
 
         private volatile boolean exhausted;
 
-        private ServerRowStream(ServerStream<Row> stream) {
+        private ServerRowStream(ServerStream<MeasuredRow> stream) {
             this.stream = stream;
             this.rows = stream.iterator();
         }
 
         @Override
         @Nullable
-        public Row next() {
+        public MeasuredRow next() {
             if (exhausted || !rows.hasNext()) {
                 exhausted = true;
                 return null;

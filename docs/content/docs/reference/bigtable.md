@@ -150,14 +150,14 @@ Bigtable, whose rejection names what it refused.
 | `prefix` | *unset ⇒ the whole table* | Adds every row whose key starts with a prefix — sugar for the range that prefix describes. Repeatable, and combinable with `rowRange` |
 | `filter` | — | One server-side `Filters.Filter`, applied to every split. What it excludes never leaves the server. Last writer wins; a filter too large for the service is rejected at `build()` |
 | `appProfileId` | *unset ⇒ the instance's default profile* | The application profile the client routes through. A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost) profile is named here like any other |
+| `maxRowsPerFetch` | `1000` | Maximum input rows one fetch hands to Flink's element queue. The fetch returns when this count or `maxBytesPerFetch` is reached |
+| `maxBytesPerFetch` | `8 MiB` | Target maximum decoded input bytes one fetch hands to Flink's element queue. One row larger than the target is handed over alone |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's enumerator or a TaskManager's reader starts. Every eligible process must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
 
-**There is no row limit, and no read-ahead or paging knobs.** A `Query.limit()` is global to a
-query, so it cannot be partitioned across splits without coordination — the client library refuses
-to shard a query that carries one — and the read-ahead side is a fixed internal bound rather than a
-knob until a measurement asks otherwise. Both are under
-[Not here yet]({{< relref "docs/connectors/datastream/bigtable" >}}#not-here-yet).
+**The fetch bounds are memory hand-off controls, not a query row limit.**
+A `Query.limit()` is global to a query, so it cannot be partitioned across splits without coordination — the client library refuses to shard a query that carries one.
+The source instead reads the complete configured ranges and returns control to Flink whenever either fetch bound is reached.
 
 **Per-cell shaping is the filter's job, not a knob's.** Which families and qualifiers to return,
 which timestamp window, how many versions of a cell — all of it is expressible through

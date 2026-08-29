@@ -114,12 +114,6 @@ public final class TestSources {
         return builder.opener(opener);
     }
 
-    /** Lowers the fetch cap, so a checkpoint can land inside a range holding few rows. */
-    public static BigtableSourceBuilder<String> withMaxRowsPerFetch(
-            BigtableSourceBuilder<String> builder, int maxRowsPerFetch) {
-        return builder.maxRowsPerFetch(maxRowsPerFetch);
-    }
-
     /** Turns each row into its key, so a test can assert on plain strings. */
     public static final class RowKeyDeserializer
             implements BigtableRowDeserializationSchema<String> {

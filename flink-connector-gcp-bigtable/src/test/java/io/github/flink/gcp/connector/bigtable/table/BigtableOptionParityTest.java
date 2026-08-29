@@ -133,6 +133,8 @@ class BigtableOptionParityTest {
         map.put("table", BigtableConnectorOptions.TABLE);
         map.put("prefix", BigtableConnectorOptions.SCAN_ROW_PREFIX);
         map.put("appProfileId", BigtableConnectorOptions.SCAN_APP_PROFILE_ID);
+        map.put("maxRowsPerFetch", BigtableConnectorOptions.SCAN_MAX_ROWS_PER_FETCH);
+        map.put("maxBytesPerFetch", BigtableConnectorOptions.SCAN_MAX_BYTES_PER_FETCH);
         map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
         return Collections.unmodifiableMap(map);

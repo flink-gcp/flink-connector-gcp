@@ -207,6 +207,34 @@ public final class BigtableConnectorOptions {
                                     + " writes under different profiles.");
 
     /**
+     * The maximum number of input rows one fetch hands to Flink's element queue. Applies only to
+     * bounded scans.
+     */
+    public static final ConfigOption<Integer> SCAN_MAX_ROWS_PER_FETCH =
+            ConfigOptions.key("scan.max-rows-per-fetch")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The maximum number of input rows one fetch hands to Flink's element"
+                                    + " queue. Applies only to bounded scans.");
+
+    /**
+     * The target maximum estimated bytes one fetch hands to Flink's element queue. The estimate
+     * covers decoded row keys, cell values, and cell metadata. A single row larger than the target
+     * is handed over alone. Applies only to bounded scans.
+     */
+    public static final ConfigOption<MemorySize> SCAN_MAX_BYTES_PER_FETCH =
+            ConfigOptions.key("scan.max-bytes-per-fetch")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The target maximum estimated bytes one fetch hands to Flink's"
+                                    + " element queue. The estimate covers decoded row"
+                                    + " keys, cell values, and cell metadata. A single row"
+                                    + " larger than the target is handed over alone."
+                                    + " Applies only to bounded scans.");
+
+    /**
      * How scan row-key prefixes and range bounds are represented. UTF8 preserves the original text
      * behavior. BASE64 accepts only canonical padded RFC 4648 standard Base64 and decodes it to the
      * exact row-key bytes.

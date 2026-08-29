@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.table;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -115,6 +116,8 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.DECODE_TRAILING_BYTES,
                         BigtableConnectorOptions.SCAN_MODE,
                         BigtableConnectorOptions.SCAN_APP_PROFILE_ID,
+                        BigtableConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
+                        BigtableConnectorOptions.SCAN_MAX_BYTES_PER_FETCH,
                         BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
                         BigtableConnectorOptions.SCAN_ROW_PREFIX,
                         BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
@@ -575,6 +578,8 @@ public class BigtableDynamicTableFactory
                 BigtableConnectorOptions.EMULATOR_ENDPOINT,
                 BigtableConnectorOptions.NULL_STRING_LITERAL,
                 BigtableConnectorOptions.SCAN_ROW_KEY_ENCODING,
+                BigtableConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
+                BigtableConnectorOptions.SCAN_MAX_BYTES_PER_FETCH,
                 BigtableConnectorOptions.SCAN_ROW_PREFIX,
                 BigtableConnectorOptions.SCAN_ROW_RANGE_START_CLOSED,
                 BigtableConnectorOptions.SCAN_ROW_RANGE_END_OPEN,
@@ -665,6 +670,13 @@ public class BigtableDynamicTableFactory
                 .trailingBytes(config.get(BigtableConnectorOptions.DECODE_TRAILING_BYTES))
                 .appProfileId(
                         optionalNonBlank(config, BigtableConnectorOptions.SCAN_APP_PROFILE_ID))
+                .maxRowsPerFetch(
+                        config.getOptional(BigtableConnectorOptions.SCAN_MAX_ROWS_PER_FETCH)
+                                .orElse(null))
+                .maxBytesPerFetch(
+                        config.getOptional(BigtableConnectorOptions.SCAN_MAX_BYTES_PER_FETCH)
+                                .map(MemorySize::getBytes)
+                                .orElse(null))
                 .serviceAccountKeyFile(
                         config.getOptional(BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))

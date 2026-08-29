@@ -103,6 +103,7 @@ public final class BigtableScanSource<T>
                                 opener,
                                 config.getFilter(),
                                 config.getMaxRowsPerFetch(),
+                                config.getMaxBytesPerFetch(),
                                 metrics);
         return new BigtableSourceReader<>(
                 splitReaderSupplier,

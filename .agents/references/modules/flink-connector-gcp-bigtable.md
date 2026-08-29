@@ -242,8 +242,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   predicted does **not** reproduce (block-data framing bounds the read) — the reasons that survive
   are format ownership, unreadability and mutability, so the guard is a reflective field test, not a
   round-trip. An empty `*Options` class fails `check-option-docs` outright.
-- **`Query.limit()` stays deferred** and the SDK agrees: `shard` refuses a request carrying one. The
-  per-fetch row cap is a correctness floor reachable only through a `@VisibleForTesting` setter.
+- **`Query.limit()` stays deferred** and the SDK agrees: `shard` refuses a request carrying one.
+  `maxRowsPerFetch` and `maxBytesPerFetch` instead bound each hand-off into Flink's element queue;
+  the byte estimate is measured during SDK row materialization, a single oversized row progresses,
+  and one look-ahead row may sit outside the target. The Table keys are bounded-scan-only and use
+  `OptionSetters`.
 - **Retries stay in the client** on this side too: `ReadRowsResumptionStrategy` resumes a broken
   stream from its last key. A sampling failure **fails the job**; no single-split fallback.
 - **Nothing claims Data Boost was exercised** (#248). The testable statement is that a configured

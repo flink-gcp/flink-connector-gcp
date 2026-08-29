@@ -51,7 +51,12 @@ class BigtableSourceReaderTest {
         Supplier<SplitReader<Row, RowRangeSplit>> splitReaders =
                 () ->
                         new BigtableSplitReader(
-                                TestSources.TABLE, opener, null, 10, metrics.metrics());
+                                TestSources.TABLE,
+                                opener,
+                                null,
+                                10,
+                                Long.MAX_VALUE,
+                                metrics.metrics());
         return new BigtableSourceReader<>(
                 splitReaders,
                 new BigtableRecordEmitter<>(
