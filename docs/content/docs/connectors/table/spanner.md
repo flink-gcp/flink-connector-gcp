@@ -222,7 +222,7 @@ The vocabulary follows Debezium's Spanner source metadata where it represents th
 The native `commit-timestamp` metadata type is non-null `TIMESTAMP_LTZ(9)`, preserving Spanner's nanosecond precision.
 Flink permits watermark columns only through precision 3, so the example declares that metadata column as `TIMESTAMP_LTZ(3)` and lets the planner apply the compatible precision cast.
 Omit the watermark declaration and use `TIMESTAMP_LTZ(9)` when downstream SQL must retain the full commit timestamp.
-`SOURCE_WATERMARK()` uses the Change Streams source's existing commit-timestamped records and coordinator-owned complete-ledger heartbeat frontier; it does not introduce a second clock or a second out-of-orderness policy.
+`SOURCE_WATERMARK()` uses the Change Streams source's existing commit-timestamped records and coordinator-owned unfinished-ledger heartbeat frontier; it does not introduce a second clock or a second out-of-orderness policy.
 
 `mod-number` is the zero-based position of the mod in its original Spanner data-change record.
 The adjacent before and after rows produced for one full-mode update carry the same `mod-number`, so metadata never splits the logical identity of that mod.

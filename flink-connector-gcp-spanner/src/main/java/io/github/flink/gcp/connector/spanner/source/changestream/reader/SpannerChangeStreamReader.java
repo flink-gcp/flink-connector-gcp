@@ -89,7 +89,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * <h2>Time</h2>
  *
  * <p>A data record is emitted at its own commit timestamp. The watermark is not this reader's to
- * compute: the coordinator owns the complete-ledger frontier and broadcasts it, and this reader
+ * compute: the coordinator owns the unfinished-ledger frontier and broadcasts it, and this reader
  * emits it through the <em>main</em> source output rather than a per-split one, so a partition no
  * reader currently holds still counts toward Flink's minimum. Heartbeats never reach the user
  * deserializer; they advance the position this reader reports back to the coordinator.

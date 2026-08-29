@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0101: The Spanner Change Streams reader bounds asynchronous partition queries
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-14 and by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23
+- Date: 2026-08-12; revised 2026-08-14, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, and by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#536](https://github.com/flink-gcp/flink-connector-gcp/issues/536),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
@@ -26,7 +26,8 @@ limitations under the License.
   [#581](https://github.com/flink-gcp/flink-connector-gcp/issues/581),
   [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635),
   [#647](https://github.com/flink-gcp/flink-connector-gcp/issues/647),
-  [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053)
+  [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053),
+  [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -64,7 +65,7 @@ Data records that pass the output filters go through the user deserializer, whic
 Every output from one data record carries that record's commit timestamp as its Flink event timestamp, and returning successfully without emitting increments `recordsSkipped` once.
 The reader advances split progress only after deserialization returns successfully, so a failure retains the record for at-least-once replay.
 Heartbeat records advance the partition watermark reported to the coordinator.
-The coordinator computes the complete-ledger minimum described by ADR-0099 and broadcasts that source-wide frontier to every reader.
+The coordinator computes the unfinished-ledger minimum described by ADR-0099 and broadcasts that source-wide frontier to every reader.
 Readers emit it through the main source output instead of a split output, so a scheduled or queued partition cannot disappear from Flink's watermark minimum merely because no query is running for it.
 Spanner guarantees that records after heartbeat instant `H` have timestamps greater than `H`, but Flink timestamps have millisecond precision and treat events at or below watermark `W` as late.
 The connector therefore emits `H.toEpochMilli() - 1`, with saturation at `Long.MIN_VALUE`, because a later nanosecond instant can truncate to the same millisecond as `H`.
@@ -94,7 +95,7 @@ This can repeat the boundary record and gives the source at-least-once delivery;
 On restore, the reader queues but does not open those splits until the coordinator has validated their positions against the effective retention.
 An explicit whole-ledger fallback tells the reader to discard that queue and request the replacement null-token split.
 
-The enumerator counts child partitions when it first accepts them and reports both scheduled-partition count and oldest scheduled-position lag.
+The enumerator counts child partitions when it first accepts them and reports scheduled-partition count, oldest scheduled-position lag, compact unfinished-ledger entries, and finished-parent proofs still needed by created children.
 Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and both the latest and longest waits for a non-heartbeat result.
 The longest-wait gauge starts at zero for each reader task attempt, changes only when a non-heartbeat result returns, and never decreases within that attempt.
 It also counts table-filtered records, records skipped without a projected change, and column metadata or value occurrences removed from records passed to the deserializer.
@@ -104,7 +105,8 @@ The source emits commit timestamps and the coordinator frontier through Flink's 
 ## Evidence
 
 Decoder fixtures cover every data field, recursive type descriptors, `TOKENLIST`, an unknown future code, absent versus explicit JSON `null`, heartbeats, and child partitions for both dialect shapes.
-Reader and coordinator tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, complete-ledger watermarks, child-before-finish ordering, query failure, and bounded completion.
+Reader and coordinator tests drive the concurrency bound, excess restored splits, the one-slot pause and resume, zero-, one-, and multi-output deserialization, commit timestamps, failure-before-progress, compact-ledger watermarks, child-before-finish ordering, query failure, and bounded completion.
+They also drive a 1,000-transition live chain, fan-out and fan-in compaction, duplicate child reports around a compacted parent, proof cleanup, and the two coordinator lineage gauges.
 Filter tests cover full-match identifiers, table-local column names, primary-key retention, consistent metadata and mod projection, empty-projection delivery and skipping, restored progress with changed filters, and distinct counters.
 They also cover disabled and skip-only activation, job-graph serialization, direct delivery of the original record instance, and unchanged progress and counters on the direct path.
 Serializer tests obtain the type through `TypeInformation.of`, round-trip every record field and projected collections, and reject an unknown serializer snapshot version without opening JDK modules.

@@ -206,8 +206,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   release under real use; the path itself calls no vendor change-stream API (plain SQL over the
   TVF).
 - The enumerator state is the only partition-lifecycle recovery record; do not add Beam's external
-  metadata table. It checkpoints scheduled and running entries and the finished parents that
-  establish child dependencies.
+  metadata table. Its version-3 state checkpoints only unfinished entries and split-id proofs for
+  finished parents still named by `CREATED` children. Remove a finished split immediately, remove
+  each proof when its last child becomes schedulable, and preserve separately whether an empty
+  ledger belongs to a bounded source. Versions 1 and 2 remain readable as validated complete
+  ledgers and compact during restore.
 - The enumerator owns one checkpointed source-watermark frontier: the minimum safe watermark across
   every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` ledger entry. Broadcast it to every reader,
   including readers with no assigned split, and reject any transition that would move it backwards.
@@ -274,7 +277,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   is at least once; advancing it would skip records that share a commit timestamp.
 - Data records carry their commit timestamp as the Flink event timestamp. Heartbeats advance the
   partition watermark reported to the coordinator, while child-partitions records are coordinator
-  events rather than user records. Readers emit only the coordinator's complete-ledger frontier
+  events rather than user records. Readers emit only the coordinator's unfinished-ledger frontier
   through the main source output and never mark a quiet partition idle.
 - Convert an inclusive Spanner heartbeat instant to Flink milliseconds by subtracting one after
   `toEpochMilli()`, saturating at `Long.MIN_VALUE`. A later nanosecond instant can truncate to the
@@ -286,8 +289,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   one `DataChangeRecord`. Every output gets that record's commit timestamp; a successful call with
   zero outputs increments `recordsSkipped` once; and an exception leaves split progress unchanged
   for at-least-once replay.
-- The enumerator owns `changeStreamPartitionsDiscovered` and the scheduled-partition lag; each
-  reader owns query-open, active-query, queued-partition, queued-lag, missed-heartbeat,
+- The enumerator owns `changeStreamPartitionsDiscovered`, the scheduled-partition lag,
+  `changeStreamPartitionLedgerEntries`, and `changeStreamFinishedParentProofs`; each reader owns
+  query-open, active-query, queued-partition, queued-lag, missed-heartbeat,
   latest- and longest-non-heartbeat-wait, and output-filter counters.
   The longest wait starts at zero per reader task attempt, updates only for non-heartbeats, and
   never decreases.
@@ -353,7 +357,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the key as `TIMESTAMP_LTZ(3)` because Flink rowtime precision stops at 3; the compatible planner
   cast is intentional.
 - `SupportsSourceWatermark.applySourceWatermark()` adds no generator. The FLIP-27 reader already
-  timestamps data records at commit time and emits the coordinator's complete-ledger heartbeat
+  timestamps data records at commit time and emits the coordinator's unfinished-ledger heartbeat
   frontier, and that remains the only progress policy.
 - Reuse `StructToRowDataConverter` through typed synthetic Spanner values so bounded, lookup, and
   CDC paths retain one decimal, UUID, JSON, PROTO, ENUM, timestamp, array, and null contract.

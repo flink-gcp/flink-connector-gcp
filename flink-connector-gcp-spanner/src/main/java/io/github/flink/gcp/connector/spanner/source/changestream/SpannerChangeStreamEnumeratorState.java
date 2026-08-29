@@ -25,64 +25,126 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.OptionalLong;
+import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * Checkpointed Spanner Change Streams partition ledger: every partition the coordinator knows
- * about, and the watermark frontier it had reached.
+ * Checkpointed Spanner Change Streams partition state.
  *
- * <p>This is the whole recovery record. There is no metadata table in the user's database, so what
- * is not here does not survive a restart — which is why the ledger keeps <em>finished</em> entries
- * too: a finished parent is what proves a child may run, and dropping it would make the child
- * unschedulable after a restore.
+ * <p>This is the whole partition-lifecycle recovery record. The partition list contains only
+ * unfinished entries. A finished parent needed by a {@link PartitionLifecycleState#CREATED CREATED}
+ * child is reduced to its split id in {@code finishedParentProofs}; once no created child refers to
+ * that id, the proof leaves the checkpoint too.
  *
- * <p>Two constructors, and the difference is who is trusted. The public one validates the whole
- * ledger — unique ids, every named parent present, no state ahead of an unfinished parent, and no
- * cycle in the lineage — because it is reached from a restore, where the bytes come from outside
- * this process. {@link #snapshotOfCoordinatorLedger} skips those checks, because the coordinator's
- * own mutation paths have enforced them on every transition and re-deriving a topological sort at
- * every checkpoint would cost the ledger's size for an answer that cannot have changed.
+ * <p>The public constructors read the complete-ledger shape written by serializer versions 1 and 2.
+ * They validate the historical ledger before compacting it, so corrupt legacy state cannot become
+ * an apparently valid proof. The compact constructor validates version 3 directly: split ids and
+ * proofs are disjoint, every created dependency is present as a live split or a proof, proofs have
+ * a created dependent, and the live graph is acyclic.
  *
- * <p>The frontier is stored rather than recomputed. It is checked against the ledger on the
- * validating path — a watermark ahead of the minimum unfinished entry is rejected — but a restore
- * has to replay the value the readers actually saw, not a value re-derived from entries that have
- * moved on since.
+ * <p>The coordinator snapshot factory skips those graph checks because every mutation path has
+ * already enforced them. Avoiding a topological sort at each checkpoint keeps snapshot cost
+ * proportional to copying the current compact state.
+ *
+ * <p>The source frontier is stored rather than recomputed. A validating path rejects a frontier
+ * ahead of any unfinished partition, but restore must replay the value readers actually saw rather
+ * than a later value derived from current entries.
  */
 @Internal
 public final class SpannerChangeStreamEnumeratorState {
 
     private final List<ChangeStreamPartitionSplit> partitions;
+    private final Set<String> finishedParentProofs;
+    private final boolean bounded;
     private final long sourceWatermark;
 
+    /** Reads and compacts the complete-ledger shape used by serializer version 1. */
     public SpannerChangeStreamEnumeratorState(List<ChangeStreamPartitionSplit> partitions) {
-        this(partitions, inferredSourceWatermark(partitions), true);
+        this(compactLegacyLedger(partitions, inferredSourceWatermark(partitions)));
     }
 
+    /** Reads and compacts the complete-ledger shape used by serializer version 2. */
     SpannerChangeStreamEnumeratorState(
             List<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
-        this(partitions, sourceWatermark, true);
+        this(compactLegacyLedger(partitions, sourceWatermark));
     }
 
-    /** Copies a ledger whose invariants were already enforced by the coordinator mutation paths. */
+    /** Reads the compact shape used by serializer version 3. */
+    SpannerChangeStreamEnumeratorState(
+            Collection<ChangeStreamPartitionSplit> partitions,
+            Collection<String> finishedParentProofs,
+            boolean bounded,
+            long sourceWatermark) {
+        this(partitions, finishedParentProofs, bounded, sourceWatermark, true);
+    }
+
+    /** Copies compact state whose invariants were enforced by coordinator mutation paths. */
     public static SpannerChangeStreamEnumeratorState snapshotOfCoordinatorLedger(
-            Collection<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
-        return new SpannerChangeStreamEnumeratorState(partitions, sourceWatermark, false);
+            Collection<ChangeStreamPartitionSplit> partitions,
+            Collection<String> finishedParentProofs,
+            boolean bounded,
+            long sourceWatermark) {
+        return new SpannerChangeStreamEnumeratorState(
+                partitions, finishedParentProofs, bounded, sourceWatermark, false);
+    }
+
+    private SpannerChangeStreamEnumeratorState(CompactedLegacyState legacy) {
+        this(
+                legacy.partitions,
+                legacy.finishedParentProofs,
+                legacy.bounded,
+                legacy.sourceWatermark,
+                true);
     }
 
     private SpannerChangeStreamEnumeratorState(
             Collection<ChangeStreamPartitionSplit> partitions,
+            Collection<String> finishedParentProofs,
+            boolean bounded,
             long sourceWatermark,
             boolean validate) {
         Preconditions.checkNotNull(partitions, "partitions must not be null");
+        Preconditions.checkNotNull(finishedParentProofs, "finishedParentProofs must not be null");
         if (validate) {
-            validate(partitions);
+            validateCompact(partitions, finishedParentProofs, bounded);
             validateSourceWatermark(partitions, sourceWatermark);
         }
         this.partitions = Collections.unmodifiableList(new ArrayList<>(partitions));
+        this.finishedParentProofs =
+                Collections.unmodifiableSet(new LinkedHashSet<>(finishedParentProofs));
+        this.bounded = bounded;
         this.sourceWatermark = sourceWatermark;
+    }
+
+    private static CompactedLegacyState compactLegacyLedger(
+            Collection<ChangeStreamPartitionSplit> partitions, long sourceWatermark) {
+        Preconditions.checkNotNull(partitions, "partitions must not be null");
+        Map<String, ChangeStreamPartitionSplit> partitionsById = validateLegacy(partitions);
+        validateSourceWatermark(partitions, sourceWatermark);
+
+        List<ChangeStreamPartitionSplit> unfinished = new ArrayList<>();
+        Set<String> finishedParentProofs = new TreeSet<>();
+        boolean bounded = false;
+        for (ChangeStreamPartitionSplit partition : partitions) {
+            bounded |= partition.getEndTimestamp() != null;
+            if (partition.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+                unfinished.add(partition);
+            }
+            if (partition.getLifecycleState() == PartitionLifecycleState.CREATED) {
+                for (String parentId : partition.getParentPartitionIds()) {
+                    if (partitionsById.get(parentId).getLifecycleState()
+                            == PartitionLifecycleState.FINISHED) {
+                        finishedParentProofs.add(parentId);
+                    }
+                }
+            }
+        }
+        return new CompactedLegacyState(unfinished, finishedParentProofs, bounded, sourceWatermark);
     }
 
     private static long inferredSourceWatermark(Collection<ChangeStreamPartitionSplit> partitions) {
@@ -95,14 +157,100 @@ public final class SpannerChangeStreamEnumeratorState {
         OptionalLong current = SpannerChangeStreamWatermarks.sourceWatermark(partitions);
         Preconditions.checkArgument(
                 !current.isPresent() || sourceWatermark <= current.getAsLong(),
-                "source watermark %s is ahead of complete-ledger frontier %s",
+                "source watermark %s is ahead of unfinished-ledger frontier %s",
                 sourceWatermark,
                 current.isPresent() ? current.getAsLong() : "<finished>");
     }
 
-    private static void validate(Collection<ChangeStreamPartitionSplit> partitions) {
+    private static Map<String, ChangeStreamPartitionSplit> validateLegacy(
+            Collection<ChangeStreamPartitionSplit> partitions) {
         Preconditions.checkArgument(
                 !partitions.isEmpty(), "partitions must contain the initial partition ledger");
+        Map<String, ChangeStreamPartitionSplit> partitionsById = indexPartitions(partitions, true);
+        Preconditions.checkArgument(
+                partitionsById.containsKey(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
+                "partition ledger must contain initial partition %s",
+                ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
+        for (ChangeStreamPartitionSplit partition : partitions) {
+            for (String parentId : partition.getParentPartitionIds()) {
+                ChangeStreamPartitionSplit parent = partitionsById.get(parentId);
+                Preconditions.checkArgument(
+                        parent != null,
+                        "partition %s names missing parent %s",
+                        partition.splitId(),
+                        parentId);
+                if (partition.getLifecycleState() != PartitionLifecycleState.CREATED) {
+                    Preconditions.checkArgument(
+                            parent.getLifecycleState() == PartitionLifecycleState.FINISHED,
+                            "partition %s is %s before parent %s is FINISHED",
+                            partition.splitId(),
+                            partition.getLifecycleState(),
+                            parentId);
+                }
+            }
+        }
+        validateAcyclic(partitions, partitionsById);
+        return partitionsById;
+    }
+
+    private static void validateCompact(
+            Collection<ChangeStreamPartitionSplit> partitions,
+            Collection<String> finishedParentProofs,
+            boolean bounded) {
+        Preconditions.checkArgument(
+                bounded || !partitions.isEmpty(),
+                "unbounded compact partition ledger must contain an unfinished partition");
+        Map<String, ChangeStreamPartitionSplit> partitionsById = indexPartitions(partitions, false);
+        Set<String> proofs = new LinkedHashSet<>();
+        for (String proof : finishedParentProofs) {
+            Preconditions.checkNotNull(proof, "finishedParentProofs must not contain null");
+            Preconditions.checkArgument(!proof.isEmpty(), "finishedParentProofs must not be empty");
+            Preconditions.checkArgument(
+                    proofs.add(proof), "finished parent proof %s appeared twice", proof);
+            Preconditions.checkArgument(
+                    !partitionsById.containsKey(proof),
+                    "finished parent proof %s is also a live partition",
+                    proof);
+        }
+
+        Set<String> referencedProofs = new LinkedHashSet<>();
+        for (ChangeStreamPartitionSplit partition : partitions) {
+            Preconditions.checkArgument(
+                    bounded == (partition.getEndTimestamp() != null),
+                    "compact partition %s boundedness does not match checkpoint flag %s",
+                    partition.splitId(),
+                    bounded);
+            for (String parentId : partition.getParentPartitionIds()) {
+                boolean liveParent = partitionsById.containsKey(parentId);
+                boolean finishedProof = proofs.contains(parentId);
+                if (partition.getLifecycleState() == PartitionLifecycleState.CREATED) {
+                    Preconditions.checkArgument(
+                            liveParent || finishedProof,
+                            "created partition %s names missing parent %s",
+                            partition.splitId(),
+                            parentId);
+                    if (finishedProof) {
+                        referencedProofs.add(parentId);
+                    }
+                } else {
+                    Preconditions.checkArgument(
+                            !liveParent,
+                            "partition %s is %s before live parent %s is released",
+                            partition.splitId(),
+                            partition.getLifecycleState(),
+                            parentId);
+                }
+            }
+        }
+        Preconditions.checkArgument(
+                referencedProofs.equals(proofs),
+                "finished parent proofs must be referenced by CREATED partitions; stale proofs %s",
+                difference(proofs, referencedProofs));
+        validateAcyclic(partitions, partitionsById);
+    }
+
+    private static Map<String, ChangeStreamPartitionSplit> indexPartitions(
+            Collection<ChangeStreamPartitionSplit> partitions, boolean legacy) {
         Map<String, ChangeStreamPartitionSplit> partitionsById = new HashMap<>();
         for (ChangeStreamPartitionSplit partition : partitions) {
             Preconditions.checkNotNull(partition, "partitions must not contain null");
@@ -110,15 +258,20 @@ public final class SpannerChangeStreamEnumeratorState {
                     partitionsById.put(partition.splitId(), partition) == null,
                     "partition split ids must be unique, but %s appeared twice",
                     partition.splitId());
+            if (!legacy) {
+                Preconditions.checkArgument(
+                        partition.getLifecycleState() != PartitionLifecycleState.FINISHED,
+                        "compact partition ledger must not contain FINISHED partition %s",
+                        partition.splitId());
+            }
         }
-        Preconditions.checkArgument(
-                partitionsById.containsKey(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID),
-                "partition ledger must contain initial partition %s",
-                ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
-        for (ChangeStreamPartitionSplit partition : partitions) {
-            validateParents(partition, partitionsById);
-        }
-        validateAcyclic(partitions, partitionsById);
+        return partitionsById;
+    }
+
+    private static Set<String> difference(Set<String> left, Set<String> right) {
+        Set<String> result = new LinkedHashSet<>(left);
+        result.removeAll(right);
+        return result;
     }
 
     private static void validateAcyclic(
@@ -128,15 +281,18 @@ public final class SpannerChangeStreamEnumeratorState {
         Map<String, List<String>> childrenByParent = new HashMap<>();
         Deque<String> ready = new ArrayDeque<>();
         for (ChangeStreamPartitionSplit partition : partitions) {
-            int parentCount = partition.getParentPartitionIds().size();
+            int parentCount = 0;
+            for (String parentId : partition.getParentPartitionIds()) {
+                if (partitionsById.containsKey(parentId)) {
+                    parentCount++;
+                    childrenByParent
+                            .computeIfAbsent(parentId, ignored -> new ArrayList<>())
+                            .add(partition.splitId());
+                }
+            }
             remainingParents.put(partition.splitId(), parentCount);
             if (parentCount == 0) {
                 ready.addLast(partition.splitId());
-            }
-            for (String parentId : partition.getParentPartitionIds()) {
-                childrenByParent
-                        .computeIfAbsent(parentId, ignored -> new ArrayList<>())
-                        .add(partition.splitId());
             }
         }
         int visited = 0;
@@ -157,29 +313,16 @@ public final class SpannerChangeStreamEnumeratorState {
                 partitionsById.size() - visited);
     }
 
-    private static void validateParents(
-            ChangeStreamPartitionSplit partition,
-            Map<String, ChangeStreamPartitionSplit> partitionsById) {
-        for (String parentId : partition.getParentPartitionIds()) {
-            ChangeStreamPartitionSplit parent = partitionsById.get(parentId);
-            Preconditions.checkArgument(
-                    parent != null,
-                    "partition %s names missing parent %s",
-                    partition.splitId(),
-                    parentId);
-            if (partition.getLifecycleState() != PartitionLifecycleState.CREATED) {
-                Preconditions.checkArgument(
-                        parent.getLifecycleState() == PartitionLifecycleState.FINISHED,
-                        "partition %s is %s before parent %s is FINISHED",
-                        partition.splitId(),
-                        partition.getLifecycleState(),
-                        parentId);
-            }
-        }
-    }
-
     public List<ChangeStreamPartitionSplit> getPartitions() {
         return partitions;
+    }
+
+    public Set<String> getFinishedParentProofs() {
+        return finishedParentProofs;
+    }
+
+    public boolean isBounded() {
+        return bounded;
     }
 
     public long getSourceWatermark() {
@@ -195,11 +338,33 @@ public final class SpannerChangeStreamEnumeratorState {
             return false;
         }
         SpannerChangeStreamEnumeratorState other = (SpannerChangeStreamEnumeratorState) o;
-        return sourceWatermark == other.sourceWatermark && partitions.equals(other.partitions);
+        return bounded == other.bounded
+                && sourceWatermark == other.sourceWatermark
+                && partitions.equals(other.partitions)
+                && finishedParentProofs.equals(other.finishedParentProofs);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(partitions, sourceWatermark);
+        return Objects.hash(partitions, finishedParentProofs, bounded, sourceWatermark);
+    }
+
+    private static final class CompactedLegacyState {
+
+        private final List<ChangeStreamPartitionSplit> partitions;
+        private final Set<String> finishedParentProofs;
+        private final boolean bounded;
+        private final long sourceWatermark;
+
+        private CompactedLegacyState(
+                List<ChangeStreamPartitionSplit> partitions,
+                Set<String> finishedParentProofs,
+                boolean bounded,
+                long sourceWatermark) {
+            this.partitions = partitions;
+            this.finishedParentProofs = finishedParentProofs;
+            this.bounded = bounded;
+            this.sourceWatermark = sourceWatermark;
+        }
     }
 }

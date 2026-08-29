@@ -65,7 +65,7 @@ This connector additionally exposes the original Spanner `mod-type`; Debezium re
 Raw key and value JSON, partition tokens, runtime processing timestamps, low watermarks, and configured resource names remain outside the metadata surface because they are either already relational rows, internal progress state, runtime observations, or static DDL.
 
 **Source watermarks reuse the DataStream source's progress contract.**
-The dynamic source implements Flink's source-watermark ability without adding a generator because the FLIP-27 reader already timestamps data records at commit time and emits the coordinator's complete-ledger heartbeat frontier.
+The dynamic source implements Flink's source-watermark ability without adding a generator because the FLIP-27 reader already timestamps data records at commit time and emits the coordinator's unfinished-ledger heartbeat frontier.
 The native commit metadata is `TIMESTAMP_LTZ(9)` so converting a record does not discard Spanner precision.
 Flink watermark columns accept at most precision 3, so a DDL using `SOURCE_WATERMARK()` declares the same key as `TIMESTAMP_LTZ(3)` and lets the planner apply the compatible cast.
 
@@ -95,7 +95,7 @@ Measured 2026-08-13 against the pom-pinned Flink 2.2.1 and Spanner emulator 1.5.
 - **Expose the DataStream regex column filters in SQL**: Table projection and filter semantics belong to the planner, while those regexes are connector-side record projections with different correctness rules.
 - **Expose raw keys, old values, new values, or column descriptors as metadata**: the Table source has already converted those payloads into physical changelog columns, so a second JSON representation creates two schema contracts for one value.
 - **Expose partition tokens or low watermarks**: those identify internal query partitions and progress rather than the logical change, and checkpoint redistribution can change their operational meaning.
-- **Generate a second watermark from the metadata column**: the underlying reader already owns the heartbeat-driven complete-ledger frontier, so another generator would create conflicting progress policies.
+- **Generate a second watermark from the metadata column**: the underlying reader already owns the heartbeat-driven unfinished-ledger frontier, so another generator would create conflicting progress policies.
 
 ## Consequences
 
