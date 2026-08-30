@@ -588,8 +588,10 @@ facts); the rules a session needs:
   first tag and the first Maven Central version are both `1.0.0` (issue #29), and the working
   tree precedes the next release as `<next>-SNAPSHOT`
 - **Releases stage on the Central Portal; a person publishes them** (ADR-0147, issue #724):
-  `just stage-release <version>` — which the tag-push release workflow, #724's remaining item,
-  will call — re-versions the reactor with `versions:set` and deploys with `-Drelease`: the
+  `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
+  version line on a `v[0-9]*` tag push, with `workflow_dispatch` as the validate-then-drop
+  dry run (one line per dispatch; the deployment is named "dry run" on the Portal) —
+  re-versions the reactor with `versions:set` and deploys with `-Drelease`: the
   connector parent's `release` profile (GPG sign, javadoc jar) plus this project's
   `central-release` (sources jar, SQL javadoc stubs, compiler re-pin back to target 17,
   `central-publishing-maven-plugin` with `autoPublish=false`). The upload stops at *validated*;
