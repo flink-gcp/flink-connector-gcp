@@ -33,7 +33,6 @@ import java.util.List;
 @Internal
 final class PlannedLoad {
 
-    final TableDestination finalDestination;
     final TableDestination jobDestination;
     final StagingFormat format;
     final List<String> uris;
@@ -43,7 +42,6 @@ final class PlannedLoad {
     final List<JobInfo.SchemaUpdateOption> schemaUpdateOptions;
 
     PlannedLoad(
-            TableDestination finalDestination,
             TableDestination jobDestination,
             StagingFormat format,
             List<String> uris,
@@ -51,7 +49,6 @@ final class PlannedLoad {
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition,
             List<JobInfo.SchemaUpdateOption> schemaUpdateOptions) {
-        this.finalDestination = finalDestination;
         this.jobDestination = jobDestination;
         this.format = format;
         this.uris = uris;

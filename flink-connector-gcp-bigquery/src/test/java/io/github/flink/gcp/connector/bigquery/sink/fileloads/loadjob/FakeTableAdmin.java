@@ -30,6 +30,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
 
 /** Recording in-memory {@link TableAdmin} fake with scriptable lost update races. */
 public final class FakeTableAdmin implements TableAdmin {
@@ -40,6 +42,8 @@ public final class FakeTableAdmin implements TableAdmin {
     public final List<TableDestination> schemaUpdates = new ArrayList<>();
     public int schemaReads;
     public int updateRacesToLose;
+    public CyclicBarrier firstSchemaReadBarrier;
+    private boolean firstSchemaReadObserved;
 
     @Override
     public void create(
@@ -64,6 +68,17 @@ public final class FakeTableAdmin implements TableAdmin {
 
     @Override
     public TableSchemaSnapshot getSchema(TableDestination destination) {
+        if (firstSchemaReadBarrier != null && !firstSchemaReadObserved) {
+            firstSchemaReadObserved = true;
+            try {
+                firstSchemaReadBarrier.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Table schema read was interrupted", failure);
+            } catch (Exception failure) {
+                throw new AssertionError("Timed out waiting for table schema reads", failure);
+            }
+        }
         schemaReads++;
         TableSchema schema = tables.get(destination);
         return schema == null ? null : TableSchemaSnapshot.of(schema, null);

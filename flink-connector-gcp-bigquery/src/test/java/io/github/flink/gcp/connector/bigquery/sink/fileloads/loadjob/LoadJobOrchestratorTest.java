@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
+import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -38,6 +39,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSi
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.committer.FileLoadsCommitterMetrics;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
@@ -45,12 +47,23 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldTyp
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.testutils.LogCapture;
+import io.github.flink.gcp.connector.testutils.TestSinkCommitterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.IntStream;
 
@@ -349,6 +362,29 @@ class LoadJobOrchestratorTest {
                         file(T1, "b", 10, StagingFormat.AVRO)));
 
         assertThat(harness.runner.loads).hasSize(1);
+    }
+
+    @Test
+    void jvmFatalAwaitFailureTakesPriorityOverAnEarlierOrdinaryFailure() throws IOException {
+        List<FileLoadsCommittable> files =
+                List.of(
+                        file(T1, "avro", 10, StagingFormat.AVRO),
+                        file(T1, "parquet", 10, StagingFormat.PARQUET));
+        Harness successful = Harness.plain();
+        successful.orchestrator.run(files);
+        List<String> jobIds = new ArrayList<>(successful.runner.loads.keySet());
+        Harness failing = Harness.plain();
+        failing.runner.failOnAwaitWith.put(jobIds.get(0), new IOException("ordinary-failure"));
+        failing.runner.failOnAwaitWith.put(jobIds.get(1), new OutOfMemoryError("fatal-failure"));
+
+        assertThatThrownBy(() -> failing.orchestrator.run(files))
+                .isInstanceOf(OutOfMemoryError.class)
+                .hasMessage("fatal-failure")
+                .satisfies(
+                        failure ->
+                                assertThat(failure.getSuppressed())
+                                        .extracting(Throwable::getMessage)
+                                        .containsExactly("ordinary-failure"));
     }
 
     @Test
@@ -1183,6 +1219,1020 @@ class LoadJobOrchestratorTest {
     }
 
     @Test
+    void submissionWaveLimitIsSharedAcrossConcurrentDestinations() throws Exception {
+        int maximumPendingJobs = 2;
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        AtomicInteger pending = new AtomicInteger();
+        AtomicInteger maximumPending = new AtomicInteger();
+        CountDownLatch releaseAwaits = new CountDownLatch(1);
+        CyclicBarrier schemaReadsReady = new CyclicBarrier(2);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () -> {
+                            FakeTableAdmin tableAdmin = new FakeTableAdmin();
+                            tableAdmin.firstSchemaReadBarrier = schemaReadsReady;
+                            return new DestinationCommitExecutor.Worker(
+                                    new PendingJobRunner(pending, maximumPending, releaseAwaits),
+                                    tableAdmin);
+                        },
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        storage,
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, maximumPendingJobs),
+                        executor);
+
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(
+                                        List.of(
+                                                file(T1, "t1-avro", 10, StagingFormat.AVRO),
+                                                file(T1, "t1-parquet", 10, StagingFormat.PARQUET),
+                                                file(T2, "t2-avro", 10, StagingFormat.AVRO),
+                                                file(T2, "t2-parquet", 10, StagingFormat.PARQUET)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitPendingJobs(pending, maximumPendingJobs);
+
+            assertThat(maximumPending).hasValue(maximumPendingJobs);
+            releaseAwaits.countDown();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(observed.get()).isNull();
+        } finally {
+            releaseAwaits.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+
+        assertThat(pending).hasValue(0);
+        assertThat(maximumPending).hasValue(maximumPendingJobs);
+    }
+
+    @Test
+    void submitsTheWholeCrossDestinationWaveBeforeAwaiting() throws Exception {
+        int jobsInWave = 4;
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        AtomicInteger pending = new AtomicInteger();
+        AtomicInteger maximumPending = new AtomicInteger();
+        CountDownLatch releaseAwaits = new CountDownLatch(1);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new PendingJobRunner(
+                                                pending, maximumPending, releaseAwaits),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, jobsInWave),
+                        executor);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(
+                                        List.of(
+                                                file(T1, "t1", 10),
+                                                file(T2, "t2", 10),
+                                                file(T3, "t3", 10),
+                                                file(T4, "t4", 10)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitPendingJobs(pending, jobsInWave);
+
+            assertThat(maximumPending).hasValue(jobsInWave);
+            assertThat(coordinator.isAlive()).isTrue();
+            releaseAwaits.countDown();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(observed.get()).isNull();
+        } finally {
+            releaseAwaits.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+
+        assertThat(pending).hasValue(0);
+    }
+
+    @Test
+    void submissionFailureStillAwaitsEverySuccessfullySubmittedJob() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        AtomicInteger submissions = new AtomicInteger();
+        CountDownLatch successfulSubmissionsReady = new CountDownLatch(2);
+        CountDownLatch awaitStarted = new CountDownLatch(2);
+        CountDownLatch releaseAwait = new CountDownLatch(1);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new PartiallyFailingSubmissionRunner(
+                                                submissions,
+                                                successfulSubmissionsReady,
+                                                awaitStarted,
+                                                releaseAwait),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 4),
+                        executor);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(
+                                        List.of(
+                                                file(T1, "t1-avro", 10, StagingFormat.AVRO),
+                                                file(T2, "t2-avro", 10, StagingFormat.AVRO),
+                                                file(T2, "t2-parquet", 10, StagingFormat.PARQUET)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitLatch(awaitStarted);
+
+            assertThat(submissions).hasValue(3);
+            assertThat(coordinator.isAlive()).isTrue();
+            releaseAwait.countDown();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("scripted submission failure");
+        } finally {
+            releaseAwait.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
+    void reportsConcurrentFatalSubmissionFailuresOnceInPlanOrder() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        OutOfMemoryError first = new OutOfMemoryError("first submission fatal");
+        OutOfMemoryError second = new OutOfMemoryError("second submission fatal");
+        Map<TableDestination, OutOfMemoryError> failures = Map.of(T1, first, T2, second);
+        CountDownLatch submissionsReady = new CountDownLatch(2);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new ConcurrentFatalSubmissionRunner(
+                                                failures, submissionsReady),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+
+        Throwable failure;
+        try {
+            orchestrator.run(List.of(file(T1, "t1", 10), file(T2, "t2", 10)));
+            throw new AssertionError("The scripted submission failures should fail the commit");
+        } catch (Throwable observed) {
+            failure = observed;
+        } finally {
+            executor.close();
+        }
+
+        assertThat(failure).isSameAs(first);
+        assertThat(failure.getSuppressed()).containsExactly(second);
+    }
+
+    @Test
+    void ordersARecordedSubmissionFailureBeforeALaterWorkerCreationFailure() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        IOException submissionFailure = new IOException("first destination submission failure");
+        IOException workerFailure = new IOException("second destination worker failure");
+        CountDownLatch submissionStarted = new CountDownLatch(1);
+        CountDownLatch workerFailureReady = new CountDownLatch(1);
+        ExecutorService workers = new PerTaskThreadExecutor("ordered-wave-worker");
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () -> {
+                            // Threads 1 and 2 reconcile the two destinations. The submission wave
+                            // then assigns plan index 0 to thread 3 and plan index 1 to thread 4.
+                            if (Thread.currentThread().getName().endsWith("-4")) {
+                                awaitLatch(submissionStarted);
+                                workerFailureReady.countDown();
+                                throw workerFailure;
+                            }
+                            return new DestinationCommitExecutor.Worker(
+                                    new SubmissionFailingRunner(
+                                            submissionFailure,
+                                            submissionStarted,
+                                            workerFailureReady),
+                                    new FakeTableAdmin());
+                        },
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()),
+                        workers);
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+
+        Throwable failure;
+        try {
+            orchestrator.run(List.of(file(T1, "t1", 10), file(T2, "t2", 10)));
+            throw new AssertionError("The scripted worker failures should fail the commit");
+        } catch (Throwable observed) {
+            failure = observed;
+        } finally {
+            executor.close();
+        }
+
+        assertThat(failure).isSameAs(submissionFailure);
+        assertThat(failure.getSuppressed()).containsExactly(workerFailure);
+    }
+
+    @Test
+    void drainsSubmittedJobsSeriallyAfterAnAwaitWorkerCannotBeCreated() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        IOException workerFailure = new IOException("await worker creation failure");
+        ConcurrentMap<String, TableDestination> submitted = new ConcurrentHashMap<>();
+        ExecutorService workers = new PerTaskThreadExecutor("await-worker-failure");
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () -> {
+                            // Threads 1-2 reconcile and 3-4 submit. Thread 5 receives the first
+                            // await batch; the single-worker fallback drains it after this worker
+                            // cannot be created.
+                            if (Thread.currentThread().getName().endsWith("-5")) {
+                                throw workerFailure;
+                            }
+                            return new DestinationCommitExecutor.Worker(
+                                    new FailingAwaitRunner(submitted), new FakeTableAdmin());
+                        },
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()),
+                        workers);
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+
+        Throwable failure;
+        try {
+            orchestrator.run(List.of(file(T1, "t1", 10), file(T2, "t2", 10)));
+            throw new AssertionError("The scripted worker failure should fail the commit");
+        } catch (Throwable observed) {
+            failure = observed;
+        } finally {
+            executor.close();
+        }
+
+        assertThat(failureMessages(failure)).contains(workerFailure.getMessage());
+        assertThat(submitted).isEmpty();
+    }
+
+    @Test
+    void awaitInterruptionPrecedesAnEarlierWorkerCreationFailure() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        IOException workerFailure = new IOException("submission-phase worker failure");
+        CountDownLatch submissionStarted = new CountDownLatch(1);
+        CountDownLatch workerFailureReady = new CountDownLatch(1);
+        CountDownLatch awaitStarted = new CountDownLatch(1);
+        CountDownLatch releaseAwait = new CountDownLatch(1);
+        ExecutorService workers = new PerTaskThreadExecutor("interrupt-wave-worker");
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () -> {
+                            if (Thread.currentThread().getName().endsWith("-4")) {
+                                awaitLatch(submissionStarted);
+                                workerFailureReady.countDown();
+                                throw workerFailure;
+                            }
+                            return new DestinationCommitExecutor.Worker(
+                                    new WorkerFailureThenBlockingAwaitRunner(
+                                            submissionStarted,
+                                            workerFailureReady,
+                                            awaitStarted,
+                                            releaseAwait),
+                                    new FakeTableAdmin());
+                        },
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()),
+                        workers);
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(List.of(file(T1, "t1", 10), file(T2, "t2", 10)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitLatch(awaitStarted);
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("Interrupted while waiting for FILE_LOADS destinations");
+            assertThat(failureMessages(observed.get())).contains("submission-phase worker failure");
+            assertThat(failureReferences(observed.get(), workerFailure)).isOne();
+        } finally {
+            releaseAwait.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
+    void interruptionKeepsAQueuedBatchSubmissionFailure() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        CountDownLatch awaitsStarted = new CountDownLatch(2);
+        CountDownLatch releaseAwaits = new CountDownLatch(1);
+        AtomicInteger submissions = new AtomicInteger();
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new QueuedSubmissionFailureRunner(
+                                                submissions, awaitsStarted, releaseAwaits),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 3),
+                        executor);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(
+                                        List.of(
+                                                file(T1, "t1", 10),
+                                                file(T2, "t2", 10),
+                                                file(T3, "t3", 10)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitLatch(awaitsStarted);
+            assertThat(submissions).hasValue(3);
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("Interrupted while waiting for FILE_LOADS destinations");
+            assertThat(failureMessages(observed.get()))
+                    .contains("scripted queued submission failure");
+        } finally {
+            releaseAwaits.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
+    void awaitInterruptionStopsTheCurrentBatchImmediately() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(1)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        AtomicInteger awaits = new AtomicInteger();
+        CountDownLatch awaitStarted = new CountDownLatch(1);
+        CountDownLatch releaseAwait = new CountDownLatch(1);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        1,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new InterruptCountingAwaitRunner(
+                                                awaits, awaitStarted, releaseAwait),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 3),
+                        executor);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(
+                                        List.of(
+                                                file(T1, "part-1", 8L << 40),
+                                                file(T1, "part-2", 8L << 40),
+                                                file(T1, "part-3", 8L << 40),
+                                                file(T2, "part-4", 10)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitLatch(awaitStarted);
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(coordinator.isInterrupted()).isTrue();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("Orchestrator test coordination was interrupted");
+            assertThat(awaits).hasValue(1);
+        } finally {
+            releaseAwait.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
+    void submissionInterruptionKeepsAnEarlierRecordedFailure() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        CountDownLatch submissionsStarted = new CountDownLatch(2);
+        CountDownLatch releaseBlockedSubmission = new CountDownLatch(1);
+        TestSinkCommitterMetricGroup metricGroup = TestSinkCommitterMetricGroup.create();
+        FileLoadsCommitterMetrics metrics = new FileLoadsCommitterMetrics(metricGroup);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new FailingAndBlockingSubmissionRunner(
+                                                submissionsStarted, releaseBlockedSubmission),
+                                        new FakeTableAdmin()),
+                        metrics);
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        metrics.loadJobsSubmitted(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(List.of(file(T1, "t1", 10), file(T2, "t2", 10)));
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            awaitLatch(submissionsStarted);
+            awaitActiveDestinations(metricGroup, 1);
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessage("Interrupted while waiting for FILE_LOADS destinations");
+            assertThat(failureMessages(observed.get()))
+                    .contains("scripted submission failure before coordinator interruption");
+        } finally {
+            releaseBlockedSubmission.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
+    void reportsEachCrossDestinationAwaitFailureOnceInPlanOrder() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        ConcurrentMap<String, TableDestination> submitted = new ConcurrentHashMap<>();
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new FailingAwaitRunner(submitted), new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+
+        Throwable failure;
+        try {
+            orchestrator.run(List.of(file(T1, "t1", 10), file(T2, "t2", 10)));
+            throw new AssertionError("The scripted await failures should fail the commit");
+        } catch (Throwable observed) {
+            failure = observed;
+        } finally {
+            executor.close();
+        }
+
+        assertThat(failure).isInstanceOf(IOException.class).hasMessage(T1.toString());
+        assertThat(failure.getSuppressed()).hasSize(1);
+        assertThat(failure.getSuppressed()[0])
+                .isInstanceOf(IOException.class)
+                .hasMessage(T2.toString());
+    }
+
+    @Test
+    void aggregatesThousandsOfAwaitFailuresWithoutDroppingTheirPlanOrder() throws Exception {
+        int jobCount = 4_096;
+        FileLoadsOptions options =
+                FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        ConcurrentMap<String, TableDestination> submitted = new ConcurrentHashMap<>();
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        1,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new FailingAwaitRunner(submitted), new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 10_000, 10_000, jobCount),
+                        executor);
+        List<FileLoadsCommittable> files =
+                IntStream.range(0, jobCount)
+                        .mapToObj(index -> file(T1, "large-" + index, 6L << 40))
+                        .toList();
+
+        Throwable failure;
+        try {
+            orchestrator.run(files);
+            throw new AssertionError("Every scripted await should fail");
+        } catch (Throwable observed) {
+            failure = observed;
+        } finally {
+            executor.close();
+        }
+
+        assertThat(failure).isInstanceOf(IOException.class).hasMessageStartingWith("p.d.tmp_");
+        assertThat(failure.getSuppressed()).hasSize(jobCount - 1);
+        assertThat(submitted).isEmpty();
+    }
+
+    @Test
+    void jvmFatalAwaitFailureStopsTheCurrentBatchImmediately() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        OutOfMemoryError fatal = new OutOfMemoryError("scripted await fatal");
+        AtomicInteger awaits = new AtomicInteger();
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        1,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new FatalAwaitRunner(fatal, awaits), new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        new InMemoryStagingStorage(),
+                        FLINK_JOB_ID,
+                        null,
+                        new SimpleCounter(),
+                        new Limits(3, 100, 100, 2),
+                        executor);
+
+        Throwable failure;
+        try {
+            orchestrator.run(
+                    List.of(
+                            file(T1, "t1-avro", 10, StagingFormat.AVRO),
+                            file(T1, "t1-parquet", 10, StagingFormat.PARQUET)));
+            throw new AssertionError("The scripted JVM-fatal failure should fail the commit");
+        } catch (Throwable observed) {
+            failure = observed;
+        } finally {
+            executor.close();
+        }
+
+        assertThat(failure).isSameAs(fatal);
+        assertThat(awaits).hasValue(1);
+    }
+
+    @Test
+    void cleanupInterruptionLeavesStagedObjectsForRetry() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(2)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        CountDownLatch cleanupStarted = new CountDownLatch(2);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        2,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new CleanupBlockingRunner(cleanupStarted, releaseCleanup),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        storage,
+                        FLINK_JOB_ID,
+                        7L,
+                        new SimpleCounter(),
+                        Limits.BIGQUERY,
+                        executor);
+        long sixTiB = 6L << 40;
+        List<FileLoadsCommittable> files =
+                List.of(
+                        file(T1, "t1-a", sixTiB),
+                        file(T1, "t1-b", sixTiB),
+                        file(T2, "t2-a", sixTiB),
+                        file(T2, "t2-b", sixTiB));
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(files);
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            assertThat(cleanupStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(coordinator.isInterrupted()).isTrue();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Interrupted while cleaning up");
+            assertThat(storage.getDeleted()).isEmpty();
+        } finally {
+            releaseCleanup.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
+    void inlineCleanupInterruptionLeavesStagedObjectsForRetry() throws Exception {
+        FileLoadsOptions options =
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxConcurrentDestinations(1)
+                        .build();
+        BigQuerySinkConfig<Object> config =
+                ((BigQueryFileLoadsSink<Object>)
+                                BigQuerySink.builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .table(T1)
+                                        .serializer(new SchemaOnlySerializer(SCHEMA))
+                                        .fileLoadsOptions(options)
+                                        .build())
+                        .getConfig();
+        CountDownLatch cleanupStarted = new CountDownLatch(1);
+        CountDownLatch releaseCleanup = new CountDownLatch(1);
+        DestinationCommitExecutor executor =
+                new DestinationCommitExecutor(
+                        1,
+                        () ->
+                                new DestinationCommitExecutor.Worker(
+                                        new CleanupBlockingRunner(cleanupStarted, releaseCleanup),
+                                        new FakeTableAdmin()),
+                        FileLoadsCommitterMetrics.unregistered(new SimpleCounter()));
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        LoadJobOrchestrator orchestrator =
+                new LoadJobOrchestrator(
+                        config,
+                        options,
+                        storage,
+                        FLINK_JOB_ID,
+                        7L,
+                        new SimpleCounter(),
+                        Limits.BIGQUERY,
+                        executor);
+        long sixTiB = 6L << 40;
+        List<FileLoadsCommittable> files = List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB));
+        AtomicReference<Throwable> observed = new AtomicReference<>();
+        Thread coordinator =
+                new Thread(
+                        () -> {
+                            try {
+                                orchestrator.run(files);
+                            } catch (Throwable failure) {
+                                observed.set(failure);
+                            }
+                        });
+
+        try {
+            coordinator.start();
+            assertThat(cleanupStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertThat(coordinator.isAlive()).isFalse();
+            assertThat(coordinator.isInterrupted()).isTrue();
+            assertThat(observed.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Interrupted while cleaning up");
+            assertThat(storage.getDeleted()).isEmpty();
+        } finally {
+            releaseCleanup.countDown();
+            coordinator.interrupt();
+            coordinator.join(TimeUnit.SECONDS.toMillis(5));
+            executor.close();
+        }
+    }
+
+    @Test
     void jobCapsAreValidatedBeforeTableOrJobSideEffects() {
         Harness tooManyLoads = Harness.withLimits(new Limits(3, 3, 100, 2));
 
@@ -1437,5 +2487,593 @@ class LoadJobOrchestratorTest {
         assertThat(harness.runner.loads).isEmpty();
         assertThat(harness.runner.copies).isEmpty();
         assertThat(harness.storage.getDeleted()).isEmpty();
+    }
+
+    private static void awaitLatch(CountDownLatch latch) throws IOException {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new IOException("Timed out waiting for orchestrator test coordination");
+            }
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Orchestrator test coordination was interrupted", failure);
+        }
+    }
+
+    private static void awaitLatchIgnoringInterrupt(CountDownLatch latch) {
+        boolean interrupted = false;
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        try {
+            while (latch.getCount() > 0) {
+                long remainingNanos = deadline - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    throw new AssertionError(
+                            "Timed out waiting for orchestrator test coordination");
+                }
+                try {
+                    if (!latch.await(remainingNanos, TimeUnit.NANOSECONDS)) {
+                        throw new AssertionError(
+                                "Timed out waiting for orchestrator test coordination");
+                    }
+                } catch (InterruptedException ignored) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static void awaitActiveDestinations(TestSinkCommitterMetricGroup metrics, int expected)
+            throws IOException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (metrics.<Integer>gaugeValue(BigQueryMetricNames.ACTIVE_COMMIT_DESTINATIONS)
+                != expected) {
+            if (System.nanoTime() >= deadline) {
+                throw new IOException(
+                        "Timed out waiting for " + expected + " active commit destinations");
+            }
+            Thread.onSpinWait();
+        }
+    }
+
+    private static List<String> failureMessages(Throwable failure) {
+        List<Throwable> pending = new ArrayList<>();
+        List<String> messages = new ArrayList<>();
+        pending.add(failure);
+        for (int index = 0; index < pending.size(); index++) {
+            Throwable candidate = pending.get(index);
+            messages.add(candidate.getMessage());
+            pending.addAll(List.of(candidate.getSuppressed()));
+        }
+        return messages;
+    }
+
+    private static int failureReferences(Throwable failure, Throwable expected) {
+        List<Throwable> pending = new ArrayList<>();
+        int references = 0;
+        pending.add(failure);
+        for (int index = 0; index < pending.size(); index++) {
+            Throwable candidate = pending.get(index);
+            if (candidate == expected) {
+                references++;
+            }
+            pending.addAll(List.of(candidate.getSuppressed()));
+        }
+        return references;
+    }
+
+    private static final class PendingJobRunner implements LoadJobRunner {
+        private final AtomicInteger pending;
+        private final AtomicInteger maximumPending;
+        private final CountDownLatch releaseAwaits;
+
+        private PendingJobRunner(
+                AtomicInteger pending, AtomicInteger maximumPending, CountDownLatch releaseAwaits) {
+            this.pending = pending;
+            this.maximumPending = maximumPending;
+            this.releaseAwaits = releaseAwaits;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) {
+            int now = pending.incrementAndGet();
+            maximumPending.accumulateAndGet(now, Math::max);
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            try {
+                if (!releaseAwaits.await(5, TimeUnit.SECONDS)) {
+                    throw new IOException("Timed out waiting to release pending test jobs");
+                }
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Pending test job was interrupted", failure);
+            }
+            pending.decrementAndGet();
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class PerTaskThreadExecutor extends AbstractExecutorService {
+        private final String threadPrefix;
+        private final AtomicInteger threadNumber = new AtomicInteger();
+        private final List<Thread> threads = new ArrayList<>();
+        private boolean shutdown;
+
+        private PerTaskThreadExecutor(String threadPrefix) {
+            this.threadPrefix = threadPrefix;
+        }
+
+        @Override
+        public synchronized void execute(Runnable command) {
+            if (shutdown) {
+                throw new RejectedExecutionException("The test executor is shut down");
+            }
+            Thread thread =
+                    new Thread(command, threadPrefix + "-" + threadNumber.incrementAndGet());
+            threads.add(thread);
+            thread.start();
+        }
+
+        @Override
+        public synchronized void shutdown() {
+            shutdown = true;
+        }
+
+        @Override
+        public synchronized List<Runnable> shutdownNow() {
+            shutdown = true;
+            for (Thread thread : threads) {
+                thread.interrupt();
+            }
+            return List.of();
+        }
+
+        @Override
+        public synchronized boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public synchronized boolean isTerminated() {
+            return shutdown && threads.stream().noneMatch(Thread::isAlive);
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+            long deadline = System.nanoTime() + unit.toNanos(timeout);
+            for (Thread thread : threadSnapshot()) {
+                while (thread.isAlive()) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) {
+                        return false;
+                    }
+                    thread.join(Math.max(1, TimeUnit.NANOSECONDS.toMillis(remaining)));
+                }
+            }
+            return true;
+        }
+
+        private synchronized List<Thread> threadSnapshot() {
+            return List.copyOf(threads);
+        }
+    }
+
+    private static final class PartiallyFailingSubmissionRunner implements LoadJobRunner {
+        private final AtomicInteger submissions;
+        private final CountDownLatch successfulSubmissionsReady;
+        private final CountDownLatch awaitStarted;
+        private final CountDownLatch releaseAwait;
+
+        private PartiallyFailingSubmissionRunner(
+                AtomicInteger submissions,
+                CountDownLatch successfulSubmissionsReady,
+                CountDownLatch awaitStarted,
+                CountDownLatch releaseAwait) {
+            this.submissions = submissions;
+            this.successfulSubmissionsReady = successfulSubmissionsReady;
+            this.awaitStarted = awaitStarted;
+            this.releaseAwait = releaseAwait;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            submissions.incrementAndGet();
+            if (spec.getFormat() == StagingFormat.PARQUET) {
+                awaitLatch(successfulSubmissionsReady);
+                throw new IOException("scripted submission failure");
+            }
+            successfulSubmissionsReady.countDown();
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            awaitStarted.countDown();
+            awaitLatch(releaseAwait);
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class ConcurrentFatalSubmissionRunner implements LoadJobRunner {
+        private final Map<TableDestination, OutOfMemoryError> failures;
+        private final CountDownLatch submissionsReady;
+
+        private ConcurrentFatalSubmissionRunner(
+                Map<TableDestination, OutOfMemoryError> failures, CountDownLatch submissionsReady) {
+            this.failures = failures;
+            this.submissionsReady = submissionsReady;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            submissionsReady.countDown();
+            // The first observed fatal stops and interrupts its peer. The barrier must still let
+            // that peer throw its scripted fatal so the test measures plan-order aggregation.
+            awaitLatchIgnoringInterrupt(submissionsReady);
+            throw failures.get(spec.getDestination());
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) {
+            throw new AssertionError("A fatally failed submission must not be awaited");
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class SubmissionFailingRunner implements LoadJobRunner {
+        private final IOException failure;
+        private final CountDownLatch submissionStarted;
+        private final CountDownLatch workerFailureReady;
+
+        private SubmissionFailingRunner(
+                IOException failure,
+                CountDownLatch submissionStarted,
+                CountDownLatch workerFailureReady) {
+            this.failure = failure;
+            this.submissionStarted = submissionStarted;
+            this.workerFailureReady = workerFailureReady;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            submissionStarted.countDown();
+            awaitLatch(workerFailureReady);
+            throw failure;
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) {
+            throw new AssertionError("A failed submission must not be awaited");
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class WorkerFailureThenBlockingAwaitRunner implements LoadJobRunner {
+        private final CountDownLatch submissionStarted;
+        private final CountDownLatch workerFailureReady;
+        private final CountDownLatch awaitStarted;
+        private final CountDownLatch releaseAwait;
+
+        private WorkerFailureThenBlockingAwaitRunner(
+                CountDownLatch submissionStarted,
+                CountDownLatch workerFailureReady,
+                CountDownLatch awaitStarted,
+                CountDownLatch releaseAwait) {
+            this.submissionStarted = submissionStarted;
+            this.workerFailureReady = workerFailureReady;
+            this.awaitStarted = awaitStarted;
+            this.releaseAwait = releaseAwait;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            submissionStarted.countDown();
+            awaitLatch(workerFailureReady);
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            awaitStarted.countDown();
+            awaitLatch(releaseAwait);
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class InterruptCountingAwaitRunner implements LoadJobRunner {
+        private final AtomicInteger awaits;
+        private final CountDownLatch awaitStarted;
+        private final CountDownLatch releaseAwait;
+
+        private InterruptCountingAwaitRunner(
+                AtomicInteger awaits, CountDownLatch awaitStarted, CountDownLatch releaseAwait) {
+            this.awaits = awaits;
+            this.awaitStarted = awaitStarted;
+            this.releaseAwait = releaseAwait;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) {}
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            awaits.incrementAndGet();
+            awaitStarted.countDown();
+            awaitLatch(releaseAwait);
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class FailingAndBlockingSubmissionRunner implements LoadJobRunner {
+        private final CountDownLatch submissionsStarted;
+        private final CountDownLatch releaseBlockedSubmission;
+
+        private FailingAndBlockingSubmissionRunner(
+                CountDownLatch submissionsStarted, CountDownLatch releaseBlockedSubmission) {
+            this.submissionsStarted = submissionsStarted;
+            this.releaseBlockedSubmission = releaseBlockedSubmission;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            submissionsStarted.countDown();
+            awaitLatch(submissionsStarted);
+            if (spec.getDestination().equals(T1)) {
+                throw new IOException(
+                        "scripted submission failure before coordinator interruption");
+            }
+            awaitLatch(releaseBlockedSubmission);
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) {
+            throw new AssertionError("A failed submission wave must not await jobs");
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class QueuedSubmissionFailureRunner implements LoadJobRunner {
+        private final AtomicInteger submissions;
+        private final CountDownLatch awaitsStarted;
+        private final CountDownLatch releaseAwaits;
+
+        private QueuedSubmissionFailureRunner(
+                AtomicInteger submissions,
+                CountDownLatch awaitsStarted,
+                CountDownLatch releaseAwaits) {
+            this.submissions = submissions;
+            this.awaitsStarted = awaitsStarted;
+            this.releaseAwaits = releaseAwaits;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            if (submissions.incrementAndGet() == 3) {
+                throw new IOException("scripted queued submission failure");
+            }
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            awaitsStarted.countDown();
+            awaitLatch(releaseAwaits);
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class FailingAwaitRunner implements LoadJobRunner {
+        private final ConcurrentMap<String, TableDestination> submitted;
+
+        private FailingAwaitRunner(ConcurrentMap<String, TableDestination> submitted) {
+            this.submitted = submitted;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) {
+            submitted.put(jobId, spec.getDestination());
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            TableDestination destination = submitted.remove(jobId);
+            if (destination == null) {
+                throw new AssertionError("Awaited an unsubmitted job " + jobId);
+            }
+            throw new IOException(destination.toString());
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class FatalAwaitRunner implements LoadJobRunner {
+        private final OutOfMemoryError fatal;
+        private final AtomicInteger awaits;
+
+        private FatalAwaitRunner(OutOfMemoryError fatal, AtomicInteger awaits) {
+            this.fatal = fatal;
+            this.awaits = awaits;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) {}
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a copy job");
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) {
+            throw new AssertionError("The direct-load test must not submit a query job");
+        }
+
+        @Override
+        public void awaitJob(String jobId) {
+            awaits.incrementAndGet();
+            throw fatal;
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {}
+    }
+
+    private static final class CleanupBlockingRunner implements LoadJobRunner {
+        private final FakeLoadJobRunner delegate = new FakeLoadJobRunner();
+        private final CountDownLatch cleanupStarted;
+        private final CountDownLatch releaseCleanup;
+
+        private CleanupBlockingRunner(
+                CountDownLatch cleanupStarted, CountDownLatch releaseCleanup) {
+            this.cleanupStarted = cleanupStarted;
+            this.releaseCleanup = releaseCleanup;
+        }
+
+        @Override
+        public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+            delegate.submitLoad(jobId, spec);
+        }
+
+        @Override
+        public void submitCopy(String jobId, CopyJobSpec spec) throws IOException {
+            delegate.submitCopy(jobId, spec);
+        }
+
+        @Override
+        public void submitQuery(String jobId, QueryJobSpec spec) throws IOException {
+            delegate.submitQuery(jobId, spec);
+        }
+
+        @Override
+        public void awaitJob(String jobId) throws IOException {
+            delegate.awaitJob(jobId);
+        }
+
+        @Override
+        public void deleteTable(TableDestination table) {
+            cleanupStarted.countDown();
+            try {
+                releaseCleanup.await();
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    private static void awaitPendingJobs(AtomicInteger pending, int expected) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (pending.get() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(pending).hasValueGreaterThanOrEqualTo(expected);
     }
 }

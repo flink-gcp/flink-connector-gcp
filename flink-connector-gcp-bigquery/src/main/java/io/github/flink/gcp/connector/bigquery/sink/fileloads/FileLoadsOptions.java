@@ -47,19 +47,19 @@ import java.util.regex.Pattern;
  * normally. Overall timeouts are the Flink job's to enforce.
  *
  * <p>{@code schemaReconcile*} is the budget for losing an etag race while reconciling a destination
- * table's schema. Those races do <b>not</b> come from this job's parallelism — FILE_LOADS
- * reconciles from a single committer subtask — but from anything else updating the same table at
- * the same time: a second Flink job, a Storage Write API sink writing the same destination, or
- * external tooling.
+ * table's schema. Those races do <b>not</b> come from this job's destination parallelism: the
+ * committer runs one task per distinct table, so the same table is never reconciled by two of its
+ * workers. They come from anything else updating the same table at the same time: a second Flink
+ * job, a Storage Write API sink writing the same destination, or external tooling.
  *
  * <p>Set via {@link BigQuerySinkBuilder#fileLoadsOptions(FileLoadsOptions)}; required when building
  * a {@code FILE_LOADS} sink and rejected for every other write method.
  *
  * <p>The staging path should point at a bucket dedicated to load staging — separate from
  * checkpoint/savepoint storage — with a lifecycle rule that expires stale objects. Staged files are
- * deleted after a successful load, but cleanup is best-effort and files are deliberately kept when
- * a load fails (so a Flink restart can retry deterministically), so orphaned objects can accumulate
- * without a lifecycle rule.
+ * deleted best-effort only after every destination load and temporary-table cleanup complete
+ * normally. They are deliberately kept after a load failure or cleanup interruption so a Flink
+ * restart can retry deterministically, so orphaned objects can accumulate without a lifecycle rule.
  *
  * <p>Instances are immutable and serializable.
  */
@@ -125,6 +125,11 @@ public final class FileLoadsOptions implements Serializable {
     /** Default for {@link Builder#maxPendingFiles(int)}. */
     public static final int DEFAULT_MAX_PENDING_FILES = 10_000;
 
+    /** Default for {@link Builder#maxConcurrentDestinations(int)}. */
+    public static final int DEFAULT_MAX_CONCURRENT_DESTINATIONS = 8;
+
+    private static final int MAX_CONCURRENT_DESTINATIONS = 64;
+
     /** Default for {@link Builder#destinationIdleTimeout(Duration)}. */
     public static final Duration DEFAULT_DESTINATION_IDLE_TIMEOUT = Duration.ofMinutes(1);
 
@@ -151,6 +156,7 @@ public final class FileLoadsOptions implements Serializable {
     private final long maxStagingFileBytes;
     private final int maxOpenDestinations;
     private final int maxPendingFiles;
+    private final int maxConcurrentDestinations;
     @Nullable private final Duration destinationIdleTimeout;
     private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
@@ -175,6 +181,7 @@ public final class FileLoadsOptions implements Serializable {
         this.maxStagingFileBytes = builder.maxStagingFileBytes;
         this.maxOpenDestinations = builder.maxOpenDestinations;
         this.maxPendingFiles = builder.maxPendingFiles;
+        this.maxConcurrentDestinations = builder.maxConcurrentDestinations;
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.maxSerializedRowBytes = builder.maxSerializedRowBytes;
         this.stagingFormat = builder.stagingFormat;
@@ -234,6 +241,13 @@ public final class FileLoadsOptions implements Serializable {
     /** Returns the maximum staging files retained for the next commit by each writer subtask. */
     public int getMaxPendingFiles() {
         return maxPendingFiles == 0 ? DEFAULT_MAX_PENDING_FILES : maxPendingFiles;
+    }
+
+    /** Returns the maximum destination actions this committer executes concurrently. */
+    public int getMaxConcurrentDestinations() {
+        return maxConcurrentDestinations == 0
+                ? DEFAULT_MAX_CONCURRENT_DESTINATIONS
+                : maxConcurrentDestinations;
     }
 
     /** Returns how long an inactive destination file remains open. */
@@ -332,6 +346,7 @@ public final class FileLoadsOptions implements Serializable {
                 && maxStagingFileBytes == that.maxStagingFileBytes
                 && getMaxOpenDestinations() == that.getMaxOpenDestinations()
                 && getMaxPendingFiles() == that.getMaxPendingFiles()
+                && getMaxConcurrentDestinations() == that.getMaxConcurrentDestinations()
                 && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
                 && getMaxSerializedRowBytes() == that.getMaxSerializedRowBytes()
                 && stagingFormat == that.stagingFormat
@@ -354,6 +369,7 @@ public final class FileLoadsOptions implements Serializable {
                 maxStagingFileBytes,
                 getMaxOpenDestinations(),
                 getMaxPendingFiles(),
+                getMaxConcurrentDestinations(),
                 getDestinationIdleTimeout(),
                 getMaxSerializedRowBytes(),
                 stagingFormat,
@@ -382,6 +398,8 @@ public final class FileLoadsOptions implements Serializable {
                 + getMaxOpenDestinations()
                 + ", maxPendingFiles="
                 + getMaxPendingFiles()
+                + ", maxConcurrentDestinations="
+                + getMaxConcurrentDestinations()
                 + ", destinationIdleTimeout="
                 + getDestinationIdleTimeout()
                 + ", maxSerializedRowBytes="
@@ -416,6 +434,7 @@ public final class FileLoadsOptions implements Serializable {
         private long maxStagingFileBytes = DEFAULT_MAX_STAGING_FILE_BYTES;
         private int maxOpenDestinations = DEFAULT_MAX_OPEN_DESTINATIONS;
         private int maxPendingFiles = DEFAULT_MAX_PENDING_FILES;
+        private int maxConcurrentDestinations = DEFAULT_MAX_CONCURRENT_DESTINATIONS;
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private long maxSerializedRowBytes = DEFAULT_MAX_SERIALIZED_ROW_BYTES;
         private StagingFormat stagingFormat = DEFAULT_STAGING_FORMAT;
@@ -560,6 +579,31 @@ public final class FileLoadsOptions implements Serializable {
             Preconditions.checkArgument(
                     maxPendingFiles > 0, "maxPendingFiles must be positive: %s", maxPendingFiles);
             this.maxPendingFiles = maxPendingFiles;
+            return this;
+        }
+
+        /**
+         * Sets the maximum number of destination actions this committer executes concurrently. Each
+         * pooled worker owns one thread and one BigQuery REST client. Before the pool is
+         * initialized, a single-destination phase instead runs on the caller; later singleton
+         * phases reuse the pool. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_MAX_CONCURRENT_DESTINATIONS}; values above 64 are rejected to
+         * keep client, thread, and in-flight state bounded.
+         *
+         * @param maxConcurrentDestinations the committer-wide destination bound, from 1 through 64
+         * @return this builder
+         */
+        public Builder maxConcurrentDestinations(int maxConcurrentDestinations) {
+            Preconditions.checkArgument(
+                    maxConcurrentDestinations > 0,
+                    "maxConcurrentDestinations must be positive: %s",
+                    maxConcurrentDestinations);
+            Preconditions.checkArgument(
+                    maxConcurrentDestinations <= MAX_CONCURRENT_DESTINATIONS,
+                    "maxConcurrentDestinations must be at most %s: %s",
+                    MAX_CONCURRENT_DESTINATIONS,
+                    maxConcurrentDestinations);
+            this.maxConcurrentDestinations = maxConcurrentDestinations;
             return this;
         }
 
