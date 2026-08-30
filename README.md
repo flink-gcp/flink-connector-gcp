@@ -3,11 +3,11 @@
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/):
 BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable and Spanner.
 
-> **Status: approaching the first release, 1.0.0.** Artifacts will be published to Maven
-> Central ([#39](https://github.com/flink-gcp/flink-connector-gcp/issues/39)) under the
-> `io.github.flink-gcp` namespace, already verified
-> ([#724](https://github.com/flink-gcp/flink-connector-gcp/issues/724)); until the release
-> lands there, they come from a local build.
+> **Status: released.** Artifacts are on
+> [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp) under the
+> `io.github.flink-gcp` namespace, in two version lines per release: `1.0.0` for the supported
+> Flink 2.x range and `1.0.0-1.20` for the Flink 1.20 LTS. The SQL uber-jars are also attached
+> to the [GitHub releases](https://github.com/flink-gcp/flink-connector-gcp/releases).
 
 ## Modules
 
@@ -54,8 +54,8 @@ for how the range is verified and why a single artifact covers the 2.x range.
 
 ## Getting started
 
-[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/) installs the
-artifacts from this build and sets up credentials, then has one complete job per connector;
+[Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/) puts the
+connectors on a job's classpath and sets up credentials, then has one complete job per connector;
 [Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/) covers dynamic
 destinations, exactly-once, auto-creation and emulator-backed local runs; and the
 [configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/) lists

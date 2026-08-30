@@ -175,6 +175,54 @@ public class DocumentationSqlPlanTest {
     }
 
     @Test
+    void addJarExamplesNameOneReleasedVersion() throws IOException {
+        // The release doc-bump rule (repository guide, Version policy) updates every
+        // ADD JAR literal to the version being released. Only two of the three carry an
+        // exact plan expectation and plan() skips AddJarOperation, so a partial bump
+        // would otherwise stay green while a rendered page names the previous release.
+        Pattern jarName = Pattern.compile("flink-sql-connector-gcp-[a-z]+-([^']+)'");
+        Map<String, String> suffixes = new LinkedHashMap<>();
+        Path directory =
+                repositoryRoot()
+                        .resolve(
+                                "flink-connector-gcp-docs-validation/src/test/resources/sql-snippets");
+        try (Stream<Path> files = Files.walk(directory)) {
+            for (Path file :
+                    files.filter(Files::isRegularFile)
+                            .filter(path -> path.toString().endsWith(".sql"))
+                            .sorted()
+                            .collect(Collectors.toList())) {
+                for (String line : Files.readAllLines(file)) {
+                    if (!line.contains("ADD JAR")) {
+                        continue;
+                    }
+                    Matcher matcher = jarName.matcher(line);
+                    assertThat(matcher.find())
+                            .as(
+                                    "%s: %s must name a quoted"
+                                            + " flink-sql-connector-gcp-<connector> jar",
+                                    file.getFileName(), line.trim())
+                            .isTrue();
+                    suffixes.put(file.getFileName() + ": " + line.trim(), matcher.group(1));
+                }
+            }
+        }
+        assertThat(suffixes).as("the docs carry ADD JAR examples").isNotEmpty();
+        suffixes.forEach(
+                (where, suffix) ->
+                        assertThat(suffix)
+                                .as(
+                                        "%s must name the bare released uber-jar, not a"
+                                                + " classifier or the -1.20 line (the docs-wide"
+                                                + " convention names the 2.x jar)",
+                                        where)
+                                .matches("[0-9]+\\.[0-9]+\\.[0-9]+\\.jar"));
+        assertThat(new HashSet<>(suffixes.values()))
+                .as("every ADD JAR example names the same released version: %s", suffixes)
+                .hasSize(1);
+    }
+
+    @Test
     void everyFlinkRegionHasOneValidationBoundary() throws IOException {
         Set<Snippet> flinkRegions =
                 sourceRegions(
@@ -384,7 +432,7 @@ public class DocumentationSqlPlanTest {
                         command(
                                 "flink/CloudTasksTableReference.sql",
                                 "add-jar",
-                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.0.0-SNAPSHOT.jar';")),
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.0.0.jar';")),
                 scenario(
                         "Cloud Tasks table reference form values",
                         snippet("flink/CloudTasksTableReference.sql", "repeated-form-values"),
@@ -475,7 +523,7 @@ public class DocumentationSqlPlanTest {
                         command(
                                 "flink/SpannerTableReference.sql",
                                 "add-jar",
-                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.0.0-SNAPSHOT.jar';")),
+                                "ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.0.0.jar';")),
                 scenario(
                         "Spanner table reference named schema",
                         withFollowup(

@@ -137,7 +137,14 @@ check-doc-snippets *args:
     just docs
     {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation clean
     {{ mvn }} -Pdocs-snippets -pl flink-connector-gcp-docs-validation -am -Dflink.gcp.docs.public=docs/public {{ args }} test-compile
-    grep -Eq 'tests="[1-9][0-9]*"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Eq 'skipped="0"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="everyRenderedSqlBlockIsSourceBacked"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="everyFlinkRegionHasOneValidationBoundary"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="documentedFlinkSqlMatchesItsValidationContract' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="batchRuntimeModeDetectionDoesNotDependOnSpacing"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml && grep -Fq 'name="statementSplitterIgnoresTrailingSqlComments"' flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml || { echo 'Flink documentation SQL validation did not execute every required boundary or skipped a test.' >&2; exit 1; }
+    mise x uv -- uv run --locked scripts/assert-surefire-boundaries.py \
+        flink-connector-gcp-docs-validation/target/surefire-reports/TEST-io.github.flink.gcp.connector.docs.DocumentationSqlPlanTest.xml \
+        everyRenderedSqlBlockIsSourceBacked \
+        addJarExamplesNameOneReleasedVersion \
+        everyFlinkRegionHasOneValidationBoundary \
+        documentedFlinkSqlMatchesItsValidationContract \
+        batchRuntimeModeDetectionDoesNotDependOnSpacing \
+        statementSplitterIgnoresTrailingSqlComments
 
 # Plan every source-backed Flink SQL region and execute every source-backed GoogleSQL region against
 # the Spanner emulator. The first command retains the Java, README and Javadoc checks because the
@@ -149,7 +156,11 @@ check-doc-sql-snippets:
     just check-doc-snippets
     {{ mvn }} -pl flink-connector-gcp-spanner clean
     {{ mvn }} -pl flink-connector-gcp-spanner -am integration-test -Dgroups=documentation-sql
-    grep -Eq 'tests="[1-9][0-9]*"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Eq 'skipped="0"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Fq 'name="everyGoogleSqlRegionIsExecuted"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Fq 'name="documentedGoogleSqlExecutes' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml && grep -Fq 'name="statementSplitterIgnoresSqlComments"' flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml || { echo 'Spanner documentation SQL validation did not execute every required boundary or skipped a test.' >&2; exit 1; }
+    mise x uv -- uv run --locked scripts/assert-surefire-boundaries.py \
+        flink-connector-gcp-spanner/target/surefire-reports/TEST-io.github.flink.gcp.connector.spanner.SpannerDocumentationSqlITCase.xml \
+        everyGoogleSqlRegionIsExecuted \
+        documentedGoogleSqlExecutes \
+        statementSplitterIgnoresSqlComments
 
 # The fixture site mounts this repository's shortcode and supplies synthetic pages and Java
 # sources, so changes to the parser are measured without depending on the live documentation.
