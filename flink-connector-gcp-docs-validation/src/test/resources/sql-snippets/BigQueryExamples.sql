@@ -123,6 +123,8 @@ SELECT id, amount, source_properties FROM source_changes;
 -- end::debezium-json-sink-and-insert[]
 
 -- tag::spanner-change-stream-source[]
+SET 'execution.checkpointing.interval' = '1 min';
+
 CREATE TABLE order_changes (
   OrderId BIGINT,
   Customer STRING,
@@ -184,3 +186,30 @@ CREATE TABLE people (
 SELECT name
 FROM people;
 -- end::bounded-source[]
+
+-- tag::table-sink[]
+SET 'execution.checkpointing.interval' = '5 min';
+
+CREATE TABLE analytics_events (
+  event_id STRING,
+  amount BIGINT
+) WITH (
+  'connector' = 'bigquery',
+  'project' = 'my-project',
+  'dataset' = 'analytics',
+  'table' = 'events'
+);
+
+INSERT INTO analytics_events
+SELECT event_id, amount
+FROM (VALUES ('event-1', CAST(42 AS BIGINT))) AS staged_events(event_id, amount);
+-- end::table-sink[]
+
+-- tag::table-sink-exactly-once-options[]
+'sink.write-method' = 'storage-api-exactly-once'
+-- end::table-sink-exactly-once-options[]
+
+-- tag::table-sink-file-loads-options[]
+'sink.write-method' = 'file-loads',
+'sink.file-loads.staging-path' = 'gs://my-staging-bucket/flink'
+-- end::table-sink-file-loads-options[]

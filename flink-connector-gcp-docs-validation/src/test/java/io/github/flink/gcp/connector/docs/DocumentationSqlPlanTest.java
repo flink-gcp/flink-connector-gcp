@@ -227,6 +227,21 @@ public class DocumentationSqlPlanTest {
                         "BigQuery bounded source",
                         snippet("flink/BigQueryExamples.sql", "bounded-source")),
                 scenario(
+                        "BigQuery append-only table sink",
+                        snippet("flink/BigQueryExamples.sql", "table-sink")),
+                scenario(
+                        "BigQuery exactly-once table sink options",
+                        fragment(
+                                "flink/BigQueryExamples.sql",
+                                "table-sink-exactly-once-options",
+                                DocumentationSqlPlanTest::bigQuerySinkMethodScenario)),
+                scenario(
+                        "BigQuery FILE_LOADS table sink options",
+                        fragment(
+                                "flink/BigQueryExamples.sql",
+                                "table-sink-file-loads-options",
+                                DocumentationSqlPlanTest::bigQuerySinkMethodScenario)),
+                scenario(
                         "Bigtable bounded source and lookup join",
                         snippet("flink/BigtableExamples.sql", "batch-source"),
                         snippet("flink/BigtableExamples.sql", "lookup-join")),
@@ -557,6 +572,24 @@ public class DocumentationSqlPlanTest {
                 + "  'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-a',\n"
                 + "  'value.format' = 'json'\n"
                 + ");";
+    }
+
+    private static String bigQuerySinkMethodScenario(String region) {
+        return "SET 'execution.checkpointing.interval' = '5 min';\n"
+                + "CREATE TABLE analytics_events (\n"
+                + "  event_id STRING,\n"
+                + "  amount BIGINT\n"
+                + ") WITH (\n"
+                + "  'connector' = 'bigquery',\n"
+                + "  'project' = 'my-project',\n"
+                + "  'dataset' = 'analytics',\n"
+                + "  'table' = 'events',\n"
+                + region
+                + "\n);\n"
+                + "INSERT INTO analytics_events\n"
+                + "SELECT event_id, amount\n"
+                + "FROM (VALUES ('event-1', CAST(42 AS BIGINT))) "
+                + "AS staged_events(event_id, amount);";
     }
 
     private static String subscriptionExpressionScenario(String region) {
