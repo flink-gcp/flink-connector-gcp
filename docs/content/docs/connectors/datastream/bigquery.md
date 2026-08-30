@@ -32,123 +32,6 @@ One builder dispatches to a write-method implementation at job-graph constructio
 Per-feature implementation status is tracked in the
 [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md).
 
-## Choosing a write method
-
-Choose a write method from the required visibility latency and delivery guarantee first, then check
-whether its ingestion price and capacity model fit the workload.
-
-| | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` | `FILE_LOADS` |
-|---|---|---|---|
-| Best fit | Low-latency streaming where downstream processing can tolerate or remove duplicates | Low-latency streaming or batch jobs that require exactly-once delivery | Streaming or batch jobs that accept minute-level visibility to avoid volume-based Storage Write API ingestion pricing |
-| Visibility | Rows are queryable after `AppendRows` succeeds; batching and an in-flight request limit decide the delay | Rows are queryable when the synchronous `FlushRows` commit completes: per checkpoint in streaming, or at end of input in batch | Rows are queryable when the synchronous load, final copy, or `WRITE_TRUNCATE_DATA` terminal query completes: per checkpoint in streaming, or at end of input in batch |
-| Delivery | At least once | Exactly once while Flink state is retained | Exactly once through deterministic BigQuery jobs while Flink state and staged objects are retained |
-| Ingestion price | Volume-based Storage Write API pricing | Volume-based Storage Write API pricing | Batch loading is free on the shared slot pool; a combined `WRITE_TRUNCATE_DATA` commit adds query processing, and Cloud Storage, cross-region transfer, and dedicated `PIPELINE` reservations can still incur charges |
-| Capacity | Per-project Storage Write API throughput and connection quotas | The same throughput quota, plus application-created stream quotas | Free shared slots with no capacity or throughput guarantee; dedicated `PIPELINE` slots are optional |
-| Slow-path effect | A full in-flight window slows the writer, and checkpoint flush waits for pending appends | Append backpressure slows the writer, and a slow `FlushRows` commit delays the next checkpoint | Staging I/O slows the writer, and a slow load lengthens checkpoint completion |
-| Destinations | Fixed or dynamic | Fixed or dynamic | Fixed or dynamic |
-| Column surface | Every type the selected serializer and the Storage Write descriptor can express | The same as at-least-once | Staging additionally rejects `INTERVAL`, `RANGE`, and flexible column names; a `JSON` destination uses Avro even when Parquet is selected |
-
-The two Storage Write API methods use the same volume-based
-[ingestion pricing](https://cloud.google.com/bigquery/pricing#data_ingestion_pricing) and published
-[write quotas](https://cloud.google.com/bigquery/quotas#write-api-limits).
-The default-stream method is the simpler choice when duplicates are acceptable; the buffered-stream
-method adds checkpoint-aligned exactly-once visibility and the state-lifetime considerations
-described in [Exactly-once](#exactly-once-buffered-streams).
-
-`FILE_LOADS` uses BigQuery's free shared pool for batch loading, whose available capacity and
-throughput are not guaranteed.
-A deployment that needs predictable load-job capacity can assign paid `PIPELINE` slots instead.
-The `WRITE_TRUNCATE_DATA` exception and its query cost are described under
-[File loads](#file-loads).
-See Google's [batch-loading capacity and pricing](https://cloud.google.com/bigquery/docs/batch-loading-data#load_job_capacity)
-and the connector's [File loads](#file-loads) section for its quota guard, staging formats and
-recovery contract.
-
-### Sizing a streaming FILE_LOADS job
-
-Size a streaming `FILE_LOADS` job from **staged bytes per checkpoint**, not from the file-roll
-threshold alone.
-For one destination with evenly distributed records, the first estimate is:
-
-```text
-staged bytes per checkpoint = records/second × staged bytes/record × checkpoint seconds
-staged bytes per subtask     = staged bytes per checkpoint ÷ sink parallelism
-```
-
-Suppose a job receives 100,000 records/s, each record occupies 150 bytes after conversion and
-compression, and the sink runs at parallelism 256.
-The 150-byte input is staged size rather than source-message size; measure it from representative
-staging objects when compression or schema shape makes the difference material.
-
-| Checkpoint interval | Staged per checkpoint | Staged per subtask | Effect of the default 16 MiB roll threshold |
-|---|---:|---:|---|
-| 3 minutes | `100,000 × 150 B × 180 = 2.7 GB` | about 10.5 MB (10.1 MiB) | Below the threshold: about one object per subtask, or 256 objects |
-| 5 minutes | `100,000 × 150 B × 300 = 4.5 GB` | about 17.6 MB (16.8 MiB) | Just above the threshold: about two objects per subtask, or 512 objects |
-
-Those object counts assume one active destination and balanced partitions.
-Encoded row sizes, partition skew, and the unflushed Avro block or Parquet row group can move the
-actual count.
-Additional destinations create independently rolled files and divide the staged bytes according to
-the resolver's traffic distribution.
-
-Rolling a file does not by itself create another load job.
-Within the per-job URI and byte limits, the single committer groups all files for one destination
-and staging format into one direct load per checkpoint.
-The roll threshold primarily changes file-level read parallelism and how soon the overflow path is
-needed; the checkpoint interval and active destination count decide the daily direct-load count.
-
-At a 3-minute interval, one active destination normally uses `24 × 60 ÷ 3 = 480` load jobs and
-destination-table modifications per day.
-Two hundred active destinations therefore use about `480 × 200 = 96,000` of the project's 100,000
-daily load jobs, before failed jobs, retries, format transitions, overflow loads, or other workloads
-consume the remaining quota.
-At a 5-minute interval the corresponding count is 288 per destination per day.
-
-The one-minute mathematical floor gives 1,440 modifications per destination per day, leaving only
-60 below the table's 1,500 daily limit and no practical retry allowance.
-By default, the connector rejects configured intervals below 2 minutes and warns below 5 minutes;
-lowering `minCheckpointInterval(...)` is an explicit opt-in for safe, short-lived jobs.
-Google's [batch-loading guidance](https://cloud.google.com/bigquery/docs/batch-loading-data#example_use_case)
-recommends a 5-minute
-incremental load cadence to retain retry headroom.
-A warning at 3 minutes means that the deployment must account for its destination count and retries,
-not that the configuration is automatically invalid.
-
-### Replacing a two-stage load
-
-`FILE_LOADS` can replace a pipeline that first lands source records on Cloud Storage and then runs a
-separate job to parse, convert and batch-load them.
-When the Flink job performs that parsing and conversion, the sink stages and loads its output in the
-same checkpointed job, removing the second scheduler, batch execution path and cross-pipeline
-recovery procedure.
-
-This consolidation does not create a raw archive.
-Staging objects contain converted BigQuery rows and are deleted best-effort only after every
-destination load and temporary-table cleanup complete normally, so they cannot replay source bytes
-after a parser or transformation bug is discovered.
-Keep an independent sink for the original records when that replay path is required.
-The `FailureHandler` handles row-level serialization and conversion failures; it cannot identify a
-parser that produced valid but semantically wrong rows.
-
-### Switching away from FILE_LOADS
-
-Changing from `FILE_LOADS` to a Storage Write API method is not only a `WriteMethod` change:
-
-- **Method options**: remove `FileLoadsOptions`; the default-stream options are optional, while the
-  buffered-stream method requires `BufferedStreamOptions`.
-- **Delivery**: at-least-once permits duplicates, while buffered streams keep exactly-once delivery
-  only with their checkpointed writer and committer state.
-- **Checkpoint behavior**: remove the load-job quota floor, then select the checkpoint cadence for
-  default-stream flushing or buffered-stream visibility and recovery.
-- **Resources and permissions**: remove staging-bucket and temporary-table dependencies, grant the
-  Storage Write API permissions, and account for volume-based ingestion charges and write quotas.
-- **Write behavior**: Storage Write API methods always append, so `WRITE_TRUNCATE`,
-  `WRITE_TRUNCATE_DATA`, `WRITE_EMPTY`, staging formats, cleanup rules and job polling no longer
-  apply.
-
-All three methods support fixed and dynamic destinations, so an existing `destinationResolver(...)`
-does not need to change solely because the write method changes.
-
 ## Credentials
 
 By default every BigQuery and Cloud Storage client uses application-default credentials (ADC).
@@ -221,7 +104,540 @@ API notes:
   per-destination creation metadata (partitioning, clustering) is supplied through
   `TableCreateOptionsProvider` so destination identity stays stable as a cache/connection key.
 
-## Additional physical fields
+## Source
+
+`BigQuerySource` reads a table through the **Storage Read API** — the same gRPC service the
+`STORAGE_API_*` write methods use, in the other direction. It is a FLIP-27 source and declares
+`Boundedness.BOUNDED`, which is not the same as batch-only: it runs inside a STREAMING pipeline and
+finishes once the table has been read, which is what a dimension-table broadcast join needs. There
+is no runtime-mode guard, unlike `FILE_LOADS` on the sink side.
+
+{{< java-snippet file="BigQueryConnectorSource.java" tag="bigquery-connector-source" >}}
+
+**The public contracts place bytes-read accounting on `ReadRows`, not session creation.**
+BigQuery records [`scanned_bytes` on `ReadRows` audit entries](https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use)
+and uses that value to calculate the read's analysis cost, while it classifies
+[`CreateReadSession` as a control-plane metadata operation](https://cloud.google.com/bigquery/quotas#storage_read_api).
+If a `ReadRows` call fails or is cancelled, its
+[metered usage includes the data read before it stopped](https://cloud.google.com/bigquery/pricing#storage_read_api_pricing).
+This source follows session creation with `ReadRows`, so its use can still incur analysis charges.
+Because BigQuery stores columns separately, a job that reads a wide table to use two of its columns
+meters the rest as bytes read unless it says so with [`selectedFields`](#push-down).
+
+### Fetch memory
+
+Each fetch stops at the first of two independent limits:
+
+- [`maxRecordsPerFetch`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) defaults
+  to 10,000 rows and bounds small-row batches and checkpoint cadence;
+- [`maxBytesPerFetch`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) defaults to
+  8 MiB of serialized Avro rows and bounds batches whose rows are wide or variable-width.
+
+The byte value is a target, not a hard heap limit.
+The reader decodes the row that determines whether it fits, keeps that one row for the next fetch,
+and always emits a row larger than the target by itself so it cannot enter a zero-progress loop.
+Serialized bytes are also not the decoded Java object's heap size.
+
+There are two larger scopes around the batch.
+`AvroRowCursor` retains the current Storage Read response block, which can carry about 128 MiB,
+while it resumes the block between fetches.
+Flink can retain up to `(source.reader.element.queue.capacity + 2)` fetched batches around the task
+thread; that queue capacity is 2 by default, so the default target represents up to about 32 MiB of
+serialized rows per active source reader in those batches, plus one deferred row and the response
+block.
+An oversized row can raise one batch above that estimate, and decoded objects can occupy more heap
+than their serialized form.
+Source parallelism multiplies the per-reader envelope, and several source subtasks in one
+TaskManager share that JVM's heap.
+
+Use [`selectedFields`](#push-down) to avoid transferring columns the job does not need and
+[`rowRestriction`](#push-down) to remove rows before the read session sends them.
+Table API projection pushdown maps retained top-level columns to `selectedFields`.
+Table API filter pushdown maps its conservative supported subset to `rowRestriction`, while every
+original predicate remains a Flink residual.
+`scan.row-restriction` remains the explicit BigQuery-native filter surface and is combined with a
+generated restriction using parenthesized `AND`.
+No batch-size metric is registered because measuring decoded heap on the per-row path would itself
+distort the allocation this guard is meant to contain; the existing `bytesRead` metric reports
+response bytes received instead.
+
+### Splits, offsets and recovery
+
+A **split is one `ReadStream` of the read session, plus the number of rows already consumed from it**.
+Restoring re-issues `ReadRows` at that offset, which is the API's own resume mechanism rather than
+anything this connector invents. Three facts hold it together:
+
+- The **read session is created exactly once**, by the enumerator, guarded by a checkpointed flag so
+  a restore adopts the existing session instead of creating a second one. A second session would pin
+  a second snapshot of the table, and a failed-over job would silently read the table as of two
+  different instants. `readSessionsCreated` reports the same fact at runtime. The guard is the
+  checkpoint, so a recovery that has none — a JobManager failover before the first checkpoint
+  completes — plans afresh at a new snapshot, which is correct because the readers restarted with no
+  state either and nothing survives from the first session.
+- The offset advances **once per successfully deserialized row**, after every synchronous output
+  has reached the source output.
+  It advances by one whether the row emitted zero, one, or many records, because it counts input
+  rows consumed rather than output records.
+  If deserialization or downstream collection fails, the offset does not advance.
+  A retry therefore replays that input row; if an earlier output from the same row had already
+  reached downstream before a later output failed, the earlier output can be duplicated.
+- A stream's rows arrive in BigQuery's **storage order, not the table's**, and an offset is a
+  position in that order (measured 2026-08-09). Nothing downstream should read order into it.
+
+A checkpoint can be taken between the last row of a stream being emitted and the reader recording
+the stream as finished, which leaves a restored split at exactly the stream's row count — a position
+the proto documents as undefined (*"Requesting a larger offset is undefined"*). Measured
+2026-08-09: BigQuery ends such a read with no rows and no error, and that is the whole of the
+handling — the restored split is opened like any other and reported finished after one empty call.
+Nothing marks such a split in advance, because nothing can: Flink removes a split's state before
+telling the reader the split finished.
+
+### Assignment and stream count
+
+Assignment is **pull-based**: a reader holds one stream at a time and asks for the next as soon as it
+finishes one, so a subtask that draws a small stream goes back for more work instead of idling. That
+is what stands in for the API's `SplitReadStream`, which FLIP-27 has no hook for and this connector
+never calls.
+
+The enumerator keeps no record of which subtask holds which stream: every question such a ledger
+would answer is answered instead by what the enumerator is handed — a request, or a returned stream.
+That is deliberate. The reference implementation this design was drawn from records a *critical data
+loss bug in reader split handling* in its own change log, fixed by signalling no-more-splits per
+reader and removing completed readers from its queue — assignment and completion is where a
+hand-written enumerator goes wrong quietly, and the per-reader half of it is something Flink's
+coordinator already does.
+
+Flink keeps one thing the connector does not: its coordinator suppresses a further request from a
+subtask it has already told there are no more splits, and clears that flag only when the subtask is
+reset. Since a reset is also what returns a failed reader's streams, a returned stream is always
+reachable by the subtask that comes back for it — but a *different* subtask that already finished
+will not pick it up.
+
+How many streams a session has is **BigQuery's decision**, shaped by two knobs. Measured 2026-08-09:
+
+| Request | 910 GB table | 23 GB table | 6 MB table |
+|---|---|---|---|
+| neither knob set | 936 streams | 138 | 1 |
+| `maxStreamCount(3)` | 3 | 3 | 1 |
+| `preferredMinStreamCount(5000)` | 936 | 552 | 1 |
+
+So `maxStreamCount` is a cap that is honoured downwards and **never a floor**: a small table is read
+by a single stream however many are asked for, and capping below the job's parallelism leaves
+subtasks idle. `preferredMinStreamCount` is a best-effort request for more. Asking for more streams
+than there are subtasks is how this source gets its elasticity. A `preferredMinStreamCount` above
+`maxStreamCount` is rejected by the builder, because BigQuery rejects it too.
+
+### Push-down
+
+`selectedFields`, `rowRestriction` and `snapshotTime` are fields of the read session, so BigQuery
+applies them before anything is transferred. What that saves differs between the two:
+`selectedFields` leaves whole columns out of the metered bytes-read usage;
+`rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
+partitioning or clustering column.
+The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
+predicate subset onto `SupportsFilterPushDown`.
+
+Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`,
+`TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns.
+`BOOLEAN` accepts equality and inequality, BigQuery `STRING` accepts equality, and those supported
+column types also accept `IS NULL` and `IS NOT NULL`.
+An `AND` contributes every child that is a necessary condition for the whole expression.
+An `OR` contributes only when every branch translates.
+String inequality and ordered string comparisons are not translated.
+Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
+rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
+Timestamp comparison pushdown requires precision 6 because the source preserves BigQuery
+microseconds at that precision.
+
+BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
+Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
+unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
+reject the generated restriction at that point.
+A collated `STRING` equality can admit additional rows, which the Flink residual removes.
+`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
+complex types, field-to-field comparisons, casts, and functions are not translated.
+
+Every generated restriction is a necessary condition for the Flink predicate; otherwise BigQuery
+could discard a matching row before Flink sees it.
+Every pushed predicate also remains a Flink residual, so Flink rejects any returned row that does
+not satisfy its own predicate semantics.
+Identifiers are derived from the physical schema and quoted as GoogleSQL identifiers, while
+literals are emitted by logical type and escaped before they enter the generated expression.
+An explicit `rowRestriction` is parenthesized separately and combined with the generated
+restriction using `AND`.
+The connector admits each generated restriction only while the combined UTF-8 expression remains
+within the Storage Read API's 1 MB limit.
+A predicate that would cross the limit remains with Flink without discarding other generated
+restrictions that fit.
+`snapshotTime` remains an explicit option rather than a SQL translation.
+
+`snapshotTime` is served from BigQuery's time-travel window, which is seven days by default: an
+instant outside it is rejected when the session is created, with `INVALID_ARGUMENT: time travel
+timestamp exceeds the maximum time travel duration of 168h` (measured 2026-08-09).
+
+### Reading a query or a view
+
+**The Storage Read API cannot read a view.** Not a logical one and not a materialized one — it reads
+storage, and a view has none, so `CreateReadSession` against one answers `INVALID_ARGUMENT: request
+failed: non-table entities cannot be read with the storage API` (measured 2026-08-10; a logical view
+and a materialized view give the same code and the same words). Pointing `table(...)` at a view fails
+with that error, and the connector adds a sentence naming `query(...)` — unless the source asked for
+[`materializeViews()`](#reading-a-view-without-writing-the-query), which handles it instead.
+
+`query(...)` is the way round it, and the way to read anything else SQL can express — a join, an
+aggregate, a `FOR SYSTEM_TIME AS OF`:
+
+{{< java-snippet file="BigQueryConnectorQueryOrView.java" tag="bigquery-connector-query-or-view" >}}
+
+The query runs once, as an ordinary query job, from the enumerator's planning call — and once is
+enforced by the same checkpointed flag that stops a second read session, so a restore adopts the
+session the first plan created and never re-runs the query. The source then reads the table the
+result landed in; from the split downwards nothing can tell the two kinds of source apart.
+
+**Cancelling the Flink job does not cancel the query.** By then it is an ordinary BigQuery job, and
+BigQuery runs it to completion — or to its own execution limit — and bills for it either way. Cancel
+it in BigQuery if that matters: the JobManager logs the job id when it submits the query, and that
+is the line that exists while the query is still running. A second line, written once the query
+finishes, names the table the result went to.
+
+**It is billed twice**: once for the bytes the query scans, and again for the bytes the read session
+scans out of its result. `selectedFields` and `rowRestriction` are applied by BigQuery to the
+*result*, so they cannot make the query cheaper — prune inside the query itself. `snapshotTime` is
+rejected beside `query(...)` rather than ignored: the result table is created by the query, so there
+is no earlier version of it, and the point in time belongs in the query as `FOR SYSTEM_TIME AS OF`.
+Table API filter pushdown follows the same boundary: it never rewrites the configured query and
+applies its generated row restriction only to the Storage Read session over that result.
+
+#### Reading a view without writing the query
+
+View materialization is **opt-in and never automatic by default**. `materializeViews()` turns it on:
+the source then asks BigQuery once, at job start, what the configured name is, and a view — logical
+or materialized — is read by generating `SELECT … FROM the_view` and reading its result. An ordinary
+table is read directly, exactly as without it.
+
+{{< java-snippet file="BigQueryConnectorViewMaterialization.java" tag="bigquery-connector-view-materialization" >}}
+
+Off by default for two reasons, and both are what the opt-in buys back. It costs a metadata call,
+and a source pointed at a table should not pay a round trip to be told it is a table — without it
+the read path makes no REST call at all. And it bills a query nobody wrote, which is a thing to ask
+for rather than to inherit. Spark and the Dataproc connector spell the same switch `viewsEnabled`.
+
+`selectedFields` **is** folded into the generated `SELECT`: a view's `SELECT *` scans every column
+and the query is billed for the scan, so leaving the projection to the read session would prune the
+transfer after paying for it. `rowRestriction` is **not** folded — BigQuery's restriction syntax is
+not a SQL `WHERE`, and folding it would give one knob two meanings depending on what the source was
+pointed at — so it stays on the read session, where a table source applies it too. The rule behind
+both: **this connector folds into SQL it wrote, and never into SQL you wrote.**
+
+`snapshotTime` is rejected beside `materializeViews()`. If the name turns out to be a view, its
+result table is created by that job and has no earlier version, so the read would fail at session
+creation rather than where the value was typed.
+
+#### Where the result lands
+
+Two choices, and they differ in who owns the result rather than in what is read.
+
+**Unset — BigQuery's anonymous dataset (the default).** The job is submitted with no destination
+table, so BigQuery writes the result into a hidden dataset of its own, expires it after about a day
+and charges no storage for it. Nothing is created here, so nothing is left to clean up, and an
+identical query re-run inside that window is answered from cache — free, and landing on the same
+table (measured 2026-08-10), which is what makes a JobManager failover before the first checkpoint
+cost nothing. Its constraints are BigQuery's, not this connector's:
+
+- access to an anonymous dataset is restricted to the identity that ran the query.
+  With `serviceAccountKeyFile(...)`, the deployment must mount the same key at the configured path
+  on the JobManager and TaskManagers; with ADC, it must ensure that they resolve to the same
+  identity;
+- Google advises against depending on a cached results table as the input of another job;
+- a result above the maximum response size is not kept as a cached result;
+- the result is not shareable and cannot be addressed from outside the job.
+
+**Set — a table in `queryResultDataset`.** The connector creates a table there and sets a one-day
+expiration on it. Storage is charged until it expires, and nothing deletes it earlier: teardown also
+runs on a JobManager failover, where the restored job is still reading the read session that table
+backs, so deleting on teardown would break the recovery it looks like it is tidying up after. The
+dataset must already exist, must be in the query's own location, and must live in `parentProject`.
+
+The expiration cannot cut a read short: a read session lasts six hours and a bounded read has to
+finish inside that anyway.
+
+#### Reusing the query job across a failover
+
+By default the query job's id is random and a previous attempt is never re-attached to: a
+JobManager failover before the first checkpoint re-plans the source and runs the query again.
+Against the anonymous dataset a completed first query makes that a free cache hit; a first query
+still *running* is the expensive case, since the cache serves only completed results and the two
+scans run — and bill — concurrently. Against a named dataset every re-run writes a second result
+table. `queryJobsSubmitted` is what reports a repeat.
+
+`reuseQueryResultWithin(...)` closes that window ([#477]({{< param BookRepo >}}/issues/477),
+recorded in ADR-0089). With it, the job id is derived from the **Flink job name**, a digest of the
+query configuration, and the window, so a re-plan finds the first attempt's job under the same id
+and adopts it. It requires `queryLocation(...)`: BigQuery scopes a job to (project, location, id),
+and a look-up naming no location sees only jobs in the US multi-region — anywhere else the
+previous attempt's job would never be found (measured against a regional dataset) — a running job
+is waited for, a finished one has its result table checked and read, a failed one is probed past
+to a fresh retry id. `queryJobsReattached` reports each reuse.
+
+Its contract is worth stating precisely: **attempts of the same Flink job name and the same query
+configuration inside one window share one query job.** That covers the failover above, and it
+equally covers an intentional redeploy under the same name inside the window — the connector
+cannot tell the two apart, so a redeployed pipeline reads the previous run's result even if the
+source data moved meanwhile. Size the window to how stale a result the pipeline may read, or
+rename the job to force a fresh query. Two unrelated pipelines do not collide: the digest covers
+the query, project, location, result dataset and window, so ids only meet when the jobs they name
+are identical — up to a sixteen-hex digest, the same footing the sink's deterministic load-job ids
+stand on. The window is capped at 24 hours, because both places a result can land expire
+after about a day: past that there is nothing left to reuse, so a longer window could only ever
+pay for the query again while appearing to deduplicate it. A table can also vanish *early* —
+deleted by hand, or a cached-results table Google dropped inside its nominal day — which is why
+adopting a finished job spends one `getTable` on the table its metadata names: a table that is
+gone is probed past like a failed job, and the query runs again under a fresh retry id, which
+`queryJobsSubmitted` reports ([#485]({{< param BookRepo >}}/issues/485)).
+
+### Deserialization
+
+Rows arrive as Avro and are decoded into a `GenericRecord`, which
+`BigQueryRowDeserializationSchema.deserialize(GenericRecord, Collector)` converts into zero or more output
+records.
+Emitting nothing skips the row, and `recordsSkipped` is the only report of that successful skip.
+Every output must be non-null and emitted synchronously during the call; retaining the collector or
+using it after the method returns is invalid.
+The SPI is a serializable interface shipped inside the job graph.
+Avro's `Schema` is itself serializable and an implementation may hold it directly.
+
+A deserializer may declare a **reader schema**, and the shipped `genericRecord(...)` implementation
+does. Rows are then resolved from the session's schema into it by Avro's schema-resolution rules, so
+the schema you write need not match the table's exactly: naming a subset of the columns with their
+natural types is enough, and the records the source produces then carry the schema you declared —
+which is also the one its `TypeInformation` is derived from. A schema that cannot be parsed fails
+where the job is built, not on a TaskManager once rows flow.
+
+Using `genericRecord(...)` requires **`flink-avro` on the job's classpath**. It is what supplies
+Flink's Avro serializer for `GenericRecord`; without it Flink falls back to Kryo, which cannot
+serialize one at all (measured 2026-08-09). A deserializer converting to your own type needs none of
+this.
+
+Records are emitted **without a timestamp**: a BigQuery row carries no event time the connector could
+know about, so assigning one is the job's decision through a `WatermarkStrategy`.
+
+### Reading against the emulator
+
+`emulatorEndpoint(...)` sends the source's read traffic to a local BigQuery emulator over plaintext.
+For a source reading a `table(...)` that is **all** of it, where the sink takes two endpoints: the
+table's schema comes from the read session, and nothing on that path makes a REST call. A source
+reading a [`query(...)`](#reading-a-query-or-a-view), or one that asked for `materializeViews()`,
+does make one — the query job, and the view lookup — and takes `emulatorRestEndpoint(...)` as well,
+the same split the sink has.
+
+The query path is not covered against the emulator. Where the result of a destination-less query
+lands is BigQuery's own mechanism rather than an API this connector drives, so the gated real-GCP
+case is its only coverage.
+
+The emulator is a convenience, never evidence about the service. Measured against
+goccy/bigquery-emulator 0.8.1 (2026-08-09), its read path differs in four ways that matter:
+
+| The emulator | BigQuery |
+|---|---|
+| rejects `maxStreamCount` above 1 | caps at the requested count, and may return fewer |
+| **ignores `ReadRowsRequest.offset`** and answers every call from row zero | resumes at the offset |
+| answers a whole table in one response block | blocks of up to about 128 MiB |
+| names the Avro schema `<project>.<dataset>`, and expires a session in one hour | `__root__` with no namespace, six hours |
+
+The second is why **no recovery test may be written against the emulator** — a green one would prove
+the opposite of what it claims — and the fourth is why the emulator harness uses a project id
+without a hyphen: a hyphen is not legal in an Avro namespace, so the schema fails to parse before a
+row is decoded. Each deviation is pinned by `BigQueryEmulatorReadDeviationITCase`, so the image bump
+that fixes one fails the build rather than leaving a workaround behind.
+
+### Read failures and retries
+
+**A broken `ReadRows` is resumed by the client library, not by this connector.** The Storage Read
+API client tracks how many rows a call has delivered and reissues it at that row, so a stream that
+drops mid-read carries on where it stopped — no row is read twice, and none is skipped. It retries
+`UNAVAILABLE`, a short list of `INTERNAL` transport faults (`RST_STREAM` and its neighbours), and a
+`RESOURCE_EXHAUSTED` that carries a `RetryInfo` delay, honouring that delay. A bare `INTERNAL` and a
+bare `RESOURCE_EXHAUSTED` are deliberately not retried by the client; this connector neither widens
+that classification nor runs a second retry loop behind it.
+
+What the client does not do is stop. Left alone it retries for **twenty-four hours**, so a stream
+that is never coming back would hold a reader for a day while reporting nothing at all.
+[`retryMaxAttempts`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) is the bound,
+and it counts **consecutive attempts that made no progress** — an attempt that delivered rows resets
+the count. When the read does fail, Flink's restart strategy restores from the last checkpoint and
+each stream resumes at the offset that checkpoint holds rather than being read from the top.
+
+How long twenty-five attempts take depends on which failure it is, and the two ends are far
+apart. For `UNAVAILABLE` the client backs off exponentially — nominally 100 ms growing by 1.3 —
+and then picks each wait *uniformly between zero and that value*, so the default bounds a stuck
+stream at about three minutes and reaches it in about half that on average. For the `INTERNAL`
+transport faults the client waits a fixed **one millisecond** and does not back off at all, so
+the bound is reached almost at once. A `RESOURCE_EXHAUSTED` waits exactly the delay the server
+named.
+
+That reset has a consequence worth knowing for a job that is slow rather than stuck. A stream that
+keeps failing and resuming *is* making progress, so it never reaches the bound and never fails
+anything — it just reads at a fraction of the speed. **`readRetries` is what reports it**, and it is
+the only thing that does at a level anyone watches: the client library logs a retry too, but through
+`java.util.logging` at `FINEST`.
+
+A failed read names the gRPC status it carried, so a failure can be looked up rather than guessed
+at. Two conditions are worth recognising:
+
+| The read fails | What it means |
+|---|---|
+| with `FAILED_PRECONDITION`, naming an offset | The restored offset is past the rows the stream holds. A stream restored at exactly its row count is *not* this: that answers empty and no error (measured 2026-08-09) |
+| after the read session's expiry | The read outlived its session, and the message says so |
+
+**A read session lives six hours from its creation**, and a read that outlives it cannot be resumed:
+restarting restores the same expired session, and creating a second one is exactly what the source
+must not do, since it would pin a second snapshot of the table. So such a job has to be started over,
+and a read that cannot finish inside six hours needs more parallelism or fewer columns. The connector
+recognises the case and says so in the failure, from the expiry each split carries. It does **not**
+refuse to read because a local clock says the session is old: the expiry is BigQuery's to apply, and
+the machine reading need not agree with it about the time.
+
+### How the source is tested
+
+The offset resume is covered three ways, because no single one of them can carry it: a unit test
+drives two readers across a snapshot against a fake that honours offsets; a MiniCluster job fails
+once part-way through and is asserted to read every row exactly once, having resumed rather than
+started over; and a gated real-GCP case measures that BigQuery resumes where it left off and answers
+a read at the row count with an empty stream.
+
+Multi-stream recovery — a subtask dying with a stream in hand, its splits coming back, another
+subtask finishing them — is measured against BigQuery as well, over a public dataset so that no table
+of ours has to be large enough to split. How large that is: measured 2026-08-10, a 195 MB table
+answers with one stream and a 264 MB one with four, and a projection lowers the count further,
+because it follows the bytes actually selected rather than the table's size.
+
+The query path is covered against BigQuery and nowhere else, for the reason
+[Reading against the emulator](#reading-against-the-emulator) gives: a gated case reads a view
+through both landing places and asserts the same rows, and reads the same view as a table to hold
+the failure message that names `query(...)` to what BigQuery actually answers. The planning
+behaviour around it — the query running once, a restore running none, the session being created
+against the table the result landed in — is the enumerator's unit tests, which need no service.
+
+## Sink
+
+### Choosing a write method
+
+Choose a write method from the required visibility latency and delivery guarantee first, then check
+whether its ingestion price and capacity model fit the workload.
+
+| | `STORAGE_API_AT_LEAST_ONCE` | `STORAGE_API_EXACTLY_ONCE` | `FILE_LOADS` |
+|---|---|---|---|
+| Best fit | Low-latency streaming where downstream processing can tolerate or remove duplicates | Low-latency streaming or batch jobs that require exactly-once delivery | Streaming or batch jobs that accept minute-level visibility to avoid volume-based Storage Write API ingestion pricing |
+| Visibility | Rows are queryable after `AppendRows` succeeds; batching and an in-flight request limit decide the delay | Rows are queryable when the synchronous `FlushRows` commit completes: per checkpoint in streaming, or at end of input in batch | Rows are queryable when the synchronous load, final copy, or `WRITE_TRUNCATE_DATA` terminal query completes: per checkpoint in streaming, or at end of input in batch |
+| Delivery | At least once | Exactly once while Flink state is retained | Exactly once through deterministic BigQuery jobs while Flink state and staged objects are retained |
+| Ingestion price | Volume-based Storage Write API pricing | Volume-based Storage Write API pricing | Batch loading is free on the shared slot pool; a combined `WRITE_TRUNCATE_DATA` commit adds query processing, and Cloud Storage, cross-region transfer, and dedicated `PIPELINE` reservations can still incur charges |
+| Capacity | Per-project Storage Write API throughput and connection quotas | The same throughput quota, plus application-created stream quotas | Free shared slots with no capacity or throughput guarantee; dedicated `PIPELINE` slots are optional |
+| Slow-path effect | A full in-flight window slows the writer, and checkpoint flush waits for pending appends | Append backpressure slows the writer, and a slow `FlushRows` commit delays the next checkpoint | Staging I/O slows the writer, and a slow load lengthens checkpoint completion |
+| Destinations | Fixed or dynamic | Fixed or dynamic | Fixed or dynamic |
+| Column surface | Every type the selected serializer and the Storage Write descriptor can express | The same as at-least-once | Staging additionally rejects `INTERVAL`, `RANGE`, and flexible column names; a `JSON` destination uses Avro even when Parquet is selected |
+
+The two Storage Write API methods use the same volume-based
+[ingestion pricing](https://cloud.google.com/bigquery/pricing#data_ingestion_pricing) and published
+[write quotas](https://cloud.google.com/bigquery/quotas#write-api-limits).
+The default-stream method is the simpler choice when duplicates are acceptable; the buffered-stream
+method adds checkpoint-aligned exactly-once visibility and the state-lifetime considerations
+described in [Exactly-once](#exactly-once-buffered-streams).
+
+`FILE_LOADS` uses BigQuery's free shared pool for batch loading, whose available capacity and
+throughput are not guaranteed.
+A deployment that needs predictable load-job capacity can assign paid `PIPELINE` slots instead.
+The `WRITE_TRUNCATE_DATA` exception and its query cost are described under
+[File loads](#file-loads).
+See Google's [batch-loading capacity and pricing](https://cloud.google.com/bigquery/docs/batch-loading-data#load_job_capacity)
+and the connector's [File loads](#file-loads) section for its quota guard, staging formats and
+recovery contract.
+
+#### Sizing a streaming FILE_LOADS job
+
+Size a streaming `FILE_LOADS` job from **staged bytes per checkpoint**, not from the file-roll
+threshold alone.
+For one destination with evenly distributed records, the first estimate is:
+
+```text
+staged bytes per checkpoint = records/second × staged bytes/record × checkpoint seconds
+staged bytes per subtask     = staged bytes per checkpoint ÷ sink parallelism
+```
+
+Suppose a job receives 100,000 records/s, each record occupies 150 bytes after conversion and
+compression, and the sink runs at parallelism 256.
+The 150-byte input is staged size rather than source-message size; measure it from representative
+staging objects when compression or schema shape makes the difference material.
+
+| Checkpoint interval | Staged per checkpoint | Staged per subtask | Effect of the default 16 MiB roll threshold |
+|---|---:|---:|---|
+| 3 minutes | `100,000 × 150 B × 180 = 2.7 GB` | about 10.5 MB (10.1 MiB) | Below the threshold: about one object per subtask, or 256 objects |
+| 5 minutes | `100,000 × 150 B × 300 = 4.5 GB` | about 17.6 MB (16.8 MiB) | Just above the threshold: about two objects per subtask, or 512 objects |
+
+Those object counts assume one active destination and balanced partitions.
+Encoded row sizes, partition skew, and the unflushed Avro block or Parquet row group can move the
+actual count.
+Additional destinations create independently rolled files and divide the staged bytes according to
+the resolver's traffic distribution.
+
+Rolling a file does not by itself create another load job.
+Within the per-job URI and byte limits, the single committer groups all files for one destination
+and staging format into one direct load per checkpoint.
+The roll threshold primarily changes file-level read parallelism and how soon the overflow path is
+needed; the checkpoint interval and active destination count decide the daily direct-load count.
+
+At a 3-minute interval, one active destination normally uses `24 × 60 ÷ 3 = 480` load jobs and
+destination-table modifications per day.
+Two hundred active destinations therefore use about `480 × 200 = 96,000` of the project's 100,000
+daily load jobs, before failed jobs, retries, format transitions, overflow loads, or other workloads
+consume the remaining quota.
+At a 5-minute interval the corresponding count is 288 per destination per day.
+
+The one-minute mathematical floor gives 1,440 modifications per destination per day, leaving only
+60 below the table's 1,500 daily limit and no practical retry allowance.
+By default, the connector rejects configured intervals below 2 minutes and warns below 5 minutes;
+lowering `minCheckpointInterval(...)` is an explicit opt-in for safe, short-lived jobs.
+Google's [batch-loading guidance](https://cloud.google.com/bigquery/docs/batch-loading-data#example_use_case)
+recommends a 5-minute
+incremental load cadence to retain retry headroom.
+A warning at 3 minutes means that the deployment must account for its destination count and retries,
+not that the configuration is automatically invalid.
+
+#### Replacing a two-stage load
+
+`FILE_LOADS` can replace a pipeline that first lands source records on Cloud Storage and then runs a
+separate job to parse, convert and batch-load them.
+When the Flink job performs that parsing and conversion, the sink stages and loads its output in the
+same checkpointed job, removing the second scheduler, batch execution path and cross-pipeline
+recovery procedure.
+
+This consolidation does not create a raw archive.
+Staging objects contain converted BigQuery rows and are deleted best-effort only after every
+destination load and temporary-table cleanup complete normally, so they cannot replay source bytes
+after a parser or transformation bug is discovered.
+Keep an independent sink for the original records when that replay path is required.
+The `FailureHandler` handles row-level serialization and conversion failures; it cannot identify a
+parser that produced valid but semantically wrong rows.
+
+#### Switching away from FILE_LOADS
+
+Changing from `FILE_LOADS` to a Storage Write API method is not only a `WriteMethod` change:
+
+- **Method options**: remove `FileLoadsOptions`; the default-stream options are optional, while the
+  buffered-stream method requires `BufferedStreamOptions`.
+- **Delivery**: at-least-once permits duplicates, while buffered streams keep exactly-once delivery
+  only with their checkpointed writer and committer state.
+- **Checkpoint behavior**: remove the load-job quota floor, then select the checkpoint cadence for
+  default-stream flushing or buffered-stream visibility and recovery.
+- **Resources and permissions**: remove staging-bucket and temporary-table dependencies, grant the
+  Storage Write API permissions, and account for volume-based ingestion charges and write quotas.
+- **Write behavior**: Storage Write API methods always append, so `WRITE_TRUNCATE`,
+  `WRITE_TRUNCATE_DATA`, `WRITE_EMPTY`, staging formats, cleanup rules and job polling no longer
+  apply.
+
+All three methods support fixed and dynamic destinations, so an existing `destinationResolver(...)`
+does not need to change solely because the write method changes.
+
+### Additional physical fields
 
 `additionalFields(...)` adds physical BigQuery columns whose values are derived from each record
 after its configured serializer emits a protobuf row.
@@ -277,7 +693,7 @@ CDC metadata below is deliberately different.
 BigQuery documents its two CDC names as write-only pseudocolumns, so they extend the default-stream
 descriptor without becoming physical columns; arbitrary additional fields never take that path.
 
-## Change data capture
+### Change data capture
 
 Experimental ([#706]({{< param BookRepo >}}/issues/706)).
 The CDC API is still taking shape: the open upstream question of how Debezium Avro source metadata
@@ -387,7 +803,7 @@ The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#cdc
 show a DataStream adapter per source connector and an SQL bridge that retains the source ordering
 metadata.
 
-## Column modes
+### Column modes
 
 **A derived column is `NULLABLE`. A constraint is something you ask for.** `REPEATED` is the one mode
 derived without being asked for, because a repeated field has no nullable form — a BigQuery
@@ -426,7 +842,7 @@ Why the policy runs this way:
 There is deliberately no inverse switch anywhere: with `NULLABLE` as the default, "all columns
 nullable" is just not asking for the constraint.
 
-## Protobuf messages
+### Protobuf messages
 
 `ProtoMessageSerializationSchema` derives the BigQuery schema from the message descriptor and rewrites each
 message into the protobuf row the Storage Write API accepts.
@@ -459,7 +875,7 @@ whose names differ only by case, which the Storage API cannot tell apart because
 descriptor field names, and a message with no fields at all, `google.protobuf.Empty` among them,
 since a BigQuery `STRUCT` must have at least one column.
 
-### Well-known types
+#### Well-known types
 
 *Well-known types* is protobuf's own term for the messages shipped in `google/protobuf/*.proto` —
 see [Protocol Buffers Well-Known Types](https://protobuf.dev/reference/protobuf/google.protobuf/).
@@ -497,7 +913,7 @@ A `Duration` outside protobuf's valid range is a row-level failure routed to the
 joined exactly as declared, *not* lowerCamelCased the way protobuf's canonical JSON form renders
 them, so they come back as they were written.
 
-### Nullability
+#### Nullability
 
 By default every non-repeated column is `NULLABLE`.
 `ProtoSchemaOptions.builder().deriveRequiredColumns()` reads each field's presence instead:
@@ -558,7 +974,7 @@ Three things to weigh before enabling it:
   [Table auto-creation](#table-auto-creation), [Schema evolution](#schema-evolution) and
   [File loads](#file-loads) for what that means afterwards.
 
-## JSON columns
+### JSON columns
 
 The Storage Write API carries a `JSON` column as a string, so nothing in the *value* path
 distinguishes it from a `STRING` column. What a JSON column needs is a **marker at schema-derivation
@@ -670,7 +1086,7 @@ Three consequences worth knowing:
 Marking a field that is neither a message nor a string — including a proto map, whose BigQuery shape
 is `REPEATED STRUCT<key, value>` — is rejected when the schema is derived, through either mechanism.
 
-## Geography columns
+### Geography columns
 
 The Storage Write API carries a `GEOGRAPHY` column as a string too, so it needs the same
 **schema-derivation marker** a [JSON column](#json-columns) does, and for the same reason: nothing in
@@ -753,7 +1169,7 @@ supplied schema may contain is a separate question — `RANGE` it rejects outrig
 - **`RANGE`.** Neither Avro nor protobuf has an equivalent, so supporting it would mean reading a
   two-field record as a range by convention. `TableSchemaToAvroConverter` rejects it too.
 
-## Avro records
+### Avro records
 
 `AvroRecordSerializationSchema` writes Avro records without a protobuf definition in sight. It takes
 one Avro writer schema for the whole job — as a `Schema` or as its JSON text, for jobs that read it
@@ -873,7 +1289,7 @@ into the row descriptor's shape, since the Storage Write API wants BigQuery's co
 than your message's — but it starts from protobuf accessors rather than Avro ones and has no logical
 types to convert.
 
-## JSON records
+### JSON records
 
 `JsonDocumentSerializationSchema` writes records that are JSON documents, as `String`s. JSON carries no schema of its
 own, so unlike the protobuf and Avro serializers this one cannot derive the destination schema — it
@@ -961,7 +1377,7 @@ rebuilding the serializer and restarting.
 costs. Where the input format is yours to choose and throughput matters, a native protobuf record
 avoids both.
 
-## Table auto-creation
+### Table auto-creation
 
 Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with a
 [missing-table verdict](#a-missing-table-does-not-say-not_found) is
@@ -982,7 +1398,7 @@ durably, and relaxing a column afterwards is a schema update rather than an edit
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
 
-### Losing the creation race costs a retry, not the job
+#### Losing the creation race costs a retry, not the job
 
 HTTP 409 is not the only way to lose the race. Past a handful of concurrent creations of the same
 table, BigQuery answers the **per-table metadata-update quota** instead — measured 2026-08-08 by
@@ -1013,7 +1429,7 @@ attaches to quotas refilling on boundaries longer than any connector budget as w
 has not been observed for a creation here, and spending the budget on one would only delay a failure
 that already names its own reason.
 
-### A missing table does not say `NOT_FOUND`
+#### A missing table does not say `NOT_FOUND`
 
 Opening a Storage Write API stream against a table that is not there answers **`PERMISSION_DENIED`**,
 not `NOT_FOUND`:
@@ -1079,7 +1495,7 @@ goccy emulator answers `NOT_FOUND` (and `UNKNOWN` on both the default stream and
 `CreateWriteStream`), so emulator tests alone cannot see this — which is why they did not, and why
 auto-creation had never once fired against the real service.
 
-## Schema evolution
+### Schema evolution
 
 All three sink write methods support schema evolution, but they do not use one update protocol.
 `SchemaUpdateOptions` defines the common widening policy: new fields require `allowNewFields()`, and `REQUIRED` to `NULLABLE` changes require `allowFieldRelaxation()`.
@@ -1094,7 +1510,7 @@ Each write method applies that policy at a boundary that preserves its delivery 
 With schema updates disabled, the Storage Write API methods fail a schema-mismatch append.
 `FILE_LOADS` instead makes the live table schema win and warns once per destination; a staged field absent from that schema is ignored by BigQuery.
 
-### Nullability and reconciliation
+#### Nullability and reconciliation
 
 Column-mode derivation and schema reconciliation are separate decisions.
 The serializer first produces the desired schema: every non-repeated column is `NULLABLE` by default, while `ProtoSchemaOptions.builder().deriveRequiredColumns()` and `AvroSchemaOptions.builder().deriveRequiredColumns()` opt into the rules under [Column modes](#column-modes).
@@ -1116,7 +1532,7 @@ Reconciliation then compares that desired schema with the live table.
 The row-level consequence is independent of how the mismatch arose.
 A row that omits a field while the live table still declares it `REQUIRED` is rejected by the Storage Write API, or fails the whole `FILE_LOADS` load job.
 
-### Storage Write API connections
+#### Storage Write API connections
 
 Schema changes are handled without a job restart on both Storage Write API methods:
 
@@ -1254,7 +1670,7 @@ Neither method is uniformly safer — their loss paths are disjoint:
 | Committable outliving its write stream | none (holds no committer state) | possible — see [Exactly-once](#exactly-once-buffered-streams) |
 | `FailureHandler` drop policies | by configuration | by configuration |
 
-## Exactly-once (buffered streams)
+### Exactly-once (buffered streams)
 
 `WriteMethod.STORAGE_API_EXACTLY_ONCE` writes through application-created Storage Write API
 **BUFFERED** streams committed with a two-phase commit protocol on Flink checkpoints: writers
@@ -1386,7 +1802,7 @@ With schema updates enabled, a schema mismatch instead reconciles the table, rec
 remote stream with the current descriptor and re-appends the batch at its original offset.
 The propagation wait uses the schema schedule rather than the general recovery schedule.
 
-## File loads
+### File loads
 
 `WriteMethod.FILE_LOADS` writes each destination table's rows to files on Cloud Storage and
 loads them with BigQuery load jobs — free of streaming-insert cost, always exactly-once. Batch
@@ -2035,434 +2451,6 @@ before surfacing as terminal (with the default schedules). Both schedules are co
 Storage Write API paths — via `DefaultStreamOptions` and via `BufferedStreamOptions`, which
 [Tuning](#tuning) states carry the same knobs with the same defaults.
 
-## Source
-
-`BigQuerySource` reads a table through the **Storage Read API** — the same gRPC service the
-`STORAGE_API_*` write methods use, in the other direction. It is a FLIP-27 source and declares
-`Boundedness.BOUNDED`, which is not the same as batch-only: it runs inside a STREAMING pipeline and
-finishes once the table has been read, which is what a dimension-table broadcast join needs. There
-is no runtime-mode guard, unlike `FILE_LOADS` on the sink side.
-
-{{< java-snippet file="BigQueryConnectorSource.java" tag="bigquery-connector-source" >}}
-
-**The public contracts place bytes-read accounting on `ReadRows`, not session creation.**
-BigQuery records [`scanned_bytes` on `ReadRows` audit entries](https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use)
-and uses that value to calculate the read's analysis cost, while it classifies
-[`CreateReadSession` as a control-plane metadata operation](https://cloud.google.com/bigquery/quotas#storage_read_api).
-If a `ReadRows` call fails or is cancelled, its
-[metered usage includes the data read before it stopped](https://cloud.google.com/bigquery/pricing#storage_read_api_pricing).
-This source follows session creation with `ReadRows`, so its use can still incur analysis charges.
-Because BigQuery stores columns separately, a job that reads a wide table to use two of its columns
-meters the rest as bytes read unless it says so with [`selectedFields`](#push-down).
-
-### Fetch memory
-
-Each fetch stops at the first of two independent limits:
-
-- [`maxRecordsPerFetch`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) defaults
-  to 10,000 rows and bounds small-row batches and checkpoint cadence;
-- [`maxBytesPerFetch`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) defaults to
-  8 MiB of serialized Avro rows and bounds batches whose rows are wide or variable-width.
-
-The byte value is a target, not a hard heap limit.
-The reader decodes the row that determines whether it fits, keeps that one row for the next fetch,
-and always emits a row larger than the target by itself so it cannot enter a zero-progress loop.
-Serialized bytes are also not the decoded Java object's heap size.
-
-There are two larger scopes around the batch.
-`AvroRowCursor` retains the current Storage Read response block, which can carry about 128 MiB,
-while it resumes the block between fetches.
-Flink can retain up to `(source.reader.element.queue.capacity + 2)` fetched batches around the task
-thread; that queue capacity is 2 by default, so the default target represents up to about 32 MiB of
-serialized rows per active source reader in those batches, plus one deferred row and the response
-block.
-An oversized row can raise one batch above that estimate, and decoded objects can occupy more heap
-than their serialized form.
-Source parallelism multiplies the per-reader envelope, and several source subtasks in one
-TaskManager share that JVM's heap.
-
-Use [`selectedFields`](#push-down) to avoid transferring columns the job does not need and
-[`rowRestriction`](#push-down) to remove rows before the read session sends them.
-Table API projection pushdown maps retained top-level columns to `selectedFields`.
-Table API filter pushdown maps its conservative supported subset to `rowRestriction`, while every
-original predicate remains a Flink residual.
-`scan.row-restriction` remains the explicit BigQuery-native filter surface and is combined with a
-generated restriction using parenthesized `AND`.
-No batch-size metric is registered because measuring decoded heap on the per-row path would itself
-distort the allocation this guard is meant to contain; the existing `bytesRead` metric reports
-response bytes received instead.
-
-### Splits, offsets and recovery
-
-A **split is one `ReadStream` of the read session, plus the number of rows already consumed from it**.
-Restoring re-issues `ReadRows` at that offset, which is the API's own resume mechanism rather than
-anything this connector invents. Three facts hold it together:
-
-- The **read session is created exactly once**, by the enumerator, guarded by a checkpointed flag so
-  a restore adopts the existing session instead of creating a second one. A second session would pin
-  a second snapshot of the table, and a failed-over job would silently read the table as of two
-  different instants. `readSessionsCreated` reports the same fact at runtime. The guard is the
-  checkpoint, so a recovery that has none — a JobManager failover before the first checkpoint
-  completes — plans afresh at a new snapshot, which is correct because the readers restarted with no
-  state either and nothing survives from the first session.
-- The offset advances **once per successfully deserialized row**, after every synchronous output
-  has reached the source output.
-  It advances by one whether the row emitted zero, one, or many records, because it counts input
-  rows consumed rather than output records.
-  If deserialization or downstream collection fails, the offset does not advance.
-  A retry therefore replays that input row; if an earlier output from the same row had already
-  reached downstream before a later output failed, the earlier output can be duplicated.
-- A stream's rows arrive in BigQuery's **storage order, not the table's**, and an offset is a
-  position in that order (measured 2026-08-09). Nothing downstream should read order into it.
-
-A checkpoint can be taken between the last row of a stream being emitted and the reader recording
-the stream as finished, which leaves a restored split at exactly the stream's row count — a position
-the proto documents as undefined (*"Requesting a larger offset is undefined"*). Measured
-2026-08-09: BigQuery ends such a read with no rows and no error, and that is the whole of the
-handling — the restored split is opened like any other and reported finished after one empty call.
-Nothing marks such a split in advance, because nothing can: Flink removes a split's state before
-telling the reader the split finished.
-
-### Assignment and stream count
-
-Assignment is **pull-based**: a reader holds one stream at a time and asks for the next as soon as it
-finishes one, so a subtask that draws a small stream goes back for more work instead of idling. That
-is what stands in for the API's `SplitReadStream`, which FLIP-27 has no hook for and this connector
-never calls.
-
-The enumerator keeps no record of which subtask holds which stream: every question such a ledger
-would answer is answered instead by what the enumerator is handed — a request, or a returned stream.
-That is deliberate. The reference implementation this design was drawn from records a *critical data
-loss bug in reader split handling* in its own change log, fixed by signalling no-more-splits per
-reader and removing completed readers from its queue — assignment and completion is where a
-hand-written enumerator goes wrong quietly, and the per-reader half of it is something Flink's
-coordinator already does.
-
-Flink keeps one thing the connector does not: its coordinator suppresses a further request from a
-subtask it has already told there are no more splits, and clears that flag only when the subtask is
-reset. Since a reset is also what returns a failed reader's streams, a returned stream is always
-reachable by the subtask that comes back for it — but a *different* subtask that already finished
-will not pick it up.
-
-How many streams a session has is **BigQuery's decision**, shaped by two knobs. Measured 2026-08-09:
-
-| Request | 910 GB table | 23 GB table | 6 MB table |
-|---|---|---|---|
-| neither knob set | 936 streams | 138 | 1 |
-| `maxStreamCount(3)` | 3 | 3 | 1 |
-| `preferredMinStreamCount(5000)` | 936 | 552 | 1 |
-
-So `maxStreamCount` is a cap that is honoured downwards and **never a floor**: a small table is read
-by a single stream however many are asked for, and capping below the job's parallelism leaves
-subtasks idle. `preferredMinStreamCount` is a best-effort request for more. Asking for more streams
-than there are subtasks is how this source gets its elasticity. A `preferredMinStreamCount` above
-`maxStreamCount` is rejected by the builder, because BigQuery rejects it too.
-
-### Push-down
-
-`selectedFields`, `rowRestriction` and `snapshotTime` are fields of the read session, so BigQuery
-applies them before anything is transferred. What that saves differs between the two:
-`selectedFields` leaves whole columns out of the metered bytes-read usage;
-`rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
-partitioning or clustering column.
-The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
-predicate subset onto `SupportsFilterPushDown`.
-
-Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`,
-`TIMESTAMP(6)`, and `TIMESTAMP_LTZ(6)` columns.
-`BOOLEAN` accepts equality and inequality, BigQuery `STRING` accepts equality, and those supported
-column types also accept `IS NULL` and `IS NOT NULL`.
-An `AND` contributes every child that is a necessary condition for the whole expression.
-An `OR` contributes only when every branch translates.
-String inequality and ordered string comparisons are not translated.
-Decimal and Flink `FLOAT` restrictions use weaker necessary bounds to cover declared-scale
-rounding and BigQuery `FLOAT64`-to-Flink-`FLOAT` narrowing, respectively.
-Timestamp comparison pushdown requires precision 6 because the source preserves BigQuery
-microseconds at that precision.
-
-BigQuery `JSON` and `GEOGRAPHY` string equality is unsupported.
-Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration cannot identify an
-unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
-reject the generated restriction at that point.
-A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-`TIME`, `BYTES`, fixed-length character columns, timestamp precisions other than 6, nested fields,
-complex types, field-to-field comparisons, casts, and functions are not translated.
-
-Every generated restriction is a necessary condition for the Flink predicate; otherwise BigQuery
-could discard a matching row before Flink sees it.
-Every pushed predicate also remains a Flink residual, so Flink rejects any returned row that does
-not satisfy its own predicate semantics.
-Identifiers are derived from the physical schema and quoted as GoogleSQL identifiers, while
-literals are emitted by logical type and escaped before they enter the generated expression.
-An explicit `rowRestriction` is parenthesized separately and combined with the generated
-restriction using `AND`.
-The connector admits each generated restriction only while the combined UTF-8 expression remains
-within the Storage Read API's 1 MB limit.
-A predicate that would cross the limit remains with Flink without discarding other generated
-restrictions that fit.
-`snapshotTime` remains an explicit option rather than a SQL translation.
-
-`snapshotTime` is served from BigQuery's time-travel window, which is seven days by default: an
-instant outside it is rejected when the session is created, with `INVALID_ARGUMENT: time travel
-timestamp exceeds the maximum time travel duration of 168h` (measured 2026-08-09).
-
-### Reading a query or a view
-
-**The Storage Read API cannot read a view.** Not a logical one and not a materialized one — it reads
-storage, and a view has none, so `CreateReadSession` against one answers `INVALID_ARGUMENT: request
-failed: non-table entities cannot be read with the storage API` (measured 2026-08-10; a logical view
-and a materialized view give the same code and the same words). Pointing `table(...)` at a view fails
-with that error, and the connector adds a sentence naming `query(...)` — unless the source asked for
-[`materializeViews()`](#reading-a-view-without-writing-the-query), which handles it instead.
-
-`query(...)` is the way round it, and the way to read anything else SQL can express — a join, an
-aggregate, a `FOR SYSTEM_TIME AS OF`:
-
-{{< java-snippet file="BigQueryConnectorQueryOrView.java" tag="bigquery-connector-query-or-view" >}}
-
-The query runs once, as an ordinary query job, from the enumerator's planning call — and once is
-enforced by the same checkpointed flag that stops a second read session, so a restore adopts the
-session the first plan created and never re-runs the query. The source then reads the table the
-result landed in; from the split downwards nothing can tell the two kinds of source apart.
-
-**Cancelling the Flink job does not cancel the query.** By then it is an ordinary BigQuery job, and
-BigQuery runs it to completion — or to its own execution limit — and bills for it either way. Cancel
-it in BigQuery if that matters: the JobManager logs the job id when it submits the query, and that
-is the line that exists while the query is still running. A second line, written once the query
-finishes, names the table the result went to.
-
-**It is billed twice**: once for the bytes the query scans, and again for the bytes the read session
-scans out of its result. `selectedFields` and `rowRestriction` are applied by BigQuery to the
-*result*, so they cannot make the query cheaper — prune inside the query itself. `snapshotTime` is
-rejected beside `query(...)` rather than ignored: the result table is created by the query, so there
-is no earlier version of it, and the point in time belongs in the query as `FOR SYSTEM_TIME AS OF`.
-Table API filter pushdown follows the same boundary: it never rewrites the configured query and
-applies its generated row restriction only to the Storage Read session over that result.
-
-#### Reading a view without writing the query
-
-View materialization is **opt-in and never automatic by default**. `materializeViews()` turns it on:
-the source then asks BigQuery once, at job start, what the configured name is, and a view — logical
-or materialized — is read by generating `SELECT … FROM the_view` and reading its result. An ordinary
-table is read directly, exactly as without it.
-
-{{< java-snippet file="BigQueryConnectorViewMaterialization.java" tag="bigquery-connector-view-materialization" >}}
-
-Off by default for two reasons, and both are what the opt-in buys back. It costs a metadata call,
-and a source pointed at a table should not pay a round trip to be told it is a table — without it
-the read path makes no REST call at all. And it bills a query nobody wrote, which is a thing to ask
-for rather than to inherit. Spark and the Dataproc connector spell the same switch `viewsEnabled`.
-
-`selectedFields` **is** folded into the generated `SELECT`: a view's `SELECT *` scans every column
-and the query is billed for the scan, so leaving the projection to the read session would prune the
-transfer after paying for it. `rowRestriction` is **not** folded — BigQuery's restriction syntax is
-not a SQL `WHERE`, and folding it would give one knob two meanings depending on what the source was
-pointed at — so it stays on the read session, where a table source applies it too. The rule behind
-both: **this connector folds into SQL it wrote, and never into SQL you wrote.**
-
-`snapshotTime` is rejected beside `materializeViews()`. If the name turns out to be a view, its
-result table is created by that job and has no earlier version, so the read would fail at session
-creation rather than where the value was typed.
-
-#### Where the result lands
-
-Two choices, and they differ in who owns the result rather than in what is read.
-
-**Unset — BigQuery's anonymous dataset (the default).** The job is submitted with no destination
-table, so BigQuery writes the result into a hidden dataset of its own, expires it after about a day
-and charges no storage for it. Nothing is created here, so nothing is left to clean up, and an
-identical query re-run inside that window is answered from cache — free, and landing on the same
-table (measured 2026-08-10), which is what makes a JobManager failover before the first checkpoint
-cost nothing. Its constraints are BigQuery's, not this connector's:
-
-- access to an anonymous dataset is restricted to the identity that ran the query.
-  With `serviceAccountKeyFile(...)`, the deployment must mount the same key at the configured path
-  on the JobManager and TaskManagers; with ADC, it must ensure that they resolve to the same
-  identity;
-- Google advises against depending on a cached results table as the input of another job;
-- a result above the maximum response size is not kept as a cached result;
-- the result is not shareable and cannot be addressed from outside the job.
-
-**Set — a table in `queryResultDataset`.** The connector creates a table there and sets a one-day
-expiration on it. Storage is charged until it expires, and nothing deletes it earlier: teardown also
-runs on a JobManager failover, where the restored job is still reading the read session that table
-backs, so deleting on teardown would break the recovery it looks like it is tidying up after. The
-dataset must already exist, must be in the query's own location, and must live in `parentProject`.
-
-The expiration cannot cut a read short: a read session lasts six hours and a bounded read has to
-finish inside that anyway.
-
-#### Reusing the query job across a failover
-
-By default the query job's id is random and a previous attempt is never re-attached to: a
-JobManager failover before the first checkpoint re-plans the source and runs the query again.
-Against the anonymous dataset a completed first query makes that a free cache hit; a first query
-still *running* is the expensive case, since the cache serves only completed results and the two
-scans run — and bill — concurrently. Against a named dataset every re-run writes a second result
-table. `queryJobsSubmitted` is what reports a repeat.
-
-`reuseQueryResultWithin(...)` closes that window ([#477]({{< param BookRepo >}}/issues/477),
-recorded in ADR-0089). With it, the job id is derived from the **Flink job name**, a digest of the
-query configuration, and the window, so a re-plan finds the first attempt's job under the same id
-and adopts it. It requires `queryLocation(...)`: BigQuery scopes a job to (project, location, id),
-and a look-up naming no location sees only jobs in the US multi-region — anywhere else the
-previous attempt's job would never be found (measured against a regional dataset) — a running job
-is waited for, a finished one has its result table checked and read, a failed one is probed past
-to a fresh retry id. `queryJobsReattached` reports each reuse.
-
-Its contract is worth stating precisely: **attempts of the same Flink job name and the same query
-configuration inside one window share one query job.** That covers the failover above, and it
-equally covers an intentional redeploy under the same name inside the window — the connector
-cannot tell the two apart, so a redeployed pipeline reads the previous run's result even if the
-source data moved meanwhile. Size the window to how stale a result the pipeline may read, or
-rename the job to force a fresh query. Two unrelated pipelines do not collide: the digest covers
-the query, project, location, result dataset and window, so ids only meet when the jobs they name
-are identical — up to a sixteen-hex digest, the same footing the sink's deterministic load-job ids
-stand on. The window is capped at 24 hours, because both places a result can land expire
-after about a day: past that there is nothing left to reuse, so a longer window could only ever
-pay for the query again while appearing to deduplicate it. A table can also vanish *early* —
-deleted by hand, or a cached-results table Google dropped inside its nominal day — which is why
-adopting a finished job spends one `getTable` on the table its metadata names: a table that is
-gone is probed past like a failed job, and the query runs again under a fresh retry id, which
-`queryJobsSubmitted` reports ([#485]({{< param BookRepo >}}/issues/485)).
-
-### Deserialization
-
-Rows arrive as Avro and are decoded into a `GenericRecord`, which
-`BigQueryRowDeserializationSchema.deserialize(GenericRecord, Collector)` converts into zero or more output
-records.
-Emitting nothing skips the row, and `recordsSkipped` is the only report of that successful skip.
-Every output must be non-null and emitted synchronously during the call; retaining the collector or
-using it after the method returns is invalid.
-The SPI is a serializable interface shipped inside the job graph.
-Avro's `Schema` is itself serializable and an implementation may hold it directly.
-
-A deserializer may declare a **reader schema**, and the shipped `genericRecord(...)` implementation
-does. Rows are then resolved from the session's schema into it by Avro's schema-resolution rules, so
-the schema you write need not match the table's exactly: naming a subset of the columns with their
-natural types is enough, and the records the source produces then carry the schema you declared —
-which is also the one its `TypeInformation` is derived from. A schema that cannot be parsed fails
-where the job is built, not on a TaskManager once rows flow.
-
-Using `genericRecord(...)` requires **`flink-avro` on the job's classpath**. It is what supplies
-Flink's Avro serializer for `GenericRecord`; without it Flink falls back to Kryo, which cannot
-serialize one at all (measured 2026-08-09). A deserializer converting to your own type needs none of
-this.
-
-Records are emitted **without a timestamp**: a BigQuery row carries no event time the connector could
-know about, so assigning one is the job's decision through a `WatermarkStrategy`.
-
-### Reading against the emulator
-
-`emulatorEndpoint(...)` sends the source's read traffic to a local BigQuery emulator over plaintext.
-For a source reading a `table(...)` that is **all** of it, where the sink takes two endpoints: the
-table's schema comes from the read session, and nothing on that path makes a REST call. A source
-reading a [`query(...)`](#reading-a-query-or-a-view), or one that asked for `materializeViews()`,
-does make one — the query job, and the view lookup — and takes `emulatorRestEndpoint(...)` as well,
-the same split the sink has.
-
-The query path is not covered against the emulator. Where the result of a destination-less query
-lands is BigQuery's own mechanism rather than an API this connector drives, so the gated real-GCP
-case is its only coverage.
-
-The emulator is a convenience, never evidence about the service. Measured against
-goccy/bigquery-emulator 0.8.1 (2026-08-09), its read path differs in four ways that matter:
-
-| The emulator | BigQuery |
-|---|---|
-| rejects `maxStreamCount` above 1 | caps at the requested count, and may return fewer |
-| **ignores `ReadRowsRequest.offset`** and answers every call from row zero | resumes at the offset |
-| answers a whole table in one response block | blocks of up to about 128 MiB |
-| names the Avro schema `<project>.<dataset>`, and expires a session in one hour | `__root__` with no namespace, six hours |
-
-The second is why **no recovery test may be written against the emulator** — a green one would prove
-the opposite of what it claims — and the fourth is why the emulator harness uses a project id
-without a hyphen: a hyphen is not legal in an Avro namespace, so the schema fails to parse before a
-row is decoded. Each deviation is pinned by `BigQueryEmulatorReadDeviationITCase`, so the image bump
-that fixes one fails the build rather than leaving a workaround behind.
-
-### Read failures and retries
-
-**A broken `ReadRows` is resumed by the client library, not by this connector.** The Storage Read
-API client tracks how many rows a call has delivered and reissues it at that row, so a stream that
-drops mid-read carries on where it stopped — no row is read twice, and none is skipped. It retries
-`UNAVAILABLE`, a short list of `INTERNAL` transport faults (`RST_STREAM` and its neighbours), and a
-`RESOURCE_EXHAUSTED` that carries a `RetryInfo` delay, honouring that delay. A bare `INTERNAL` and a
-bare `RESOURCE_EXHAUSTED` are deliberately not retried by the client; this connector neither widens
-that classification nor runs a second retry loop behind it.
-
-What the client does not do is stop. Left alone it retries for **twenty-four hours**, so a stream
-that is never coming back would hold a reader for a day while reporting nothing at all.
-[`retryMaxAttempts`]({{< relref "docs/reference/bigquery" >}}#bigquerysourcebuilder) is the bound,
-and it counts **consecutive attempts that made no progress** — an attempt that delivered rows resets
-the count. When the read does fail, Flink's restart strategy restores from the last checkpoint and
-each stream resumes at the offset that checkpoint holds rather than being read from the top.
-
-How long twenty-five attempts take depends on which failure it is, and the two ends are far
-apart. For `UNAVAILABLE` the client backs off exponentially — nominally 100 ms growing by 1.3 —
-and then picks each wait *uniformly between zero and that value*, so the default bounds a stuck
-stream at about three minutes and reaches it in about half that on average. For the `INTERNAL`
-transport faults the client waits a fixed **one millisecond** and does not back off at all, so
-the bound is reached almost at once. A `RESOURCE_EXHAUSTED` waits exactly the delay the server
-named.
-
-That reset has a consequence worth knowing for a job that is slow rather than stuck. A stream that
-keeps failing and resuming *is* making progress, so it never reaches the bound and never fails
-anything — it just reads at a fraction of the speed. **`readRetries` is what reports it**, and it is
-the only thing that does at a level anyone watches: the client library logs a retry too, but through
-`java.util.logging` at `FINEST`.
-
-A failed read names the gRPC status it carried, so a failure can be looked up rather than guessed
-at. Two conditions are worth recognising:
-
-| The read fails | What it means |
-|---|---|
-| with `FAILED_PRECONDITION`, naming an offset | The restored offset is past the rows the stream holds. A stream restored at exactly its row count is *not* this: that answers empty and no error (measured 2026-08-09) |
-| after the read session's expiry | The read outlived its session, and the message says so |
-
-**A read session lives six hours from its creation**, and a read that outlives it cannot be resumed:
-restarting restores the same expired session, and creating a second one is exactly what the source
-must not do, since it would pin a second snapshot of the table. So such a job has to be started over,
-and a read that cannot finish inside six hours needs more parallelism or fewer columns. The connector
-recognises the case and says so in the failure, from the expiry each split carries. It does **not**
-refuse to read because a local clock says the session is old: the expiry is BigQuery's to apply, and
-the machine reading need not agree with it about the time.
-
-### How the source is tested
-
-The offset resume is covered three ways, because no single one of them can carry it: a unit test
-drives two readers across a snapshot against a fake that honours offsets; a MiniCluster job fails
-once part-way through and is asserted to read every row exactly once, having resumed rather than
-started over; and a gated real-GCP case measures that BigQuery resumes where it left off and answers
-a read at the row count with an empty stream.
-
-Multi-stream recovery — a subtask dying with a stream in hand, its splits coming back, another
-subtask finishing them — is measured against BigQuery as well, over a public dataset so that no table
-of ours has to be large enough to split. How large that is: measured 2026-08-10, a 195 MB table
-answers with one stream and a 264 MB one with four, and a projection lowers the count further,
-because it follows the bytes actually selected rather than the table's size.
-
-The query path is covered against BigQuery and nowhere else, for the reason
-[Reading against the emulator](#reading-against-the-emulator) gives: a gated case reads a view
-through both landing places and asserts the same rows, and reads the same view as a table to hold
-the failure message that names `query(...)` to what BigQuery actually answers. The planning
-behaviour around it — the query running once, a restore running none, the session being created
-against the table the result landed in — is the enumerator's unit tests, which need no service.
-
-### Not here yet
-
-**Avro is the only wire format. The Arrow alternative was measured against it and declined, so
-there is nothing here to wait for** ([#393]({{< param BookRepo >}}/issues/393)). The Storage Read
-API serves either format, but Flink hands a job one record at a time, and all of Arrow's advantage
-lies in not doing that. Measured 2026-08-10 against a public BigQuery table read over a single
-stream: building one record per row out of Arrow ran 34% *slower* than decoding Avro into that
-record directly, over two million rows a pass; and separately, Arrow's rows were 84% larger on the
-wire. Arrow is faster only for a reader that never asks for a row, which Flink is not.
-
-There is no unbounded or CDC read, and there is no planned one: BigQuery has no changelog read
-primitive, so it could only be a polling emulation ([#64]({{< param BookRepo >}}/issues/64) records
-the reasoning).
-
 ## Metrics
 
 Registered on the sink writer's metric group, one set per subtask. The three write methods report
@@ -2881,3 +2869,22 @@ credential-less CI:
 
 These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
 ([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent.
+
+## Scope and provenance
+
+The [module README]({{< param BookRepo >}}/blob/main/flink-connector-gcp-bigquery/README.md) records implementation status and provenance.
+The connector-specific design decisions on this page link to their durable ADRs.
+
+### Not here yet
+
+**Avro is the only wire format. The Arrow alternative was measured against it and declined, so
+there is nothing here to wait for** ([#393]({{< param BookRepo >}}/issues/393)). The Storage Read
+API serves either format, but Flink hands a job one record at a time, and all of Arrow's advantage
+lies in not doing that. Measured 2026-08-10 against a public BigQuery table read over a single
+stream: building one record per row out of Arrow ran 34% *slower* than decoding Avro into that
+record directly, over two million rows a pass; and separately, Arrow's rows were 84% larger on the
+wire. Arrow is faster only for a reader that never asks for a row, which Flink is not.
+
+There is no unbounded or CDC read, and there is no planned one: BigQuery has no changelog read
+primitive, so it could only be a polling emulation ([#64]({{< param BookRepo >}}/issues/64) records
+the reasoning).

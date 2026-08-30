@@ -133,30 +133,122 @@ verifies, offline, that what is checked in still matches the bundle and the pins
 licence-name URLs (`opensource.org`, `spdx.org`) are rejected as sources: they serve HTML pages or
 bare templates, and the copyright holder is part of a BSD or MIT text.
 
-## Options
+## Schema and type mapping
 
-Every connector-owned runtime option maps onto the DataStream API, which stays the source of
-truth; destination components are assembled together, and `scan.parent-project` overrides the
-`project` fallback passed to `parentProject(...)`.
-Flink's `scan.parallelism` and `sink.parallelism` configure the corresponding runtime provider
-instead.
-Except for the documented `project` fallback into `scan.parent-project`, leaving an optional
-runtime option out of the DDL leaves its setter uncalled, so its default is whatever the connector
-or SDK already uses. The full list of defaults is in the
-[configuration reference]({{< relref "docs/reference/bigquery" >}}).
+### Type mapping
 
-### Destination
+A sink derives the BigQuery column type from the SQL declaration and uses that schema when it
+creates a missing table.
+A source reads the Storage Read API's Avro field by physical name and converts it to the declared
+SQL type.
+The DDL must therefore agree with the source table or query result because planning does not fetch
+the live schema.
 
-| Option | Type | Maps to |
+| Flink declaration | BigQuery source column | BigQuery sink column |
 |---|---|---|
-| `project` | String | The project part of `table(...)`; also the source billing project unless `scan.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `scan.parent-project` |
-| `dataset` | String | The dataset part of `table(...)`; required for a sink or direct table source, unused by a query source |
-| `table` | String | The table part of `table(...)`; required for a sink or direct table source. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Read or Write API's gRPC endpoint as `host:port`. Parsed when the statement is planned, so a malformed value fails on the client in either direction, and the rejection names `emulator-endpoint` — the key written in the DDL. Refused outright under `file-loads`, before its shape is looked at |
-| `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, used for source query/view materialization and sink table metadata. Separate because BigQuery serves the two transports on different ports. Parsed and refused on the same terms as `emulator-endpoint`, under its own name. A direct table source leaves it unused — one `WITH` clause serves both directions — but a malformed value is still rejected |
-| `service-account-key-file` | String | `serviceAccountKeyFile(...)`; a service-account JSON key-file path loaded on JobManagers and TaskManagers at runtime. Absent uses ADC; rejected with either emulator endpoint |
+| `CHAR`, `VARCHAR`, `STRING` | `STRING`, `JSON` or `GEOGRAPHY` | `STRING`, or `JSON` / `GEOGRAPHY` when marked |
+| `BOOLEAN` | `BOOL` | `BOOL` |
+| `BINARY`, `VARBINARY`, `BYTES` | `BYTES` | `BYTES` |
+| `TINYINT`, `SMALLINT`, `INT`, `BIGINT` | `INT64` | `INT64` |
+| `FLOAT`, `DOUBLE` | `FLOAT64` | `FLOAT64` |
+| `DECIMAL(p, s)` | A fitting `NUMERIC` or `BIGNUMERIC` value | `NUMERIC` when `s <= 9` and `p - s <= 29`; otherwise `BIGNUMERIC` |
+| `DATE` | `DATE` | `DATE` |
+| `TIME(p)` | `TIME`; Flink 1.20 and 2.2 resolve SQL `p` to `0`, while 2.3 retains it through `3` | `TIME`; the same Flink-version boundary applies |
+| `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected | `DATETIME`; `p > 6` is rejected |
+| `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected | `TIMESTAMP`; `p > 6` is rejected |
+| `ROW` | `STRUCT`, recursively | `STRUCT`, recursively, or `JSON` when marked |
+| `` ROW<`start` DATE, `end` DATE> `` | `RANGE<DATE>`; source only | `STRUCT<start DATE, end DATE>` |
+| `` ROW<`start` TIMESTAMP(p), `end` TIMESTAMP(p)> `` | `RANGE<DATETIME>`; source only | `STRUCT<start DATETIME, end DATETIME>` |
+| `` ROW<`start` TIMESTAMP_LTZ(p), `end` TIMESTAMP_LTZ(p)> `` | `RANGE<TIMESTAMP>`; source only | `STRUCT<start TIMESTAMP, end TIMESTAMP>` |
+| `ARRAY<T>` | `REPEATED T`; declarations may use nullable elements although BigQuery values contain none | `REPEATED T`; nested arrays and nullable element declarations are rejected |
+| `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` | `REPEATED STRUCT<key, value>` |
+| `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected | rejected |
 
-### Source
+Unsupported Flink logical types are rejected on the client when the job graph is built.
+A DDL that disguises BigQuery `INTERVAL` as a `ROW` is rejected from the live writer schema before
+the first value is converted.
+A source decimal that does not fit the declared precision fails the read rather than becoming
+`NULL`.
+
+#### `RANGE` is source-only
+
+The Storage Read API represents `RANGE<T>` as a record with nullable `start` and `end` fields.
+Declare that record as one of the three `ROW` shapes in the table above.
+A null endpoint means that side is unbounded, while a null `ROW` means the range value itself is
+null.
+
+The sink does not infer `RANGE` from a two-field `ROW`.
+The same declaration sent to a sink creates a BigQuery `STRUCT`, which keeps source and sink schema
+derivation deterministic instead of guessing from field names.
+
+#### `INTERVAL` remains unsupported
+
+BigQuery returned `INTERVAL` as an undocumented Avro record containing months, days and
+microseconds in a real-service measurement on 2026-08-13.
+Flink divides intervals into a year-month value and a day-time value, so neither type can preserve
+all three components.
+Flink's internal day-time value is also measured in milliseconds and cannot preserve the observed
+microseconds.
+
+The source therefore rejects both Flink interval types and rejects declaring BigQuery `INTERVAL`
+as a raw `ROW<months INT, days INT, microseconds BIGINT>`.
+If the textual representation is sufficient, use a query source that casts the BigQuery interval
+to `STRING` and declare that result column as Flink `STRING`.
+The sink continues to reject interval declarations because it has no lossless BigQuery mapping.
+
+#### `TIMESTAMP` is civil and `TIMESTAMP_LTZ` is an instant
+
+`TIMESTAMP` is a wall-clock type, so it becomes BigQuery's `DATETIME`; `TIMESTAMP_LTZ` is an
+instant, so it becomes `TIMESTAMP`. The GoogleCloudDataproc connector maps these the other way
+round, which stores a wall-clock value as an instant and an instant as a wall-clock value. If you
+are migrating from it, this is the row to check.
+
+#### SQL `TIME` precision depends on the Flink version
+
+BigQuery Storage Read returns `TIME` as Avro `time-micros`. Flink 1.20 and 2.2 resolve a SQL
+declaration such as `TIME(3)` to `TIME(0)` before the connector sees the schema, so source and sink
+SQL paths on those versions carry only whole seconds. Flink 2.3 and newer retain the declared
+precision and the connector preserves milliseconds through `TIME(3)`. Use a query source that casts
+the value to `STRING` when fractional text must be preserved on the earlier versions.
+
+A catalog schema constructed programmatically can carry `TIME(1)` through `TIME(3)` to the
+connector on every supported version, whose internal value stores milliseconds. The connector
+rejects a programmatic precision above `3` rather than claiming it can preserve BigQuery's
+microseconds.
+
+#### Marked columns
+
+`sink.json-field-paths` and `sink.geography-field-paths` name columns by dotted path — `payload`,
+`event.body`, `the_map.value`. A map's key cannot be marked.
+
+A marked `STRING` is passed through **verbatim and unvalidated**: malformed JSON or an invalid
+geometry is a row-level error BigQuery reports, exactly as on the other write paths. A marked `ROW`
+is different — it is rendered as JSON text rather than expanded into a `STRUCT`, so its columns
+become object members. Strings are escaped, `BYTES` becomes base64, `DECIMAL` an unquoted number,
+and the temporal types ISO-8601 strings. A `MULTISET` has no JSON form and is rejected, as is a map
+with non-string keys. `GEOGRAPHY` may only mark a `STRING`: no structured value means a geometry to
+BigQuery.
+
+### Schema evolution
+
+The two `sink.schema-update.*` options are accepted under every write method.
+Whenever the connector reconciles rather than replaces a table schema, they select the same additive union rules: existing fields are not removed, reordered or retyped, new fields are added as `NULLABLE`, and `REPEATED` modes do not change.
+
+`sink.derive-required-columns` and `sink.schema-update.allow-field-relaxation` operate at different stages.
+The former changes the desired schema derived from the DDL: when enabled, a `NOT NULL` column becomes `REQUIRED`; when disabled, every non-repeated derived column is `NULLABLE`.
+The latter permits the connector to relax an existing table column from `REQUIRED` to `NULLABLE` when the DDL-derived schema is nullable.
+During additive reconciliation it never tightens a `NULLABLE` table column to `REQUIRED`, and a new `REQUIRED`-derived column is added to an existing table as `NULLABLE` because BigQuery cannot add required fields.
+Changing `sink.derive-required-columns` alone therefore does not rewrite an existing table.
+
+The selected write method decides when that union is applied.
+`storage-api-at-least-once` rebuilds its default-stream writer after reconciling the table.
+`storage-api-exactly-once` drains old-schema rows and reconnects the same buffered stream at the same next offset.
+`file-loads` reconciles once per destination before loading each batch run or streaming checkpoint, then puts the reconciled schema on every load job.
+For `file-loads`, `write-append` and `write-truncate-data` jobs also carry BigQuery's native schema-update options, `write-empty` relies on the connector's pre-load reconciliation, `write-truncate-data` preserves the live schema and constraints, and `write-truncate` replaces the table schema instead of reconciling it.
+
+See [Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) on the DataStream page for the nullability result table, failure behavior, propagation waits and serializer compatibility rules.
+
+## Source
 
 The source is bounded and insert-only. A direct source names `project`, `dataset`, and `table`.
 `scan.query` switches to the query-result path, where either `project` or
@@ -206,44 +298,26 @@ restrictions that fit.
 For `scan.query`, the configured query text is never rewritten; both explicit and generated
 restrictions apply only when Storage Read reads the materialized result table.
 
-| Option | Type | Maps to |
-|---|---|---|
-| `scan.parent-project` | String | `parentProject(...)`; the project that owns and is billed for the Storage Read session. *Unset ⇒ `project`*. Set it independently when the table belongs to another project, such as a public dataset |
-| `scan.query` | String | `query(...)`; reads the query's result instead of the configured table |
-| `scan.materialize-views` | Boolean | `materializeViews()`; checks a configured table name and materializes it when it is a logical or materialized view. Cannot be combined with `scan.query` |
-| `scan.query-location` | String | `queryLocation(...)`; query or view materialization only |
-| `scan.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
-| `scan.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `scan.query-location` |
-| `scan.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword. Combined with a translated SQL predicate using parenthesized `AND` |
-| `scan.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
-| `scan.max-stream-count` | Integer | `maxStreamCount(...)` |
-| `scan.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |
-| `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch(...)` |
-| `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` |
-| `scan.retry.max-attempts` | Integer | `retryMaxAttempts(...)` |
-| `scan.parallelism` | Integer | The bounded source's parallelism (Flink's own option) |
+## Sink
 
-### Sink
+The non-CDC sink accepts insert-only input and writes one BigQuery table per Flink table.
+It offers the default stream, buffered exactly-once streams, and FILE_LOADS without changing the physical SQL schema.
+The [Table sink example]({{< relref "docs/examples/bigquery" >}}#table-sink) shows the option differences without repeating the job.
 
-| Option | Type | Maps to |
-|---|---|---|
-| `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
-| `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
-| `sink.cdc.debezium-mysql.source-uuids` | List&lt;String&gt; | Ordered MySQL GTID source UUIDs. The append-only order assigns failover epochs for the Debezium MySQL sequence profile |
-| `sink.cdc.ticdc.cluster-id` | String | The TiCDC cluster ID whose commit timestamp oracle values order this table, as the changefeed reports it in `cluster_id`. A row change reporting another cluster is rejected rather than ordered against an unrelated oracle. TiCDC defaults this identifier to `default` |
-| `sink.cdc.max-staleness` | Duration | `CdcTableOptions.maxStaleness(...)`. Absent means that the property is unmanaged |
-| `sink.cdc.clear-max-staleness` | Boolean | `CdcTableOptions.clearMaxStaleness()`. Explicitly removes a previous value and is mutually exclusive with `sink.cdc.max-staleness` |
-| `sink.cdc.table-reconciliation` | Enum | `cdcTableReconciliationPolicy(...)` — `verify-only` (default) or `reconcile`. Selects whether an existing table is only checked or has managed mutable CDC properties converged |
-| `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never`. This controls only whether a missing table may be created; existing-table handling is independent |
-| `sink.location` | String | `location(...)` |
-| `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
-| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load/query option applies to `write-append` and `write-truncate-data`, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
-| `sink.derive-required-columns` | Boolean | Derives a `REQUIRED` column from a `NOT NULL` one; off, every derived column is `NULLABLE` |
-| `sink.json-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `JSON` |
-| `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
-| `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
+### Inserts only, unless CDC is enabled
 
-### Change data capture
+Without `sink.cdc.enabled`, the changelog mode is insert-only. An updating query — an aggregation
+without a window, a non-windowed join — is rejected when the plan is built, because BigQuery's
+append-only write paths cannot express a retraction and appending the `-U` and `-D` rows as ordinary
+ones would corrupt the table silently.
+
+Setting `sink.cdc.enabled` to `true` makes the sink answer an updating query with an upsert changelog
+instead, so the same query plans; an insert-only query still gets insert-only. That path augments
+each row with BigQuery's CDC pseudocolumns, and it carries its own restrictions — it runs on
+`storage-api-at-least-once` and no other write method. See
+[Change data capture](#change-data-capture).
+
+## Change data capture
 
 Experimental ([#706]({{< param BookRepo >}}/issues/706)), with the DataStream CDC surface it maps
 onto: the feature's shape may still move with the upstream question, and a `sink.cdc.*` option
@@ -317,7 +391,7 @@ Once a sequence metadata column is selected, every emitted row must supply a non
 missing or invalid values enter the configured row-failure path.
 Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order.
 
-#### What the sequence value looks like
+### What the sequence value looks like
 
 Whichever route supplies it, the sink writes one string into BigQuery's `_CHANGE_SEQUENCE_NUMBER`
 pseudocolumn, and every built-in profile writes each section as exactly 16 uppercase hexadecimal
@@ -399,7 +473,7 @@ Streaming rows require an untagged single-source `UUID:transaction_id` GTID plus
 DataStream applications can use `DebeziumMySqlCdcSequenceNumberProvider` with the same ordered
 UUID list.
 
-#### MySQL topology support
+### MySQL topology support
 
 The profile has these topology boundaries:
 
@@ -419,7 +493,7 @@ Group Replication can become supportable if MySQL and Debezium can expose a dura
 ordering coordinate in source metadata.
 Until then, use `change-sequence-number` with an application-provided total order for that topology.
 
-#### TiCDC commit timestamp oracle values
+### TiCDC commit timestamp oracle values
 
 TiCDC emits TiDB row changes in a Debezium-compatible envelope whose source map carries
 `connector=TiCDC`, the numeric `commit_ts`, and `cluster_id`.
@@ -471,7 +545,7 @@ question for whoever operates the changefeed rather than something the topic rev
 TiCDC provides no initial snapshot stream, so a populated destination needs a separate initial
 load, taken at the changefeed's start timestamp.
 
-#### Spanner commit timestamps, record sequences, and mod numbers
+### Spanner commit timestamps, record sequences, and mod numbers
 
 Spanner reaches this sink through two routes that share one ordering contract.
 Both encode three fixed-width unsigned 64-bit hexadecimal sections: the commit timestamp in
@@ -531,6 +605,68 @@ those two ordered, must supply its own total order through `change-sequence-numb
 
 The `snapshot` property is ignored: the Spanner connector streams a change stream and has no
 snapshot phase whose value could select a different ordering.
+
+## Options
+
+Every connector-owned runtime option maps onto the DataStream API, which stays the source of
+truth; destination components are assembled together, and `scan.parent-project` overrides the
+`project` fallback passed to `parentProject(...)`.
+Flink's `scan.parallelism` and `sink.parallelism` configure the corresponding runtime provider
+instead.
+Except for the documented `project` fallback into `scan.parent-project`, leaving an optional
+runtime option out of the DDL leaves its setter uncalled, so its default is whatever the connector
+or SDK already uses. The full list of defaults is in the
+[configuration reference]({{< relref "docs/reference/bigquery" >}}).
+
+### Destination
+
+| Option | Type | Maps to |
+|---|---|---|
+| `project` | String | The project part of `table(...)`; also the source billing project unless `scan.parent-project` overrides it. Required for sinks and direct sources; a query source may instead set `scan.parent-project` |
+| `dataset` | String | The dataset part of `table(...)`; required for a sink or direct table source, unused by a query source |
+| `table` | String | The table part of `table(...)`; required for a sink or direct table source. One SQL table writes to one BigQuery table: per-record routing has no SQL surface and stays on the DataStream API |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)`, the Storage Read or Write API's gRPC endpoint as `host:port`. Parsed when the statement is planned, so a malformed value fails on the client in either direction, and the rejection names `emulator-endpoint` — the key written in the DDL. Refused outright under `file-loads`, before its shape is looked at |
+| `emulator-rest-endpoint` | String | `emulatorRestEndpoint(...)`, used for source query/view materialization and sink table metadata. Separate because BigQuery serves the two transports on different ports. Parsed and refused on the same terms as `emulator-endpoint`, under its own name. A direct table source leaves it unused — one `WITH` clause serves both directions — but a malformed value is still rejected |
+| `service-account-key-file` | String | `serviceAccountKeyFile(...)`; a service-account JSON key-file path loaded on JobManagers and TaskManagers at runtime. Absent uses ADC; rejected with either emulator endpoint |
+
+### Source options
+
+| Option | Type | Maps to |
+|---|---|---|
+| `scan.parent-project` | String | `parentProject(...)`; the project that owns and is billed for the Storage Read session. *Unset ⇒ `project`*. Set it independently when the table belongs to another project, such as a public dataset |
+| `scan.query` | String | `query(...)`; reads the query's result instead of the configured table |
+| `scan.materialize-views` | Boolean | `materializeViews()`; checks a configured table name and materializes it when it is a logical or materialized view. Cannot be combined with `scan.query` |
+| `scan.query-location` | String | `queryLocation(...)`; query or view materialization only |
+| `scan.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
+| `scan.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `scan.query-location` |
+| `scan.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword. Combined with a translated SQL predicate using parenthesized `AND` |
+| `scan.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
+| `scan.max-stream-count` | Integer | `maxStreamCount(...)` |
+| `scan.preferred-min-stream-count` | Integer | `preferredMinStreamCount(...)` |
+| `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch(...)` |
+| `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` |
+| `scan.retry.max-attempts` | Integer | `retryMaxAttempts(...)` |
+| `scan.parallelism` | Integer | The bounded source's parallelism (Flink's own option) |
+
+### Sink options
+
+| Option | Type | Maps to |
+|---|---|---|
+| `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
+| `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
+| `sink.cdc.debezium-mysql.source-uuids` | List&lt;String&gt; | Ordered MySQL GTID source UUIDs. The append-only order assigns failover epochs for the Debezium MySQL sequence profile |
+| `sink.cdc.ticdc.cluster-id` | String | The TiCDC cluster ID whose commit timestamp oracle values order this table, as the changefeed reports it in `cluster_id`. A row change reporting another cluster is rejected rather than ordered against an unrelated oracle. TiCDC defaults this identifier to `default` |
+| `sink.cdc.max-staleness` | Duration | `CdcTableOptions.maxStaleness(...)`. Absent means that the property is unmanaged |
+| `sink.cdc.clear-max-staleness` | Boolean | `CdcTableOptions.clearMaxStaleness()`. Explicitly removes a previous value and is mutually exclusive with `sink.cdc.max-staleness` |
+| `sink.cdc.table-reconciliation` | Enum | `cdcTableReconciliationPolicy(...)` — `verify-only` (default) or `reconcile`. Selects whether an existing table is only checked or has managed mutable CDC properties converged |
+| `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never`. This controls only whether a missing table may be created; existing-table handling is independent |
+| `sink.location` | String | `location(...)` |
+| `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
+| `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load/query option applies to `write-append` and `write-truncate-data`, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
+| `sink.derive-required-columns` | Boolean | Derives a `REQUIRED` column from a `NOT NULL` one; off, every derived column is `NULLABLE` |
+| `sink.json-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `JSON` |
+| `sink.geography-field-paths` | List&lt;String&gt; | Derives the named columns as BigQuery `GEOGRAPHY` |
+| `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
 
 ### Table creation
 
@@ -644,119 +780,6 @@ A Table API sink has one fixed destination, so it exposes neither the DataStream
 `maxConcurrentDestinations(...)` nor `maxConcurrentCheckpointFinalizations(...)` control: one
 destination has no committer or writer-finalization work to distribute.
 
-## Type mapping
-
-A sink derives the BigQuery column type from the SQL declaration and uses that schema when it
-creates a missing table.
-A source reads the Storage Read API's Avro field by physical name and converts it to the declared
-SQL type.
-The DDL must therefore agree with the source table or query result because planning does not fetch
-the live schema.
-
-| Flink declaration | BigQuery source column | BigQuery sink column |
-|---|---|---|
-| `CHAR`, `VARCHAR`, `STRING` | `STRING`, `JSON` or `GEOGRAPHY` | `STRING`, or `JSON` / `GEOGRAPHY` when marked |
-| `BOOLEAN` | `BOOL` | `BOOL` |
-| `BINARY`, `VARBINARY`, `BYTES` | `BYTES` | `BYTES` |
-| `TINYINT`, `SMALLINT`, `INT`, `BIGINT` | `INT64` | `INT64` |
-| `FLOAT`, `DOUBLE` | `FLOAT64` | `FLOAT64` |
-| `DECIMAL(p, s)` | A fitting `NUMERIC` or `BIGNUMERIC` value | `NUMERIC` when `s <= 9` and `p - s <= 29`; otherwise `BIGNUMERIC` |
-| `DATE` | `DATE` | `DATE` |
-| `TIME(p)` | `TIME`; Flink 1.20 and 2.2 resolve SQL `p` to `0`, while 2.3 retains it through `3` | `TIME`; the same Flink-version boundary applies |
-| `TIMESTAMP(p)` | `DATETIME`; `p > 6` is rejected | `DATETIME`; `p > 6` is rejected |
-| `TIMESTAMP_LTZ(p)` | `TIMESTAMP`; `p > 6` is rejected | `TIMESTAMP`; `p > 6` is rejected |
-| `ROW` | `STRUCT`, recursively | `STRUCT`, recursively, or `JSON` when marked |
-| `` ROW<`start` DATE, `end` DATE> `` | `RANGE<DATE>`; source only | `STRUCT<start DATE, end DATE>` |
-| `` ROW<`start` TIMESTAMP(p), `end` TIMESTAMP(p)> `` | `RANGE<DATETIME>`; source only | `STRUCT<start DATETIME, end DATETIME>` |
-| `` ROW<`start` TIMESTAMP_LTZ(p), `end` TIMESTAMP_LTZ(p)> `` | `RANGE<TIMESTAMP>`; source only | `STRUCT<start TIMESTAMP, end TIMESTAMP>` |
-| `ARRAY<T>` | `REPEATED T`; declarations may use nullable elements although BigQuery values contain none | `REPEATED T`; nested arrays and nullable element declarations are rejected |
-| `MAP<K, V>`, `MULTISET<T>` | `REPEATED STRUCT<key, value>` | `REPEATED STRUCT<key, value>` |
-| `TIMESTAMP WITH TIME ZONE`, `INTERVAL`, `RAW`, `NULL`, structured and distinct types | rejected | rejected |
-
-Unsupported Flink logical types are rejected on the client when the job graph is built.
-A DDL that disguises BigQuery `INTERVAL` as a `ROW` is rejected from the live writer schema before
-the first value is converted.
-A source decimal that does not fit the declared precision fails the read rather than becoming
-`NULL`.
-
-### `RANGE` is source-only
-
-The Storage Read API represents `RANGE<T>` as a record with nullable `start` and `end` fields.
-Declare that record as one of the three `ROW` shapes in the table above.
-A null endpoint means that side is unbounded, while a null `ROW` means the range value itself is
-null.
-
-The sink does not infer `RANGE` from a two-field `ROW`.
-The same declaration sent to a sink creates a BigQuery `STRUCT`, which keeps source and sink schema
-derivation deterministic instead of guessing from field names.
-
-### `INTERVAL` remains unsupported
-
-BigQuery returned `INTERVAL` as an undocumented Avro record containing months, days and
-microseconds in a real-service measurement on 2026-08-13.
-Flink divides intervals into a year-month value and a day-time value, so neither type can preserve
-all three components.
-Flink's internal day-time value is also measured in milliseconds and cannot preserve the observed
-microseconds.
-
-The source therefore rejects both Flink interval types and rejects declaring BigQuery `INTERVAL`
-as a raw `ROW<months INT, days INT, microseconds BIGINT>`.
-If the textual representation is sufficient, use a query source that casts the BigQuery interval
-to `STRING` and declare that result column as Flink `STRING`.
-The sink continues to reject interval declarations because it has no lossless BigQuery mapping.
-
-### `TIMESTAMP` is civil and `TIMESTAMP_LTZ` is an instant
-
-`TIMESTAMP` is a wall-clock type, so it becomes BigQuery's `DATETIME`; `TIMESTAMP_LTZ` is an
-instant, so it becomes `TIMESTAMP`. The GoogleCloudDataproc connector maps these the other way
-round, which stores a wall-clock value as an instant and an instant as a wall-clock value. If you
-are migrating from it, this is the row to check.
-
-### SQL `TIME` precision depends on the Flink version
-
-BigQuery Storage Read returns `TIME` as Avro `time-micros`. Flink 1.20 and 2.2 resolve a SQL
-declaration such as `TIME(3)` to `TIME(0)` before the connector sees the schema, so source and sink
-SQL paths on those versions carry only whole seconds. Flink 2.3 and newer retain the declared
-precision and the connector preserves milliseconds through `TIME(3)`. Use a query source that casts
-the value to `STRING` when fractional text must be preserved on the earlier versions.
-
-A catalog schema constructed programmatically can carry `TIME(1)` through `TIME(3)` to the
-connector on every supported version, whose internal value stores milliseconds. The connector
-rejects a programmatic precision above `3` rather than claiming it can preserve BigQuery's
-microseconds.
-
-### Marked columns
-
-`sink.json-field-paths` and `sink.geography-field-paths` name columns by dotted path — `payload`,
-`event.body`, `the_map.value`. A map's key cannot be marked.
-
-A marked `STRING` is passed through **verbatim and unvalidated**: malformed JSON or an invalid
-geometry is a row-level error BigQuery reports, exactly as on the other write paths. A marked `ROW`
-is different — it is rendered as JSON text rather than expanded into a `STRUCT`, so its columns
-become object members. Strings are escaped, `BYTES` becomes base64, `DECIMAL` an unquoted number,
-and the temporal types ISO-8601 strings. A `MULTISET` has no JSON form and is rejected, as is a map
-with non-string keys. `GEOGRAPHY` may only mark a `STRING`: no structured value means a geometry to
-BigQuery.
-
-## Schema evolution
-
-The two `sink.schema-update.*` options are accepted under every write method.
-Whenever the connector reconciles rather than replaces a table schema, they select the same additive union rules: existing fields are not removed, reordered or retyped, new fields are added as `NULLABLE`, and `REPEATED` modes do not change.
-
-`sink.derive-required-columns` and `sink.schema-update.allow-field-relaxation` operate at different stages.
-The former changes the desired schema derived from the DDL: when enabled, a `NOT NULL` column becomes `REQUIRED`; when disabled, every non-repeated derived column is `NULLABLE`.
-The latter permits the connector to relax an existing table column from `REQUIRED` to `NULLABLE` when the DDL-derived schema is nullable.
-During additive reconciliation it never tightens a `NULLABLE` table column to `REQUIRED`, and a new `REQUIRED`-derived column is added to an existing table as `NULLABLE` because BigQuery cannot add required fields.
-Changing `sink.derive-required-columns` alone therefore does not rewrite an existing table.
-
-The selected write method decides when that union is applied.
-`storage-api-at-least-once` rebuilds its default-stream writer after reconciling the table.
-`storage-api-exactly-once` drains old-schema rows and reconnects the same buffered stream at the same next offset.
-`file-loads` reconciles once per destination before loading each batch run or streaming checkpoint, then puts the reconciled schema on every load job.
-For `file-loads`, `write-append` and `write-truncate-data` jobs also carry BigQuery's native schema-update options, `write-empty` relies on the connector's pre-load reconciliation, `write-truncate-data` preserves the live schema and constraints, and `write-truncate` replaces the table schema instead of reconciling it.
-
-See [Schema evolution]({{< relref "docs/connectors/datastream/bigquery" >}}#schema-evolution) on the DataStream page for the nullability result table, failure behavior, propagation waits and serializer compatibility rules.
-
 ## Delivery guarantees
 
 `sink.write-method` decides them. **In streaming execution all three need checkpointing enabled**
@@ -792,19 +815,6 @@ The [worked examples]({{< relref "docs/examples/bigquery" >}}) carry what neithe
 can: how to redeploy an exactly-once job without losing the rows a discarded checkpoint was holding,
 and why a FILE_LOADS staging bucket wants to be a dedicated one with a lifecycle rule sized above
 the longest outage the job must recover from.
-
-### Inserts only, unless CDC is enabled
-
-Without `sink.cdc.enabled`, the changelog mode is insert-only. An updating query — an aggregation
-without a window, a non-windowed join — is rejected when the plan is built, because BigQuery's
-append-only write paths cannot express a retraction and appending the `-U` and `-D` rows as ordinary
-ones would corrupt the table silently.
-
-Setting `sink.cdc.enabled` to `true` makes the sink answer an updating query with an upsert changelog
-instead, so the same query plans; an insert-only query still gets insert-only. That path augments
-each row with BigQuery's CDC pseudocolumns, and it carries its own restrictions — it runs on
-`storage-api-at-least-once` and no other write method. See
-[Change data capture](#change-data-capture).
 
 ## Design decisions
 

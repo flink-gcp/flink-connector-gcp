@@ -235,6 +235,8 @@ JOIN user_attributes FOR SYSTEM_TIME AS OF e.proc_time AS a
 -- end::attribute-enrichment-pipeline[]
 
 -- tag::selected-cell-bigquery-cdc[]
+SET 'execution.checkpointing.interval' = '1 min';
+
 CREATE TABLE current_profiles (
   profile_id STRING NOT NULL,
   name STRING,

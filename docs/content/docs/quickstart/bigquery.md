@@ -61,11 +61,15 @@ for more than speed: **a read through this API is charged for the bytes it scans
 
 ## Next
 
-[BigQuery examples]({{< relref "docs/examples/bigquery" >}}) — a table per day from the event
-timestamp, both exactly-once write methods, and what `tableCreateOptions(...)` decides at creation
-time.
+Choose the direction and API you need next:
 
-Reading is covered further under
-[Source]({{< relref "docs/connectors/datastream/bigquery" >}}#source) — what a checkpoint carries,
-how many read streams BigQuery actually gives you, and why no recovery test may be written against
-the emulator.
+- DataStream [source examples]({{< relref "docs/examples/bigquery" >}}#datastream-source) and
+  [sink examples]({{< relref "docs/examples/bigquery" >}}#datastream-sink)
+- Table [source example]({{< relref "docs/examples/bigquery" >}}#table-source) and
+  [sink example]({{< relref "docs/examples/bigquery" >}}#table-sink)
+- [Change data capture]({{< relref "docs/examples/bigquery" >}}#change-data-capture) and
+  [local development]({{< relref "docs/examples/bigquery" >}}#local-development)
+- DataStream connector reference [source]({{< relref "docs/connectors/datastream/bigquery" >}}#source)
+  and [sink]({{< relref "docs/connectors/datastream/bigquery" >}}#sink) sections
+- Table connector reference [source]({{< relref "docs/connectors/table/bigquery" >}}#source) and
+  [sink]({{< relref "docs/connectors/table/bigquery" >}}#sink) sections

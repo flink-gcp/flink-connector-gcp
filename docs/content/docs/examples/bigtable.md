@@ -245,10 +245,16 @@ That changelog can feed a BigQuery table with the same primary key and CDC enabl
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="selected-cell-bigquery-cdc" >}}
 
+The checkpoint interval persists the Change Streams position and flushes the BigQuery default
+stream, so it must remain enabled for at-least-once recovery.
 The example selects one source cluster so multi-cluster conflict resolution cannot reorder the selected-cell changelog.
 It deliberately supplies no BigQuery [sequence metadata]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture).
 BigQuery therefore resolves colliding mutations for one primary key by arrival order, and Change Streams partitions do not supply a total application order across the pipeline.
 This is an analytics-replica pattern, not a strict replica guarantee.
+Because Change Streams startup defaults to `latest`, a fresh job materializes only mutations that
+arrive after it starts.
+A populated source needs a separate initial snapshot or backfill coordinated with a Change Streams
+handoff before the BigQuery table contains every existing key.
 
 ## Local development
 
