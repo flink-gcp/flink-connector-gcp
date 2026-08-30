@@ -40,7 +40,8 @@ The SQL request model, writable metadata and `WITH` options are in the
 
 A complete runnable job is in
 [Quickstart](https://flink-gcp.github.io/flink-connector-gcp/docs/quickstart/cloudtasks/); sharding
-across queues and emulator-backed local runs are worked through in
+across queues, App Engine, Cloud Run and external API tasks, Table request bodies, a
+Pub/Sub-to-Bigtable lookup pipeline, and emulator-backed local runs are worked through in
 [Examples](https://flink-gcp.github.io/flink-connector-gcp/docs/examples/cloudtasks/). Every option
 the sink takes, with its default, is in the
 [configuration reference](https://flink-gcp.github.io/flink-connector-gcp/docs/reference/cloudtasks/).

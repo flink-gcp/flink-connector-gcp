@@ -53,7 +53,7 @@ the endpoint caveat.
 | [Dynamic destinations]({{< relref "docs/examples/dynamic-destinations" >}}) | The shared resolver contract, per-destination resources, idle eviction, auto-creation and Pub/Sub ordering across all five sinks |
 | [BigQuery]({{< relref "docs/examples/bigquery" >}}) | Debezium MySQL, Debezium PostgreSQL, TiCDC and Spanner CDC; dynamic tables, both exactly-once write methods and redeployment, table auto-creation, an SQL table read, DataStream table/query/view/snapshot/public-dataset reads, and the emulator |
 | [Cloud Pub/Sub]({{< relref "docs/examples/pubsub" >}}) | DataStream subscription and topic creation, dynamic topics, Table source startup and ordering, readable and writable message metadata, and the emulator |
-| [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Sharding across queues, the emulator |
+| [Cloud Tasks]({{< relref "docs/examples/cloudtasks" >}}) | Dynamic queues; App Engine, Cloud Run function and external API tasks; Pub/Sub events enriched from Bigtable; JSON, CSV, raw and Avro bodies; the emulator |
 | [Bigtable]({{< relref "docs/examples/bigtable" >}}) | Bounded and filtered DataStream reads; multi-cell and dynamic-table writes, skipping and dropping records; Table scans, upsert and insert-only sinks, writable timestamps, and lookup joins; Pub/Sub attribute enrichment into Cloud Tasks; envelope CDC and a selected-cell BigQuery analytics replica; application profiles and the emulator |
 | [Spanner]({{< relref "docs/examples/spanner" >}}) | SQL lookup joins and upsert writes; several tables, deletes, skipping and dropping records, batch tuning, key-range and fixed-timestamp reads, Data Boost, Change Streams metadata and filtering, and the emulator |
 

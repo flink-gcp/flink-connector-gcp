@@ -48,5 +48,12 @@ documents as significant.
 
 ## Next
 
-[Cloud Tasks examples]({{< relref "docs/examples/cloudtasks" >}}) — sharding across queues, and
-running against the emulator so the dispatches land on a server you can inspect.
+The [Cloud Tasks examples]({{< relref "docs/examples/cloudtasks" >}}) continue with dynamic queue
+routing on the DataStream sink; App Engine, Cloud Run function, external API, and cross-connector
+requests on the Table sink; request-body formats; and an emulator run whose dispatches land on a
+server that can be inspected locally.
+
+Use the [DataStream connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) for runtime,
+delivery, failure, metric, and tuning behavior, or the
+[Table connector]({{< relref "docs/connectors/table/cloudtasks" >}}) for DDL, formats, writable
+metadata, and planner restrictions.

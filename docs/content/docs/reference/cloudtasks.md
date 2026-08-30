@@ -83,7 +83,7 @@ a one-way door — a deleted queue name cannot be reused for three days.
 Set through `writerOptions(...)`; every knob is defaulted. Retries are this sink's own
 responsibility, unlike every other connector here, because the generated client gives `CreateTask`
 an *empty* set of retryable status codes — the reasoning, and which status lands in which budget,
-is under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning).
+is under [Delivery guarantees and state]({{< relref "docs/connectors/datastream/cloudtasks" >}}#delivery-guarantees-and-state).
 
 | Option | Default | What it does |
 |---|---|---|

@@ -22,6 +22,12 @@ limitations under the License.
 
 # Cloud Tasks SQL Connector
 
+Start with the [Quickstart]({{< relref "docs/quickstart/cloudtasks" >}}) for the basic DataStream
+job, or use the [Cloud Tasks examples]({{< relref "docs/examples/cloudtasks" >}}) for complete
+Table sink requests and cross-connector pipelines.
+
+## Overview and setup
+
 The `cloud-tasks` table connector is a sink provided by the
 `flink-connector-gcp-cloudtasks` module.
 It maps onto the [DataStream sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}), which
@@ -41,7 +47,7 @@ The three metadata columns configure the request outside that body.
 Because `target.type` defaults to `http`, this DDL remains compatible with tables created before
 App Engine target support.
 
-## Getting the connector onto the classpath
+### Getting the connector onto the classpath
 
 Use `flink-sql-connector-gcp-cloudtasks`, the relocated SQL uber-jar, for SQL Client deployments.
 Place `flink-sql-connector-gcp-cloudtasks-<version>.jar` in Flink's `lib/` before starting the
@@ -62,7 +68,13 @@ Merging them into another fat jar without merging service descriptors can silent
 the factory registrations. A Maven or Gradle DataStream job should instead depend on the plain
 `flink-connector-gcp-cloudtasks` module and resolve its transitive dependencies normally.
 
-## Body format and request metadata
+## Table sink
+
+### Body format and request metadata
+
+This overview covers generic body serialization and the request metadata projected before encoding.
+Later sibling sections keep the form-specific examples, bodyless methods and writable metadata
+independently visible in the page outline.
 
 `format` is any `SerializationFormatFactory` available on the job classpath, such as `json`, `csv`,
 Avro or `raw` where its schema requirements are met.
@@ -246,7 +258,7 @@ appears in JSON, CSV or another body by accident.
 The sink advertises only metadata belonging to the selected target family, so `url` cannot be used
 with App Engine and the App Engine address and routing keys cannot be used with HTTP.
 
-## App Engine targets
+### App Engine targets
 
 Set `target.type` to `app-engine` for an App Engine handler in the queue's project and region.
 The connector creates the task's `AppEngineHttpRequest` arm rather than translating routing into an
@@ -254,7 +266,8 @@ external URL.
 Task-level service, version and instance selectors are independent, and a queue-level
 `appEngineRoutingOverride` remains authoritative when the queue defines one.
 
-{{< sql-snippet file="flink/CloudTasksTableReference.sql" tag="app-engine-target" >}}
+The [worked App Engine example]({{< relref "docs/examples/cloudtasks" >}}#an-app-engine-handler)
+shows the target and routing metadata together in one planned statement.
 
 An empty or absent routing value lets App Engine choose its default service, version and an
 available instance.
@@ -262,7 +275,7 @@ Instance routing is valid only for a manually scaled service.
 Reserved headers including `Host`, `Content-Length`, `X-Google-*` and `X-AppEngine-*` are set by
 Cloud Tasks or App Engine and cannot be overridden.
 
-## Authentication has two independent identities
+### Authentication has two independent identities
 
 `service-account-key-file` authenticates the Flink writer to the Cloud Tasks API.
 When it is absent the writer uses application-default credentials.
@@ -302,33 +315,17 @@ App Engine targets do not accept the `http.oidc.*` or `http.oauth.*` options.
 Cloud Tasks dispatches them through the same-project, same-region App Engine integration instead
 of attaching an external HTTP authorization token.
 
-## Delivery guarantees and task identity
-
-See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
-for the Table and DataStream API comparison.
-
-The connector accepts an insert-only Flink changelog.
-That planner contract prevents update and delete rows from becoming new HTTP requests, but it does
-not deduplicate task creation by itself.
-Without writable `task-id` metadata, a replay creates another unnamed task.
-
-Selecting `task-id` installs the DataStream sink's existing task-id extractor for every row.
-A remembered duplicate returns `ALREADY_EXISTS`, which the sink treats as successful creation
-without comparing the existing task's payload or schedule.
-Cloud Tasks cannot update a task after creation, so reusing an ID does not replace the originally
-created task definition, even when only the executed or deleted task's retained name remains.
-The metadata value must identify an immutable logical task, or include a content or schedule
-version when a changed row must create another task.
-
-This is bounded effectively-once task creation, not exactly-once handler execution.
-Cloud Tasks may dispatch the handler more than once, so the handler still needs an idempotent
-operation or its own durable event ledger.
-
 ## Options
 
 The queue is fixed for a table.
 SQL exposes no dynamic queue metadata and never creates or configures a queue.
-Rate limits, dispatch concurrency and delivery retries remain queue configuration.
+Queue rate limits, dispatch concurrency, delivery retries, and paused or disabled queue behavior
+are service-side settings and behaviors that apply equally to Table jobs; they are documented under
+[Queues, rate limits and sink concurrency]({{< relref "docs/connectors/datastream/cloudtasks" >}}#queues-rate-limits-and-sink-concurrency)
+rather than repeated as Table options.
+[Writer concurrency]({{< relref "docs/connectors/datastream/cloudtasks" >}}#queues-rate-limits-and-sink-concurrency)
+and [`CreateTask` RPC recovery]({{< relref "docs/connectors/datastream/cloudtasks" >}}#delivery-guarantees-and-state)
+use the options below and follow the same runtime behavior as the DataStream sink.
 
 An option left out leaves the corresponding DataStream setting at its existing default, except
 `target.type`, `http.method` and `app-engine.method`, whose SQL defaults are `http`, `POST` and
@@ -395,3 +392,35 @@ explains why `NOT_FOUND` has a separate short budget and why no setting controls
 | `sink.recovery.not-found.max-attempts` | Integer | 3 | `notFoundRecoveryMaxAttempts` |
 | `sink.metrics.per-destination` | Boolean | `false` | `perDestinationMetrics` |
 | `sink.parallelism` | Integer | job parallelism | the sink operator parallelism |
+
+## Delivery guarantees and task identity
+
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the Table and DataStream API comparison.
+
+The connector accepts an insert-only Flink changelog.
+That planner contract prevents update and delete rows from becoming new HTTP requests, but it does
+not deduplicate task creation by itself.
+Without writable `task-id` metadata, a replay creates another unnamed task.
+
+Selecting `task-id` installs the DataStream sink's existing task-id extractor for every row.
+A remembered duplicate returns `ALREADY_EXISTS`, which the sink treats as successful creation
+without comparing the existing task's payload or schedule.
+Cloud Tasks cannot update a task after creation, so reusing an ID does not replace the originally
+created task definition, even when only the executed or deleted task's retained name remains.
+The metadata value must identify an immutable logical task, or include a content or schedule
+version when a changed row must create another task.
+
+This is bounded effectively-once task creation, not exactly-once handler execution.
+Cloud Tasks may dispatch the handler more than once, so the handler still needs an idempotent
+operation or its own durable event ledger.
+
+## Testing
+
+Planner tests translate every source-backed statement through connector discovery and sink
+validation without submitting a job or calling GCP.
+Serializer and factory tests cover physical-column projection, target-family metadata, header
+precedence, body methods, OIDC and OAuth selection, and task-ID extraction.
+The emulator integration tests add HTTP dispatch, metadata overrides, named-task deduplication,
+form bytes, and an inspectable App Engine task; the App Engine real-service suite covers behavior
+the emulator cannot implement.

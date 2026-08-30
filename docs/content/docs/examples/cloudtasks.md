@@ -24,11 +24,136 @@ limitations under the License.
 
 Starting from the [Cloud Tasks quickstart]({{< relref "docs/quickstart/cloudtasks" >}}) job.
 
-## Table API request bodies
+The [DataStream connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) explains sink
+runtime behavior, while the [Table connector]({{< relref "docs/connectors/table/cloudtasks" >}})
+owns DDL, writable metadata, and planner restrictions.
+
+## DataStream sink
+
+### Basic dispatch job
+
+The [Quickstart]({{< relref "docs/quickstart/cloudtasks" >}}) is the canonical basic job: it creates
+one external HTTP task for each input record and leaves dispatch pacing to the queue.
+The examples below change its destination or use the Table API instead of copying that job.
+
+### Sharding across queues
+
+The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#cloud-tasks-queues)
+places this sharding pattern in the shared resolver contract.
+
+{{< java-snippet file="CloudTasksExamplesShardingAcrossQueues.java" tag="cloud-tasks-examples-sharding-across-queues" >}}
+
+A single Cloud Tasks client serves every queue, and the sink creates no per-queue client, stream,
+publisher, or batcher to cache or evict.
+When `CloudTasksWriterOptions.builder().perDestinationMetrics(true).build()` is supplied through
+`writerOptions(...)`, each queue with a recorded send or failure registers counters that remain for
+the task lifetime because Flink cannot unregister metrics.
+That optional metric registry state is separate from service-client state.
+
+Sharding this way is how a pipeline exceeds the per-queue throughput ceiling.
+The aggregate limits, and why they rarely matter for the workload this connector exists for, are
+on the [Cloud Tasks connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) page.
+All the queues must exist; the sink creates none of them.
+
+## Table sink
+
+The Table sink encodes physical columns as a request body and projects writable metadata into the
+task and its HTTP or App Engine request.
+The following cases organize that split around the system Cloud Tasks invokes.
+
+### An App Engine handler
+
+An App Engine target uses the queue project's native `AppEngineHttpRequest` arm rather than an
+external URL.
+The writable `relative-uri`, service, version, and instance columns select the handler and its
+task-level routing for each row.
+
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="app-engine-target" >}}
+
+An absent service or version uses the App Engine default when the task is attempted, and an absent
+instance selects an available instance.
+A specific instance requires manual scaling, and a queue-level `appEngineRoutingOverride` still
+wins over the values in the row.
+The [Table connector page]({{< relref "docs/connectors/table/cloudtasks" >}}#app-engine-targets)
+defines the reserved headers and routing constraints.
+
+### An authenticated Cloud Run function
+
+An HTTP Cloud Run function uses the external HTTP target with an OIDC token.
+The target URL includes the function path, while the audience remains the function's stable root
+`run.app` URL.
+
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="cloud-run-function" >}}
+
+The OIDC settings are fixed options rather than writable metadata because the connector exposes no
+per-row dispatch identity.
+The identity that calls `CreateTask` still comes from the Flink writer's application-default or
+key-file credentials.
+That creator identity needs `iam.serviceAccounts.actAs` on the configured dispatch service account.
+Cloud Tasks later generates the OIDC token for `dispatcher@my-project.iam.gserviceaccount.com` when
+it dispatches the task, and that service account needs permission to invoke the function.
+Creating the task proves neither that the function ran nor that it succeeded.
+The [authentication reference]({{< relref "docs/connectors/table/cloudtasks" >}}#authentication-has-two-independent-identities)
+lists both identities and their permissions.
+
+### An external API request
+
+An external API often varies the resource URL and request details per row.
+This table keeps the JSON body in physical columns and supplies method, URL, headers, schedule time,
+and task identity through writable metadata.
+
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="external-api" >}}
+
+The `PATCH` body contains only `order_id`, `status`, and `amount`; the five metadata columns are
+projected out before JSON serialization.
+The `task-id` value deduplicates task creation within Cloud Tasks' retained-name window, but it does
+not make the external API operation exactly once.
+
+Once the connector successfully creates the task, Cloud Tasks owns dispatch and its retries.
+A 2xx handler response completes the task; a non-2xx response or a missed deadline is retried under
+the queue's retry policy.
+The connector observes task creation only, so the API operation must be idempotent or deduplicate
+using a durable business key.
+
+### Pub/Sub events enriched from Bigtable
+
+This pipeline consumes order events from Pub/Sub, looks up each customer's endpoint and tenant in
+Bigtable, and creates an external API task from the enriched row.
+
+{{< sql-snippet file="flink/CloudTasksExamples.sql" tag="pubsub-bigtable-cloud-tasks" >}}
+
+Checkpointing is required here: Pub/Sub acknowledges consumed messages at completed checkpoints,
+and the Cloud Tasks sink flushes outstanding task creations at the same boundary.
+The equality condition covers Bigtable's complete row key, so the temporal join becomes one point
+read per input event.
+An inner join emits no task when the route is absent.
+The null predicates also drop incomplete route rows and events without the order or task identity
+needed to construct a valid request.
+Monitor those rejected inputs in a production pipeline rather than treating their absence as a
+successful dispatch.
+The event ID becomes the task identity, while the lookup result selects the URL and tenant header.
+Treat the routing table as trusted configuration and constrain endpoint values to an allowlist
+before this insert; the connector forwards each URL but does not enforce which hosts the job may
+target.
+Validate `order_id` as one path segment before concatenating it, rejecting path separators, dot
+segments, query delimiters and fragment delimiters that could select a different resource on an
+allowed host.
+
+The [Pub/Sub examples]({{< relref "docs/examples/pubsub" >}}#publishing-and-consuming-with-sql)
+cover subscription startup, checkpoint acknowledgement, and per-key ordering.
+The [Bigtable lookup example]({{< relref "docs/examples/bigtable" >}}#joining-a-bigtable-lookup-table)
+covers the lookup-key rule and synchronous default.
+Its [Pub/Sub enrichment example]({{< relref "docs/examples/bigtable" >}}#enriching-pubsub-events-before-creating-tasks)
+compares synchronous and asynchronous lookup with the cache choices.
+Composing those connectors does not strengthen their delivery or ordering guarantees, and the
+Cloud Tasks handler remains responsible for idempotent execution.
+
+### Table API request bodies
 
 The `cloud-tasks` Table sink passes physical columns to the selected Flink serialization format
 and projects writable request metadata out before encoding.
-The metadata columns in these examples therefore set `X-Trace-Id` without appearing in the body.
+The metadata columns in the four format-specific examples after this overview therefore set
+`X-Trace-Id` without appearing in the body.
 This projection is a connector guarantee.
 
 The connector treats bytes from a generic format as opaque and does not select their media type.
@@ -47,7 +172,8 @@ Use the matching format reference for the Flink version deployed with the job:
 | raw | [raw format](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/connectors/table/formats/raw/) | [raw format](https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/connectors/table/formats/raw/) | [raw format](https://nightlies.apache.org/flink/flink-docs-release-2.3/docs/connectors/table/formats/raw/) |
 | Avro | [Avro format](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/connectors/table/formats/avro/) | [Avro format](https://nightlies.apache.org/flink/flink-docs-release-2.2/docs/connectors/table/formats/avro/) | [Avro format](https://nightlies.apache.org/flink/flink-docs-release-2.3/docs/connectors/table/formats/avro/) |
 
-The following examples name only the options that determine their bodies.
+The following sibling sections keep each format visible in the page outline and name only the
+options that determine its body.
 
 ### Nested JSON
 
@@ -143,21 +269,9 @@ The Cloud Tasks SQL uber-jar does not bundle generic Flink formats; JSON, CSV an
 in the Flink SQL distribution, while Avro requires the version-matched `flink-avro` format artifact
 on the SQL Client and cluster classpaths.
 
-## Sharding across queues
+## Local development
 
-The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#cloud-tasks-queues) places this sharding pattern in the shared resolver contract.
-
-{{< java-snippet file="CloudTasksExamplesShardingAcrossQueues.java" tag="cloud-tasks-examples-sharding-across-queues" >}}
-
-A single Cloud Tasks client serves every queue, and the sink creates no per-queue client, stream, publisher or batcher to cache or evict.
-When `CloudTasksWriterOptions.builder().perDestinationMetrics(true).build()` is supplied through `writerOptions(...)`, each queue with a recorded send or failure registers counters that remain for the task lifetime because Flink cannot unregister metrics.
-That optional metric registry state is separate from service-client state.
-
-Sharding this way is how a pipeline exceeds the per-queue throughput ceiling.
-The aggregate limits, and why they rarely matter for the workload this connector exists for, are on the [Cloud Tasks connector]({{< relref "docs/connectors/datastream/cloudtasks" >}}) page.
-All the queues must exist; the sink creates none of them.
-
-## Running against the emulator
+### Running against the emulator
 
 Google publishes no Cloud Tasks emulator; the one the integration tests use is
 [`aertje/cloud-tasks-emulator`](https://github.com/aertje/cloud-tasks-emulator) (MIT). Queues are

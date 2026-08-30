@@ -165,26 +165,3 @@ SELECT '',
        'https://api.example.com/search?q=' || URL_ENCODE(query_text)
 FROM pending_searches;
 -- end::get-request[]
-
--- tag::app-engine-target[]
-CREATE TABLE app_engine_tasks (
-  payload        STRING,
-  target_path    STRING NOT NULL METADATA FROM 'relative-uri',
-  service_name   STRING          METADATA FROM 'app-engine-service',
-  version_name   STRING          METADATA FROM 'app-engine-version',
-  instance_name  STRING          METADATA FROM 'app-engine-instance',
-  dedupe_key     STRING          METADATA FROM 'task-id'
-) WITH (
-  'connector' = 'cloud-tasks',
-  'project' = 'my-project',
-  'location' = 'asia-northeast1',
-  'queue' = 'app-engine-orders',
-  'target.type' = 'app-engine',
-  'app-engine.method' = 'POST',
-  'app-engine.headers.Content-Type' = 'application/json',
-  'format' = 'json'
-);
-
-INSERT INTO app_engine_tasks
-VALUES ('ready', '/tasks/42?source=sql', 'worker', 'v2', CAST(NULL AS STRING), 'order-42');
--- end::app-engine-target[]

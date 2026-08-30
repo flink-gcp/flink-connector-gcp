@@ -249,6 +249,18 @@ public class DocumentationSqlPlanTest {
                         "Bigtable selected cell to BigQuery CDC",
                         snippet("flink/BigtableExamples.sql", "selected-cell-bigquery-cdc")),
                 scenario(
+                        "Cloud Tasks App Engine target",
+                        snippet("flink/CloudTasksExamples.sql", "app-engine-target")),
+                scenario(
+                        "Cloud Tasks Cloud Run function",
+                        snippet("flink/CloudTasksExamples.sql", "cloud-run-function")),
+                scenario(
+                        "Cloud Tasks external API request",
+                        snippet("flink/CloudTasksExamples.sql", "external-api")),
+                scenario(
+                        "Pub/Sub to Bigtable lookup to Cloud Tasks",
+                        snippet("flink/CloudTasksExamples.sql", "pubsub-bigtable-cloud-tasks")),
+                scenario(
                         "Cloud Tasks nested JSON request",
                         snippet("flink/CloudTasksExamples.sql", "nested-json")),
                 scenario("Cloud Tasks CSV request", snippet("flink/CloudTasksExamples.sql", "csv")),
@@ -380,9 +392,6 @@ public class DocumentationSqlPlanTest {
                                                 + "SELECT 'flink connectors' AS query_text"),
                                 DocumentationSqlPlanTest::registerUrlEncodeForFlink1),
                         snippet("flink/CloudTasksTableReference.sql", "get-request")),
-                scenario(
-                        "Cloud Tasks table reference App Engine target",
-                        snippet("flink/CloudTasksTableReference.sql", "app-engine-target")),
                 scenario(
                         "Pub/Sub table reference sink and updating-query rejection",
                         List.of(
