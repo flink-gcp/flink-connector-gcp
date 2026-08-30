@@ -71,6 +71,6 @@ readable. And recovery re-reads whole partitions, so a job that fails part-way e
 
 ## Next
 
-[Spanner examples]({{< relref "docs/examples/spanner" >}}) — deletes, skipping records, dropping
-refused mutations instead of failing, tuning the batch, reading a key range, and running against the
-emulator.
+[Spanner examples]({{< relref "docs/examples/spanner" >}}) starts with bounded DataStream source
+and sink cases, then adds a bounded Table scan, Table upserts, lookup joins, both Change Streams
+changelog modes, a replica-shaped materialization pattern, and local emulator development.

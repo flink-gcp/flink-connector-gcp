@@ -80,7 +80,19 @@ class SpannerDocumentationSqlITCase extends AbstractSpannerEmulatorITCase {
                 new Scenario(
                         "account status table",
                         new Snippet(SPANNER_EXAMPLES, "account-status-table"),
-                        SpannerDocumentationSqlITCase::assertAccountStatusTable));
+                        SpannerDocumentationSqlITCase::assertAccountStatusTable),
+                new Scenario(
+                        "inventory table and seed row",
+                        new Snippet(SPANNER_EXAMPLES, "inventory-table-and-row"),
+                        SpannerDocumentationSqlITCase::assertInventoryTableAndSeedRow),
+                new Scenario(
+                        "orders change stream and replica",
+                        new Snippet(SPANNER_EXAMPLES, "orders-change-stream-and-replica"),
+                        SpannerDocumentationSqlITCase::assertOrdersChangeStreamAndReplica),
+                new Scenario(
+                        "order change after source starts",
+                        new Snippet(SPANNER_EXAMPLES, "order-change-after-source-starts"),
+                        SpannerDocumentationSqlITCase::assertOrderChangeAfterSourceStarts));
     }
 
     @Test
@@ -121,6 +133,86 @@ class SpannerDocumentationSqlITCase extends AbstractSpannerEmulatorITCase {
 
         assertThat(query(database, "SELECT region, account, status FROM account_status LIMIT 1"))
                 .isEmpty();
+    }
+
+    private static void assertInventoryTableAndSeedRow(List<String> statements) throws Exception {
+        assertThat(statements).hasSize(2);
+        DatabaseDestination database =
+                createDatabase(Dialect.GOOGLE_STANDARD_SQL, statements.get(0));
+
+        long updated =
+                client(database)
+                        .readWriteTransaction()
+                        .run(
+                                transaction ->
+                                        transaction.executeUpdate(Statement.of(statements.get(1))));
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(query(database, "SELECT sku, quantity FROM inventory"))
+                .singleElement()
+                .satisfies(
+                        row -> {
+                            assertThat(row.getString("sku")).isEqualTo("widget-1");
+                            assertThat(row.getLong("quantity")).isEqualTo(12L);
+                        });
+    }
+
+    private static void assertOrdersChangeStreamAndReplica(List<String> statements)
+            throws Exception {
+        assertThat(statements).hasSize(3);
+        DatabaseDestination database =
+                createDatabase(
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        statements.get(0),
+                        statements.get(1),
+                        statements.get(2));
+
+        assertThat(query(database, "SELECT order_id FROM source_orders")).isEmpty();
+        assertThat(
+                        query(
+                                database,
+                                "SELECT OPTION_VALUE"
+                                        + " FROM INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS"
+                                        + " WHERE CHANGE_STREAM_NAME = 'source_order_changes'"
+                                        + " AND OPTION_NAME = 'value_capture_type'"))
+                .singleElement()
+                .satisfies(
+                        row ->
+                                assertThat(row.getString("OPTION_VALUE"))
+                                        .isEqualTo("NEW_ROW_AND_OLD_VALUES"));
+        assertThat(query(database, "SELECT order_id FROM order_replica")).isEmpty();
+    }
+
+    private static void assertOrderChangeAfterSourceStarts(List<String> statements)
+            throws Exception {
+        assertThat(statements).hasSize(1);
+        List<String> setupStatements =
+                splitStatements(
+                        region(new Snippet(SPANNER_EXAMPLES, "orders-change-stream-and-replica")));
+        assertThat(setupStatements).hasSize(3);
+        DatabaseDestination database =
+                createDatabase(
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        setupStatements.get(0),
+                        setupStatements.get(1),
+                        setupStatements.get(2));
+
+        long updated =
+                client(database)
+                        .readWriteTransaction()
+                        .run(
+                                transaction ->
+                                        transaction.executeUpdate(Statement.of(statements.get(0))));
+
+        assertThat(updated).isEqualTo(1);
+        assertThat(query(database, "SELECT order_id, customer, status FROM source_orders"))
+                .singleElement()
+                .satisfies(
+                        row -> {
+                            assertThat(row.getLong("order_id")).isEqualTo(1L);
+                            assertThat(row.getString("customer")).isEqualTo("Ada");
+                            assertThat(row.getString("status")).isEqualTo("PENDING");
+                        });
     }
 
     private static void assertAccount(Struct row) {

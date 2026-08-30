@@ -48,7 +48,9 @@ Mount the same configured path in all of those containers, including after a res
 The option is mutually exclusive with `emulator-endpoint`; prefer an attached service account or Workload Identity when available.
 See the [DataStream credential deployment contract]({{< relref "docs/connectors/datastream/spanner" >}}#credentials) for the exact process boundaries and failure behavior.
 
-## Named schemas
+## Schema and type mapping
+
+### Named schemas
 
 Set `schema` when the destination or source table belongs to a named Spanner schema.
 The connector qualifies that schema with `table` for mutations, bounded scans, and synchronous and asynchronous lookups.
@@ -70,25 +72,7 @@ Quote a reserved word when it is used as the schema, the first component of the 
 
 {{< sql-snippet file="flink/SpannerTableReference.sql" tag="named-schema" >}}
 
-## Mutation behavior
-
-See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
-for the cross-connector distinction between a planner key and a destination write operation.
-
-A declared `PRIMARY KEY` makes the sink an upsert sink.
-`INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
-The key may be composite, but every member must map to a Spanner key type.
-
-Without a primary key, the sink accepts insert-only input and uses Spanner `insert`.
-This preserves duplicate-key errors instead of pretending that an unknown physical key can support upserts or deletes.
-As with other Flink connectors, `PRIMARY KEY ... NOT ENFORCED` describes the contract to the planner; the connector does not verify uniqueness.
-
-The delivery guarantee remains at-least-once.
-Replaying one upsert or delete is idempotent, while insert-only writes can fail on a replayed primary key.
-The writer submits records as separate `BatchWrite` mutation groups, whose application order is not
-guaranteed, so successive updates to the same key do not provide a latest-input-value guarantee.
-
-## Type mapping
+### Type mapping
 
 Spanner's [GoogleSQL data types](https://cloud.google.com/spanner/docs/reference/standard-sql/data-types) and [PostgreSQL data types](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) define the native column and key constraints that this mapping enforces.
 
@@ -117,7 +101,9 @@ Precision overflow, scale loss, and PostgreSQL numeric `NaN` fail conversion ins
 The error names the physical column and declared Flink shape without including the stored value.
 `FLOAT` cannot be a primary-key column in either dialect, and no PostgreSQL decimal can be a primary-key column because PostgreSQL `numeric` is not a key type.
 
-## Scan behavior
+## Source
+
+### Scan behavior
 
 The source is bounded and reads the table through Spanner `partitionRead` at one shared snapshot.
 Top-level projection is pushed into the requested Spanner column list, so unused columns do not cross the network.
@@ -143,6 +129,53 @@ A missing or invisible schema is reported separately from a missing or invisible
 Partition count and size are service hints, not exact split controls.
 The default timestamp bound is strong; set either a read timestamp or exact staleness, never both.
 There are deliberately no column-range partition options because Spanner chooses partition boundaries from physical storage.
+
+## Sink
+
+### Mutation behavior
+
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the cross-connector distinction between a planner key and a destination write operation.
+
+A declared `PRIMARY KEY` makes the sink an upsert sink.
+`INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
+The key may be composite, but every member must map to a Spanner key type.
+
+Without a primary key, the sink accepts insert-only input and uses Spanner `insert`.
+This preserves duplicate-key errors instead of pretending that an unknown physical key can support upserts or deletes.
+As with other Flink connectors, `PRIMARY KEY ... NOT ENFORCED` describes the contract to the planner; the connector does not verify uniqueness.
+
+## Lookup behavior
+
+The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
+Composite keys are encoded in the DDL declaration order even when the planner supplies the predicates in another order.
+A null key or an absent Spanner row produces no joined row.
+Exact pushed primary-key predicates also gate synchronous and asynchronous lookups before an RPC, while Flink evaluates any residual predicate normally.
+`scan.index` does not change lookup keys or lookup access paths.
+
+`lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
+Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
+The standard partial-cache expiry, size, and missing-key options apply unchanged.
+`lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
+Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this option is what buys a second attempt at the other two.
+`RESOURCE_EXHAUSTED` is not retried here because the client already retries it whenever the server asks for a delay, and waits that delay; re-issuing the read at once would spend the budget against the wait rather than observe it.
+
+UUID, JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
+
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="schema-markers" >}}
+
+UUID and JSON fields use `STRING`, PROTO fields use `BYTES`, and ENUM fields use `BIGINT` in the Flink schema.
+The UUID marker maps `STRING` and `ARRAY<STRING>` carriers to native UUID columns in both dialects, including primary-key columns and composite lookup keys.
+UUID input must use the complete 36-character `8-4-4-4-12` hexadecimal form, with either letter case; Java's shortened accepted forms are rejected.
+Reads always emit lowercase canonical UUID strings, and nullable UUID scalars, arrays, and array elements remain null.
+Malformed sink or lookup input fails conversion with the physical column name but without including the input value.
+Set `dialect = 'POSTGRESQL'` for PostgreSQL-dialect databases; JSON markers then produce `jsonb` values.
+PROTO and ENUM markers require `GOOGLE_STANDARD_SQL` and are rejected for PostgreSQL databases.
+A marker names one top-level physical field or an entire array field.
+Every marker must resolve to exactly one physical field and no field may have more than one marker.
+
+The connector does not inspect or migrate the live Spanner schema.
+Changing an existing column from `STRING` to `UUID` therefore requires coordinating the Spanner DDL and this option before redeploying the Flink job, and every stored string must already be valid canonical UUID input before migration.
 
 ## Change Streams scan behavior
 
@@ -178,38 +211,6 @@ A conversion failure identifies the table, commit timestamp, transaction, record
 
 Startup, expired-restore fallback, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
 The checkpoint, retention, delivery, and capacity contracts therefore remain those of the [DataStream Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
-
-## Lookup behavior
-
-The source supports temporal lookup joins when the equality key contains every column of the declared `PRIMARY KEY`.
-Composite keys are encoded in the DDL declaration order even when the planner supplies the predicates in another order.
-A null key or an absent Spanner row produces no joined row.
-Exact pushed primary-key predicates also gate synchronous and asynchronous lookups before an RPC, while Flink evaluates any residual predicate normally.
-`scan.index` does not change lookup keys or lookup access paths.
-
-`lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
-Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
-The standard partial-cache expiry, size, and missing-key options apply unchanged.
-`lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
-Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this option is what buys a second attempt at the other two.
-`RESOURCE_EXHAUSTED` is not retried here because the client already retries it whenever the server asks for a delay, and waits that delay; re-issuing the read at once would spend the budget against the wait rather than observe it.
-
-UUID, JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
-
-{{< sql-snippet file="flink/SpannerTableReference.sql" tag="schema-markers" >}}
-
-UUID and JSON fields use `STRING`, PROTO fields use `BYTES`, and ENUM fields use `BIGINT` in the Flink schema.
-The UUID marker maps `STRING` and `ARRAY<STRING>` carriers to native UUID columns in both dialects, including primary-key columns and composite lookup keys.
-UUID input must use the complete 36-character `8-4-4-4-12` hexadecimal form, with either letter case; Java's shortened accepted forms are rejected.
-Reads always emit lowercase canonical UUID strings, and nullable UUID scalars, arrays, and array elements remain null.
-Malformed sink or lookup input fails conversion with the physical column name but without including the input value.
-Set `dialect = 'POSTGRESQL'` for PostgreSQL-dialect databases; JSON markers then produce `jsonb` values.
-PROTO and ENUM markers require `GOOGLE_STANDARD_SQL` and are rejected for PostgreSQL databases.
-A marker names one top-level physical field or an entire array field.
-Every marker must resolve to exactly one physical field and no field may have more than one marker.
-
-The connector does not inspect or migrate the live Spanner schema.
-Changing an existing column from `STRING` to `UUID` therefore requires coordinating the Spanner DDL and this option before redeploying the Flink job, and every stored string must already be valid canonical UUID input before migration.
 
 ## Options
 
@@ -266,3 +267,20 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 | `sink.parallelism` | *unset ⇒ operator parallelism* | Flink's standard sink parallelism override |
 
 The sink options map directly onto the DataStream writer options; their validation limits are listed in the [Spanner reference]({{< relref "docs/reference/spanner" >}}#spannerwriteroptions).
+
+## Delivery guarantee
+
+Both source modes are **at least once**.
+The bounded source can replay one partition after recovery or when a reader is interrupted
+mid-partition, while the Change Streams source can replay records at the inclusive checkpoint
+timestamp.
+The sink is **at-least-once**.
+Replaying one upsert or delete is idempotent, while insert-only writes can fail on a replayed primary key.
+The writer submits records as separate `BatchWrite` mutation groups, whose application order is not
+guaranteed, so successive updates to the same key do not provide a latest-input-value guarantee.
+
+## Design decisions and testing
+
+The Table connector composes the bounded source, Change Streams source, and sink implementations documented on the
+[DataStream connector page]({{< relref "docs/connectors/datastream/spanner" >}}); its Table-only lookup behavior is documented above.
+That page records the underlying design decisions, emulator deviations, and gated real-GCP coverage.
