@@ -27,6 +27,7 @@ limitations under the License.
 
     <artifactId>flink-connector-gcp-base</artifactId>
     <name>Flink Connectors GCP : Base</name>
+    <description>Shared runtime for the independent Google Cloud connectors for Apache Flink. Not affiliated with the Apache Software Foundation or Google.</description>
     <packaging>jar</packaging>
 
     <dependencies>

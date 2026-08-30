@@ -67,6 +67,8 @@ and this repository still claims otherwise.
 
 Moving the range means editing, in this order:
   1. pom.xml                         flink.version -> $ceiling
+                                     flink.version.floor -> $ceiling (kept equal;
+                                     the central-release enforcer compares them)
                                      the old ceiling becomes the new floor, and
                                      this one edit moves ci.yaml, the floor row
                                      of the weekly matrix and binary_compat's

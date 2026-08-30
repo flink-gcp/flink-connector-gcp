@@ -27,6 +27,7 @@
 
     <artifactId>flink-sql-connector-gcp-bigtable</artifactId>
     <name>Flink Connectors GCP : SQL : Bigtable</name>
+    <description>SQL uber-jar for the independent Google Cloud Bigtable connector for Apache Flink. Not affiliated with the Apache Software Foundation or Google.</description>
     <packaging>jar</packaging>
 
     <properties>

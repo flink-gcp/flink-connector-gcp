@@ -27,6 +27,7 @@ limitations under the License.
 
     <artifactId>flink-connector-gcp-cloudtasks</artifactId>
     <name>Flink Connectors GCP : Cloud Tasks</name>
+    <description>Independent Google Cloud Tasks connector for Apache Flink. Not affiliated with the Apache Software Foundation or Google.</description>
     <packaging>jar</packaging>
 
     <dependencies>
