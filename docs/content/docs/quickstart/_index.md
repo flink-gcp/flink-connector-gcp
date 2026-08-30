@@ -60,13 +60,13 @@ cd flink-connector-gcp
 ./mvnw install -DskipTests
 ```
 
-That installs `0.1.0-SNAPSHOT` into `~/.m2`, from where an ordinary dependency resolves:
+That installs `1.0.0-SNAPSHOT` into `~/.m2`, from where an ordinary dependency resolves:
 
 ```xml
 <dependency>
   <groupId>io.github.flink-gcp</groupId>
   <artifactId>flink-connector-gcp-bigquery</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>1.0.0-SNAPSHOT</version>
 </dependency>
 
 <!-- The connectors declare their Flink dependencies as `provided`, so a job brings its own.
