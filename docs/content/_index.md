@@ -23,12 +23,13 @@ limitations under the License.
 
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/).
 
-> **Status: approaching the first release, 1.0.0.** Until it reaches Maven Central
-> ([#39]({{< param BookRepo >}}/issues/39)), artifacts come from a local build; building
-> from source and working on the connectors is covered by
-> [Development]({{< relref "docs/development" >}}).
+> **Status: released.** Artifacts are on
+> [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp): `1.0.0` for the
+> supported Flink 2.x range and `1.0.0-1.20` for the Flink 1.20 LTS. The
+> [Quickstart]({{< relref "docs/quickstart" >}}) shows the coordinates; building from source
+> is covered by [Development]({{< relref "docs/development" >}}).
 
-The [Quickstart]({{< relref "docs/quickstart" >}}) builds and installs the connectors, sets up
+The [Quickstart]({{< relref "docs/quickstart" >}}) puts the connectors on a job's classpath, sets up
 credentials and runs one complete job per connector; [Examples]({{< relref "docs/examples" >}})
 covers dynamic destinations, exactly-once, auto-creation and emulator-backed local runs; and the
 [configuration reference]({{< relref "docs/reference" >}}) lists every option each connector takes,
@@ -47,7 +48,7 @@ range, which is a deliberate change here rather than an automatic one — a week
 every supported version, so widening or moving the range is backed by a green matrix instead of
 an assumption.
 
-One artifact covers the whole range. The connectors are compiled against the oldest supported
+One artifact covers the whole 2.x range. The connectors are compiled against the oldest supported
 minor, because compiling against the oldest and running on a newer one is the direction that
 works. That this actually holds is measured, not assumed: Flink promises source compatibility
 across minors for `@Public` API and nothing for `@PublicEvolving` or `@Experimental`, and only
@@ -69,8 +70,8 @@ is verified on Java 17; the Java 21 row above is a 2.x claim.
 Building for 1.20 means selecting that seam along with the version — `just verify-flink 1.20.4`
 does both, and the raw Maven form is `./mvnw verify -Dflink.version=1.20.4
 -Dflink.compat=flink1` (the `flink.compat` property's comment in the root `pom.xml` is where
-the mechanism is documented). Until artifacts are published, running on a 1.20 cluster means
-building from source this way.
+the mechanism is documented). A 1.20 cluster does not need that build: the published
+`X.Y.Z-1.20` version line is this same compilation, released.
 
 ## Connectors
 

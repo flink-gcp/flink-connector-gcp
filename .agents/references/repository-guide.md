@@ -586,7 +586,13 @@ facts); the rules a session needs:
 
 - Releases follow full semver. Early milestones closed without artifacts and without tags; the
   first tag and the first Maven Central version are both `1.0.0` (issue #29), and the working
-  tree precedes the next release as `<next>-SNAPSHOT`
+  tree precedes the next release as `<next>-SNAPSHOT`. The published docs name the latest
+  *released* version, not the tree's: cutting a release updates the quickstart coordinates,
+  the status blockquotes (README and the site front page), and the `ADD JAR` jar names in the
+  source-backed SQL snippets — three tagged `.sql` sources; the plan test's
+  `addJarExamplesNameOneReleasedVersion` holds all three to one version, because only two
+  carry exact statement expectations — and a follow-up PR then bumps the working tree to the
+  next `-SNAPSHOT`
 - **Releases stage on the Central Portal; a person publishes them** (ADR-0147, issue #724):
   `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
   version line on a `v[0-9]*` tag push, with `workflow_dispatch` as the validate-then-drop

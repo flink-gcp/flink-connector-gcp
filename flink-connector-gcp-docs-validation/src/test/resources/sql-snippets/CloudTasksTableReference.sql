@@ -43,7 +43,7 @@ FROM staged_orders;
 -- end::overview[]
 
 -- tag::add-jar[]
-ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.0.0-SNAPSHOT.jar';
+ADD JAR '/path/to/flink-sql-connector-gcp-cloudtasks-1.0.0.jar';
 -- end::add-jar[]
 
 -- tag::repeated-form-values[]
