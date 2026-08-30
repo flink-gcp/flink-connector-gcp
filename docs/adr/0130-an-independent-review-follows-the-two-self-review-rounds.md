@@ -18,10 +18,13 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-22 (measured on
-  [#1008](https://github.com/flink-gcp/flink-connector-gcp/pull/1008))
-- Issues: [#1017](https://github.com/flink-gcp/flink-connector-gcp/issues/1017)
+  [#1008](https://github.com/flink-gcp/flink-connector-gcp/pull/1008)); conflict-only refresh
+  revised by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30)
+- Issues: [#1017](https://github.com/flink-gcp/flink-connector-gcp/issues/1017),
+  [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172)
 - Modules: all (workflow)
-- Current behavior: root `AGENTS.md` § GitHub workflow, and the `independent-review` skill
+- Current behavior: root `AGENTS.md` § GitHub workflow, and the `push-pr-branch` and
+  `independent-review` skills
 
 ## Context
 
@@ -32,8 +35,12 @@ change, from a description that model also wrote.
 
 ## Decision
 
-A draft pull request is reviewed by a second model after both self-review rounds, after each fix-up
-push, and before it is called ready.
+A draft pull request is reviewed by a second model after both self-review rounds and before it is
+called ready. The initial round reads the full diff and records its covered surfaces. A narrow
+repair receives an independent review of the `range-diff` between the previous and current
+base-to-head patch series and the invariants affected by its changed hunks; it does not reopen
+untouched work. Expanded scope or contracts restart the full round. A proven base-only refresh
+retains the review.
 
 - **It is given the worktree at the pushed commit and nothing else** — no pull-request number, and
   an instruction not to look the pull request up or to read the agent memory stores. "Do not trust
@@ -131,7 +138,11 @@ and the third round has its own PR comment for the same reason the first two do:
 otherwise tell a review that found nothing from one that never ran.
 
 It costs wall-clock rather than attention — #1008's pass took 16 m 48 s in the background — which is
-why there is no small-change carve-out of the kind round two has.
+why there is no small-change carve-out of the kind round two has. The conflict-only rule is not a
+small-change carve-out: it preserves a review of an unchanged PR-owned patch while current PR
+merge-ref CI checks the new base integration. The bounded repair mode is also not a carve-out: it
+reviews every changed line and affected invariant while preventing repeated searches of untouched
+work from becoming an unbounded gate.
 
 This does not weaken `docs/adr/0060`. This round does not answer either self-review round's
 *question*, and those rounds found things it did not report; what it added on #1008 was a defect

@@ -1,6 +1,6 @@
 ---
 name: self-review-round-two
-description: "Run round two of this repository's mandatory two-round self-review — is the pull request description *true*? Use after `self-review` and before telling anyone the PR is ready, or when about to claim a PR is finished. Its lenses point outward rather than at the diff: the user meeting the error, the operator reading the dashboard, the blast radius of a move, an adversary defeating the invariant, and a reader following the docs. Also pays any measurement round one deferred."
+description: "Run round two of this repository's mandatory two-round self-review — is the pull request description *true*? Use after `self-review`, with bounded fix-up review after a narrow repair. A conflict-only base refresh follows `push-pr-branch`. Its lenses point outward: the user, operator, blast radius, adversary, and docs reader. Also pays measurements deferred by round one and records coverage."
 ---
 
 # Self-review, round two
@@ -17,6 +17,12 @@ session, on the draft PR, before the draft is offered to anyone — deliberately
 push-triggered review is noise on every commit and a ready-for-review trigger would force a
 draft/undraft cycle through the same workflow.
 
+A base-only rebase proven unchanged by `push-pr-branch` keeps this round's result. Only after this
+round has completed its own initial full claim audit may a narrow repair compare patch series with
+`git range-diff <previous-base>..<previous-reviewed-SHA> <current-base>..HEAD`; a round-one repair
+made before that audit does not narrow round two. Do not use a tree diff between rebased head SHAs.
+Restart the full claim audit when the repair expands scope or changes a contract beyond the finding.
+
 **Round one asked whether the code does what the description says. Round two asks whether the
 description is true.** That is a different question, and it is the reason the rounds are not
 "review twice" (`docs/adr/0060`). Run it before saying the PR is ready — not after.
@@ -30,6 +36,15 @@ for a job jar, false for the `lib/` deployment the docs recommend). **None of th
 from a lens aimed at the diff.**
 
 ## Step 1: extract the claims
+
+Freeze this round's coverage inventory before extracting claims: the changed or published surfaces
+and the behavior, test, public-contract, and factual-claim invariants they owe. Record which entries
+the round checks. Resolve the current merge base against the pull request's actual base branch once
+and use its literal full SHA throughout the round: `origin/main` for an ordinary pull request and
+the parent branch for a stacked one. Do not leave either mutable ref in review commands. A bounded
+repair starts from the prior inventory and adds every entry touched by the `range-diff`; verify its
+previous objects with `git cat-file -e <previous-base>^{commit}` and
+`git cat-file -e <previous-reviewed-SHA>^{commit}`, and run the full audit if either is unavailable.
 
 Before looking at any code, list every factual assertion the change makes, from all five places it
 hides:
@@ -111,9 +126,11 @@ small change, steps 1 and 4 alone still apply: list the claims, grep the page.
 
 ## Record it
 
-A second PR comment: the claims checked, which were false and what replaced them, the
-measurements paid, and the deferrals with their reasons. If round two changed the design — it has
-— say so in the description too, because the description is what round two just audited.
+A second PR comment: the full reviewed HEAD and base SHAs, the inventory entries and claims checked,
+which were false and what replaced them, the measurements paid, and the deferrals with their
+reasons. For a fix-up, name the previous reviewed HEAD and base and why the bounded `range-diff`
+did or did not expand the claim inventory. If round two changed the design, say so in the
+description too.
 
 Routing stays the user's (`docs/adr/0061`): fold in, file, or drop, and never `gh issue create` on
 your own initiative.
@@ -121,9 +138,11 @@ your own initiative.
 ## Done when
 
 - [ ] Every claim in description, javadoc, docs, commit message **and the issue's premise** listed
+- [ ] Coverage inventory entries checked are recorded
 - [ ] Each checked against a source of truth, not against the diff
 - [ ] Deferred measurements paid
 - [ ] The whole page grepped for the changed term, not just the edited paragraph
 - [ ] Mutation batch re-run if this round changed code
 - [ ] A PR comment recording the round
+- [ ] That PR comment names the full reviewed HEAD and base SHAs
 - [ ] `independent-review` run next, and only then is the PR ready

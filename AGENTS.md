@@ -142,12 +142,25 @@ green; use the clean-state procedures in that guide for such changes.
 - Before every PR-branch push, use `$push-pr-branch`: fetch, rebase onto `origin/main`, squash only
   after rebasing, and inspect `git diff --diff-filter=D --name-only origin/main`. A PR closes its
   issue with an unformatted `Closes #N`, checked with `closingIssuesReferences`, never by eye.
+- A branch refresh whose only purpose is to absorb a moved `main` uses the conflict-only fast path
+  in `$push-pr-branch`. Do not turn it into a full local build or restart every review round. Prove
+  that the old head was pushed and reviewed, inspect whether the upstream delta affects the PR's
+  claims, prove whether the PR-owned patch changed, and inspect every resolved hunk. Run only the
+  checks the resolved paths owe; current PR merge-ref CI validates build integration with the new
+  base. The compatibility-sensitive `just verify-flink 1.20.4` exception still applies.
 - After creating the draft PR, run `$self-review`, apply verified findings, push fixes, and then run
   `$self-review-round-two` when its trigger applies. Record findings and reasoned deferrals on the
-  PR. Re-run affected tests after review changes.
-- Then run `$independent-review` before calling the PR ready, and again after each fix-up push: a
-  second model — not the one that wrote the change — reviews the pushed commit, given no
-  pull-request number, told to write nothing, and told not to read the PR or the agent memories
+  PR. Each round's first full review freezes its changed surfaces and invariants and records which
+  it covered. Only after that round has completed its full pass may a narrow fix-up review
+  `git range-diff previous-base..previous-reviewed-SHA current-base..HEAD` and the affected
+  invariants; a tree diff between rebased head SHAs is not the repair delta. Restart the full pass
+  when the fix expands scope or changes a contract beyond the finding. Record full base and head
+  SHAs and verify that both previous objects remain available before bounded review; the independent
+  round retains its previous detached review worktree until Ready.
+- Then run `$independent-review` before calling the PR ready. A second model — not the one that
+  wrote the change — reviews the initial full diff, and a narrow repair through the same
+  `range-diff`. Give it no pull-request number, tell it to write nothing, and tell it
+  not to read the PR or the agent memories
   (ADR-0130). Its findings are hypotheses, a defect it finds that predates the change is routed by
   the user, and a round that could not run is recorded rather than skipped in silence.
 - Pin GitHub Actions with `just pin-actions` when adding a workflow or changing an action version.

@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-06 (measured across PRs
   [#314](https://github.com/flink-gcp/flink-connector-gcp/pull/314) and
-  [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317))
-- Issues: —
+  [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317)); conflict-only refresh revised
+  by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30)
+- Issues: [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172)
 - Modules: all (workflow)
 - Current behavior: root `AGENTS.md` § GitHub workflow (the imperative form, with the review
   tooling)
@@ -50,6 +51,12 @@ Three rules the rounds share:
   rework left alive a mutant that had been alive all along, because no test pinned that the
   call sites feed the counter the metric reports.
 
+**Each round also freezes a coverage inventory** during its initial full review: changed surfaces
+and their behavior, test, public-contract, and factual-claim invariants. The round names its full
+base and head SHAs and checked entries. Only after that full pass may a narrow repair review the
+`range-diff` between the previous and current patch series; tree diffs between rebased heads also
+contain intervening `main`. Expanded scope or contracts restart the full inventory.
+
 ## Evidence
 
 Measured on 2026-08-06 across PRs [#314](https://github.com/flink-gcp/flink-connector-gcp/pull/314) and [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317), both of which had passed round one and were
@@ -74,8 +81,8 @@ the commit message.
 - The cost is real — three agents plus verification, and on PR [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317) round two changed the
   design — so the full second round is for changes whose description makes claims about
   framework behaviour, deployment, or "this is the only way", not for a typo fix.
-- Findings *and* deferrals, with their reasons, are recorded as a PR comment; recording is
-  not routing, which ADR-0061 governs.
+- Coverage, findings, and deferrals, with their reasons and full reviewed base and head SHAs, are
+  recorded as a PR comment; recording is not routing, which ADR-0061 governs.
 - **The rounds are carried by two project skills**, `.agents/skills/self-review/` and
   `.agents/skills/self-review-round-two/`, rather than by a built-in command. Claude Code's
   `/code-review` — and `/review`, an alias of it since v2.1.223 — is marked

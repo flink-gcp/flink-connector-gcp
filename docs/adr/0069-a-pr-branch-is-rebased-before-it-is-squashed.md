@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0069: A PR branch is rebased before it is squashed, and the deletion list is read before it is pushed
 
 - Status: Accepted
-- Date: 2026-08-08 (measured on [#376])
+- Date: 2026-08-08 (measured on [#376]); conflict-only verification revised by
+  [#1172] (2026-08-30)
 - Issues: [#376] — a pull request rather than an issue, and the first in this column: the decision
   came out of that PR's own failure, and no issue was ever filed for it. `—` was the alternative
-  and says less.
+  and says less; [#1172] refines the verification required after the safe rebase.
 - Modules: all (workflow)
 - Current behavior: `.agents/skills/push-pr-branch/`, root `AGENTS.md` § Workflow rules
 
@@ -72,6 +73,22 @@ git diff --diff-filter=D --name-only origin/main    # empty, or every path delib
 The procedure, its recovery path and the reasoning live in `.agents/skills/push-pr-branch/`, which
 the workflow rule names; `git reset --soft $(git merge-base HEAD origin/main)` is the equivalent
 safe form when a rebase is genuinely unwanted.
+
+A base refresh does not by itself require a full local build or every review round again.
+The old result belongs to the old tree, so it is not carried over as an exact-tree result; instead,
+the procedure proves that the pushed and reviewed PR patch survived, reviews relevant upstream
+dependencies and every conflict resolution, reruns the checks those resolutions owe, and lets the
+pull request's base-into-head merge-ref CI validate build integration. A semantic change runs
+affected verification and the bounded repair review from ADR-0060 and ADR-0130; expanded scope or a
+broader contract change restarts the full review. The Flink 1.x compatibility check remains local
+because per-PR CI still builds only one Flink version.
+
+This refines the earlier conservative rule measured on
+[PR #1014](https://github.com/flink-gcp/flink-connector-gcp/pull/1014): that rebase brought another pull
+request's changes to four source files, so its pre-rebase test result could not describe the new
+tree. The evidence establishes that the new tree needs integration evidence; it does not establish
+that every PR must rebuild all unchanged upstream work locally. The focused checks and merge-ref CI
+split those responsibilities while retaining the cross-version exception CI cannot cover.
 
 **Deliberately not a CI check.** A content-only check cannot tell this apart from an intentional
 deletion: the deleted files existed at the merge base, exactly as they would if their removal were
@@ -146,3 +163,4 @@ guard.
 
 [#376]: https://github.com/flink-gcp/flink-connector-gcp/pull/376
 [#388]: https://github.com/flink-gcp/flink-connector-gcp/issues/388
+[#1172]: https://github.com/flink-gcp/flink-connector-gcp/pull/1172
