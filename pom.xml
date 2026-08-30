@@ -1156,7 +1156,7 @@ limitations under the License.
              -Drelease so the connector parent's own `release` profile — GPG signing at
              verify, the javadoc jar, the enforcer floor — fires together with this one;
              `just stage-release <version>` is the entry point, and the tag-push release
-             workflow (issue #724's remaining item) will call the same recipe. autoPublish
+             workflow (.github/workflows/release.yaml) calls the same recipe. autoPublish
              stays false: the upload stops at VALIDATED on the Portal, and the one-way
              Publish — or the dry run's Drop — is a deliberate click in the Portal UI. -->
         <profile>

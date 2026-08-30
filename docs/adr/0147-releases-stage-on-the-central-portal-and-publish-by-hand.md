@@ -38,16 +38,17 @@ irreversibility of a first Central release, not about feasibility.
 ## Decision
 
 **A tag push stages the release; a person publishes it from the Portal UI.**
-The build side lands first and the tag-push workflow that invokes it is [#724]'s remaining
-item — until it lands, staging is `just stage-release <version>` run by hand.
+`.github/workflows/release.yaml` runs `just stage-release` once per version line on a `v*`
+tag push, and its `workflow_dispatch` trigger is the validate-then-drop dry run.
 The recipe re-versions the reactor with `versions:set` and runs
 `deploy -Drelease -DskipTests -Djapicmp.skip=true`. `-Drelease` activates two profiles at once:
 the connector parent's `release` (GPG signing at verify, the javadoc jar, the enforcer floor) and
 this project's `central-release` (the sources jar the parent profile does not attach, a compiler
 re-pin, and `central-publishing-maven-plugin` with `autoPublish=false` and
 `waitUntil=validated`). The upload stops at *validated*; Publish — or a dry run's Drop — is a
-deliberate click. Once the pipeline has survived a real release, flipping `autoPublish=true` is a
-one-line change if the manual gate proves redundant.
+deliberate click. Once the pipeline has survived a real release, the manual gate can be
+retired — two changes together, `autoPublish=true` and the workflow's `draft: false`, per the
+Consequences below.
 
 **Each release stages two version lines** (decided with the maintainer 2026-08-30, resolving
 the publishing half that ADR-0054 had left with [#39]'s suffix scheme): bare `X.Y.Z` is the
@@ -100,7 +101,7 @@ every verify lane runs the real check.
   with the maintainer's explicit preference: Maven Central is new to this project, a published
   version is permanent, and the Portal's validated-deployment page is also the dry-run mechanism
   — the same workflow proves the pipeline by staging a bundle that is dropped instead of
-  published. The consequence section above names the one-line path back to the PyPI shape.
+  published. The Consequences below name the two-change path back to the PyPI shape.
 - **Publishing `flink-connector-gcp-test-utils`.** Declined; reasons in the decision. Revisit if
   a user asks for the test doubles as a dependency.
 - **A `maven-release-plugin` release-commit flow** (`release:prepare`/`release:perform`).
@@ -118,16 +119,31 @@ every verify lane runs the real check.
 
 ## Consequences
 
-- The dry run [#724] requires is the same workflow with the Portal's Drop button, so the
-  rehearsal exercises the real path, not a parallel one.
+- The dry run [#724] requires is the same workflow with the Portal's Drop button — with one
+  honest limit: a dispatch stages **one line per run** (rehearsing both lines is two
+  dispatches, and the deployment is named "dry run" on the Portal), and the draft-Release step
+  only executes on a real tag, so its first real execution is the first release.
 - The staged bundle's validation report (signing, checksums, POM completeness, sources/javadoc
   presence) is produced by the Portal on every upload, giving each release a pre-publish
   checklist for free.
-- A future `autoPublish=true` flip removes the human gate but keeps `waitUntil` semantics; the
-  workflow needs no other change.
-- The release workflow ([#724]'s remaining item) will run the staging recipe once per version
-  line and create the GitHub Release from the tag with generated notes; a release is two
-  Portal deployments and the Central publish clicks stay the only manual steps.
+- A future `autoPublish=true` flip removes the Portal gate but is **two** changes, not one:
+  the workflow's `draft: true` must flip with it, or Central goes live while the GitHub
+  Release stays invisible.
+- A `vX.Y.Z` tag — the only shape the trigger admits, so a release is always both version
+  lines — runs the staging recipe once per line and drafts the GitHub Release with generated
+  notes and the ten SQL uber-jars (five per line) attached; a release is then two Portal
+  deployments, and publishing them and the draft Release are the manual steps, taken
+  together.
+- **The two staging runs are not atomic, and recovery is manual.** A failure in the LTS half
+  leaves the bare line VALIDATED on the Portal; a re-run stages it again, and the Portal keeps
+  both — deployments are named with the run id so they are tellable apart, and the stale one
+  is Dropped by hand. A draft Release that failed half-made is deleted before re-running
+  (GitHub allows several drafts on one tag name, and a draft survives deleting the tag). A tag
+  cut on the wrong commit is recoverable **only before** Publish: Drop the deployments, delete
+  the draft, delete and re-push the tag — the workflow refuses a tag whose commit is not an
+  ancestor of `main`, and a tag only triggers it at all if the tagged tree already contains
+  `release.yaml`. After Publish, Central is immutable and the only move is the next patch
+  version.
 
 [#724]: https://github.com/flink-gcp/flink-connector-gcp/issues/724
 [#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
