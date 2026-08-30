@@ -27,6 +27,7 @@
 
     <artifactId>flink-sql-connector-gcp-bigquery</artifactId>
     <name>Flink Connectors GCP : SQL : BigQuery</name>
+    <description>SQL uber-jar for the independent Google BigQuery connector for Apache Flink. Not affiliated with the Apache Software Foundation or Google.</description>
     <packaging>jar</packaging>
 
     <properties>

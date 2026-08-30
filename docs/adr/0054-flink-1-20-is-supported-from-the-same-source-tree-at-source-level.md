@@ -18,7 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-01 ([#32], reversing the branch plan the issue was opened for — measured, not
-  assumed); revised by [#404] (2026-08-09)
+  assumed); revised by [#404] (2026-08-09); revised by [#724] (2026-08-30, ADR-0147):
+  each release also publishes the per-major LTS jar as `X.Y.Z-1.20` — support stays
+  source-level and per-major, and no cross-major binary claim is added
 - Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404]
 - Modules: all connectors
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
@@ -121,3 +123,4 @@ carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1
 [#32]: https://github.com/flink-gcp/flink-connector-gcp/issues/32
 [#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
 [#404]: https://github.com/flink-gcp/flink-connector-gcp/issues/404
+[#724]: https://github.com/flink-gcp/flink-connector-gcp/issues/724

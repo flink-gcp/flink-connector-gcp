@@ -27,6 +27,7 @@
 
     <artifactId>flink-sql-connector-gcp-pubsub</artifactId>
     <name>Flink Connectors GCP : SQL : Pub/Sub</name>
+    <description>SQL uber-jar for the independent Google Cloud Pub/Sub connector for Apache Flink. Not affiliated with the Apache Software Foundation or Google.</description>
     <packaging>jar</packaging>
 
     <properties>

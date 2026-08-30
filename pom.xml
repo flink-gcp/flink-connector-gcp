@@ -29,6 +29,10 @@ limitations under the License.
     <artifactId>flink-connector-gcp-parent</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <name>Flink Connectors GCP : Parent</name>
+    <!-- name, description, url, licenses, developers and scm are the POM metadata Maven
+         Central validates on every published artifact (#724). Modules carry their own
+         name and description; the rest is inherited from here. -->
+    <description>Independent Google Cloud connectors for Apache Flink: BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, and Spanner. It is not affiliated with, endorsed by, or supported by the Apache Software Foundation or Google. Apache Flink, Flink, and the Flink logo are trademarks of the Apache Software Foundation.</description>
     <packaging>pom</packaging>
     <inceptionYear>2026</inceptionYear>
 
@@ -41,6 +45,17 @@ limitations under the License.
             <distribution>repo</distribution>
         </license>
     </licenses>
+
+    <!-- The same collective identity as <organization> below, for the same reason: it
+         stays correct as contributors appear, and it satisfies Central's developer-info
+         requirement without publishing a personal identity in every consumer's local
+         repository. -->
+    <developers>
+        <developer>
+            <name>The flink-gcp authors</name>
+            <url>https://github.com/flink-gcp</url>
+        </developer>
+    </developers>
 
     <!-- `scm:[provider]:[provider_specific]` is the documented structure for both
          connections, and `connection` is the read-only one. `flink-connector-parent`
@@ -99,6 +114,14 @@ limitations under the License.
              version matrix in .github/workflows/weekly.yaml, never a dependabot
              minor bump (see the ignore rule in .github/dependabot.yml). -->
         <flink.version>2.2.1</flink.version>
+        <!-- The same literal again, referenced only by the central-release profile's
+             enforce-version-line-toolchain rule: a bare-version release must build at
+             exactly this floor, and comparing ${flink.version} against a second
+             property that nothing else overrides is the only exactness check an
+             effective-model rule can express. scripts/check-flink-release.sh names
+             both properties in its edit list, so a range move keeps them equal; a
+             drift fails the next release build loudly, which is the safe direction. -->
+        <flink.version.floor>2.2.1</flink.version.floor>
         <!-- Which per-major source root the connector modules compile
              (src/main/java-${flink.compat}): the roots absorb the two API differences
              between the supported majors, one small same-FQCN file per root per difference.
@@ -167,6 +190,21 @@ limitations under the License.
         <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
         <!-- Adds the per-major compat source root; see the flink.compat property above. -->
         <build-helper-maven-plugin.version>3.6.1</build-helper-maven-plugin.version>
+        <!-- The connector parent's release profile pins 1.4 (2010), which predates both
+             the bc signer and CI-friendly key handling; 3.x reads the key and passphrase
+             from MAVEN_GPG_KEY / MAVEN_GPG_PASSPHRASE (#724, central-release profile
+             below). -->
+        <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
+        <!-- The rest of the release-staging pins (#724, ADR-0147): the parent's
+             maven-source-plugin property dates from 2020 and would move invisibly with
+             a parent bump, the Central upload plugin has no parent-managed version at
+             all, and versions-maven-plugin and maven-help-plugin are invoked by
+             `just stage-release` through the pluginManagement entries below so their
+             pins live where dependabot reads. -->
+        <maven-source-plugin.version>3.3.1</maven-source-plugin.version>
+        <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+        <versions-maven-plugin.version>2.21.0</versions-maven-plugin.version>
+        <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
 
         <!-- Test execution -->
         <!-- The JUnit tags surefire excludes (issue #245). "gated" is the real-GCP
@@ -679,6 +717,28 @@ limitations under the License.
                         </execution>
                     </executions>
                 </plugin>
+
+            <plugin>
+                <!-- `just stage-release` invokes versions:set and help:evaluate by
+                     prefix; these two entries are what pin the versions they resolve
+                     (#724, ADR-0147). -->
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>versions-maven-plugin</artifactId>
+                <version>${versions-maven-plugin.version}</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-help-plugin</artifactId>
+                <version>${maven-help-plugin.version}</version>
+            </plugin>
+            <plugin>
+                <!-- Declared by the central-release profile below and by the
+                     flink-connector-gcp-test-utils guard; the version lives here so
+                     both declarations stay bare. -->
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>${central-publishing-maven-plugin.version}</version>
+            </plugin>
             </plugins>
         </pluginManagement>
 
@@ -1092,5 +1152,187 @@ limitations under the License.
                 </repository>
             </repositories>
         </profile>
+        <!-- Staging a release on the Central Portal (issue #724, ADR-0147). Activated by
+             -Drelease so the connector parent's own `release` profile — GPG signing at
+             verify, the javadoc jar, the enforcer floor — fires together with this one;
+             `just stage-release <version>` is the entry point, and the tag-push release
+             workflow (issue #724's remaining item) will call the same recipe. autoPublish
+             stays false: the upload stops at VALIDATED on the Portal, and the one-way
+             Publish — or the dry run's Drop — is a deliberate click in the Portal UI. -->
+        <profile>
+            <id>central-release</id>
+            <activation>
+                <property>
+                    <name>release</name>
+                </property>
+            </activation>
+            <properties>
+                <!-- The parent's release profile downgrades maven.compiler.target to 11,
+                     which would ship bytecode no CI lane has tested; re-pin the ordinary
+                     build's 17 (the parent's own default outside that profile). The
+                     parent's release enforcer reads the same property as its JDK floor,
+                     so the release build requires JDK 17, like every other build here. -->
+                <maven.compiler.target>17</maven.compiler.target>
+            </properties>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <!-- Central requires a javadoc jar for every jar-packaging
+                                 artifact, and the five SQL uber-jars have no sources of
+                                 their own: they repackage classes whose Javadoc ships
+                                 with the connector artifacts and renders on the
+                                 documentation site. The sanctioned answer for a shaded
+                                 distribution is a stub javadoc jar pointing at the real
+                                 documentation. One managed execution serves all five:
+                                 the main build declares maven-jar-plugin for every
+                                 module, so this execution runs reactor-wide under
+                                 -Drelease, and skipIfEmpty stands it down wherever
+                                 src/main/central-javadoc-stub does not exist — every
+                                 non-SQL module. If an SQL module ever gains main
+                                 sources, attach-javadocs below will claim the same
+                                 `javadoc` classifier; delete that module's stub
+                                 directory in the same change. -->
+                            <groupId>org.apache.maven.plugins</groupId>
+                            <artifactId>maven-jar-plugin</artifactId>
+                            <executions>
+                                <execution>
+                                    <id>javadoc-stub</id>
+                                    <phase>package</phase>
+                                    <goals>
+                                        <goal>jar</goal>
+                                    </goals>
+                                    <configuration>
+                                        <classifier>javadoc</classifier>
+                                        <classesDirectory>${project.basedir}/src/main/central-javadoc-stub</classesDirectory>
+                                        <skipIfEmpty>true</skipIfEmpty>
+                                    </configuration>
+                                </execution>
+                            </executions>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+                <plugins>
+                    <plugin>
+                        <!-- The parent's release profile attaches the javadoc jar but
+                             not the sources jar (that sits in its docs-and-source
+                             profile, which nothing activates here); Central requires
+                             both. The execution id is deliberately not the parent's
+                             `attach-sources`: docs-and-source binds that id to the
+                             forking `jar` goal, and a same-id declaration would merge
+                             into one execution running both goals if both profiles were
+                             ever active together. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>${maven-source-plugin.version}</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources-no-fork</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- The main-build declaration of this plugin is the site
+                             aggregate and carries inherited=false, which also cancels
+                             the attach-javadocs execution the parent's release profile
+                             would otherwise hand every module — measured: a -Drelease
+                             build produced sources jars and no javadoc jars. inherited
+                             here flips the merged declaration back on for the modules.
+                             The site configuration rides along, so per-module javadoc
+                             also runs with failOnWarnings=true — kept deliberately: it
+                             aborts a release at package, before anything is staged, and
+                             the per-module build was measured green 2026-08-30. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <inherited>true</inherited>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <!-- The site declaration's destDir rides the same
+                                         merge, and the jar goal treats it as a path
+                                         under the module directory — measured twice:
+                                         destDir=java left seven untracked
+                                         <module>/java/ directories, and a bare
+                                         destDir=apidocs moved them, while
+                                         reportOutputDirectory had no effect on the jar
+                                         goal. An interpolated absolute path is the
+                                         override that confines the HTML to target/. -->
+                                    <destDir>${project.build.directory}/apidocs</destDir>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- The in-build half of the mislabelling guard (ADR-0147). The
+                             recipe's probe (scripts/stage-release-guard.py) gives early,
+                             readable feedback, but a wrapper can never prove the deploy
+                             resolves what the probe measured — any probe needs at least
+                             one property the deploy does not carry, and a profile can
+                             key on it. This rule runs inside the release build itself,
+                             against the final effective model: a -1.20 version must be
+                             a flink1/1.20.x build, and any other version must be a
+                             flink2 build of a 2.x Flink. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>enforce-version-line-toolchain</id>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <evaluateBeanshell>
+                                            <message>The staged version and the Flink toolchain disagree: a -1.20 version must build with flink.compat=flink1 and a 1.20.x flink.version, and a bare X.Y.Z version must build with flink.compat=flink2 at exactly the pinned floor ${flink.version.floor} (ADR-0147). Resolved: version=${project.version}, flink.version=${flink.version}, flink.compat=${flink.compat}.</message>
+                                            <condition>"${project.version}".endsWith("-1.20") ? ("flink1".equals("${flink.compat}") &amp;&amp; "${flink.version}".startsWith("1.20.")) : ("flink2".equals("${flink.compat}") &amp;&amp; "${flink.version}".equals("${flink.version.floor}"))</condition>
+                                        </evaluateBeanshell>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <!-- bc signs with Bouncy Castle from the MAVEN_GPG_KEY /
+                             MAVEN_GPG_PASSPHRASE environment variables, so CI needs
+                             neither a gpg binary nor an imported keyring; locally the
+                             same two variables stage a dry run. -->
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <configuration>
+                            <signer>bc</signer>
+                            <bestPractices>true</bestPractices>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <!-- Replaces the deploy phase reactor-wide (a build extension):
+                             `deploy` assembles one bundle, uploads it to the Central
+                             Portal, and blocks until the Portal has validated it. Even
+                             a -DskipPublishing run reads the `central` server entry
+                             from settings.xml before it skips, so a local dry run
+                             passes -s with a placeholder entry. The two reactor-only
+                             modules guard themselves: flink-connector-gcp-test-utils
+                             carries skipPublishing in its own pom (#724, ADR-0147), and
+                             docs-validation sits outside the ordinary module list with
+                             its own deploy skip. -->
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
     </profiles>
 </project>

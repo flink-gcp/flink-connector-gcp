@@ -188,4 +188,25 @@ limitations under the License.
             <scope>provided</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <!-- This module is reactor-only (#724, ADR-0147): every dependent
+                     consumes it in test scope, which no consumer resolves, and
+                     publishing it would freeze its API under the connector artifacts'
+                     compatibility discipline for no user benefit. The guard lives here,
+                     in the module it protects, like docs-validation's deploy skip — a
+                     root-level exclusion list keyed on the artifactId would silently
+                     stop matching on a rename. The version comes from the root
+                     pluginManagement; without -Drelease the plugin binds no goal and
+                     this declaration is inert. -->
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>true</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

@@ -584,10 +584,27 @@ facts); the rules a session needs:
 
 ## Version policy
 
-- Releases follow full semver (`v0.1.0`, `v0.2.0`, ...). Early milestones are **tags only** — no
-  artifact publishing. Publishing to Maven Central happens once all connectors are implemented,
-  as `v1.0.0` (Central namespace registration, signing and the Flink 1.x/2.x publishing strategy
-  are decided then; see issues #29 and #39)
+- Releases follow full semver. Early milestones closed without artifacts and without tags; the
+  first tag and the first Maven Central version are both `1.0.0` (issue #29), and the working
+  tree precedes the next release as `<next>-SNAPSHOT`
+- **Releases stage on the Central Portal; a person publishes them** (ADR-0147, issue #724):
+  `just stage-release <version>` — which the tag-push release workflow, #724's remaining item,
+  will call — re-versions the reactor with `versions:set` and deploys with `-Drelease`: the
+  connector parent's `release` profile (GPG sign, javadoc jar) plus this project's
+  `central-release` (sources jar, SQL javadoc stubs, compiler re-pin back to target 17,
+  `central-publishing-maven-plugin` with `autoPublish=false`). The upload stops at *validated*;
+  Publish, or a dry run's Drop, is a click in the Portal UI. Every release stages two version
+  lines: bare `X.Y.Z` built for the 2.x range (ADR-0053's one artifact) and `X.Y.Z-1.20` built
+  for the 1.x LTS — the recipe adds `-Dflink.compat=flink1` itself, requires the matching
+  `-Dflink.version=1.20.<patch>`, and refuses a mislabelled pairing in either direction. The
+  published set per line is 12 artifacts — the parent POM, base, five connectors, five SQL
+  uber-jars; `flink-connector-gcp-test-utils`
+  skips itself in its own POM (test-scope-only consumption; freezing its API buys users
+  nothing), and the signing key is a dedicated project release key read from
+  `MAVEN_GPG_KEY`/`MAVEN_GPG_PASSPHRASE` (the bc signer; the parent's gpg-plugin 1.4 pin is
+  overridden to 3.x). The release build passes `-Djapicmp.skip=true` — the reference resolves
+  from the reactor itself when the versions are equal (ADR-0124) — and `-DskipTests`, because
+  the staged commit already passed every CI lane
 - **The project's own API stability is annotation-tiered and japicmp-checked** (ADR-0124, issue
   #728): `@Public` — the promoted entry surface, its signature closure, and its subtypes — must
   not break within a major version (a deliberate break is a major-release event); the japicmp

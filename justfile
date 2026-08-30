@@ -80,6 +80,45 @@ check-license-headers:
 verify-flink version *extra:
     @just verify -Dflink.version={{ version }} {{ if version =~ '^1\.' { '-Dflink.compat=flink1' } else { '' } }} {{ extra }}
 
+# -Drelease activates two profiles at once: the connector parent's `release` (GPG
+# signing, javadoc jar, enforcer) and this project's `central-release` (sources jar,
+# compiler re-pin, Central Portal upload with autoPublish=false — the deployment stops
+# at VALIDATED and Publish or Drop is a click in the Portal UI; issue #724, ADR-0147).
+# Signing reads MAVEN_GPG_KEY and MAVEN_GPG_PASSPHRASE; the upload reads the `central`
+# server credentials from ~/.m2/settings.xml. -Djapicmp.skip=true is unconditional
+# because the release whose version equals japicmp.referenceVersion would otherwise
+# resolve the reference from the reactor itself and read the old side's whole compile
+# classpath as old API (ADR-0124); every verify lane already runs the real check.
+# -DskipTests because the staged commit already passed every CI lane. Every release
+# stages two version lines (ADR-0147): bare X.Y.Z is the Flink 2.x line built at the
+# pom's pinned floor, and X.Y.Z-1.20 is the same coordinates compiled for the 1.x
+# LTS (ADR-0054's per-major jar) — the recipe adds -Dflink.compat=flink1 itself and
+# the caller passes the matching -Dflink.version=1.20.<patch>. A mislabelled pairing
+# — a 2.x-built jar under a -1.20 version, or the reverse — would be discovered only
+# after an irreversible publish. scripts/stage-release-guard.py refuses to start one:
+# it rejects a malformed version (a tag name arrives as v1.0.0, versions:set would
+# happily stamp and stage it, and Central accepts a v prefix and leading zeros), and
+# it probes Maven's *effective* flink.version/flink.compat with the deploy line's own
+# fixed properties — inspecting the arguments instead would lose to -D's --define
+# long form, separated values, MAVEN_OPTS and .mvn/maven.config. The airtight half is
+# the enforce-version-line-toolchain enforcer rule in the central-release profile,
+# which re-checks the same invariant inside the release build itself.
+# [positional-arguments] passes the arguments through the shell quoted, so nothing is
+# re-parsed by bash. The recipe re-versions the working tree's POMs and leaves them
+# that way if a later step fails — fine in CI, where the checkout is ephemeral;
+# locally restore with `git checkout -- '*pom.xml'` (one star: '**/pom.xml' is a
+# non-glob pathspec that misses the root pom, and a tree left at the release version
+# arms the japicmp reactor-self-reference trap the root pom documents). Extra
+# arguments go to the deploy step: `-DskipPublishing=true` builds and signs the
+# bundle without uploading it.
+#
+# Stage <version> on the Central Portal, e.g. `just stage-release 1.0.0`.
+[positional-arguments]
+stage-release version *extra:
+    mise x uv -- uv run --locked scripts/stage-release-guard.py "$@"
+    {{ mvn }} versions:set -DnewVersion="$1" -DgenerateBackupPoms=false
+    {{ mvn }} clean deploy -Drelease -DskipTests -Djapicmp.skip=true {{ if version =~ '-1\.20$' { '-Dflink.compat=flink1' } else { '' } }} "${@:2}"
+
 # The opt-in module is outside the ordinary reactor so its dependency on every connector does not
 # widen connector-only builds. `-am` is still load-bearing here: the snippets must compile against
 # the working tree, never io.github.flink-gcp SNAPSHOTs left in ~/.m2.
