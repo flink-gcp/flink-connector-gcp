@@ -98,6 +98,11 @@ the same DDL reads the table back, with the scan options that page carries.
 
 ## Next
 
-[Bigtable examples]({{< relref "docs/examples/bigtable" >}}) — several mutations per record,
-deletes, a table named per record, dropping bad rows instead of failing, reading a key range, and
-running against the emulator.
+Continue with the Bigtable examples by direction: [DataStream source]({{< relref
+"docs/examples/bigtable" >}}#datastream-source), [DataStream sink]({{< relref
+"docs/examples/bigtable" >}}#datastream-sink), [Table source]({{< relref
+"docs/examples/bigtable" >}}#table-source), [Table sink]({{< relref
+"docs/examples/bigtable" >}}#table-sink), [lookup joins]({{< relref
+"docs/examples/bigtable" >}}#lookup-joins), [Change Streams]({{< relref
+"docs/examples/bigtable" >}}#change-streams), or [local development]({{< relref
+"docs/examples/bigtable" >}}#local-development).

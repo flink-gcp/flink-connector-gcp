@@ -138,7 +138,8 @@ unique by, which need not be the row-key column at all, so the sink asks for who
 planner completes each one before the delete reaches it. That completion is a `ChangelogNormalize`,
 which keeps state proportional to the keyspace. For this delete-completion decision, a query that
 carries no deletes needs no `ChangelogNormalize` either way. Flink 2.3's separate conflict-strategy
-state for insert-only input is covered under [delivery guarantees](#delivery-guarantees).
+state for insert-only input is covered under
+[Flink 2.3 may demand ON CONFLICT](#flink-23-may-demand-on-conflict).
 
 **A completed delete is completed from what the job has seen.** `ChangelogNormalize` holds the last
 row per key in Flink state, so a `-D` for a key this job never inserted has nothing to complete from
@@ -169,7 +170,55 @@ connector cannot encode is accepted and the first `INSERT INTO` over it fails. T
 wrapped in Flink's own "Unable to create a sink for writing table ..." — the actionable sentence is
 in the cause.
 
-## Reading
+## Type mapping
+
+A Bigtable cell is an uninterpreted byte string, so a convention has to be picked. This connector
+uses the HBase ecosystem's — `org.apache.hadoop.hbase.util.Bytes` as Flink's HBase connector applies
+it — reproduced here rather than depended on, since `hbase-common` drags in Hadoop. The row key
+takes the same encodings.
+
+| Flink type | Cell bytes |
+|---|---|
+| `CHAR`, `VARCHAR`, `STRING` | UTF-8, with no length prefix |
+| `BOOLEAN` | One byte: `0xFF` for true, `0x00` for false |
+| `BINARY`, `VARBINARY`, `BYTES` | The bytes themselves |
+| `DECIMAL(p, s)` | A four-byte big-endian scale, then the unscaled value as a two's-complement big-endian `BigInteger` |
+| `TINYINT` | One byte |
+| `SMALLINT` | Two bytes, big-endian |
+| `INT`, `DATE`, `INTERVAL YEAR TO MONTH` | Four bytes, big-endian. A `DATE` is a day count, not an epoch-millisecond value |
+| `TIME(p)` | Four bytes, big-endian, the millisecond of the day |
+| `BIGINT`, `INTERVAL DAY TO SECOND` | Eight bytes, big-endian |
+| `FLOAT` | Four bytes: the IEEE 754 bits, big-endian |
+| `DOUBLE` | Eight bytes: the IEEE 754 bits, big-endian |
+| `TIMESTAMP(p)`, `TIMESTAMP_LTZ(p)` | Eight bytes, big-endian, milliseconds since the epoch |
+
+`ARRAY`, `MAP`, `MULTISET`, a nested `ROW`, `RAW` and `TIMESTAMP WITH TIME ZONE` have no encoding
+and are rejected — but see below for *when*.
+
+### Precision stops at milliseconds
+
+A `TIME` or `TIMESTAMP` cell holds milliseconds, so a precision above 3 is rejected rather than
+silently truncated — the same bound the HBase connector draws. `TIMESTAMP` and `TIMESTAMP_LTZ`
+encode identically, to the same epoch-millisecond value.
+
+### Nulls
+
+A null is an **empty cell** for every type except a character string, where an empty cell is a
+legitimate value; a null there writes `null-string-literal` instead. Nulls are written rather than
+skipped: a qualifier left unwritten keeps whatever an earlier version of the row put there, which is
+not what "this column is null now" means. A whole column family that is null writes no cells at all,
+since there is no value to encode.
+
+Two collisions the convention does not resolve, both inherited from the HBase connector. A null and
+a zero-length value are the **same bytes** in a `BINARY`, `VARBINARY` or `BYTES` cell — only a
+character string gets a marker — so a column that must tell them apart needs the distinction encoded
+in the value. And a character string whose value happens to equal `null-string-literal` reads back
+as a null; pick a literal the data cannot contain.
+
+A read reverses the convention through the same option —
+[What a read produces](#what-a-read-produces) below.
+
+## Source
 
 With the default `scan.mode = bounded`, a `SELECT` is a **bounded scan** over the DataStream source
 — the same split planning, resumption and metrics that
@@ -211,163 +260,6 @@ row.
 **The latest version of each cell is read.** Bigtable stores timestamped versions; the scan takes
 the newest per qualifier. A qualifier the declared family holds but the DDL does not name is
 ignored.
-
-### Change Streams
-
-Set `scan.mode = change-stream` to read the table's mutation log through the DataStream Change
-Streams source.
-The default remains `bounded`, so existing DDL keeps its current row-scan behavior.
-
-A Change Streams table is source-only: an `INSERT INTO` naming one is rejected when the statement is
-planned, rather than writing to the table as an ordinary sink and discarding the
-`scan.change-stream.*` options.
-Its physical envelope has exactly the `row_key` and `entries` columns; this example also selects
-all optional metadata as virtual columns:
-
-{{< sql-snippet file="flink/BigtableTableReference.sql" tag="change-stream-envelope" >}}
-
-The source emits one `INSERT` row per Bigtable mutation.
-`entries` retains the service order, and `entry_index` is its zero-based position in that list.
-The source rejects a primary key because two mutations for the same `row_key` are distinct log
-records rather than updates to one Flink row.
-
-The metadata columns expose scalar fields attached to the mutation:
-
-| Metadata key | Type | Meaning |
-|---|---|---|
-| `mutation-type` | `STRING NOT NULL` | `USER` for a user mutation or `GARBAGE_COLLECTION` for a garbage-collection mutation |
-| `source-cluster-id` | `STRING` | The originating cluster for a user mutation; null for garbage collection |
-| `commit-timestamp` | `TIMESTAMP_LTZ(9) NOT NULL` | The service commit time, retaining nanoseconds |
-| `tie-breaker` | `INT NOT NULL` | The service tie breaker for mutations committed at the same time |
-| `estimated-low-watermark` | `TIMESTAMP_LTZ(9) NOT NULL` | The producing partition's estimated low watermark at this mutation |
-
-The declared column names are local to the DDL; `METADATA FROM` selects the stable connector key.
-Flink permits an explicitly castable declared type and applies the cast after the source, while the
-connector always emits the type in the table above.
-Marking the columns `VIRTUAL` keeps them out of the physical row, which is what the envelope schema
-check reads.
-
-| `kind` | `qualifier` | `timestamp` | `value` | `delete_range` |
-|---|---|---|---|---|
-| `SET_CELL` | `RAW_VALUE` | `RAW_TIMESTAMP` | `RAW_VALUE` | null |
-| `DELETE_CELLS` | `RAW_VALUE` | null | null | timestamp bounds |
-| `DELETE_FAMILY` | null | null | null | null |
-| `ADD_TO_CELL` | generic value | generic value | generic value | null |
-| `MERGE_TO_CELL` | generic value | generic value | generic value | null |
-
-A generic value sets `value_type` to `RAW_VALUE`, `RAW_TIMESTAMP`, or `INT64`.
-`RAW_VALUE` populates `bytes_value`; the other two populate `long_value`, with raw timestamps in
-microseconds.
-Delete bounds use `OPEN`, `CLOSED`, or `UNBOUNDED`, and an unbounded endpoint has a null micros
-field.
-Fields that do not apply to an entry kind are null.
-If a later client library introduces an entry or value subtype the SDK converter does not know, the
-job fails with that subtype's class name before emitting an incomplete mutation.
-
-`UNNEST` expands the ordered entry array for relational processing:
-
-{{< sql-snippet file="flink/BigtableTableReference.sql" tag="unnest-change-stream-entries" >}}
-
-SQL result rows have no implicit arrival order.
-`entry_index` carries each entry's original zero-based service position through the expansion, so a
-downstream keyed computation can reconstruct the order without relying on `UNNEST` output order.
-
-The envelope is a mutation record, not a reconstructed Bigtable row.
-Bigtable does not supply before or complete after images, so a cell or family deletion remains an
-inserted envelope row rather than a Flink `DELETE` or `UPDATE`.
-
-#### Selected-cell upserts
-
-Set `scan.change-stream.changelog-mode = selected-cell` only when one Bigtable cell contains the
-complete serialized non-key part of a logical row.
-The mutation row key supplies exactly one declared physical primary key, which may appear anywhere
-in the DDL, and `value.format` decodes every other physical column.
-At least one non-key column is required.
-The primary key decodes under the same fixed-width rule as every other read, and this mode is
-where its default bites hardest: a key longer than a fixed-width primary key's layout silently
-decodes as its prefix, and the `DELETE` or `UPDATE_AFTER` it keys then lands on the wrong Flink
-row. Set `decode.trailing-bytes = 'reject'` here unless the table's keys are known to be exact, so
-such a mutation fails the read instead — see
-[what a read produces](#what-a-read-produces).
-
-{{< sql-snippet file="flink/BigtableTableReference.sql" tag="selected-cell-upserts" >}}
-
-The source recognizes only this atomic producer protocol:
-
-- An upsert is one full delete of the selected column across all timestamps, or one delete of the
-  selected family, followed by exactly one selected `SetCell` in the same mutation.
-- A delete is that full selected-column or selected-family delete without a later selected
-  `SetCell` and produces a key-only `DELETE`.
-- Entries for other cells and families produce no row.
-
-The upsert is emitted as `UPDATE_AFTER`, not an invented `INSERT`.
-A downstream keyed table can materialize the first update it observes as the current value.
-The source performs no point lookup, stores no previous row image, and does not scan a snapshot
-before its configured Change Streams start position.
-
-The configured source cluster must match every mutation that affects the selected cell.
-This excludes cross-cluster conflict ordering from the changelog contract.
-The job fails on standalone, repeated, or out-of-order selected `SetCell` entries; partial
-timestamp deletes; garbage-collection or aggregate mutations affecting the selected cell; or a
-mutation from another cluster.
-The chosen format must be insert-only and emit exactly one non-null row for every upsert.
-Format metadata is not exposed because a key-only delete has no payload to decode.
-
-These are producer requirements, not inferences the connector can make from arbitrary Bigtable
-traffic.
-A writer that does not atomically replace the complete selected value with the sequence above must
-use the lossless `envelope` mode instead.
-
-The application profile is required and must route to one cluster, as on the DataStream source.
-The emulator is rejected because it does not implement Change Streams.
-Row ranges, the HBase-compatible cell codec, lookup options, projection pushdown, and filter
-pushdown belong to the bounded source and are not Change Streams settings.
-The factory rejects those options in Change Streams mode and rejects Change Streams options in
-bounded mode.
-A sink is held to the same rule: a table written to may carry the scan and lookup options it also
-reads with, but a Change Streams option on it is rejected rather than ignored.
-
-An absent `scan.startup.mode` retains the DataStream builder's latest-position default.
-Choose `earliest` or `timestamp`; the timestamp mode also requires
-`scan.startup.timestamp-millis`.
-Restored checkpoint state wins over that fresh-start setting.
-If a restored position has expired, the job fails unless
-`scan.resume-fallback.mode` explicitly opts into `earliest`, `latest`, or a timestamp
-with `scan.resume-fallback.timestamp-millis`.
-This restore contract is [ADR-0094]({{< param BookRepo >}}/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
-
-Set `scan.bounded.timestamp-millis` to make the source bounded; without it the source is continuous.
-`scan.max-concurrent-streams-per-subtask` bounds open partition reads in each source subtask and
-keeps the DataStream builder's default of two when absent.
-Source parallelism multiplied by that value is configured job capacity, not a Bigtable quota.
-No option sets the service heartbeat interval, and Spanner's
-`scan.change-stream.heartbeat-interval` has no counterpart here: Bigtable's five seconds are fixed,
-because the same value paces how the reader rotates queued partitions in.
-[ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md)
-records that decision.
-
-Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
-queryable metadata.
-The `estimated-low-watermark` value belongs to the partition that produced the mutation; it is not
-a safe stream-wide event-time frontier, and the connector does not provide native
-`SOURCE_WATERMARK()` support.
-Bigtable permits a future record below a previously observed estimate, so including queued and
-enumerator-held partitions would still not satisfy Flink's non-early contract.
-
-Do not declare `SOURCE_WATERMARK()` for this connector.
-Flink can retain that expression in a separate watermark operator when the source does not support
-pushdown, but the Bigtable source does not provide the source-generated watermark it requests.
-
-A DDL can instead declare an ordinary, application-owned watermark expression over commit-time
-metadata:
-
-{{< sql-snippet file="flink/BigtableTableReference.sql" tag="application-watermark" >}}
-
-The five-minute delay is an example policy, not a recommended or service-backed bound.
-Bigtable publishes no finite maximum lateness, and source concurrency can leave partitions queued
-or unassigned, so the job must choose how it handles records behind that watermark.
-See [ADR-0109]({{< param BookRepo >}}/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md)
-for the decision and the different Spanner heartbeat contract.
 
 ### Filter pushdown
 
@@ -482,233 +374,7 @@ Supported SQL row-key predicates further intersect this configured union.
 An empty intersection returns no rows rather than widening back to the configured range or the
 whole table.
 
-### Lookup joins
-
-The table supports processing-time temporal joins by equality on its row-key column. The lookup
-key is interpreted after projection, so the row key may appear anywhere in the DDL and the query
-may reorder the lookup table's output. Composite keys, nested family fields and predicates that do
-not include row-key equality are rejected when the join is planned.
-
-{{< sql-snippet file="flink/BigtableTableReference.sql" tag="lookup-join" >}}
-
-By default each input row performs a synchronous Bigtable point read. Set `lookup.async = true`
-for asynchronous point reads. A missing Bigtable row produces no lookup result, so a left join
-keeps the input row with null lookup columns and an inner join drops it. Both forms apply the same
-family projection filter as a scan and use `scan.app-profile-id`; a Data Boost application profile
-cannot serve the point-read modes.
-Flink does not currently pass an additional right-side temporal-join predicate through
-`SupportsFilterPushDown`.
-It keeps that expression in the lookup operator, where NONE, PARTIAL and FULL modes evaluate the
-same residual predicate.
-Configured `scan.row-prefix`, `scan.row-range.*` and `scan.row-ranges` bounds still apply to point
-reads and FULL-cache contents.
-
-`lookup.cache = PARTIAL` uses Flink's standard on-demand lookup cache around either the synchronous
-or asynchronous function. Configure at least one of `lookup.partial-cache.max-rows`,
-`lookup.partial-cache.expire-after-access` or `lookup.partial-cache.expire-after-write` with it.
-`lookup.cache = FULL` loads the projected table through a bounded scan into each lookup task; choose
-`PERIODIC` with `lookup.full-cache.periodic-reload.interval`, or `TIMED` with
-`lookup.full-cache.timed-reload.iso-time`. FULL is synchronous by definition, so combining it with
-`lookup.async = true` is rejected. Its scan may use a Data Boost profile. Scan prefix and range
-bounds apply consistently to point reads and FULL-cache contents.
-
-Point reads retry only `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `ABORTED`, which are the statuses the
-Bigtable client itself retries a point read on, so `lookup.max-retries` buys more attempts rather
-than a different retry policy. It counts retries after the first attempt and defaults to 3. Other
-failures surface immediately, `RESOURCE_EXHAUSTED` among them: Bigtable raises it for an exhausted
-admin API quota, node limit or node storage limit, and another point read clears none of those. The
-connector adds no lookup-specific metrics; Flink owns cache metrics and the Bigtable client owns
-RPC metrics.
-
-Scan, connection and write options map onto builder setters of the DataStream API, which stays their
-source of truth. Lookup options are table-layer or Flink-owned instead. An option left out of the
-DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
-the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
-
-`scan.max-rows-per-fetch` and `scan.max-bytes-per-fetch` bound each bounded scan fetch before it hands decoded input to Flink's element queue.
-The first limit reached ends the fetch; one row larger than the byte target is handed over alone.
-Top-level projection and pushed cell filters can reduce the cells returned before the byte estimate is measured; pushed row-key predicates instead reduce which rows enter the fetch.
-The bounds are per source subtask, so increasing `scan.parallelism` can increase the number of batches queued at once.
-They do not change point lookups or FULL-cache reloads, whose loader and memory ownership are Flink's lookup-cache path rather than the bounded `ScanTableSource` reader.
-They are rejected when `scan.mode = change-stream`.
-
-`scan.mode`, `null-string-literal`, `decode.trailing-bytes`, `scan.row-key-encoding`,
-`lookup.async`, `sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to
-the table layer because they configure its codec, runtime shape or planner contract rather than a
-DataStream builder.
-
-### Destination
-
-| Option | Type | Maps to |
-|---|---|---|
-| `project` | String | The project part of `table(...)`; a bare project id |
-| `instance` | String | The instance part of `table(...)` |
-| `table` | String | The table part of `table(...)`. One SQL table writes to one Bigtable table: per-record routing has no SQL surface and stays on the DataStream API |
-| `service-account-key-file` | String | Shared credential path mapped to `serviceAccountKeyFile(...)` for the sink, the scan and change-stream sources, and every lookup cache mode. Unset keeps ADC. Every eligible TaskManager must see the path; either source also needs it on the JobManager. The option is rejected beside `emulator-endpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client for every direction — whether the table is written to, scanned, or joined as a lookup dimension. The rejection names `emulator-endpoint`, the key written in the DDL. Under `scan.mode = 'change-stream'` the option is refused outright, before its shape is looked at |
-| `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies, in both directions. Every other type writes a null as an empty cell |
-| `decode.trailing-bytes` | Enum | What a read does with a fixed-width cell or row key longer than the declared type's layout: `ignore` (default) decodes the declared width and discards the rest, HBase's own rule; `reject` fails the read instead. Not a builder setter, for the same reason as `null-string-literal`. Governs scans, lookups and the selected-cell primary key; refused in the envelope Change Streams mode, which decodes no cell. See [what a read produces](#what-a-read-produces) |
-
-### Scan
-
-| Option | Type | Maps to |
-|---|---|---|
-| `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter. `change-stream` makes the table source-only, so writing to it is rejected |
-| `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
-| `scan.max-rows-per-fetch` | Integer | `maxRowsPerFetch(...)` for bounded scans; unset keeps the builder default of 1,000 rows |
-| `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` for bounded scans; unset keeps the builder default of 8 MiB. The target covers decoded input content and always allows one oversized row to progress |
-| `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
-| `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with every range |
-| `scan.row-range.start-closed` | String | The inclusive decoded start key of the legacy single `rowRange(...)`. Either bound may be given alone |
-| `scan.row-range.end-open` | String | The exclusive decoded end key of that range |
-| `scan.row-ranges` | String | Additional `[start,end)` ranges separated by unescaped `;`. Either endpoint may be omitted. Backslash escapes grammar characters inside UTF-8 endpoints |
-| `scan.change-stream.changelog-mode` | Enum | Required in Change Streams mode. `envelope` selects the fixed insert-only generic mutation envelope; `selected-cell` emits keyed upserts and deletes under the documented atomic producer protocol |
-| `scan.change-stream.selected-cell.family` | String | Required only in selected-cell mode; family that holds the complete serialized logical value |
-| `scan.change-stream.selected-cell.qualifier-base64` | String | Required only in selected-cell mode; exact qualifier in canonical padded RFC 4648 standard Base64. An empty decoded qualifier is valid |
-| `scan.change-stream.selected-cell.source-cluster-id` | String | Required only in selected-cell mode; the one source cluster accepted for mutations affecting the selected cell |
-| `value.format` | String | Required only in selected-cell mode; insert-only Flink format that decodes the selected cell into all non-key physical columns. Its `value.<format>.*` options configure that format |
-| `scan.startup.mode` | Enum | `startPosition(...)`: `earliest`, `latest`, or `timestamp`. Unset retains the builder's latest default |
-| `scan.startup.timestamp-millis` | Long | Epoch-millisecond instant paired with startup mode `timestamp` |
-| `scan.resume-fallback.mode` | Enum | `resumeFallback(...)`: explicit fallback for an expired restored continuation; uses the same three modes |
-| `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
-| `scan.bounded.timestamp-millis` | Long | `boundedTimestamp(...)`; makes Change Streams bounded at the epoch-millisecond instant. Requires `scan.mode = change-stream`; the separate `scan.mode = bounded` value selects a finite scan of the current table |
-| `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
-| `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
-
-### Lookup
-
-| Option | Type | Meaning |
-|---|---|---|
-| `lookup.async` | Boolean | Use asynchronous point reads; defaults to `false`. Cannot be combined with FULL caching |
-| `lookup.cache` | Enum | Flink's cache mode: `NONE`, `PARTIAL` or `FULL` |
-| `lookup.max-retries` | Integer | Retries after the initial point read for transient failures; defaults to `3` |
-| `lookup.partial-cache.expire-after-access` | Duration | Standard PARTIAL-cache access expiry |
-| `lookup.partial-cache.expire-after-write` | Duration | Standard PARTIAL-cache write expiry |
-| `lookup.partial-cache.cache-missing-key` | Boolean | Whether PARTIAL caches misses |
-| `lookup.partial-cache.max-rows` | Long | Maximum PARTIAL-cache rows |
-| `lookup.full-cache.reload-strategy` | Enum | FULL reload strategy: `PERIODIC` or `TIMED` |
-| `lookup.full-cache.periodic-reload.interval` | Duration | Interval for periodic FULL reloads |
-| `lookup.full-cache.periodic-reload.schedule-mode` | Enum | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
-| `lookup.full-cache.timed-reload.iso-time` | String | Local ISO time for a timed FULL reload |
-| `lookup.full-cache.timed-reload.interval-in-days` | Integer | Days between timed FULL reloads |
-
-### Sink
-
-| Option | Type | Maps to |
-|---|---|---|
-| `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
-| `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
-| `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
-| `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
-| `sink.batching.element-count-threshold` | Long | `BigtableWriterOptions.batchElementCountThreshold(...)`. Counts **entries** — one row's mutations — not mutations |
-| `sink.batching.request-byte-threshold` | MemorySize | `BigtableWriterOptions.batchRequestByteThreshold(...)` |
-| `sink.in-flight.max-entries` | Integer | `BigtableWriterOptions.maxInFlightEntries(...)` |
-| `sink.in-flight.max-bytes` | MemorySize | `BigtableWriterOptions.maxInFlightBytes(...)` |
-| `sink.max-consecutive-rejections` | Integer | `BigtableWriterOptions.maxConsecutiveRejections(...)`. **Inert from SQL**: a DDL has no failure-policy option, so the sink fails the job on the first confirmed rejection and never reaches a bound. It exists so the DDL surface stays one key per writer knob |
-| `sink.recovery.initial-backoff` | Duration | `BigtableWriterOptions.recoveryInitialBackoff(...)`, the budget for repairing a missing table or family |
-| `sink.recovery.max-backoff` | Duration | `BigtableWriterOptions.recoveryMaxBackoff(...)` |
-| `sink.recovery.max-attempts` | Integer | `BigtableWriterOptions.recoveryMaxAttempts(...)` |
-| `sink.destination-idle-timeout` | Duration | `BigtableWriterOptions.destinationIdleTimeout(...)` |
-| `sink.max-active-instances` | Integer | `BigtableWriterOptions.maxActiveInstances(...)`. **Inert from SQL**: one DDL sink names one instance, so every valid positive cap already contains it. It exists so the DDL surface stays one key per writer knob |
-| `sink.metrics.per-destination` | Boolean | `BigtableWriterOptions.perDestinationMetrics(...)` |
-| `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
-
-### Table creation
-
-| Option | Type | Maps to |
-|---|---|---|
-| `sink.table-create.gc-rule.max-versions` | Integer | `GcRule.maxVersions(...)` for every family the sink creates |
-| `sink.table-create.gc-rule.max-age` | Duration | `GcRule.maxAge(...)` for every family the sink creates. Set beside the version limit, the two are combined as a **union** — a cell goes when it is either too old or too far down the version list |
-
-**The families come from the DDL, not from a key.** A `ROW<...>` column already says a family
-exists, so naming the same families again in the `WITH` clause would only create a way for the two
-lists to disagree.
-
-**The garbage-collection rule does not.** A `GcRule` is a tree of unions and intersections to any
-depth, and a flat `WITH` namespace cannot carry one; the two keys above are the contraction, and
-they apply the same rule to every family. A family needing anything else is created out of band,
-which is what `create-never` is for.
-
-At least one of the two keys is **required** under `create-if-needed`, which the DataStream API
-does not require. A family created with no rule keeps every version of every cell forever, and this
-sink is at-least-once and upsert-shaped: each replay writes another version of the same cells, so a
-rule-less family created from a DDL would grow without bound with nothing reporting it.
-
-Setting either key without `sink.create-disposition` = `create-if-needed` is rejected rather than
-ignored. A table that declares no column family is rejected outright, whatever the disposition: a
-mutation with no cell in it is not a write.
-
-## Type mapping
-
-A Bigtable cell is an uninterpreted byte string, so a convention has to be picked. This connector
-uses the HBase ecosystem's — `org.apache.hadoop.hbase.util.Bytes` as Flink's HBase connector applies
-it — reproduced here rather than depended on, since `hbase-common` drags in Hadoop. The row key
-takes the same encodings.
-
-| Flink type | Cell bytes |
-|---|---|
-| `CHAR`, `VARCHAR`, `STRING` | UTF-8, with no length prefix |
-| `BOOLEAN` | One byte: `0xFF` for true, `0x00` for false |
-| `BINARY`, `VARBINARY`, `BYTES` | The bytes themselves |
-| `DECIMAL(p, s)` | A four-byte big-endian scale, then the unscaled value as a two's-complement big-endian `BigInteger` |
-| `TINYINT` | One byte |
-| `SMALLINT` | Two bytes, big-endian |
-| `INT`, `DATE`, `INTERVAL YEAR TO MONTH` | Four bytes, big-endian. A `DATE` is a day count, not an epoch-millisecond value |
-| `TIME(p)` | Four bytes, big-endian, the millisecond of the day |
-| `BIGINT`, `INTERVAL DAY TO SECOND` | Eight bytes, big-endian |
-| `FLOAT` | Four bytes: the IEEE 754 bits, big-endian |
-| `DOUBLE` | Eight bytes: the IEEE 754 bits, big-endian |
-| `TIMESTAMP(p)`, `TIMESTAMP_LTZ(p)` | Eight bytes, big-endian, milliseconds since the epoch |
-
-`ARRAY`, `MAP`, `MULTISET`, a nested `ROW`, `RAW` and `TIMESTAMP WITH TIME ZONE` have no encoding
-and are rejected — but see below for *when*.
-
-### Precision stops at milliseconds
-
-A `TIME` or `TIMESTAMP` cell holds milliseconds, so a precision above 3 is rejected rather than
-silently truncated — the same bound the HBase connector draws. `TIMESTAMP` and `TIMESTAMP_LTZ`
-encode identically, to the same epoch-millisecond value.
-
-### Nulls
-
-A null is an **empty cell** for every type except a character string, where an empty cell is a
-legitimate value; a null there writes `null-string-literal` instead. Nulls are written rather than
-skipped: a qualifier left unwritten keeps whatever an earlier version of the row put there, which is
-not what "this column is null now" means. A whole column family that is null writes no cells at all,
-since there is no value to encode.
-
-Two collisions the convention does not resolve, both inherited from the HBase connector. A null and
-a zero-length value are the **same bytes** in a `BINARY`, `VARBINARY` or `BYTES` cell — only a
-character string gets a marker — so a column that must tell them apart needs the distinction encoded
-in the value. And a character string whose value happens to equal `null-string-literal` reads back
-as a null; pick a literal the data cannot contain.
-
-A read reverses the convention through the same option —
-[What a read produces](#what-a-read-produces) above.
-
-## Delivery guarantees
-
-See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
-for the cross-connector distinction between an insert-only changelog and destination-side
-insert-if-absent behavior.
-
-The sink is **at-least-once** and advertises **upsert** by default, including when the requested
-input contains inserts alone. A Bigtable write is an upsert on the row key by construction —
-`setCell` overwrites — and there is no retract path to offer instead. On Flink 2.x the upsert mode
-says a delete may carry the upsert key alone only when the DDL declares the primary key, which is
-what makes that key the row key; [The schema](#the-schema) above has the consequence for a job.
-Flink 1.20 has no such distinction and always completes the row first.
-
-An append-only row design must generate a unique row key for each logical event, because reusing a
-row key updates that row.
-An application that keeps cell history within one row must instead choose distinct qualifiers or
-stable event timestamps deliberately.
-A stable timestamp makes a replay target the same cell version, while omitting the timestamp uses
-the writer's wall clock and can create a new version after Flink recovery.
-
-A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
-key, so "this key is gone" is what a delete means here; removing only the declared cells would leave
-a row behind made of whatever else was in it.
+## Sink
 
 ### Flink 2.3 may demand ON CONFLICT
 
@@ -823,6 +489,345 @@ Each of these fails the record through the sink's failure handler rather than sk
 Retries, error classification and the failure handler are the DataStream sink's and are described on
 its [page]({{< relref "docs/connectors/datastream/bigtable" >}}). A SQL table has no failure-policy
 option, so its sink always fails the job on a routed failure.
+
+## Lookup joins
+
+The table supports processing-time temporal joins by equality on its row-key column. The lookup
+key is interpreted after projection, so the row key may appear anywhere in the DDL and the query
+may reorder the lookup table's output. Composite keys, nested family fields and predicates that do
+not include row-key equality are rejected when the join is planned.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="lookup-join" >}}
+
+By default each input row performs a synchronous Bigtable point read. Set `lookup.async = true`
+for asynchronous point reads. A missing Bigtable row produces no lookup result, so a left join
+keeps the input row with null lookup columns and an inner join drops it. Both forms apply the same
+family projection filter as a scan and use `scan.app-profile-id`; a Data Boost application profile
+cannot serve the point-read modes.
+Flink does not currently pass an additional right-side temporal-join predicate through
+`SupportsFilterPushDown`.
+It keeps that expression in the lookup operator, where NONE, PARTIAL and FULL modes evaluate the
+same residual predicate.
+Configured `scan.row-prefix`, `scan.row-range.*` and `scan.row-ranges` bounds still apply to point
+reads and FULL-cache contents.
+
+`lookup.cache = PARTIAL` uses Flink's standard on-demand lookup cache around either the synchronous
+or asynchronous function. Configure at least one of `lookup.partial-cache.max-rows`,
+`lookup.partial-cache.expire-after-access` or `lookup.partial-cache.expire-after-write` with it.
+`lookup.cache = FULL` loads the projected table through a bounded scan into each lookup task; choose
+`PERIODIC` with `lookup.full-cache.periodic-reload.interval`, or `TIMED` with
+`lookup.full-cache.timed-reload.iso-time`. FULL is synchronous by definition, so combining it with
+`lookup.async = true` is rejected. Its scan may use a Data Boost profile. Scan prefix and range
+bounds apply consistently to point reads and FULL-cache contents.
+
+Point reads retry only `DEADLINE_EXCEEDED`, `UNAVAILABLE` and `ABORTED`, which are the statuses the
+Bigtable client itself retries a point read on, so `lookup.max-retries` buys more attempts rather
+than a different retry policy. It counts retries after the first attempt and defaults to 3. Other
+failures surface immediately, `RESOURCE_EXHAUSTED` among them: Bigtable raises it for an exhausted
+admin API quota, node limit or node storage limit, and another point read clears none of those. The
+connector adds no lookup-specific metrics; Flink owns cache metrics and the Bigtable client owns
+RPC metrics.
+
+## Change Streams
+
+Set `scan.mode = change-stream` to read the table's mutation log through the DataStream Change
+Streams source.
+The default remains `bounded`, so existing DDL keeps its current row-scan behavior.
+
+A Change Streams table is source-only: an `INSERT INTO` naming one is rejected when the statement is
+planned, rather than writing to the table as an ordinary sink and discarding the
+`scan.change-stream.*` options.
+Its physical envelope has exactly the `row_key` and `entries` columns; this example also selects
+all optional metadata as virtual columns:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="change-stream-envelope" >}}
+
+The source emits one `INSERT` row per Bigtable mutation.
+`entries` retains the service order, and `entry_index` is its zero-based position in that list.
+The source rejects a primary key because two mutations for the same `row_key` are distinct log
+records rather than updates to one Flink row.
+
+The metadata columns expose scalar fields attached to the mutation:
+
+| Metadata key | Type | Meaning |
+|---|---|---|
+| `mutation-type` | `STRING NOT NULL` | `USER` for a user mutation or `GARBAGE_COLLECTION` for a garbage-collection mutation |
+| `source-cluster-id` | `STRING` | The originating cluster for a user mutation; null for garbage collection |
+| `commit-timestamp` | `TIMESTAMP_LTZ(9) NOT NULL` | The service commit time, retaining nanoseconds |
+| `tie-breaker` | `INT NOT NULL` | The service tie breaker for mutations committed at the same time |
+| `estimated-low-watermark` | `TIMESTAMP_LTZ(9) NOT NULL` | The producing partition's estimated low watermark at this mutation |
+
+The declared column names are local to the DDL; `METADATA FROM` selects the stable connector key.
+Flink permits an explicitly castable declared type and applies the cast after the source, while the
+connector always emits the type in the table above.
+Marking the columns `VIRTUAL` keeps them out of the physical row, which is what the envelope schema
+check reads.
+
+| `kind` | `qualifier` | `timestamp` | `value` | `delete_range` |
+|---|---|---|---|---|
+| `SET_CELL` | `RAW_VALUE` | `RAW_TIMESTAMP` | `RAW_VALUE` | null |
+| `DELETE_CELLS` | `RAW_VALUE` | null | null | timestamp bounds |
+| `DELETE_FAMILY` | null | null | null | null |
+| `ADD_TO_CELL` | generic value | generic value | generic value | null |
+| `MERGE_TO_CELL` | generic value | generic value | generic value | null |
+
+A generic value sets `value_type` to `RAW_VALUE`, `RAW_TIMESTAMP`, or `INT64`.
+`RAW_VALUE` populates `bytes_value`; the other two populate `long_value`, with raw timestamps in
+microseconds.
+Delete bounds use `OPEN`, `CLOSED`, or `UNBOUNDED`, and an unbounded endpoint has a null micros
+field.
+Fields that do not apply to an entry kind are null.
+If a later client library introduces an entry or value subtype the SDK converter does not know, the
+job fails with that subtype's class name before emitting an incomplete mutation.
+
+`UNNEST` expands the ordered entry array for relational processing:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="unnest-change-stream-entries" >}}
+
+SQL result rows have no implicit arrival order.
+`entry_index` carries each entry's original zero-based service position through the expansion, so a
+downstream keyed computation can reconstruct the order without relying on `UNNEST` output order.
+
+The envelope is a mutation record, not a reconstructed Bigtable row.
+Bigtable does not supply before or complete after images, so a cell or family deletion remains an
+inserted envelope row rather than a Flink `DELETE` or `UPDATE`.
+
+### Selected-cell upserts
+
+Set `scan.change-stream.changelog-mode = selected-cell` only when one Bigtable cell contains the
+complete serialized non-key part of a logical row.
+The mutation row key supplies exactly one declared physical primary key, which may appear anywhere
+in the DDL, and `value.format` decodes every other physical column.
+At least one non-key column is required.
+The primary key decodes under the same fixed-width rule as every other read, and this mode is
+where its default bites hardest: a key longer than a fixed-width primary key's layout silently
+decodes as its prefix, and the `DELETE` or `UPDATE_AFTER` it keys then lands on the wrong Flink
+row. Set `decode.trailing-bytes = 'reject'` here unless the table's keys are known to be exact, so
+such a mutation fails the read instead — see
+[what a read produces](#what-a-read-produces).
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="selected-cell-upserts" >}}
+
+The source recognizes only this atomic producer protocol:
+
+- An upsert is one full delete of the selected column across all timestamps, or one delete of the
+  selected family, followed by exactly one selected `SetCell` in the same mutation.
+- A delete is that full selected-column or selected-family delete without a later selected
+  `SetCell` and produces a key-only `DELETE`.
+- Entries for other cells and families produce no row.
+
+The upsert is emitted as `UPDATE_AFTER`, not an invented `INSERT`.
+A downstream keyed table can materialize the first update it observes as the current value.
+The source performs no point lookup, stores no previous row image, and does not scan a snapshot
+before its configured Change Streams start position.
+
+The configured source cluster must match every mutation that affects the selected cell.
+This excludes cross-cluster conflict ordering from the changelog contract.
+The job fails on standalone, repeated, or out-of-order selected `SetCell` entries; partial
+timestamp deletes; garbage-collection or aggregate mutations affecting the selected cell; or a
+mutation from another cluster.
+The chosen format must be insert-only and emit exactly one non-null row for every upsert.
+Format metadata is not exposed because a key-only delete has no payload to decode.
+
+These are producer requirements, not inferences the connector can make from arbitrary Bigtable
+traffic.
+A writer that does not atomically replace the complete selected value with the sequence above must
+use the lossless `envelope` mode instead.
+
+The application profile is required and must route to one cluster, as on the DataStream source.
+The emulator is rejected because it does not implement Change Streams.
+Row ranges, the HBase-compatible cell codec, lookup options, projection pushdown, and filter
+pushdown belong to the bounded source and are not Change Streams settings.
+The factory rejects those options in Change Streams mode and rejects Change Streams options in
+bounded mode.
+A sink is held to the same rule: a table written to may carry the scan and lookup options it also
+reads with, but a Change Streams option on it is rejected rather than ignored.
+
+An absent `scan.startup.mode` retains the DataStream builder's latest-position default.
+Choose `earliest` or `timestamp`; the timestamp mode also requires
+`scan.startup.timestamp-millis`.
+Restored checkpoint state wins over that fresh-start setting.
+If a restored position has expired, the job fails unless
+`scan.resume-fallback.mode` explicitly opts into `earliest`, `latest`, or a timestamp
+with `scan.resume-fallback.timestamp-millis`.
+This restore contract is [ADR-0094]({{< param BookRepo >}}/blob/main/docs/adr/0094-change-stream-start-positions-resolve-once-and-restored-state-wins-until-it-expires.md).
+
+Set `scan.bounded.timestamp-millis` to make the source bounded; without it the source is continuous.
+`scan.max-concurrent-streams-per-subtask` bounds open partition reads in each source subtask and
+keeps the DataStream builder's default of two when absent.
+Source parallelism multiplied by that value is configured job capacity, not a Bigtable quota.
+No option sets the service heartbeat interval, and Spanner's
+`scan.change-stream.heartbeat-interval` has no counterpart here: Bigtable's five seconds are fixed,
+because the same value paces how the reader rotates queued partitions in.
+[ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md)
+records that decision.
+
+Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
+queryable metadata.
+The `estimated-low-watermark` value belongs to the partition that produced the mutation; it is not
+a safe stream-wide event-time frontier, and the connector does not provide native
+`SOURCE_WATERMARK()` support.
+Bigtable permits a future record below a previously observed estimate, so including queued and
+enumerator-held partitions would still not satisfy Flink's non-early contract.
+
+Do not declare `SOURCE_WATERMARK()` for this connector.
+Flink can retain that expression in a separate watermark operator when the source does not support
+pushdown, but the Bigtable source does not provide the source-generated watermark it requests.
+
+A DDL can instead declare an ordinary, application-owned watermark expression over commit-time
+metadata:
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="application-watermark" >}}
+
+The five-minute delay is an example policy, not a recommended or service-backed bound.
+Bigtable publishes no finite maximum lateness, and source concurrency can leave partitions queued
+or unassigned, so the job must choose how it handles records behind that watermark.
+See [ADR-0109]({{< param BookRepo >}}/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md)
+for the decision and the different Spanner heartbeat contract.
+
+## Options
+
+Scan, connection and write options map onto builder setters of the DataStream API, which stays their
+source of truth. Lookup options are table-layer or Flink-owned instead. An option left out of the
+DDL leaves the corresponding setter or lookup setting untouched; the full list of defaults is in
+the [configuration reference]({{< relref "docs/reference/bigtable" >}}).
+
+`scan.max-rows-per-fetch` and `scan.max-bytes-per-fetch` bound each bounded scan fetch before it hands decoded input to Flink's element queue.
+The first limit reached ends the fetch; one row larger than the byte target is handed over alone.
+Top-level projection and pushed cell filters can reduce the cells returned before the byte estimate is measured; pushed row-key predicates instead reduce which rows enter the fetch.
+The bounds are per source subtask, so increasing `scan.parallelism` can increase the number of batches queued at once.
+They do not change point lookups or FULL-cache reloads, whose loader and memory ownership are Flink's lookup-cache path rather than the bounded `ScanTableSource` reader.
+They are rejected when `scan.mode = change-stream`.
+
+`scan.mode`, `null-string-literal`, `decode.trailing-bytes`, `scan.row-key-encoding`,
+`lookup.async`, `sink.cell-timestamp.truncate-to-millis` and `sink.insert-only-input-mode` belong to
+the table layer because they configure its codec, runtime shape or planner contract rather than a
+DataStream builder.
+
+### Destination
+
+| Option | Type | Maps to |
+|---|---|---|
+| `project` | String | The project part of `table(...)`; a bare project id |
+| `instance` | String | The instance part of `table(...)` |
+| `table` | String | The table part of `table(...)`. One SQL table writes to one Bigtable table: per-record routing has no SQL surface and stays on the DataStream API |
+| `service-account-key-file` | String | Shared credential path mapped to `serviceAccountKeyFile(...)` for the sink, the scan and change-stream sources, and every lookup cache mode. Unset keeps ADC. Every eligible TaskManager must see the path; either source also needs it on the JobManager. The option is rejected beside `emulator-endpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client for every direction — whether the table is written to, scanned, or joined as a lookup dimension. The rejection names `emulator-endpoint`, the key written in the DDL. Under `scan.mode = 'change-stream'` the option is refused outright, before its shape is looked at |
+| `null-string-literal` | String | The cell value that stands for a null in a character-string column; defaults to `null`. Not a builder setter: it configures the cell codec this layer supplies, in both directions. Every other type writes a null as an empty cell |
+| `decode.trailing-bytes` | Enum | What a read does with a fixed-width cell or row key longer than the declared type's layout: `ignore` (default) decodes the declared width and discards the rest, HBase's own rule; `reject` fails the read instead. Not a builder setter, for the same reason as `null-string-literal`. Governs scans, lookups and the selected-cell primary key; refused in the envelope Change Streams mode, which decodes no cell. See [what a read produces](#what-a-read-produces) |
+
+### Scan
+
+| Option | Type | Maps to |
+|---|---|---|
+| `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter. `change-stream` makes the table source-only, so writing to it is rejected |
+| `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
+| `scan.max-rows-per-fetch` | Integer | `maxRowsPerFetch(...)` for bounded scans; unset keeps the builder default of 1,000 rows |
+| `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` for bounded scans; unset keeps the builder default of 8 MiB. The target covers decoded input content and always allows one oversized row to progress |
+| `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |
+| `scan.row-prefix` | List of String | `prefix(...)`, once per decoded element. `;`-separated and additive with every range |
+| `scan.row-range.start-closed` | String | The inclusive decoded start key of the legacy single `rowRange(...)`. Either bound may be given alone |
+| `scan.row-range.end-open` | String | The exclusive decoded end key of that range |
+| `scan.row-ranges` | String | Additional `[start,end)` ranges separated by unescaped `;`. Either endpoint may be omitted. Backslash escapes grammar characters inside UTF-8 endpoints |
+| `scan.change-stream.changelog-mode` | Enum | Required in Change Streams mode. `envelope` selects the fixed insert-only generic mutation envelope; `selected-cell` emits keyed upserts and deletes under the documented atomic producer protocol |
+| `scan.change-stream.selected-cell.family` | String | Required only in selected-cell mode; family that holds the complete serialized logical value |
+| `scan.change-stream.selected-cell.qualifier-base64` | String | Required only in selected-cell mode; exact qualifier in canonical padded RFC 4648 standard Base64. An empty decoded qualifier is valid |
+| `scan.change-stream.selected-cell.source-cluster-id` | String | Required only in selected-cell mode; the one source cluster accepted for mutations affecting the selected cell |
+| `value.format` | String | Required only in selected-cell mode; insert-only Flink format that decodes the selected cell into all non-key physical columns. Its `value.<format>.*` options configure that format |
+| `scan.startup.mode` | Enum | `startPosition(...)`: `earliest`, `latest`, or `timestamp`. Unset retains the builder's latest default |
+| `scan.startup.timestamp-millis` | Long | Epoch-millisecond instant paired with startup mode `timestamp` |
+| `scan.resume-fallback.mode` | Enum | `resumeFallback(...)`: explicit fallback for an expired restored continuation; uses the same three modes |
+| `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
+| `scan.bounded.timestamp-millis` | Long | `boundedTimestamp(...)`; makes Change Streams bounded at the epoch-millisecond instant. Requires `scan.mode = change-stream`; the separate `scan.mode = bounded` value selects a finite scan of the current table |
+| `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
+| `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
+
+### Lookup
+
+| Option | Type | Meaning |
+|---|---|---|
+| `lookup.async` | Boolean | Use asynchronous point reads; defaults to `false`. Cannot be combined with FULL caching |
+| `lookup.cache` | Enum | Flink's cache mode: `NONE`, `PARTIAL` or `FULL` |
+| `lookup.max-retries` | Integer | Retries after the initial point read for transient failures; defaults to `3` |
+| `lookup.partial-cache.expire-after-access` | Duration | Standard PARTIAL-cache access expiry |
+| `lookup.partial-cache.expire-after-write` | Duration | Standard PARTIAL-cache write expiry |
+| `lookup.partial-cache.cache-missing-key` | Boolean | Whether PARTIAL caches misses |
+| `lookup.partial-cache.max-rows` | Long | Maximum PARTIAL-cache rows |
+| `lookup.full-cache.reload-strategy` | Enum | FULL reload strategy: `PERIODIC` or `TIMED` |
+| `lookup.full-cache.periodic-reload.interval` | Duration | Interval for periodic FULL reloads |
+| `lookup.full-cache.periodic-reload.schedule-mode` | Enum | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
+| `lookup.full-cache.timed-reload.iso-time` | String | Local ISO time for a timed FULL reload |
+| `lookup.full-cache.timed-reload.interval-in-days` | Integer | Days between timed FULL reloads |
+
+### Sink options
+
+| Option | Type | Maps to |
+|---|---|---|
+| `sink.app-profile-id` | String | `appProfileId(...)`. Named for the sink rather than shared, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles — the scan's profile is `scan.app-profile-id` |
+| `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
+| `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement |
+| `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
+| `sink.batching.element-count-threshold` | Long | `BigtableWriterOptions.batchElementCountThreshold(...)`. Counts **entries** — one row's mutations — not mutations |
+| `sink.batching.request-byte-threshold` | MemorySize | `BigtableWriterOptions.batchRequestByteThreshold(...)` |
+| `sink.in-flight.max-entries` | Integer | `BigtableWriterOptions.maxInFlightEntries(...)` |
+| `sink.in-flight.max-bytes` | MemorySize | `BigtableWriterOptions.maxInFlightBytes(...)` |
+| `sink.max-consecutive-rejections` | Integer | `BigtableWriterOptions.maxConsecutiveRejections(...)`. **Inert from SQL**: a DDL has no failure-policy option, so the sink fails the job on the first confirmed rejection and never reaches a bound. It exists so the DDL surface stays one key per writer knob |
+| `sink.recovery.initial-backoff` | Duration | `BigtableWriterOptions.recoveryInitialBackoff(...)`, the budget for repairing a missing table or family |
+| `sink.recovery.max-backoff` | Duration | `BigtableWriterOptions.recoveryMaxBackoff(...)` |
+| `sink.recovery.max-attempts` | Integer | `BigtableWriterOptions.recoveryMaxAttempts(...)` |
+| `sink.destination-idle-timeout` | Duration | `BigtableWriterOptions.destinationIdleTimeout(...)` |
+| `sink.max-active-instances` | Integer | `BigtableWriterOptions.maxActiveInstances(...)`. **Inert from SQL**: one DDL sink names one instance, so every valid positive cap already contains it. It exists so the DDL surface stays one key per writer knob |
+| `sink.metrics.per-destination` | Boolean | `BigtableWriterOptions.perDestinationMetrics(...)` |
+| `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
+
+### Table creation
+
+| Option | Type | Maps to |
+|---|---|---|
+| `sink.table-create.gc-rule.max-versions` | Integer | `GcRule.maxVersions(...)` for every family the sink creates |
+| `sink.table-create.gc-rule.max-age` | Duration | `GcRule.maxAge(...)` for every family the sink creates. Set beside the version limit, the two are combined as a **union** — a cell goes when it is either too old or too far down the version list |
+
+**The families come from the DDL, not from a key.** A `ROW<...>` column already says a family
+exists, so naming the same families again in the `WITH` clause would only create a way for the two
+lists to disagree.
+
+**The garbage-collection rule does not.** A `GcRule` is a tree of unions and intersections to any
+depth, and a flat `WITH` namespace cannot carry one; the two keys above are the contraction, and
+they apply the same rule to every family. A family needing anything else is created out of band,
+which is what `create-never` is for.
+
+At least one of the two keys is **required** under `create-if-needed`, which the DataStream API
+does not require. A family created with no rule keeps every version of every cell forever, and this
+sink is at-least-once and upsert-shaped: each replay writes another version of the same cells, so a
+rule-less family created from a DDL would grow without bound with nothing reporting it.
+
+Setting either key without `sink.create-disposition` = `create-if-needed` is rejected rather than
+ignored. A table that declares no column family is rejected outright, whatever the disposition: a
+mutation with no cell in it is not a write.
+
+## Delivery guarantees
+
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the cross-connector distinction between an insert-only changelog and destination-side
+insert-if-absent behavior.
+
+The sink is **at-least-once** and advertises **upsert** by default, including when the requested
+input contains inserts alone. A Bigtable write is an upsert on the row key by construction —
+`setCell` overwrites — and there is no retract path to offer instead. On Flink 2.x the upsert mode
+says a delete may carry the upsert key alone only when the DDL declares the primary key, which is
+what makes that key the row key; [The schema](#the-schema) above has the consequence for a job.
+Flink 1.20 has no such distinction and always completes the row first.
+
+An append-only row design must generate a unique row key for each logical event, because reusing a
+row key updates that row.
+An application that keeps cell history within one row must instead choose distinct qualifiers or
+stable event timestamps deliberately.
+A stable timestamp makes a replay target the same cell version, while omitting the timestamp uses
+the writer's wall clock and can create a new version after Flink recovery.
+
+A `-D` deletes the **whole row**, not the declared qualifiers one by one. The row key is the primary
+key, so "this key is gone" is what a delete means here; removing only the declared cells would leave
+a row behind made of whatever else was in it.
 
 ## Design decisions
 

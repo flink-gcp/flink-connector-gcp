@@ -54,60 +54,6 @@ them into writes whose completion is awaited before the next begins.
 `batchElementCountThreshold(1)` only makes concurrent one-entry requests and does not establish
 order. ADR-0093 records the measurement and decision.
 
-## API notes
-
-The record-to-mutation step is the whole public surface beyond the builder:
-
-The following signature excerpt omits its package declaration, imports, and Javadocs.
-
-```java
-@Public
-public interface BigtableSerializationSchema<T> extends Serializable {
-    default void open(SerializationSchema.InitializationContext context) throws Exception {}
-
-    @Nullable
-    RowMutationEntry serialize(T element, SinkWriter.Context context) throws IOException;
-}
-```
-
-Returning a `RowMutationEntry` rather than a narrower value type is deliberate: it is the client's
-own mutation builder, so `setCell`, `deleteCells`, `deleteFamily`, `deleteRow` and the aggregate
-`addToCell` and `mergeToCell` are all expressible, several of them per record, and the sink adds no
-vocabulary of its own to learn.
-The two aggregate mutations take a value model the client library has not settled, so a client
-upgrade may move their argument types.
-Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
-the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
-in the serializer rather than upstream of the sink. Every serializer in this connector family reads
-`null` that way. A skip is counted by [`recordsSkipped`](#metrics), the only thing that reports
-it: a serializer skipping every record would otherwise leave an empty table under a green job.
-
-The signature and the null-means-skip convention are shared with the `BaseRowMutationSerializer` of
-[google/flink-connector-gcp](https://github.com/google/flink-connector-gcp), so a
-serializer written against that connector ports by changing the interface name. Its built-in
-`GenericRecord` and `RowData` serializers are deliberately not ported: `RowData` conversion belongs
-to the [Table API layer]({{< relref "docs/connectors/table/bigtable" >}}), which supplies its own,
-and an Avro convenience is additive whenever there is a use case asking for it.
-
-`context` is Flink's write context, so `context.timestamp()` is the record's event time — usually
-the right cell timestamp when the record carries none of its own.
-
-`serviceAccountKeyFile(path)` authenticates every data client and the table auto-creation admin
-with the service-account JSON key at `path`.
-The file is read when each writer starts, so the same path must be readable on every eligible
-TaskManager.
-When the setter is absent, application-default credentials remain in effect, including
-`GOOGLE_APPLICATION_CREDENTIALS`.
-A read or parse failure reports neither the path nor credential material.
-The option is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
-See [Credential file deployment](#credential-file-deployment) before deploying a key file.
-
-`emulatorEndpoint("host:port")` points the sink at a Bigtable emulator over a plaintext channel with
-no credentials, so it must only ever be used against an emulator — never against production
-Bigtable. The setter parses it into the host and port the client's emulator settings take, so a
-malformed value is rejected by that call on the client rather than when the writer builds its client
-on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
-
 ## Credential file deployment
 
 > **Authentication recommendation.**
@@ -130,404 +76,6 @@ on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
 >
 > Mounting several job-specific keys into one shared session cluster weakens isolation because co-located jobs share the cluster environment.
 > Prefer an application or per-job cluster with Workload Identity when jobs require separate identities.
-
-## Per-record destinations
-
-`table(...)` writes every record to one table. `destinationResolver(...)` names the table per
-record instead, so one sink writes to many — a table per tenant, a table per day — the same shape
-the BigQuery, Pub/Sub and Cloud Tasks sinks take. The two setters write the same field, so the last
-one wins, and one of them is required.
-
-The following builder excerpt omits the application serializer supplied to `serializer(...)`.
-
-```java
-Sink<OrderEvent> sink =
-        BigtableSink.<OrderEvent>builder()
-                .destinationResolver(
-                        (event, context) ->
-                                TableDestination.of("my-project", "my-instance",
-                                        "orders-" + event.day()))
-                .serializer(...)
-                .build();
-```
-
-The resolver runs once per record, **before** the serializer, so a record the serializer then
-rejects is still reported against the table it was headed for. It must be cheap and deterministic,
-and it should return cached `TableDestination` instances when destinations repeat — a small
-`Map.computeIfAbsent` keyed on the varying part is enough. Returning `null` fails the job: a
-resolver that cannot name a table is a configuration error, not a bad record, so it is never handed
-to the [failed-mutation policy](#failed-mutation-policy).
-
-What a destination costs is a **bulk mutation batcher of its own**, because the client binds one to
-one table. Under those batchers the sink keeps one client per (project, instance), shared by every
-table of that instance, so a resolver spreading records over many tables of one instance multiplies
-batchers rather than channel pools.
-
-A batcher is dropped once its table has gone
-`writerOptions(...).destinationIdleTimeout(...)` without a mutation — one hour by default, swept
-at the end of a checkpoint's flush when the batcher is already empty — and rebuilt transparently
-if that table is written to again.
-The factory releases the client when that sweep removes the instance's last live table; removing
-one of several sibling tables leaves their shared client open.
-
-Each writer subtask also keeps at most
-`writerOptions(...).maxActiveInstances(...)` open-or-closing instance clients — 16 by default.
-When a record names another instance at capacity, the writer sends and waits for all outstanding
-mutations, then evicts the least recently used instance and its table batchers.
-Client close normally runs on daemon reapers, so an idle sweep does not wait for the SDK's final
-metrics export, but the closing client keeps its capacity slot; creation waits interruptibly if
-every slot is still open or closing.
-If the runtime refuses to schedule a reaper task, the factory closes that client synchronously to
-avoid leaking it, so that exceptional sweep can wait for the export before reporting the
-scheduling failure.
-An ordinary scheduling exception is logged as close hygiene; an `Error` still fails the task or
-reaches Flink's JVM-fatal handling.
-A later record for that instance rebuilds its client and batcher transparently.
-This capacity is per subtask, and many tables in one fixed instance still consume one slot.
-So a resolver's *instance cardinality* is bounded even during a burst shorter than the idle
-timeout.
-
-The in-flight bounds are the writer's, summed across every destination rather than split among
-them: `maxInFlightEntries` and `maxInFlightBytes` mean the same thing whether the sink writes one
-table or fifty. What grows with the destination count is one accumulator per live batcher, on top
-of those bounds.
-
-By default the sink never **creates** a table or a column family, so both must exist. Opting into
-[auto-creation](#table-auto-creation) requires declaring the schema, not only permitting the
-creation ([#233]({{< param BookRepo >}}/issues/233)): a Bigtable table's schema is its column
-families and their garbage-collection policies, which is exactly the part a sink cannot guess — and
-unlike a topic, a table created bare would reject every mutation.
-
-**Auto-creation beside a resolver is a different risk profile** from auto-creation of one fixed
-table. One schema serves every table the sink creates — a resolver names tables, not schemas — and
-a resolver that computes a table id from record data can invent one table per record, each an admin
-RPC against an instance-level table limit. Prefer a resolver whose range you can state, and keep
-`CREATE_NEVER` where you cannot.
-
-## Table auto-creation
-
-Off by default. `createDisposition(CREATE_IF_NEEDED)` opts in, and requires
-[`tableCreateOptions(...)`]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) naming at
-least one column family — the disposition says the sink *may* create, the options say *what*, and
-the builder rejects each without the other:
-
-{{< java-snippet file="BigtableConnectorTableAutoCreation.java" tag="bigtable-connector-table-auto-creation" >}}
-
-Creation is **reactive**, the shape the
-[Pub/Sub sink]({{< relref "docs/connectors/datastream/pubsub" >}}#topic-auto-creation) uses: no
-admin client is even constructed unless a mutation actually fails with `NOT_FOUND`. When one does,
-the failed mutations are *parked*, the sink ensures the table and its declared families exist —
-idempotently, so parallel subtasks race safely; a lost race falls through to adding whatever
-families are still missing, in one atomic request, re-reading at most once more per family it
-declares — and then re-applies the parked mutations,
-retrying on a jittered backoff (the
-[`recovery*` knobs]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions): 500 ms
-doubling to 10 s, at most 10 attempts, ±25% jitter so subtasks resuming against the same fresh
-table do not re-apply in lockstep). The repair runs before the next record and inside every
-`flush()`, so a completed checkpoint never leaves a mutation parked; a repair that exhausts its
-budget fails the job with the incident's cause. A creation that itself fails spends attempts from
-the same budget — the admin client retries neither of its RPCs, so this schedule is what stands
-between one transient admin failure and a restart, and it is where an ensure whose declared
-families keep vanishing between the read and the addition ends up as well, rather than in a loop
-whose only symptom would be checkpoints that stop completing. Nothing is ever dropped by the repair — a mutation
-is re-applied or the job fails — which is why `NOT_FOUND` may be acted on even when an outage
-status arrives beside it.
-
-**Creation only, per family.** An existing table is used as it is; the families declared in the
-options that it lacks are added, with their rules, and an existing family's garbage-collection
-rule is neither compared nor updated. The one condition creation cannot repair is a mutation
-naming a family the options do not declare. After ensuring the table, the sink compares a
-missing-family response with the entry and the families the ensure observed; an absent referenced
-family fails immediately with the table and family named instead of spending the remaining
-recovery attempts. A `NOT_FOUND` that does not specifically identify a missing family keeps the
-existing bounded retry behaviour ([#432]({{< param BookRepo >}}/issues/432)).
-
-**The garbage-collection rule is the decision that matters.** This sink is at-least-once: a replay
-whose serializer sets no explicit cell timestamps writes duplicate cell versions, and the family's
-rule is what decides whether those accumulate forever. A family declared without a rule keeps
-Bigtable's default of collecting nothing;
-`GcRule.union(GcRule.maxVersions(1), GcRule.maxAge(...))` is the usual shape for keeping only the
-latest cell. The [reference]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) lists the
-four rule shapes.
-
-Under the default `CREATE_NEVER` a `NOT_FOUND` stays **fatal** — a missing table fails every
-record alike, so it must never reach a handler that may drop records — and the failure names the
-disposition, so the reader meeting it learns the knob that changes it. Auto-creation needs the
-`bigtable.tables.create` and `bigtable.tables.update` permissions (`roles/bigtable.admin` carries
-both) on top of the data-plane role; a job whose table exists never exercises them.
-
-Two caveats. The repair happens inside `write()`/`flush()`, so an incident's backoff extends
-checkpoint duration by up to the recovery budget — about a minute at the defaults. And the sink
-creates tables, never instances — provisioning an instance is capacity planning, not schema — so a
-job pointed at a missing instance fails when the repair's own creation is refused.
-
-## Delivery guarantees and state
-
-See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
-for the Table and DataStream API comparison.
-
-**At-least-once.** The writer is stateless — it stores nothing in Flink state — and `flush()` runs
-at every checkpoint barrier: it sends what the client has buffered and then waits until every
-outstanding mutation has been acknowledged. So a completed checkpoint means Bigtable has applied
-every record up to the barrier — other than those the [serializer skipped](#api-notes), which are
-written nowhere by design — and discarding operator state can never lose sink-buffered records.
-
-That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
-`sendToDeadLetterQueue(...)` a completed checkpoint means every record up to the barrier was either
-applied, [skipped by the serializer](#api-notes), or handed to the
-[failed-mutation policy](#failed-mutation-policy), which says which failures reach it.
-
-Checkpointing must be enabled in a streaming job. Without it `flush()` never runs mid-stream and
-outstanding mutations are lost on a failure; batch execution is covered by the end-of-input flush.
-
-**Whether a replay is idempotent is the serializer's decision.** After a restart the records since
-the last checkpoint are written again, and:
-
-- a `setCell` carrying an **explicit** timestamp overwrites the same cell — the second write is
-  invisible, and the sink is effectively exactly-once for that column;
-- a `setCell` **without** one takes the server's clock, so the replay writes another version of the
-  cell, and the table's garbage-collection policy (`maxVersions`, `maxAge`) decides how long both
-  survive.
-
-Neither is wrong, but only one of them is a choice made on purpose. Setting the timestamp from the
-record — its event time, an updated-at column, `context.timestamp()` — is what makes a replay a
-no-op. Note that a cell timestamp is in microseconds but a table's granularity is milliseconds, so
-the value must be a multiple of 1000 — `context.timestamp()`, which is in milliseconds, has to be
-multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
-(*"Timestamp granularity mismatch. Expected a multiple of 1000 (millisecond granularity)"*), which
-makes it a [row-level failure](#error-handling) and so droppable — measured against the service, not
-inferred. Worth reading before running a dropping policy: a job that multiplies the timestamp
-wrongly produces the violation on *every* record, which is the case that puts the sink into the
-[isolation pass](#error-handling) for the whole stream and costs it its batching.
-
-Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
-`deleteRow` replayed after later writes for the same key would delete those too. That is a property
-of the mutation, not of the sink.
-
-## Retries belong to the client
-
-The client ships retry settings for `MutateRows` — per entry, for the transient codes
-(`UNAVAILABLE`, `DEADLINE_EXCEEDED`, …), with its own exponential backoff — and this sink leaves
-them alone rather than adding a loop around them. That is the opposite of the
-[Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink, whose generated client
-retries `CreateTask` on nothing at all and therefore has to; the difference is in the clients, not
-in a preference. What reaches this writer is a failure the client already gave up on, so it is
-classified and either routed or fatal — never retried again.
-
-## Tuning
-
-Two pairs of knobs, doing different jobs, both on
-[`BigtableWriterOptions`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions).
-
-**Every count among them counts entries, not mutations.** An entry is one `RowMutationEntry` — one
-record the serializer returned — and it carries as many mutations as the serializer put `setCell`
-calls in it, so a job writing ten cells per record puts ten mutations behind each unit these knobs
-count. Bigtable's own documented limit is stated in the other unit: no more than
-[100,000 mutations](https://cloud.google.com/bigtable/quotas) in a batch. **The two never have to be
-reconciled by a job**, because the client enforces the mutation limit itself and unconditionally: it
-flushes the accumulated batch as soon as one more entry would carry it past 100,000 mutations,
-whatever `batchElementCountThreshold` says, and refuses to build a single entry carrying more than
-that on its own. So no setting of these knobs produces an over-limit request, and a test pins both
-facts so that a client upgrade moving either one goes red.
-
-**The batch thresholds** (`batchElementCountThreshold`, `batchRequestByteThreshold`) are handed to
-the client and decide when it sends a batch. Both are unset by default, which leaves the client's
-own values (100 entries, 20 MiB, and a one-second timer) in place — recorded in the reference for
-sizing rather than restated in this project's code, so a client upgrade that retunes them is
-inherited. A batch goes out on whichever of five conditions arrives first: those two, the
-one-second timer, the client's 100,000-mutation guard, and a full writer sending every batcher.
-Any claim of the form
-"setting `batchElementCountThreshold` to *N* makes batches of *N*" has to name the condition that
-*binds*, or it is false — no batch ever holds more than `maxInFlightEntries` entries whatever this
-knob says, because an entry counts as unacknowledged from the moment the batcher accepts it, so
-what a batcher is still accumulating is part of a total the writer stops admitting past.
-
-**The in-flight bounds** (`maxInFlightEntries`, `maxInFlightBytes`) are the writer's own, and they
-are what backpressures the stream: at either cap `write()` yields to the task mailbox until
-completions bring the counters down. Both are needed — an entry may be megabytes, so a count alone
-bounds no memory. Admission is checked as "below the cap", never as "does this entry fit", so an
-entry larger than the byte cap is admitted on an empty writer and overshoots it until it
-completes; that is deliberate, because such a wait ends only when a completion arrives and none can
-with nothing in flight, which would make a fits-predicate a task hang rather than backpressure.
-
-**The client's own flow controller is why raising the bounds has a ceiling.** It permits 20,000
-outstanding entries and 100 MiB of accumulated size, and when either is reached it *blocks* the
-calling thread — which is Flink's task thread, the one that has to stay free to run mailbox mails
-and checkpoint barriers. Its static limits are not settable through the client's public API (only
-latency-based throttling can be turned on and off), so the sink's answer is to keep its own bounds
-below them: the defaults are, and a much larger `maxInFlightEntries` simply moves the effective
-bound into the client, where it stalls instead of backpressuring. This is the same defect class the
-Pub/Sub sink removed its SDK flow-control knobs over
-([#85]({{< param BookRepo >}}/issues/85)).
-
-**It is also where the batch thresholds' ceilings come from — 19,999 entries and 100 MiB − 1
-byte.** The client's settings builder requires each threshold to stay *strictly* below the matching
-flow-control budget and refuses to build a client at all otherwise, so a job configured past either
-one does not get a bigger batch; it dies on the task manager as the writer opens, reported as
-`Failed to create a Bigtable mutation batcher`. Rejecting those values at the setter is what turns
-that into a message at submission ([#436]({{< param BookRepo >}}/issues/436)).
-
-**The in-flight bounds are warned about at the same two figures, not capped.** An
-`maxInFlightEntries` above 20,000 or a `maxInFlightBytes` above 100 MiB still describes a working
-job — what changes is which layer bounds it — so `build()` logs a `WARN` naming the value and the
-cost rather than refusing it. Refusing would be wrong: that budget is per *client*, and this sink
-holds one per (project, instance), so a resolver spreading records over several instances draws on
-several budgets and can legitimately want a writer-global bound above one of them. Nothing at
-`build()` knows how many instances a resolver will name, which is exactly why this one is advice
-and the batch thresholds' ceilings are not.
-
-There are no rate knobs beyond this. Bigtable's throughput is a property of the instance's nodes and
-of how well the row keys spread across tablets; a sink-side rate limit would not change either.
-
-**A sink whose client has stopped answering says so in the log, and nothing else does.** Both waits
-— the admission gate in `write()` and the drain at a checkpoint — emit a `WARN` naming the
-connector, the wait, the in-flight entry count and the number of live tables once a minute has
-passed with no mutation answered, repeating no more than once a minute however many waits the writer
-makes. There is no knob and no sink-side timeout, because the client already has one: it gives up on
-a stalled `MutateRows` at its own 10-minute total timeout (measured: 10 min 1 s against an endpoint
-that accepts and never answers, 9 min 46 s against one that refuses the connection). The warning
-exists because of what happens in those ten minutes — no counter moves, since `numRecordsSend` only
-counts what was sent and a mutation that never answers is never counted as a failure — and because
-of what happens at the end of them: with Flink's defaults
-(`execution.checkpointing.timeout` 10 min, `execution.checkpointing.tolerable-failed-checkpoints`
-0) the checkpoint can expire first, failing the job with a message that names nothing about
-Bigtable. See [#431]({{< param BookRepo >}}/issues/431).
-
-## Error handling
-
-Failures are classified on the task thread — mutation completion callbacks re-dispatch onto Flink's
-mailbox, so the writer's state is touched from one thread only — and routed by class:
-
-| Class | Examples | Behavior |
-|---|---|---|
-| Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy) once confirmed against the one mutation (below); applying the same mutation again could not succeed |
-| Missing table | `NOT_FOUND` — the table or one of its column families does not exist | [Repaired](#table-auto-creation) under `CREATE_IF_NEEDED`; fatal under the default `CREATE_NEVER`, with the disposition named in the failure |
-| Fatal | `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, the two it retries) or a contended or overloaded service it does not retry at all (`ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
-
-The row-level examples are the ones measured against the service, and they are the whole list this
-page will vouch for — see [what the gated suite measures](#testing). Two conditions that read like
-`INVALID_ARGUMENT` candidates are not: an entry carrying more than 100,000 mutations, or more than
-200 MiB of them, is rejected by the **client**, before any RPC, so it arrives as a serialization
-failure rather than as a service rejection (see
-[serializer failures](#failed-mutation-policy) — such a `FailedMutation` carries no entry and no row
-key). The check sits in the mutation list itself, so it covers `deleteCells` and `deleteRow` exactly
-as it covers `setCell`.
-
-The split's purpose is that a *dropping* handler never sees a condition. An outage would otherwise
-bleed the stream one mutation at a time instead of backpressuring it, and a missing column family —
-which fails every record alike — would empty the whole stream into the dead-letter destination under
-a green job. `NOT_FOUND` is checked ahead of everything else in the chain, because acting on it is
-safe where a drop would not be: the [repair](#table-auto-creation) re-applies and never discards,
-and under `CREATE_NEVER` the outcome is a job failure either way.
-
-**A rejection is confirmed against one mutation before it is routed.** Bigtable may reject a whole
-`MutateRows` request rather than the entry that provoked it, and the client then fails every entry of
-that batch with the same status — measured against the service, one bad record written beside a good
-one had **both** futures fail with the same `INVALID_ARGUMENT` and neither row written. Routing on
-that report would hand a dropping handler a whole batch for one bad record.
-
-So a row-level rejection answering a batched request is *parked* rather than routed, and the sink
-runs an **isolation pass**: each parked mutation is re-submitted as the only entry of its own
-request, so the service answers it alone. One that succeeds was collateral damage and is now
-applied; one rejected again is the mutation the service really refused, and only that one reaches
-the handler. The pass runs before every checkpoint completes and again as soon as the next record is
-written, so nothing waits in the park across a checkpoint —
-[`parkedEntries`](#metrics) is what reports its depth.
-
-The cost is a real one and worth planning for: while isolating, the sink spends roughly one request
-per record, so a stream with frequent rejections loses the batching it normally gets. That is the
-price of not discarding the records batched with a bad one
-([#239]({{< param BookRepo >}}/issues/239)).
-
-Under the default `failJob()` policy that cost is bounded by the failure itself — the first
-confirmed rejection fails the job, so the pass isolates one mutation and stops. It is a **dropping**
-policy that pays it, and what ends the pass there is
-[`maxConsecutiveRejections`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions)
-([#361]({{< param BookRepo >}}/issues/361)): a dropping policy is a decision to keep running
-through *anomalous* records, and a stream being refused wholesale is not that — it is broken data
-degraded to one request per record under a green job — so once that many confirmed rejections
-arrive in a row, with not one successfully applied mutation between them, the job fails with a
-message naming the option, the count and the last rejection's status. Every mutation rejected up to
-that point — the tripping one included — was routed to the handler first; what a handler had
-durably delivered by then follows the `FailureHandler` contract's own checkpoint-contingent
-guarantee. Any applied mutation resets the count — an occasional bad record can never accumulate into a
-failure — and only rejections the pass has *confirmed* count: records the serializer rejects say
-nothing about the service's view of the stream. The `-1` sentinel removes the bound for a pipeline
-that really does want to trickle through arbitrarily bad data.
-
-**Only a status that is unrecoverable by definition is routed**, which is why the row-level class is
-`INVALID_ARGUMENT` alone. gRPC defines it as *"problematic regardless of the state of the system"*
-and [AIP-194](https://google.aip.dev/194) lists it as must-not-retry; `FAILED_PRECONDITION`, by the
-same definition, means the system is *not in the required state*, so a mutation rejected with it
-might well be accepted later — dropping it would be data loss, however data-shaped the failures it
-names look.
-
-Routing takes **both halves** of a condition, and each half reads the cause chain differently on
-purpose: no transient status *anywhere* in the chain, so an unstable service cannot produce a dead
-letter even when a data-shaped status sits in front of it; and the chain's *first* classifiable
-status is `INVALID_ARGUMENT`, because one buried under an `INTERNAL` or an `UNKNOWN` describes the
-inner call, and dropping the mutation over it would discard a record on a server-side failure. The
-two mistakes are mirror images, and the classifier's tests pin both.
-
-A failure captured in a completion callback is rethrown on the task thread from the next `write()`
-or `flush()`, and `flush()` waits for every outstanding mutation, so a failure can never slip past a
-checkpoint barrier.
-
-**A failure the sink has already acted on is not reported a second time when the task closes.** The
-client's batcher accumulates every entry failure of its lifetime and re-states all of them as it
-shuts down, which consuming a mutation's own future does not clear — so the sink absorbs that report
-and logs it rather than letting it fail a job the configured policy had deliberately kept running.
-Logging is also all that can be done with a failure that *first* appears during close, carried by a
-batch the shutdown itself sent: Flink stops accepting mailbox work before it closes operators, so
-the completion that would classify and route such a failure can no longer run, and that log line is
-its only record. The mutation itself is covered by at-least-once, since a close with unsent work
-only happens on a path that is already ending the job.
-
-### Failed-mutation policy
-
-Two data-shaped failures are pluggable: a record the serializer rejects, and a row-level rejection.
-A record the serializer *skips* by returning `null` is neither: it is not a failure, so it never
-reaches the handler and is counted by [`recordsSkipped`](#metrics) rather than
-`numRecordsSendErrors`.
-The policy is `failedMutationHandler(...)`, taking the shared `FailureHandler<FailedMutation>` SPI
-from `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
-connectors in this repository):
-
-{{< java-snippet file="BigtableConnectorFailedMutationPolicy.java" tag="bigtable-connector-failed-mutation-policy" >}}
-
-- `FailureHandler.failJob()` (default) — every failed mutation fails the checkpoint
-- `FailureHandler.logAndDrop()` — logs each failed mutation at WARN and drops it
-- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each one to a `DeadLetterQueue`
-  (experimental)
-
-`FailedMutation` carries the destination, the `RowMutationEntry` (`null` when serialization itself
-failed), the row key, and — as the shared contract's payload — the **serialized
-`MutateRowsRequest.Entry`**, so a dead-letter consumer recovers every mutation of the row with
-`MutateRowsRequest.Entry.parseFrom(bytes)` rather than just learning which row it was. Delivery of
-handled elements is at-least-once for failures that recur on replay; the SPI's own page states that
-guarantee in full.
-
-`PubSubDeadLetterQueue`, this repository's one shipped implementation, reports what it published,
-what it still holds and how long its waits take on **this sink's** writer
-group — documented once, with the queue, under
-[Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics).
-
-`PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
-publisher independently of this Bigtable sink's credentials.
-Each sink writer reads the file when it opens the queue, so the path must be readable on every
-TaskManager that can run the sink.
-If the setting is absent, the queue uses application-default credentials.
-The Pub/Sub [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment)
-note covers Kubernetes Secret mounts, session clusters and rotation.
-
-Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) rather
-than the job status when running anything other than `failJob()`: it counts every mutation the
-handler received. A **serializer** bug rejecting every record shows up only as a rate — serializer
-rejections never count toward
-[`maxConsecutiveRejections`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions), since
-they say nothing about the service's view of the stream — where a stream the *service* refuses
-wholesale fails the job at that bound. It counts records rather than batches: a rejection is
-[confirmed against one mutation](#error-handling) before the handler sees it.
 
 ## Source
 
@@ -837,6 +385,381 @@ assumption.
 The decision and the difference from Spanner's heartbeat contract are recorded in
 [ADR-0109]({{< param BookRepo >}}/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md).
 
+## Sink
+
+### API notes
+
+The record-to-mutation step is the whole public surface beyond the builder:
+
+The following signature excerpt omits its package declaration, imports, and Javadocs.
+
+```java
+@Public
+public interface BigtableSerializationSchema<T> extends Serializable {
+    default void open(SerializationSchema.InitializationContext context) throws Exception {}
+
+    @Nullable
+    RowMutationEntry serialize(T element, SinkWriter.Context context) throws IOException;
+}
+```
+
+Returning a `RowMutationEntry` rather than a narrower value type is deliberate: it is the client's
+own mutation builder, so `setCell`, `deleteCells`, `deleteFamily`, `deleteRow` and the aggregate
+`addToCell` and `mergeToCell` are all expressible, several of them per record, and the sink adds no
+vocabulary of its own to learn.
+The two aggregate mutations take a value model the client library has not settled, so a client
+upgrade may move their argument types.
+Returning `null` **skips** the record — it is written nowhere, is not a failure, and never reaches
+the failed-mutation handler — which is how a filter that depends on the mutation being built belongs
+in the serializer rather than upstream of the sink. Every serializer in this connector family reads
+`null` that way. A skip is counted by [`recordsSkipped`](#metrics), the only thing that reports
+it: a serializer skipping every record would otherwise leave an empty table under a green job.
+
+The signature and the null-means-skip convention are shared with the `BaseRowMutationSerializer` of
+[google/flink-connector-gcp](https://github.com/google/flink-connector-gcp), so a
+serializer written against that connector ports by changing the interface name. Its built-in
+`GenericRecord` and `RowData` serializers are deliberately not ported: `RowData` conversion belongs
+to the [Table API layer]({{< relref "docs/connectors/table/bigtable" >}}), which supplies its own,
+and an Avro convenience is additive whenever there is a use case asking for it.
+
+`context` is Flink's write context, so `context.timestamp()` is the record's event time — usually
+the right cell timestamp when the record carries none of its own.
+
+`serviceAccountKeyFile(path)` authenticates every data client and the table auto-creation admin
+with the service-account JSON key at `path`.
+The file is read when each writer starts, so the same path must be readable on every eligible
+TaskManager.
+When the setter is absent, application-default credentials remain in effect, including
+`GOOGLE_APPLICATION_CREDENTIALS`.
+A read or parse failure reports neither the path nor credential material.
+The option is rejected beside `emulatorEndpoint(...)`, whose channel carries no credentials.
+See [Credential file deployment](#credential-file-deployment) before deploying a key file.
+
+`emulatorEndpoint("host:port")` points the sink at a Bigtable emulator over a plaintext channel with
+no credentials, so it must only ever be used against an emulator — never against production
+Bigtable. The setter parses it into the host and port the client's emulator settings take, so a
+malformed value is rejected by that call on the client rather than when the writer builds its client
+on a task manager ([#235]({{< param BookRepo >}}/issues/235)).
+
+### Per-record destinations
+
+`table(...)` writes every record to one table. `destinationResolver(...)` names the table per
+record instead, so one sink writes to many — a table per tenant, a table per day — the same shape
+the BigQuery, Pub/Sub and Cloud Tasks sinks take. The two setters write the same field, so the last
+one wins, and one of them is required.
+
+The following builder excerpt omits the application serializer supplied to `serializer(...)`.
+
+```java
+Sink<OrderEvent> sink =
+        BigtableSink.<OrderEvent>builder()
+                .destinationResolver(
+                        (event, context) ->
+                                TableDestination.of("my-project", "my-instance",
+                                        "orders-" + event.day()))
+                .serializer(...)
+                .build();
+```
+
+The resolver runs once per record, **before** the serializer, so a record the serializer then
+rejects is still reported against the table it was headed for. It must be cheap and deterministic,
+and it should return cached `TableDestination` instances when destinations repeat — a small
+`Map.computeIfAbsent` keyed on the varying part is enough. Returning `null` fails the job: a
+resolver that cannot name a table is a configuration error, not a bad record, so it is never handed
+to the [failed-mutation policy](#failed-mutation-policy).
+
+What a destination costs is a **bulk mutation batcher of its own**, because the client binds one to
+one table. Under those batchers the sink keeps one client per (project, instance), shared by every
+table of that instance, so a resolver spreading records over many tables of one instance multiplies
+batchers rather than channel pools.
+
+A batcher is dropped once its table has gone
+`writerOptions(...).destinationIdleTimeout(...)` without a mutation — one hour by default, swept
+at the end of a checkpoint's flush when the batcher is already empty — and rebuilt transparently
+if that table is written to again.
+The factory releases the client when that sweep removes the instance's last live table; removing
+one of several sibling tables leaves their shared client open.
+
+Each writer subtask also keeps at most
+`writerOptions(...).maxActiveInstances(...)` open-or-closing instance clients — 16 by default.
+When a record names another instance at capacity, the writer sends and waits for all outstanding
+mutations, then evicts the least recently used instance and its table batchers.
+Client close normally runs on daemon reapers, so an idle sweep does not wait for the SDK's final
+metrics export, but the closing client keeps its capacity slot; creation waits interruptibly if
+every slot is still open or closing.
+If the runtime refuses to schedule a reaper task, the factory closes that client synchronously to
+avoid leaking it, so that exceptional sweep can wait for the export before reporting the
+scheduling failure.
+An ordinary scheduling exception is logged as close hygiene; an `Error` still fails the task or
+reaches Flink's JVM-fatal handling.
+A later record for that instance rebuilds its client and batcher transparently.
+This capacity is per subtask, and many tables in one fixed instance still consume one slot.
+So a resolver's *instance cardinality* is bounded even during a burst shorter than the idle
+timeout.
+
+The in-flight bounds are the writer's, summed across every destination rather than split among
+them: `maxInFlightEntries` and `maxInFlightBytes` mean the same thing whether the sink writes one
+table or fifty. What grows with the destination count is one accumulator per live batcher, on top
+of those bounds.
+
+By default the sink never **creates** a table or a column family, so both must exist. Opting into
+[auto-creation](#table-auto-creation) requires declaring the schema, not only permitting the
+creation ([#233]({{< param BookRepo >}}/issues/233)): a Bigtable table's schema is its column
+families and their garbage-collection policies, which is exactly the part a sink cannot guess — and
+unlike a topic, a table created bare would reject every mutation.
+
+**Auto-creation beside a resolver is a different risk profile** from auto-creation of one fixed
+table. One schema serves every table the sink creates — a resolver names tables, not schemas — and
+a resolver that computes a table id from record data can invent one table per record, each an admin
+RPC against an instance-level table limit. Prefer a resolver whose range you can state, and keep
+`CREATE_NEVER` where you cannot.
+
+### Table auto-creation
+
+Off by default. `createDisposition(CREATE_IF_NEEDED)` opts in, and requires
+[`tableCreateOptions(...)`]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) naming at
+least one column family — the disposition says the sink *may* create, the options say *what*, and
+the builder rejects each without the other:
+
+{{< java-snippet file="BigtableConnectorTableAutoCreation.java" tag="bigtable-connector-table-auto-creation" >}}
+
+Creation is **reactive**, the shape the
+[Pub/Sub sink]({{< relref "docs/connectors/datastream/pubsub" >}}#topic-auto-creation) uses: no
+admin client is even constructed unless a mutation actually fails with `NOT_FOUND`. When one does,
+the failed mutations are *parked*, the sink ensures the table and its declared families exist —
+idempotently, so parallel subtasks race safely; a lost race falls through to adding whatever
+families are still missing, in one atomic request, re-reading at most once more per family it
+declares — and then re-applies the parked mutations,
+retrying on a jittered backoff (the
+[`recovery*` knobs]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions): 500 ms
+doubling to 10 s, at most 10 attempts, ±25% jitter so subtasks resuming against the same fresh
+table do not re-apply in lockstep). The repair runs before the next record and inside every
+`flush()`, so a completed checkpoint never leaves a mutation parked; a repair that exhausts its
+budget fails the job with the incident's cause. A creation that itself fails spends attempts from
+the same budget — the admin client retries neither of its RPCs, so this schedule is what stands
+between one transient admin failure and a restart, and it is where an ensure whose declared
+families keep vanishing between the read and the addition ends up as well, rather than in a loop
+whose only symptom would be checkpoints that stop completing. Nothing is ever dropped by the repair — a mutation
+is re-applied or the job fails — which is why `NOT_FOUND` may be acted on even when an outage
+status arrives beside it.
+
+**Creation only, per family.** An existing table is used as it is; the families declared in the
+options that it lacks are added, with their rules, and an existing family's garbage-collection
+rule is neither compared nor updated. The one condition creation cannot repair is a mutation
+naming a family the options do not declare. After ensuring the table, the sink compares a
+missing-family response with the entry and the families the ensure observed; an absent referenced
+family fails immediately with the table and family named instead of spending the remaining
+recovery attempts. A `NOT_FOUND` that does not specifically identify a missing family keeps the
+existing bounded retry behaviour ([#432]({{< param BookRepo >}}/issues/432)).
+
+**The garbage-collection rule is the decision that matters.** This sink is at-least-once: a replay
+whose serializer sets no explicit cell timestamps writes duplicate cell versions, and the family's
+rule is what decides whether those accumulate forever. A family declared without a rule keeps
+Bigtable's default of collecting nothing;
+`GcRule.union(GcRule.maxVersions(1), GcRule.maxAge(...))` is the usual shape for keeping only the
+latest cell. The [reference]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) lists the
+four rule shapes.
+
+Under the default `CREATE_NEVER` a `NOT_FOUND` stays **fatal** — a missing table fails every
+record alike, so it must never reach a handler that may drop records — and the failure names the
+disposition, so the reader meeting it learns the knob that changes it. Auto-creation needs the
+`bigtable.tables.create` and `bigtable.tables.update` permissions (`roles/bigtable.admin` carries
+both) on top of the data-plane role; a job whose table exists never exercises them.
+
+Two caveats. The repair happens inside `write()`/`flush()`, so an incident's backoff extends
+checkpoint duration by up to the recovery budget — about a minute at the defaults. And the sink
+creates tables, never instances — provisioning an instance is capacity planning, not schema — so a
+job pointed at a missing instance fails when the repair's own creation is refused.
+
+### Retries belong to the client
+
+The client ships retry settings for `MutateRows` — per entry, for the transient codes
+(`UNAVAILABLE`, `DEADLINE_EXCEEDED`, …), with its own exponential backoff — and this sink leaves
+them alone rather than adding a loop around them. That is the opposite of the
+[Cloud Tasks]({{< relref "docs/connectors/datastream/cloudtasks" >}}) sink, whose generated client
+retries `CreateTask` on nothing at all and therefore has to; the difference is in the clients, not
+in a preference. What reaches this writer is a failure the client already gave up on, so it is
+classified and either routed or fatal — never retried again.
+
+## Delivery guarantees and state
+
+See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
+for the Table and DataStream API comparison.
+
+**At-least-once.** The writer is stateless — it stores nothing in Flink state — and `flush()` runs
+at every checkpoint barrier: it sends what the client has buffered and then waits until every
+outstanding mutation has been acknowledged. So a completed checkpoint means Bigtable has applied
+every record up to the barrier — other than those the [serializer skipped](#api-notes), which are
+written nowhere by design — and discarding operator state can never lose sink-buffered records.
+
+That guarantee assumes the default `FailureHandler.failJob()` policy. Under `logAndDrop()` or
+`sendToDeadLetterQueue(...)` a completed checkpoint means every record up to the barrier was either
+applied, [skipped by the serializer](#api-notes), or handed to the
+[failed-mutation policy](#failed-mutation-policy), which says which failures reach it.
+
+Checkpointing must be enabled in a streaming job. Without it `flush()` never runs mid-stream and
+outstanding mutations are lost on a failure; batch execution is covered by the end-of-input flush.
+
+**Whether a replay is idempotent is the serializer's decision.** After a restart the records since
+the last checkpoint are written again, and:
+
+- a `setCell` carrying an **explicit** timestamp overwrites the same cell — the second write is
+  invisible, and the sink is effectively exactly-once for that column;
+- a `setCell` **without** one takes the server's clock, so the replay writes another version of the
+  cell, and the table's garbage-collection policy (`maxVersions`, `maxAge`) decides how long both
+  survive.
+
+Neither is wrong, but only one of them is a choice made on purpose. Setting the timestamp from the
+record — its event time, an updated-at column, `context.timestamp()` — is what makes a replay a
+no-op. Note that a cell timestamp is in microseconds but a table's granularity is milliseconds, so
+the value must be a multiple of 1000 — `context.timestamp()`, which is in milliseconds, has to be
+multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
+(*"Timestamp granularity mismatch. Expected a multiple of 1000 (millisecond granularity)"*), which
+makes it a [row-level failure](#error-handling) and so droppable — measured against the service, not
+inferred. Worth reading before running a dropping policy: a job that multiplies the timestamp
+wrongly produces the violation on *every* record, which is the case that puts the sink into the
+[isolation pass](#error-handling) for the whole stream and costs it its batching.
+
+Deletes replay the same way and are naturally idempotent, with one caveat worth stating: a
+`deleteRow` replayed after later writes for the same key would delete those too. That is a property
+of the mutation, not of the sink.
+
+## Error handling
+
+Failures are classified on the task thread — mutation completion callbacks re-dispatch onto Flink's
+mailbox, so the writer's state is touched from one thread only — and routed by class:
+
+| Class | Examples | Behavior |
+|---|---|---|
+| Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy) once confirmed against the one mutation (below); applying the same mutation again could not succeed |
+| Missing table | `NOT_FOUND` — the table or one of its column families does not exist | [Repaired](#table-auto-creation) under `CREATE_IF_NEEDED`; fatal under the default `CREATE_NEVER`, with the disposition named in the failure |
+| Fatal | `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, the two it retries) or a contended or overloaded service it does not retry at all (`ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
+
+The row-level examples are the ones measured against the service, and they are the whole list this
+page will vouch for — see [what the gated suite measures](#testing). Two conditions that read like
+`INVALID_ARGUMENT` candidates are not: an entry carrying more than 100,000 mutations, or more than
+200 MiB of them, is rejected by the **client**, before any RPC, so it arrives as a serialization
+failure rather than as a service rejection (see
+[serializer failures](#failed-mutation-policy) — such a `FailedMutation` carries no entry and no row
+key). The check sits in the mutation list itself, so it covers `deleteCells` and `deleteRow` exactly
+as it covers `setCell`.
+
+The split's purpose is that a *dropping* handler never sees a condition. An outage would otherwise
+bleed the stream one mutation at a time instead of backpressuring it, and a missing column family —
+which fails every record alike — would empty the whole stream into the dead-letter destination under
+a green job. `NOT_FOUND` is checked ahead of everything else in the chain, because acting on it is
+safe where a drop would not be: the [repair](#table-auto-creation) re-applies and never discards,
+and under `CREATE_NEVER` the outcome is a job failure either way.
+
+**A rejection is confirmed against one mutation before it is routed.** Bigtable may reject a whole
+`MutateRows` request rather than the entry that provoked it, and the client then fails every entry of
+that batch with the same status — measured against the service, one bad record written beside a good
+one had **both** futures fail with the same `INVALID_ARGUMENT` and neither row written. Routing on
+that report would hand a dropping handler a whole batch for one bad record.
+
+So a row-level rejection answering a batched request is *parked* rather than routed, and the sink
+runs an **isolation pass**: each parked mutation is re-submitted as the only entry of its own
+request, so the service answers it alone. One that succeeds was collateral damage and is now
+applied; one rejected again is the mutation the service really refused, and only that one reaches
+the handler. The pass runs before every checkpoint completes and again as soon as the next record is
+written, so nothing waits in the park across a checkpoint —
+[`parkedEntries`](#metrics) is what reports its depth.
+
+The cost is a real one and worth planning for: while isolating, the sink spends roughly one request
+per record, so a stream with frequent rejections loses the batching it normally gets. That is the
+price of not discarding the records batched with a bad one
+([#239]({{< param BookRepo >}}/issues/239)).
+
+Under the default `failJob()` policy that cost is bounded by the failure itself — the first
+confirmed rejection fails the job, so the pass isolates one mutation and stops. It is a **dropping**
+policy that pays it, and what ends the pass there is
+[`maxConsecutiveRejections`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions)
+([#361]({{< param BookRepo >}}/issues/361)): a dropping policy is a decision to keep running
+through *anomalous* records, and a stream being refused wholesale is not that — it is broken data
+degraded to one request per record under a green job — so once that many confirmed rejections
+arrive in a row, with not one successfully applied mutation between them, the job fails with a
+message naming the option, the count and the last rejection's status. Every mutation rejected up to
+that point — the tripping one included — was routed to the handler first; what a handler had
+durably delivered by then follows the `FailureHandler` contract's own checkpoint-contingent
+guarantee. Any applied mutation resets the count — an occasional bad record can never accumulate into a
+failure — and only rejections the pass has *confirmed* count: records the serializer rejects say
+nothing about the service's view of the stream. The `-1` sentinel removes the bound for a pipeline
+that really does want to trickle through arbitrarily bad data.
+
+**Only a status that is unrecoverable by definition is routed**, which is why the row-level class is
+`INVALID_ARGUMENT` alone. gRPC defines it as *"problematic regardless of the state of the system"*
+and [AIP-194](https://google.aip.dev/194) lists it as must-not-retry; `FAILED_PRECONDITION`, by the
+same definition, means the system is *not in the required state*, so a mutation rejected with it
+might well be accepted later — dropping it would be data loss, however data-shaped the failures it
+names look.
+
+Routing takes **both halves** of a condition, and each half reads the cause chain differently on
+purpose: no transient status *anywhere* in the chain, so an unstable service cannot produce a dead
+letter even when a data-shaped status sits in front of it; and the chain's *first* classifiable
+status is `INVALID_ARGUMENT`, because one buried under an `INTERNAL` or an `UNKNOWN` describes the
+inner call, and dropping the mutation over it would discard a record on a server-side failure. The
+two mistakes are mirror images, and the classifier's tests pin both.
+
+A failure captured in a completion callback is rethrown on the task thread from the next `write()`
+or `flush()`, and `flush()` waits for every outstanding mutation, so a failure can never slip past a
+checkpoint barrier.
+
+**A failure the sink has already acted on is not reported a second time when the task closes.** The
+client's batcher accumulates every entry failure of its lifetime and re-states all of them as it
+shuts down, which consuming a mutation's own future does not clear — so the sink absorbs that report
+and logs it rather than letting it fail a job the configured policy had deliberately kept running.
+Logging is also all that can be done with a failure that *first* appears during close, carried by a
+batch the shutdown itself sent: Flink stops accepting mailbox work before it closes operators, so
+the completion that would classify and route such a failure can no longer run, and that log line is
+its only record. The mutation itself is covered by at-least-once, since a close with unsent work
+only happens on a path that is already ending the job.
+
+### Failed-mutation policy
+
+Two data-shaped failures are pluggable: a record the serializer rejects, and a row-level rejection.
+A record the serializer *skips* by returning `null` is neither: it is not a failure, so it never
+reaches the handler and is counted by [`recordsSkipped`](#metrics) rather than
+`numRecordsSendErrors`.
+The policy is `failedMutationHandler(...)`, taking the shared `FailureHandler<FailedMutation>` SPI
+from `flink-connector-gcp-base` ([#37]({{< param BookRepo >}}/issues/37) standardizes it across the
+connectors in this repository):
+
+{{< java-snippet file="BigtableConnectorFailedMutationPolicy.java" tag="bigtable-connector-failed-mutation-policy" >}}
+
+- `FailureHandler.failJob()` (default) — every failed mutation fails the checkpoint
+- `FailureHandler.logAndDrop()` — logs each failed mutation at WARN and drops it
+- `FailureHandler.sendToDeadLetterQueue(...)` — forwards each one to a `DeadLetterQueue`
+  (experimental)
+
+`FailedMutation` carries the destination, the `RowMutationEntry` (`null` when serialization itself
+failed), the row key, and — as the shared contract's payload — the **serialized
+`MutateRowsRequest.Entry`**, so a dead-letter consumer recovers every mutation of the row with
+`MutateRowsRequest.Entry.parseFrom(bytes)` rather than just learning which row it was. Delivery of
+handled elements is at-least-once for failures that recur on replay; the SPI's own page states that
+guarantee in full.
+
+`PubSubDeadLetterQueue`, this repository's one shipped implementation, reports what it published,
+what it still holds and how long its waits take on **this sink's** writer
+group — documented once, with the queue, under
+[Dead-letter metrics]({{< relref "docs/connectors/datastream/pubsub" >}}#dead-letter-metrics).
+
+`PubSubDeadLetterQueue.builder().serviceAccountKeyFile(path)` selects credentials for the dead-letter
+publisher independently of this Bigtable sink's credentials.
+Each sink writer reads the file when it opens the queue, so the path must be readable on every
+TaskManager that can run the sink.
+If the setting is absent, the queue uses application-default credentials.
+The Pub/Sub [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment)
+note covers Kubernetes Secret mounts, session clusters and rotation.
+
+Watch [`numRecordsSendErrors`]({{< relref "docs/connectors/datastream/bigtable" >}}#metrics) rather
+than the job status when running anything other than `failJob()`: it counts every mutation the
+handler received. A **serializer** bug rejecting every record shows up only as a rate — serializer
+rejections never count toward
+[`maxConsecutiveRejections`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions), since
+they say nothing about the service's view of the stream — where a stream the *service* refuses
+wholesale fails the job at that bound. It counts records rather than batches: a rejection is
+[confirmed against one mutation](#error-handling) before the handler sees it.
+
 ## Metrics
 
 Registered on the sink writer's metric group, one set per subtask:
@@ -971,13 +894,84 @@ The counters follow Beam's initial-partition, split, merge, reconciliation, hear
 Flink keeps the partition ledger in checkpoint state, so Beam's orphaned metadata-table counter has no counterpart.
 Flink's `currentEmitEventTimeLag` describes the latest emitted record rather than Beam's lifetime processing-delay distribution, and the connector does not duplicate Flink's `numRecordsIn`, `watermarkLag`, split `currentWatermark`, or `sourceIdleTime` metrics.
 
-## Scope
+## Tuning
 
-Not implemented, with the reason rather than a promise:
+Two pairs of knobs, doing different jobs, both on
+[`BigtableWriterOptions`]({{< relref "docs/reference/bigtable" >}}#bigtablewriteroptions).
 
-- conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
-  request-response primitives rather than a write path a sink batches: each is one RPC whose result
-  the caller is expected to read, and neither participates in `MutateRows`.
+**Every count among them counts entries, not mutations.** An entry is one `RowMutationEntry` — one
+record the serializer returned — and it carries as many mutations as the serializer put `setCell`
+calls in it, so a job writing ten cells per record puts ten mutations behind each unit these knobs
+count. Bigtable's own documented limit is stated in the other unit: no more than
+[100,000 mutations](https://cloud.google.com/bigtable/quotas) in a batch. **The two never have to be
+reconciled by a job**, because the client enforces the mutation limit itself and unconditionally: it
+flushes the accumulated batch as soon as one more entry would carry it past 100,000 mutations,
+whatever `batchElementCountThreshold` says, and refuses to build a single entry carrying more than
+that on its own. So no setting of these knobs produces an over-limit request, and a test pins both
+facts so that a client upgrade moving either one goes red.
+
+**The batch thresholds** (`batchElementCountThreshold`, `batchRequestByteThreshold`) are handed to
+the client and decide when it sends a batch. Both are unset by default, which leaves the client's
+own values (100 entries, 20 MiB, and a one-second timer) in place — recorded in the reference for
+sizing rather than restated in this project's code, so a client upgrade that retunes them is
+inherited. A batch goes out on whichever of five conditions arrives first: those two, the
+one-second timer, the client's 100,000-mutation guard, and a full writer sending every batcher.
+Any claim of the form
+"setting `batchElementCountThreshold` to *N* makes batches of *N*" has to name the condition that
+*binds*, or it is false — no batch ever holds more than `maxInFlightEntries` entries whatever this
+knob says, because an entry counts as unacknowledged from the moment the batcher accepts it, so
+what a batcher is still accumulating is part of a total the writer stops admitting past.
+
+**The in-flight bounds** (`maxInFlightEntries`, `maxInFlightBytes`) are the writer's own, and they
+are what backpressures the stream: at either cap `write()` yields to the task mailbox until
+completions bring the counters down. Both are needed — an entry may be megabytes, so a count alone
+bounds no memory. Admission is checked as "below the cap", never as "does this entry fit", so an
+entry larger than the byte cap is admitted on an empty writer and overshoots it until it
+completes; that is deliberate, because such a wait ends only when a completion arrives and none can
+with nothing in flight, which would make a fits-predicate a task hang rather than backpressure.
+
+**The client's own flow controller is why raising the bounds has a ceiling.** It permits 20,000
+outstanding entries and 100 MiB of accumulated size, and when either is reached it *blocks* the
+calling thread — which is Flink's task thread, the one that has to stay free to run mailbox mails
+and checkpoint barriers. Its static limits are not settable through the client's public API (only
+latency-based throttling can be turned on and off), so the sink's answer is to keep its own bounds
+below them: the defaults are, and a much larger `maxInFlightEntries` simply moves the effective
+bound into the client, where it stalls instead of backpressuring. This is the same defect class the
+Pub/Sub sink removed its SDK flow-control knobs over
+([#85]({{< param BookRepo >}}/issues/85)).
+
+**It is also where the batch thresholds' ceilings come from — 19,999 entries and 100 MiB − 1
+byte.** The client's settings builder requires each threshold to stay *strictly* below the matching
+flow-control budget and refuses to build a client at all otherwise, so a job configured past either
+one does not get a bigger batch; it dies on the task manager as the writer opens, reported as
+`Failed to create a Bigtable mutation batcher`. Rejecting those values at the setter is what turns
+that into a message at submission ([#436]({{< param BookRepo >}}/issues/436)).
+
+**The in-flight bounds are warned about at the same two figures, not capped.** An
+`maxInFlightEntries` above 20,000 or a `maxInFlightBytes` above 100 MiB still describes a working
+job — what changes is which layer bounds it — so `build()` logs a `WARN` naming the value and the
+cost rather than refusing it. Refusing would be wrong: that budget is per *client*, and this sink
+holds one per (project, instance), so a resolver spreading records over several instances draws on
+several budgets and can legitimately want a writer-global bound above one of them. Nothing at
+`build()` knows how many instances a resolver will name, which is exactly why this one is advice
+and the batch thresholds' ceilings are not.
+
+There are no rate knobs beyond this. Bigtable's throughput is a property of the instance's nodes and
+of how well the row keys spread across tablets; a sink-side rate limit would not change either.
+
+**A sink whose client has stopped answering says so in the log, and nothing else does.** Both waits
+— the admission gate in `write()` and the drain at a checkpoint — emit a `WARN` naming the
+connector, the wait, the in-flight entry count and the number of live tables once a minute has
+passed with no mutation answered, repeating no more than once a minute however many waits the writer
+makes. There is no knob and no sink-side timeout, because the client already has one: it gives up on
+a stalled `MutateRows` at its own 10-minute total timeout (measured: 10 min 1 s against an endpoint
+that accepts and never answers, 9 min 46 s against one that refuses the connection). The warning
+exists because of what happens in those ten minutes — no counter moves, since `numRecordsSend` only
+counts what was sent and a mutation that never answers is never counted as a failure — and because
+of what happens at the end of them: with Flink's defaults
+(`execution.checkpointing.timeout` 10 min, `execution.checkpointing.tolerable-failed-checkpoints`
+0) the checkpoint can expire first, failing the job with a message that names nothing about
+Bigtable. See [#431]({{< param BookRepo >}}/issues/431).
 
 ## Testing
 
@@ -1103,6 +1097,14 @@ The first row is why **split planning is never an emulator test**: every plan bu
 emulator is effectively one split, so an emulator suite could not tell a working planner from one
 that loses the tail of a table. The third is why a configured `appProfileId` is covered only by the
 gated suite.
+
+## Scope
+
+Not implemented, with the reason rather than a promise:
+
+- conditional and read-modify-write mutations (`checkAndMutateRow`, `readModifyWriteRow`). These are
+  request-response primitives rather than a write path a sink batches: each is one RPC whose result
+  the caller is expected to read, and neither participates in `MutateRows`.
 
 ## Provenance and attribution
 

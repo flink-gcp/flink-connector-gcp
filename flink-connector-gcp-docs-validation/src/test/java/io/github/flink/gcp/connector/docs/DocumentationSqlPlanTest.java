@@ -237,6 +237,18 @@ public class DocumentationSqlPlanTest {
                         "Bigtable batch upsert",
                         snippet("flink/BigtableExamples.sql", "batch-upsert")),
                 scenario(
+                        "Bigtable insert-only sink",
+                        snippet("flink/BigtableExamples.sql", "insert-only-sink")),
+                scenario(
+                        "Bigtable writable cell timestamp",
+                        snippet("flink/BigtableExamples.sql", "cell-timestamp-sink")),
+                scenario(
+                        "Pub/Sub event to Bigtable attributes to Cloud Tasks",
+                        snippet("flink/BigtableExamples.sql", "attribute-enrichment-pipeline")),
+                scenario(
+                        "Bigtable selected cell to BigQuery CDC",
+                        snippet("flink/BigtableExamples.sql", "selected-cell-bigquery-cdc")),
+                scenario(
                         "Cloud Tasks nested JSON request",
                         snippet("flink/CloudTasksExamples.sql", "nested-json")),
                 scenario("Cloud Tasks CSV request", snippet("flink/CloudTasksExamples.sql", "csv")),
