@@ -73,5 +73,9 @@ for exactly the reasons the two jobs above give. The full option surface is on t
 
 ## Next
 
-[Cloud Pub/Sub examples]({{< relref "docs/examples/pubsub" >}}) — a topic per record, topic and
-subscription auto-creation, and running the whole thing against the emulator.
+Continue with the Pub/Sub examples by direction: [DataStream source]({{< relref
+"docs/examples/pubsub" >}}#datastream-source), [DataStream sink]({{< relref
+"docs/examples/pubsub" >}}#datastream-sink), [Table source]({{< relref
+"docs/examples/pubsub" >}}#table-source), [Table sink]({{< relref
+"docs/examples/pubsub" >}}#table-sink), or [local development]({{< relref
+"docs/examples/pubsub" >}}#running-against-the-emulator).

@@ -400,14 +400,8 @@ public class DocumentationSqlPlanTest {
                                 "orders",
                                 "doesn't support consuming update changes")),
                 scenario(
-                        "Pub/Sub table reference source",
-                        snippet("flink/PubSubTableReference.sql", "source-overview")),
-                scenario(
-                        "Pub/Sub table reference resource-name expressions",
-                        setup(
-                                "CREATE TEMPORARY VIEW subscription_rows AS "
-                                        + "SELECT 'projects/my-project/subscriptions/orders-sub' "
-                                        + "AS subscription"),
+                        "Pub/Sub table reference source and resource-name expressions",
+                        snippet("flink/PubSubTableReference.sql", "source-overview"),
                         fragment(
                                 "flink/PubSubTableReference.sql",
                                 "subscription-resource-spellings",
@@ -559,7 +553,7 @@ public class DocumentationSqlPlanTest {
                             String expression = comment < 0 ? line : line.substring(0, comment);
                             return "SELECT "
                                     + expression.stripTrailing()
-                                    + " FROM subscription_rows;";
+                                    + " FROM incoming_orders;";
                         })
                 .collect(Collectors.joining("\n"));
     }

@@ -33,10 +33,6 @@ the option keys below are declared by `PubSubConnectorOptions` — `format`, `si
 both it and the DataStream types the options map onto are in the
 [Java API reference]({{< param ApiDocsURL >}}).
 
-{{< sql-snippet file="flink/PubSubTableReference.sql" tag="sink-overview" >}}
-
-{{< sql-snippet file="flink/PubSubTableReference.sql" tag="source-overview" >}}
-
 ## Getting the connector onto the classpath
 
 Use `flink-sql-connector-gcp-pubsub`, an uber-jar built for exactly this: put it in Flink's `lib/`
@@ -93,19 +89,24 @@ bare templates, and the copyright holder is part of a BSD or MIT text.
 A Pub/Sub message is a payload plus attributes and an ordering key. The payload is what `format`
 encodes, from the table's physical columns; everything else is a metadata column.
 
-Metadata columns are appended after the physical columns, so the format never sees them — a `json`
-table with the DDL above publishes `{"order_id":"...","amount":...}` and carries `attrs` and `okey`
-outside the payload.
+Metadata columns are appended after the physical columns, so the format never sees them.
+The directional sections below keep the metadata fields beside the source or sink that uses them.
 
-### Writable
+## Source
 
-| Metadata key | Type | Notes |
-|---|---|---|
-| `attributes` | `MAP<STRING, STRING>` | A null column adds no attributes. A null key or a null value in the map **fails the write**: Pub/Sub attributes can represent neither, and dropping the entry would be data loss the query cannot see. Filter such entries out first |
-| `ordering-key` | `STRING` | A null or empty value sets no key. Requires `sink.message-ordering.enabled` = `true`, and see the ordering caveat below |
+The concise DDL-to-builder map remains in the [source option inventory](#source-options).
 
-Writable metadata is not forwarded to the format. No built-in format ships any, and the Kafka
-connector does not forward either.
+The source table exposes Pub/Sub message fields as readable metadata and assigns event time from the
+service publish time:
+
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="source-overview" >}}
+
+The query is unbounded and emits one result for each completed event-time window.
+The DDL selects per-key ordering explicitly; the startup example below is separate because changing
+a subscription's position mutates shared service state.
+Per-key ordering requires `orders-sub` to be created with message ordering enabled.
+With this one-subscription DDL it creates one split, so source parallelism above one adds no
+consuming capacity; [Ordering and parallelism](#ordering-and-parallelism) explains the boundary.
 
 ### Readable
 
@@ -144,143 +145,6 @@ The subscription is on neither the message nor anything the SDK hands the connec
 through `Subscriber`, whose receiver callback delivers a message and an ack handle and never
 surfaces the streaming-pull response. So it is threaded through
 `PubSubDeserializationSchema.deserialize`, which is why that SPI takes a `SubscriptionDestination`.
-
-## Options
-
-`project` and `format` are always required; `topic` is required to write. The destination is not
-declared as a required option because one factory serves both directions, and a table that is only
-read from must not be forced to name a topic.
-
-Topic names are bare names resolved against `project`, never resource paths — `'topic' = 'orders'`,
-not `'topic' = 'projects/my-project/topics/orders'`.
-
-### Shared
-
-| Option | Type | Maps to |
-|---|---|---|
-| `project` | String, required | the project component of `TopicDestination.of(...)` / `SubscriptionDestination.of(...)` |
-| `format` | String, required | format factory discovery, encoding or decoding as the direction needs |
-| `service-account-key-file` | String | `serviceAccountKeyFile(...)`, a service-account JSON key-file path read when each writer, reader or enumerator starts |
-| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client in either direction. The rejection names `emulator-endpoint`, the key written in the DDL |
-
-When `service-account-key-file` is absent, the connector uses application-default credentials.
-That default already honors `GOOGLE_APPLICATION_CREDENTIALS`; set this option only when the job must select an explicit service-account JSON key path independently of its process environment.
-The source reads the file on the JobManager for subscription administration and on each TaskManager that creates a reader, while the sink reads it on each TaskManager that creates a writer.
-The same path must therefore be readable in every eligible process.
-Each writer, reader or enumerator loads the file once and shares the resulting provider among the Pub/Sub clients it creates.
-A read or parse failure reports neither the path nor credential material.
-The DataStream page's [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) note covers Kubernetes Secret mounts, session clusters and key rotation for both APIs.
-
-Service-account keys are long-lived secrets, so prefer an attached service account or Workload Identity where the deployment supports one.
-Raw JSON, Base64-encoded JSON, access tokens, and custom credential-provider classes are not accepted by this option.
-`service-account-key-file` and `emulator-endpoint` are mutually exclusive because the emulator channel deliberately uses no credentials.
-
-### Sink
-
-Every option maps onto one setter of `PubSubSinkBuilder`, `PubSubPublisherOptions.Builder` or
-`TopicCreateOptions.Builder`, named in the last column. An option left out of the DDL leaves that
-setter uncalled, so its default is whatever the connector or the SDK already uses — the default is
-never restated here, and there is no third state between "configured" and "default".
-
-The `sink.auto-create.*` options configure the topic that `sink.create-disposition` =
-`create-if-needed` (the default) creates — they are additive settings, not an authorization, and
-setting any of them alongside an explicit `create-never` is rejected.
-`sink.auto-create.storage-policy.enforce-in-transit` requires
-`sink.auto-create.storage-policy.allowed-regions`.
-
-| Option | Type | Maps to |
-|---|---|---|
-| `topic` | String, required to write | `topic(...)` |
-| `sink.create-disposition` | `create-if-needed` \| `create-never` | `createDisposition` |
-| `sink.auto-create.message-retention` | Duration | `TopicCreateOptions` `messageRetention` |
-| `sink.auto-create.kms-key-name` | String | `TopicCreateOptions` `kmsKeyName` |
-| `sink.auto-create.storage-policy.allowed-regions` | String list | `TopicCreateOptions` `allowedPersistenceRegions` |
-| `sink.auto-create.storage-policy.enforce-in-transit` | Boolean | `TopicCreateOptions` `enforceInTransit` |
-| `sink.batching.element-count-threshold` | Long | `batchElementCountThreshold` |
-| `sink.batching.request-byte-threshold` | MemorySize | `batchRequestByteThreshold` |
-| `sink.batching.delay-threshold` | Duration | `batchDelayThreshold` |
-| `sink.retry.total-timeout` | Duration | `retryTotalTimeout` |
-| `sink.retry.initial-delay` | Duration | `retryInitialDelay` |
-| `sink.retry.delay-multiplier` | Double | `retryDelayMultiplier` |
-| `sink.retry.max-delay` | Duration | `retryMaxDelay` |
-| `sink.retry.initial-rpc-timeout` | Duration | `retryInitialRpcTimeout` |
-| `sink.retry.rpc-timeout-multiplier` | Double | `retryRpcTimeoutMultiplier` |
-| `sink.retry.max-rpc-timeout` | Duration | `retryMaxRpcTimeout` |
-| `sink.retry.max-attempts` | Integer | `retryMaxAttempts` |
-| `sink.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
-| `sink.in-flight.max-messages` | Integer | `maxInFlightMessages` |
-| `sink.in-flight.max-bytes` | MemorySize | `maxInFlightBytes` |
-| `sink.max-consecutive-rejections` | Integer | `maxConsecutiveRejections` |
-| `sink.publish-progress-timeout` | Duration | `publishProgressTimeout` |
-| `sink.recovery.initial-backoff` | Duration | `recoveryInitialBackoff` |
-| `sink.recovery.max-backoff` | Duration | `recoveryMaxBackoff` |
-| `sink.recovery.max-attempts` | Integer | `recoveryMaxAttempts` |
-| `sink.shutdown-timeout` | Duration | `shutdownTimeout` |
-| `sink.max-active-publishers` | Integer | `maxActivePublishers` |
-| `sink.destination-idle-timeout` | Duration | `destinationIdleTimeout` |
-| `sink.metrics.per-destination` | Boolean | `perDestinationMetrics` |
-| `sink.parallelism` | Integer | the sink operator's parallelism |
-
-`sink.retry.total-timeout` and `sink.retry.max-attempts` are **rejected** together with
-`sink.message-ordering.enabled` = `true`, because an ordering-enabled publisher retries without
-limit: neither an attempt cap nor a total timeout can bound a publish there. The `CREATE TABLE`
-itself succeeds — the check runs when the table is used as a sink, so the failure lands at plan
-time, before any record is published. The six other `sink.retry.*` keys are unaffected. See
-[`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
-
-### Source
-
-Every option maps onto one setter of `PubSubSourceBuilder` or `PubSubSubscriberOptions.Builder`,
-under the same "absent means default" rule as the sink.
-
-| Option | Type | Maps to |
-|---|---|---|
-| `subscription` | String list, `;`-separated, required to read | `subscriptions(...)` |
-| `scan.ordering-mode` | `none` \| `per-key` | `orderingMode` |
-| `scan.deserialization-failure-policy` | `fail` \| `drop` \| `nack` | `deserializationFailurePolicy` |
-| `scan.flow-control.max-outstanding-element-count` | Long | `flowControlMaxOutstandingElementCount` |
-| `scan.flow-control.max-outstanding-request-bytes` | MemorySize | `flowControlMaxOutstandingRequestBytes` |
-| `scan.subscriber-buffer.max-messages` | Long | `subscriberBufferMaxMessages` |
-| `scan.subscriber-buffer.max-bytes` | MemorySize | `subscriberBufferMaxBytes` |
-| `scan.paused-split-buffer.max-messages` | Long | `pausedSplitBufferMaxMessages` |
-| `scan.paused-split-buffer.max-bytes` | MemorySize | `pausedSplitBufferMaxBytes` |
-| `scan.parallel-pull-count` | Integer | `parallelPullCount` |
-| `scan.ack.max-extension-period` | Duration | `maxAckExtensionPeriod` |
-| `scan.ack.min-duration-per-extension` | Duration | `minDurationPerAckExtension` |
-| `scan.ack.max-duration-per-extension` | Duration | `maxDurationPerAckExtension` |
-| `scan.ack.await-confirmation` | Duration | `awaitAckConfirmation` |
-| `scan.shutdown-timeout` | Duration | `shutdownTimeout` |
-| `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch` |
-| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
-| `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `PubSubStartPosition.of(mode, ...)` |
-| `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `PubSubStartPosition.of(...)` |
-| `scan.auto-create.topics` | Map<String, String> | each subscription key maps to its `topic(...)` — see [Subscription auto-creation](#subscription-auto-creation-maps-every-subscription-to-its-topic) for both accepted syntaxes |
-| `scan.auto-create.ack-deadline` | Duration | `ackDeadline` |
-| `scan.auto-create.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
-| `scan.auto-create.message-retention` | Duration | `messageRetention` |
-| `scan.auto-create.retain-acked-messages` | Boolean | `retainAckedMessages` |
-| `scan.auto-create.expiration-ttl` | Duration | `expirationTtl` |
-| `scan.auto-create.never-expire` | Boolean | `neverExpire()` |
-| `scan.auto-create.dead-letter.topic` | String | `deadLetterPolicy(...)`, first argument |
-| `scan.auto-create.dead-letter.max-delivery-attempts` | Integer | `deadLetterPolicy(...)`, second argument |
-| `scan.auto-create.filter` | String | `filter` |
-| `scan.parallelism` | Integer | the source operator's parallelism |
-
-`scan.parallel-pull-count` and `scan.parallelism` are unrelated despite the names: the first is how
-many gRPC streaming-pull connections one subscriber opens, the second is the Flink operator's
-parallelism. So are `scan.flow-control.*` and the sink's `sink.in-flight.*` — the sink's are the
-writer's own caps, because gax flow control could never be the byte bound an ordered sink needs
-([#85]({{< param BookRepo >}}/issues/85)).
-
-Several subscriptions are separated by `;` — `'subscription' = 'orders-sub;refunds-sub'` — and are
-resolved against `project`, so a subscription in **another project cannot be named**;
-`SubscriptionDestination` takes its components separately and parses no path.
-
-Combinations the source itself refuses are not re-checked here: `scan.ordering-mode` = `per-key`
-with `scan.parallel-pull-count` above 1, or a repeated subscription, both fail with the message the
-DataStream builder already produces.
-
-Byte-valued options are written the Flink way — `'sink.in-flight.max-bytes' = '64 mb'`.
 
 ### A start position seeks, and a seek is not local to your job
 
@@ -373,23 +237,43 @@ Both topic names are bare names resolved against `project`, like `topic` on the 
 Creation is idempotent — `ALREADY_EXISTS` counts as success, so two jobs racing to create the same
 subscription need no coordination. `enableExactlyOnceDelivery` is deliberately not offered: the
 startup check rejects such a subscription, so the option would only let you create one the source
-then refuses. Note that a subscription retains nothing published **before** it existed, so a table
-that auto-creates one starts from an empty backlog whatever the topic already held.
+then refuses. By default, a newly created subscription has no backlog from before its creation.
+When the topic has topic-level message retention, however, `scan.startup.mode` =
+`earliest-retained` or a retained `timestamp` can seek it back to messages published before it
+existed.
 
-## Delivery guarantees
+### Ordering and parallelism
 
-At-least-once in both directions, unchanged from the DataStream connectors. The sink publishes
-asynchronously and flushes at each checkpoint, so a failover republishes whatever the last completed
-checkpoint did not cover.
+`scan.ordering-mode = per-key` requires subscriptions created with message ordering enabled and
+preserves emission order separately for each ordering key within each subscription.
+It creates one split per subscription and assigns that subscription to one reader subtask, so
+source parallelism above the subscription count adds no consuming capacity.
+The `none` mode can create several splits for one subscription and favors throughput instead.
 
-**A source table needs checkpointing enabled.** Messages are acknowledged when a checkpoint
-completes, so without one nothing is ever acknowledged and everything is redelivered forever; the
-source detects that state and fails rather than stalling silently. Set
-`execution.checkpointing.interval`.
+The ordering boundary ends at the source output.
+A downstream exchange must partition by the ordering key when later operators still require that
+order.
+The [DataStream source explanation]({{< relref "docs/connectors/datastream/pubsub"
+>}}#message-ordering) covers subscriber connections, checkpoints, and the throughput cost.
 
-The source's changelog mode is **the format's**, not a hard-coded insert-only, so a changelog format
-over Pub/Sub works. The transport is still at-least-once — a redelivered `-U` is a real possibility,
-which is a property of the pipeline to design around rather than one this connector can remove.
+## Sink
+
+The concise DDL-to-builder map remains in the [sink option inventory](#sink-options).
+
+The sink table publishes the physical columns as JSON and writes attributes and an ordering key as
+message metadata:
+
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="sink-overview" >}}
+
+### Writable
+
+| Metadata key | Type | Notes |
+|---|---|---|
+| `attributes` | `MAP<STRING, STRING>` | A null column adds no attributes. A null key or a null value in the map **fails the write**: Pub/Sub attributes can represent neither, and dropping the entry would be data loss the query cannot see. Filter such entries out first |
+| `ordering-key` | `STRING` | A null or empty value sets no key. Requires `sink.message-ordering.enabled` = `true`, and see the ordering caveat below |
+
+Writable metadata is not forwarded to the format. No built-in format ships any, and the Kafka
+connector does not forward either.
 
 ### Ordering keys are routed to one writer
 
@@ -418,6 +302,161 @@ Pub/Sub has no way to express a retraction, so an updating query is rejected whe
 planned rather than publishing its `-U` and `-D` rows as ordinary messages:
 
 {{< sql-snippet file="flink/PubSubTableReference.sql" tag="updating-query-rejected" >}}
+
+## Options
+
+`project` and `format` are always required; `topic` is required to write. The destination is not
+declared as a required option because one factory serves both directions, and a table that is only
+read from must not be forced to name a topic.
+
+Topic names are bare names resolved against `project`, never resource paths — `'topic' = 'orders'`,
+not `'topic' = 'projects/my-project/topics/orders'`.
+Byte-valued options are written the Flink way — `'sink.in-flight.max-bytes' = '64 mb'`.
+
+### Shared
+
+| Option | Type | Maps to |
+|---|---|---|
+| `project` | String, required | the project component of `TopicDestination.of(...)` / `SubscriptionDestination.of(...)` |
+| `format` | String, required | format factory discovery, encoding or decoding as the direction needs |
+| `service-account-key-file` | String | `serviceAccountKeyFile(...)`, a service-account JSON key-file path read when each writer, reader or enumerator starts |
+| `emulator-endpoint` | String | `emulatorEndpoint(...)` as `host:port`. Parsed when the statement is planned, as everything on this page is, so a malformed value fails on the client in either direction. The rejection names `emulator-endpoint`, the key written in the DDL |
+
+When `service-account-key-file` is absent, the connector uses application-default credentials.
+That default already honors `GOOGLE_APPLICATION_CREDENTIALS`; set this option only when the job must select an explicit service-account JSON key path independently of its process environment.
+The source reads the file on the JobManager for subscription administration and on each TaskManager that creates a reader, while the sink reads it on each TaskManager that creates a writer.
+The same path must therefore be readable in every eligible process.
+Each writer, reader or enumerator loads the file once and shares the resulting provider among the Pub/Sub clients it creates.
+A read or parse failure reports neither the path nor credential material.
+The DataStream page's [credential file deployment]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) note covers Kubernetes Secret mounts, session clusters and key rotation for both APIs.
+
+Service-account keys are long-lived secrets, so prefer an attached service account or Workload Identity where the deployment supports one.
+Raw JSON, Base64-encoded JSON, access tokens, and custom credential-provider classes are not accepted by this option.
+`service-account-key-file` and `emulator-endpoint` are mutually exclusive because the emulator channel deliberately uses no credentials.
+
+### Source options
+
+The last column names the corresponding DataStream API surface. Most options map to a setter on
+`PubSubSourceBuilder` or `PubSubSubscriberOptions.Builder`; `scan.auto-create.*` maps to
+`SubscriptionCreateOptions.Builder`, startup settings construct `PubSubStartPosition`, and
+`scan.parallelism` configures the source operator. Optional settings follow the same "absent means
+default" rule as the [sink](#sink-options); `subscription` is required.
+
+| Option | Type | Maps to |
+|---|---|---|
+| `subscription` | String list, `;`-separated, required to read | `subscriptions(...)` |
+| `scan.ordering-mode` | `none` \| `per-key` | `orderingMode` |
+| `scan.deserialization-failure-policy` | `fail` \| `drop` \| `nack` | `deserializationFailurePolicy` |
+| `scan.flow-control.max-outstanding-element-count` | Long | `flowControlMaxOutstandingElementCount` |
+| `scan.flow-control.max-outstanding-request-bytes` | MemorySize | `flowControlMaxOutstandingRequestBytes` |
+| `scan.subscriber-buffer.max-messages` | Long | `subscriberBufferMaxMessages` |
+| `scan.subscriber-buffer.max-bytes` | MemorySize | `subscriberBufferMaxBytes` |
+| `scan.paused-split-buffer.max-messages` | Long | `pausedSplitBufferMaxMessages` |
+| `scan.paused-split-buffer.max-bytes` | MemorySize | `pausedSplitBufferMaxBytes` |
+| `scan.parallel-pull-count` | Integer | `parallelPullCount` |
+| `scan.ack.max-extension-period` | Duration | `maxAckExtensionPeriod` |
+| `scan.ack.min-duration-per-extension` | Duration | `minDurationPerAckExtension` |
+| `scan.ack.max-duration-per-extension` | Duration | `maxDurationPerAckExtension` |
+| `scan.ack.await-confirmation` | Duration | `awaitAckConfirmation` |
+| `scan.shutdown-timeout` | Duration | `shutdownTimeout` |
+| `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch` |
+| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
+| `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `PubSubStartPosition.of(mode, ...)` |
+| `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `PubSubStartPosition.of(...)` |
+| `scan.auto-create.topics` | Map<String, String> | each subscription key maps to its `topic(...)` — see [Subscription auto-creation](#subscription-auto-creation-maps-every-subscription-to-its-topic) for both accepted syntaxes |
+| `scan.auto-create.ack-deadline` | Duration | `ackDeadline` |
+| `scan.auto-create.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
+| `scan.auto-create.message-retention` | Duration | `messageRetention` |
+| `scan.auto-create.retain-acked-messages` | Boolean | `retainAckedMessages` |
+| `scan.auto-create.expiration-ttl` | Duration | `expirationTtl` |
+| `scan.auto-create.never-expire` | Boolean | `neverExpire()` |
+| `scan.auto-create.dead-letter.topic` | String | `deadLetterPolicy(...)`, first argument |
+| `scan.auto-create.dead-letter.max-delivery-attempts` | Integer | `deadLetterPolicy(...)`, second argument |
+| `scan.auto-create.filter` | String | `filter` |
+| `scan.parallelism` | Integer | the source operator's parallelism |
+
+`scan.parallel-pull-count` and `scan.parallelism` are unrelated despite the names: the first is how
+many gRPC streaming-pull connections one subscriber opens, the second is the Flink operator's
+parallelism. So are `scan.flow-control.*` and the sink's `sink.in-flight.*` — the sink's are the
+writer's own caps, because gax flow control could never be the byte bound an ordered sink needs
+([#85]({{< param BookRepo >}}/issues/85)).
+
+Several subscriptions are separated by `;` — `'subscription' = 'orders-sub;refunds-sub'` — and are
+resolved against `project`, so a subscription in **another project cannot be named**;
+`SubscriptionDestination` takes its components separately and parses no path.
+
+Combinations the source itself refuses are not re-checked here: `scan.ordering-mode` = `per-key`
+with `scan.parallel-pull-count` above 1, or a repeated subscription, both fail with the message the
+DataStream builder already produces.
+
+### Sink options
+
+The last column names the corresponding DataStream API surface. Most options map to a setter on
+`PubSubSinkBuilder`, `PubSubPublisherOptions.Builder` or `TopicCreateOptions.Builder`, while
+`sink.parallelism` configures the sink operator. An optional setting left out of the DDL remains at
+the connector or SDK default — the default is never restated here, and there is no third state
+between "configured" and "default". `topic` is required.
+
+The `sink.auto-create.*` options configure the topic that `sink.create-disposition` =
+`create-if-needed` (the default) creates — they are additive settings, not an authorization, and
+setting any of them alongside an explicit `create-never` is rejected.
+`sink.auto-create.storage-policy.enforce-in-transit` requires
+`sink.auto-create.storage-policy.allowed-regions`.
+
+| Option | Type | Maps to |
+|---|---|---|
+| `topic` | String, required to write | `topic(...)` |
+| `sink.create-disposition` | `create-if-needed` \| `create-never` | `createDisposition` |
+| `sink.auto-create.message-retention` | Duration | `TopicCreateOptions` `messageRetention` |
+| `sink.auto-create.kms-key-name` | String | `TopicCreateOptions` `kmsKeyName` |
+| `sink.auto-create.storage-policy.allowed-regions` | String list | `TopicCreateOptions` `allowedPersistenceRegions` |
+| `sink.auto-create.storage-policy.enforce-in-transit` | Boolean | `TopicCreateOptions` `enforceInTransit` |
+| `sink.batching.element-count-threshold` | Long | `batchElementCountThreshold` |
+| `sink.batching.request-byte-threshold` | MemorySize | `batchRequestByteThreshold` |
+| `sink.batching.delay-threshold` | Duration | `batchDelayThreshold` |
+| `sink.retry.total-timeout` | Duration | `retryTotalTimeout` |
+| `sink.retry.initial-delay` | Duration | `retryInitialDelay` |
+| `sink.retry.delay-multiplier` | Double | `retryDelayMultiplier` |
+| `sink.retry.max-delay` | Duration | `retryMaxDelay` |
+| `sink.retry.initial-rpc-timeout` | Duration | `retryInitialRpcTimeout` |
+| `sink.retry.rpc-timeout-multiplier` | Double | `retryRpcTimeoutMultiplier` |
+| `sink.retry.max-rpc-timeout` | Duration | `retryMaxRpcTimeout` |
+| `sink.retry.max-attempts` | Integer | `retryMaxAttempts` |
+| `sink.message-ordering.enabled` | Boolean | `enableMessageOrdering` |
+| `sink.in-flight.max-messages` | Integer | `maxInFlightMessages` |
+| `sink.in-flight.max-bytes` | MemorySize | `maxInFlightBytes` |
+| `sink.max-consecutive-rejections` | Integer | `maxConsecutiveRejections` |
+| `sink.publish-progress-timeout` | Duration | `publishProgressTimeout` |
+| `sink.recovery.initial-backoff` | Duration | `recoveryInitialBackoff` |
+| `sink.recovery.max-backoff` | Duration | `recoveryMaxBackoff` |
+| `sink.recovery.max-attempts` | Integer | `recoveryMaxAttempts` |
+| `sink.shutdown-timeout` | Duration | `shutdownTimeout` |
+| `sink.max-active-publishers` | Integer | `maxActivePublishers` |
+| `sink.destination-idle-timeout` | Duration | `destinationIdleTimeout` |
+| `sink.metrics.per-destination` | Boolean | `perDestinationMetrics` |
+| `sink.parallelism` | Integer | the sink operator's parallelism |
+
+`sink.retry.total-timeout` and `sink.retry.max-attempts` are **rejected** together with
+`sink.message-ordering.enabled` = `true`, because an ordering-enabled publisher retries without
+limit: neither an attempt cap nor a total timeout can bound a publish there. The `CREATE TABLE`
+itself succeeds — the check runs when the table is used as a sink, so the failure lands at plan
+time, before any record is published. The six other `sink.retry.*` keys are unaffected. See
+[`PubSubPublisherOptions`]({{< relref "docs/reference/pubsub" >}}#pubsubpublisheroptions).
+
+## Delivery guarantees
+
+At-least-once in both directions, unchanged from the DataStream connectors. The sink publishes
+asynchronously and flushes at each checkpoint, so a failover republishes whatever the last completed
+checkpoint did not cover.
+
+**A source table needs checkpointing enabled.** Messages are acknowledged when a checkpoint
+completes, so without one nothing is ever acknowledged and everything is redelivered forever; the
+source detects that state and fails rather than stalling silently. Set
+`execution.checkpointing.interval`.
+
+The source's changelog mode is **the format's**, not a hard-coded insert-only, so a changelog format
+over Pub/Sub works. The transport is still at-least-once — a redelivered `-U` is a real possibility,
+which is a property of the pipeline to design around rather than one this connector can remove.
 
 ## Design decisions
 

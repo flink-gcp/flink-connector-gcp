@@ -24,35 +24,37 @@ limitations under the License.
 
 Starting from the [Cloud Pub/Sub quickstart]({{< relref "docs/quickstart/pubsub" >}}) jobs.
 
-## Publishing and consuming with SQL
+## DataStream source
 
-Create the subscription before publishing so it retains every message from the example:
+The [Quickstart consume job]({{< relref "docs/quickstart/pubsub" >}}#read-a-stream-from-a-subscription)
+is the canonical basic source example.
+The worked case below changes how the source obtains its subscription.
 
-```sh
-gcloud pubsub topics create orders --project=my-project
-gcloud pubsub subscriptions create orders-sub \
-  --topic=orders \
-  --enable-message-ordering \
-  --project=my-project
-```
+### Subscriptions, on the source
 
-The sink table publishes JSON payloads, attributes, and an ordering key to the topic:
+On the source, **passing creation settings alongside a subscription is what authorises creating
+it.** No separate disposition is needed, because there is no meaningful "create with defaults" — a
+subscription without a topic is not a subscription, and only you know which topic to bind.
 
-{{< sql-snippet file="flink/PubSubExamples.sql" tag="sink" >}}
+{{< java-snippet file="PubSubExamplesSubscriptionsOnSource.java" tag="pubsub-examples-subscriptions-on-source" >}}
 
-The source table consumes those payloads from the subscription and can expose Pub/Sub fields as virtual metadata columns:
+**The settings are per subscription because they carry the topic binding.** One options object
+shared across several would bind them all to one topic, and Pub/Sub delivers a complete copy of a
+topic's stream to every subscription of it — so the source would emit each message once per
+subscription, with nothing anywhere reporting an error.
 
-{{< sql-snippet file="flink/PubSubExamples.sql" tag="source" >}}
+This example keeps the default `continueFromSubscription()` start position, so a subscription it
+auto-creates begins without a pre-creation backlog. A topic with topic-level message retention can
+make older retained messages available to a new subscription when a job explicitly seeks with
+`earliestRetained()` or `fromTimestamp(...)`.
 
-The source is unbounded, so the `SELECT` continues waiting for later messages.
-With ordering enabled on the sink and subscription and `scan.ordering-mode` set to `per-key`, Pub/Sub and the source preserve publish order separately for each non-empty ordering key within this subscription; they do not establish one global order across keys, subscriptions, or topics.
-The table sink routes one non-empty key to one writer subtask before publishing, while null and empty keys remain unordered.
-The source pins this subscription to one reader subtask and preserves order only up to its output; repartition downstream by `ordering_key` when later operators must retain the same per-key order.
-The connector remains at-least-once, so recovery may replay a message even though the relative order for its key is preserved.
-Checkpointing acknowledges messages only after their output is durable and flushes messages still batched by the sink; configure it for both directions in a production job.
-The subscription must exist unless `scan.auto-create.*` settings explicitly authorize source-side creation, and the source never creates its topic.
+## DataStream sink
 
-## A topic per record
+The [Quickstart publish job]({{< relref "docs/quickstart/pubsub" >}}#publish-a-stream-to-a-topic)
+is the canonical basic sink example.
+The worked cases below change the destination and how the sink creates it.
+
+### A topic per record
 
 The [dynamic destinations guide]({{< relref "docs/examples/dynamic-destinations" >}}#pubsub-topics) explains the shared resolver contract and the ordering boundary for a dynamically selected topic.
 
@@ -69,7 +71,7 @@ Publishers still active when the writer closes are closed with it.
 The `keyBy` call routes one customer's records to one sink subtask, and the resolver must keep that customer on one topic.
 Pub/Sub preserves a separate sequence when the same key moves to another topic or writer subtask.
 
-## Topics, on the sink
+### Topics, on the sink
 
 The sink creates a missing topic reactively: a publish failing with `NOT_FOUND` parks its messages,
 creates the topic, and republishes under a bounded backoff. An existing topic costs nothing — no
@@ -86,22 +88,84 @@ Supplying the options is not what authorises creation here — the disposition i
 can meaningfully be created with defaults. Combining them with `CREATE_NEVER` is rejected at graph
 construction rather than silently ignored.
 
-## Subscriptions, on the source
+## Publishing and consuming with SQL
 
-The source is the other way round: **passing creation settings alongside a subscription is what
-authorises creating it.** There is no disposition, because there is no meaningful "create with
-defaults" — a subscription without a topic is not a subscription, and only you know which topic to
-bind.
+Create the subscription before publishing so it retains every message from the example:
 
-{{< java-snippet file="PubSubExamplesSubscriptionsOnSource.java" tag="pubsub-examples-subscriptions-on-source" >}}
+```sh
+gcloud pubsub topics create orders --project=my-project
+gcloud pubsub subscriptions create orders-sub \
+  --topic=orders \
+  --enable-message-ordering \
+  --project=my-project
+```
 
-**The settings are per subscription because they carry the topic binding.** One options object
-shared across several would bind them all to one topic, and Pub/Sub delivers a complete copy of a
-topic's stream to every subscription of it — so the source would emit each message once per
-subscription, with nothing anywhere reporting an error.
+Source guidance is presented before sink guidance on this page.
+To run the two SQL regions as one end-to-end round trip, prepare both without submitting the source
+`SELECT`, run the bounded sink `INSERT` to completion, and then submit the unbounded source `SELECT`.
+Each submission creates a separate Flink job.
 
-A subscription only retains messages published **after** it exists, so a job that auto-creates one
-starts from an empty backlog whatever was published before.
+### Table source
+
+Before submitting the source `SELECT`, create the ordering-enabled subscription and run the bounded
+sink `INSERT` in the order described by the [round-trip setup](#publishing-and-consuming-with-sql).
+
+The source consumes JSON payloads and exposes the fields that Pub/Sub keeps outside the payload as
+virtual metadata columns:
+
+{{< sql-snippet file="flink/PubSubExamples.sql" tag="source" >}}
+
+The attributes map supplies `profile_key`, which can become the equality key for the
+[Bigtable enrichment pipeline]({{< relref "docs/examples/bigtable"
+>}}#enriching-pubsub-events-before-creating-tasks).
+That example introduces asynchronous lookup, while the
+[Bigtable Table connector]({{< relref "docs/connectors/table/bigtable" >}}#lookup-joins) covers the
+synchronous, asynchronous, and cached modes.
+
+The publish time drives the watermark, and the message id and subscription resource name remain
+available for tracing the enriched event.
+After the lookup, the [Cloud Tasks request metadata]({{< relref
+"docs/connectors/table/cloudtasks" >}}#writable-metadata) can derive a URL, headers, schedule time,
+or task id from the enriched row.
+The [Cloud Tasks delivery section]({{< relref "docs/connectors/table/cloudtasks"
+>}}#delivery-guarantees-and-task-identity) explains what happens after task creation.
+
+With `scan.ordering-mode` set to `per-key`, the source creates one split for each subscription
+and assigns each subscription to one reader subtask.
+Source parallelism above the subscription count therefore adds no consuming capacity.
+The source preserves a key's order only to its output.
+If the enrichment plan introduces a downstream exchange, it must partition by `ordering_key`
+when later operators still require that order.
+The [DataStream ordering section]({{< relref "docs/connectors/datastream/pubsub"
+>}}#message-ordering) gives the full boundary and cost.
+
+The source is unbounded, so the `SELECT` continues waiting for later messages.
+The connector remains at-least-once, and recovery may replay a message even when the relative order
+for its key is preserved.
+Checkpointing acknowledges messages only after their output is durable.
+The subscription must exist unless `scan.auto-create.*` settings authorize source-side creation,
+and the source never creates its topic.
+The source DDL selects `continue-from-subscription`, which leaves the shared subscription position
+unchanged.
+The [Table source guide]({{< relref "docs/connectors/table/pubsub" >}}#source) explains the other
+startup modes and the service-side seek they perform.
+
+### Table sink
+
+Before submitting the sink `INSERT`, create the ordering-enabled subscription shown in the
+[round-trip setup](#publishing-and-consuming-with-sql) so it retains the published messages.
+
+The sink publishes the payload, attributes, and ordering key that the source definition reads:
+
+{{< sql-snippet file="flink/PubSubExamples.sql" tag="sink" >}}
+
+The table sink routes one non-empty ordering key to one writer subtask before publishing.
+Null and empty keys remain unordered.
+This bounded `INSERT` flushes at end of input.
+In a streaming sink job, checkpointing flushes messages still batched by the publishers and is
+required for at-least-once delivery.
+The [Table sink guide]({{< relref "docs/connectors/table/pubsub" >}}#sink) documents the writable
+metadata and the shuffle introduced by an ordering-key column.
 
 ## Running against the emulator
 
