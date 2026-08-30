@@ -57,13 +57,22 @@ import org.apache.parquet.io.SeekableInputStream;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -1261,6 +1270,85 @@ class FileLoadsWriterTest {
     }
 
     @Test
+    void checkpointFinalizationUsesTheConfiguredConcurrencyBound() throws Exception {
+        BlockingCloseStagingStorage storage = new BlockingCloseStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxOpenDestinations(3)
+                                .maxConcurrentCheckpointFinalizations(3)
+                                .build(),
+                        new ManualProcessingTimeService(),
+                        metrics);
+        writer.write(new TestRow("a", "row", 1L), CONTEXT);
+        writer.write(new TestRow("b", "row", 2L), CONTEXT);
+        writer.write(new TestRow("c", "row", 3L), CONTEXT);
+
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try {
+            Future<Collection<FileLoadsCommittable>> finalization =
+                    caller.submit(writer::prepareCommit);
+
+            assertThat(storage.awaitAllCloses()).isTrue();
+            assertThat(storage.maximumActiveCloses()).isEqualTo(3);
+            // Ownership moved to the finalizer before its workers started. A fatal worker can
+            // return while a peer still runs, so writer.close() must not see that peer as open.
+            assertThat(metrics.<Integer>gaugeValue("openDestinations")).isZero();
+            storage.releaseCloses();
+
+            assertThat(finalization.get(5, TimeUnit.SECONDS)).hasSize(3);
+            assertThat(storage.maximumActiveCloses()).isEqualTo(3);
+        } finally {
+            storage.releaseCloses();
+            caller.shutdownNow();
+        }
+    }
+
+    @Test
+    void checkpointFinalizationDefaultsToTheCallingThread() throws Exception {
+        CloseThreadStagingStorage storage = new CloseThreadStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxOpenDestinations(2)
+                                .build());
+        writer.write(new TestRow("a", "row", 1L), CONTEXT);
+        writer.write(new TestRow("b", "row", 2L), CONTEXT);
+        Thread caller = Thread.currentThread();
+
+        assertThat(writer.prepareCommit()).hasSize(2);
+
+        assertThat(storage.closeThreads()).containsExactly(caller, caller);
+    }
+
+    @Test
+    void singletonCheckpointFinalizationStaysOnTheCallingThreadAtHigherConcurrency()
+            throws Exception {
+        CloseThreadStagingStorage storage = new CloseThreadStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxConcurrentCheckpointFinalizations(3)
+                                .build());
+        writer.write(new TestRow("a", "row", 1L), CONTEXT);
+        Thread caller = Thread.currentThread();
+
+        assertThat(writer.prepareCommit()).hasSize(1);
+
+        assertThat(storage.closeThreads()).containsExactly(caller);
+    }
+
+    @Test
     void multiplePrepareCommitCyclesYieldDistinctUris() throws Exception {
         // Streaming execution calls prepareCommit once per checkpoint; the per-destination file
         // sequence must keep growing so a later checkpoint's file never reuses an earlier URI.
@@ -1306,5 +1394,87 @@ class FileLoadsWriterTest {
         // The aborted file may or may not have finalized an object; either way no committable
         // references it, which is what keeps failed attempts out of load jobs.
         assertThat(writer.prepareCommit()).isEmpty();
+    }
+
+    private static final class BlockingCloseStagingStorage implements StagingStorage {
+        private static final long serialVersionUID = 1L;
+
+        private final CountDownLatch allCloses = new CountDownLatch(3);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger activeCloses = new AtomicInteger();
+        private final AtomicInteger maximumActiveCloses = new AtomicInteger();
+
+        @Override
+        public OutputStream createObject(String gcsUri) {
+            return new ByteArrayOutputStream() {
+                private final AtomicBoolean closed = new AtomicBoolean();
+
+                @Override
+                public void close() throws IOException {
+                    if (!closed.compareAndSet(false, true)) {
+                        return;
+                    }
+                    int active = activeCloses.incrementAndGet();
+                    maximumActiveCloses.accumulateAndGet(active, Math::max);
+                    allCloses.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS)) {
+                            throw new IOException("Timed out waiting to release staged files");
+                        }
+                        super.close();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("Staging close interrupted", e);
+                    } finally {
+                        activeCloses.decrementAndGet();
+                    }
+                }
+            };
+        }
+
+        @Override
+        public void deleteObjects(List<String> gcsUris) {}
+
+        @Override
+        public void close() {}
+
+        private boolean awaitAllCloses() throws InterruptedException {
+            return allCloses.await(5, TimeUnit.SECONDS);
+        }
+
+        private void releaseCloses() {
+            release.countDown();
+        }
+
+        private int maximumActiveCloses() {
+            return maximumActiveCloses.get();
+        }
+    }
+
+    private static final class CloseThreadStagingStorage implements StagingStorage {
+        private static final long serialVersionUID = 1L;
+
+        private final List<Thread> closeThreads = new ArrayList<>();
+
+        @Override
+        public OutputStream createObject(String gcsUri) {
+            return new ByteArrayOutputStream() {
+                @Override
+                public void close() throws IOException {
+                    closeThreads.add(Thread.currentThread());
+                    super.close();
+                }
+            };
+        }
+
+        @Override
+        public void deleteObjects(List<String> gcsUris) {}
+
+        @Override
+        public void close() {}
+
+        private List<Thread> closeThreads() {
+            return closeThreads;
+        }
     }
 }

@@ -1400,10 +1400,94 @@ the others): `stagingPath` (required), `writeDisposition` (`WRITE_APPEND` defaul
 `WRITE_TRUNCATE` for batch reloads that replace the table schema, `WRITE_TRUNCATE_DATA` for batch
 reloads that preserve schema and constraints, or `WRITE_EMPTY`), `tempDataset`, the streaming guard
 `minCheckpointInterval`, the writer-memory bounds (`maxStagingFileBytes`,
-`maxOpenDestinations`, `maxPendingFiles`, `destinationIdleTimeout`, `maxSerializedRowBytes`), the committer-wide
-`maxConcurrentDestinations`, and the committer's two backoff schedules
+`maxOpenDestinations`, `maxPendingFiles`, `destinationIdleTimeout`, `maxSerializedRowBytes`), the
+writer's `maxConcurrentCheckpointFinalizations`, the committer-wide `maxConcurrentDestinations`,
+and the committer's two backoff schedules
 (`loadJobPoll*` for job completion polling, `schemaReconcile*` for the etag-race reconcile) — all
 described below.
+
+**Performance and quota tuning.** FILE_LOADS has two synchronous boundaries.
+Each writer subtask must finish its Cloud Storage objects before its checkpoint committables can
+leave the writer.
+At that checkpoint's completion, the global committer groups every subtask's files and waits for
+all load, copy, and terminal query jobs.
+A slow writer can extend the current checkpoint, while a slow destination delays the next
+checkpoint's completion and backpressures the pipeline.
+
+Use sink parallelism as the first staging-upload concurrency lever when slots are available and
+destinations distribute across subtasks.
+A bounded real-GCS probe on 2026-08-30 evenly distributed objects across eight serial writer lanes
+and compared that shape with eight writer-local full-upload lanes.
+The medians were within 7.8% at 10 and 50 destinations for both 32 KiB and 5 MiB objects, while sink
+parallelism reduced the serial baseline by 77.5–85.2%.
+One destination did not improve because it supplied only one independent upload.
+The probe ran from a local client, not a region-local Flink cluster, and isolated Cloud Storage
+upload from serialization and load jobs.
+[ADR-0146]({{< param BookRepo >}}/blob/main/docs/adr/0146-file-loads-bounds-writer-checkpoint-finalization-concurrency.md)
+carries every median and the GKE Autopilot follow-up.
+
+If TaskManager or slot count must remain fixed, `maxConcurrentCheckpointFinalizations` lets one
+writer close several open destination files concurrently at a checkpoint or end of input.
+The default 1 preserves serial close, and values through 8 are accepted.
+At concurrency 8, the same probe reduced finalization-only medians by 27.6–40.7% for the 10- and
+50-destination cases.
+That arm reproduced the connector's serial-write and bounded-close shape, but it did not invoke the
+production finalizer.
+A post-implementation real-GCS confirmation directly invoked the production finalizer and staging
+storage for concurrency 1, 2, 4, and 8.
+At 8 it reduced close medians by 78.8–84.3% and serial-write-plus-close medians by 26.2–44.7%.
+A second confirmation through the production Avro writer reduced close medians by 79.5–79.6% and
+total medians by 27.2–43.7% at concurrency 8.
+Neither confirmation ran through Flink checkpoint coordination; [ADR-0146]({{< param BookRepo >}}/blob/main/docs/adr/0146-file-loads-bounds-writer-checkpoint-finalization-concurrency.md)
+separates the prototype, production-class, and pending GKE end-to-end evidence.
+It does not parallelize appends, size rolls, capacity evictions, or idle closes, and one open file
+has no work to distribute.
+Each active close uses one bounded worker thread and one Cloud Storage finalization request.
+It does not keep another queued row buffer because every file was already open, but Parquet close
+can encode and compress several already-buffered row groups at once.
+Measure close-time heap and CPU before raising the concurrency for Parquet.
+
+Higher sink parallelism helps only when records and destinations reach multiple subtasks, while
+writer-local checkpoint finalization helps when multiple destination files reach one subtask.
+A single hot destination pinned to one subtask retains one open file and therefore cannot use
+either form of close concurrency without changing record partitioning.
+Higher parallelism can also create one file per destination in every subtask that receives its
+records, while the per-subtask open-file, pending-file, upload-buffer, and Parquet row-group bounds
+multiply across the job.
+Measure subtask distribution, TaskManager heap, checkpoint duration, `openDestinations`,
+`pendingFiles`, and `capacityEvictions` before and after changing it.
+
+The following sequence keeps upload, load, and quota tuning separate.
+
+| Observed shape | First adjustment | Cost or boundary to watch |
+|---|---|---|
+| Writer-side checkpoint time grows with destinations and slots are available | Raise sink parallelism and verify that destinations distribute across subtasks | More subtasks can create more files and multiply writer memory bounds |
+| Several destination files reach one writer and TaskManager or slot count must stay fixed | Raise `maxConcurrentCheckpointFinalizations` from 1 toward 8 | Each active close adds a worker thread and Cloud Storage finalization request; Parquet can concurrently encode and compress buffered row groups; one open file does not benefit |
+| `capacityEvictions` grows while heap has measured headroom | Raise `maxOpenDestinations` | Each Avro destination adds a 4 MiB upload chunk baseline; Parquet also adds a row group |
+| `pendingFiles` approaches `maxPendingFiles` | Reduce destination churn or per-checkpoint volume; raise the bound only with heap headroom | Every finished and open file stays in the checkpoint committable set |
+| Size-based rolls push one destination toward 10,000 staged files in a commit | Raise `maxStagingFileBytes` or reduce commit volume | Overflow adds partition loads, temporary tables, and copy jobs |
+| Checkpoints, destination churn, or multiple subtasks produce many files below 8 MiB | Lengthen the checkpoint interval, reduce churn, or reduce sink parallelism as the cause permits | Raising `maxStagingFileBytes` alone cannot prevent these closes |
+| Size-based rolls produce files outside the measured 8–32 MiB band | Move `maxStagingFileBytes` toward the band and remeasure | Smaller is not monotonic; 16 MiB is the default trade-off |
+| One destination clearly exceeds 256 MiB per commit and has no `JSON` column | Measure opt-in Parquet against Avro | Parquet needs provided dependencies and is slower below the measured 256 MiB step |
+| Daily table operations approach their quota | Lengthen the checkpoint interval or use a Storage Write API method | A checkpoint that commits files consumes at least one destination-table modification |
+| Committer time grows with independent destinations | Tune `maxConcurrentDestinations` from its default 8 | Each active destination adds a worker, BigQuery client, and pending jobs |
+
+The connector names every staged object as an exact source URI rather than using a wildcard.
+BigQuery currently permits 10,000 source URIs in a load-job configuration and up to 15 TB of
+ordinary input, while the connector partitions at 10,000 files or a conservative 11 TiB.
+The service's separate 10,000,000-file limit includes files matched by wildcard URIs and therefore
+does not raise this connector's exact-URI ceiling.
+An overflow destination loads partitions into temporary tables and performs one final copy or query
+against the user table, so extra partition loads consume project load-job quota without each
+consuming another user-table modification.
+
+Failed jobs also count toward BigQuery's current load-job quotas: 100,000 load jobs per project per
+day and 1,500 per destination table per day.
+A standard destination table separately permits 1,500 daily modifications from load, copy, and
+query jobs combined.
+The [BigQuery quotas page](https://docs.cloud.google.com/bigquery/quotas#load_jobs) is authoritative
+because service limits can change.
+The connector's lower planning bounds remain deliberate even if a project has unused quota.
 
 **Topology.** Parallel writers encode records (serializer proto bytes → Avro `GenericRecord`) and
 stream them straight to per-destination GCS objects.

@@ -127,10 +127,12 @@ class FileLoadsOptionsMapperTest {
                         .map(Method::getName)
                         .collect(Collectors.toSet());
 
-        // Table sinks have one fixed destination, so destination commit concurrency cannot change
-        // their behavior. Keep that DataStream-only knob visible in the reflection result before
-        // excluding it from this mapper's two-way coverage.
-        assertThat(setters).contains("maxConcurrentDestinations");
+        // Table sinks have one fixed destination, so each writer has one open checkpoint file and
+        // the committer has one destination. Keep these DataStream-only concurrency knobs visible
+        // in the reflection result before excluding them from this mapper's two-way coverage.
+        assertThat(setters)
+                .contains("maxConcurrentCheckpointFinalizations", "maxConcurrentDestinations");
+        setters.remove("maxConcurrentCheckpointFinalizations");
         setters.remove("maxConcurrentDestinations");
 
         // Both directions: a new Table-relevant knob without an option, and an option whose knob
