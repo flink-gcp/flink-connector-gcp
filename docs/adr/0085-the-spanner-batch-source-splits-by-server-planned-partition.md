@@ -171,6 +171,9 @@ reader requests only when it holds no partition, so the mid-partition wake-ups a
 come from `SplitFetcher.shutdown()`. A shutdown never fetches again, so the re-read is not reached.
 
 **A fetch is bounded by both input rows and estimated decoded logical bytes** ([#1140]).
+In this ADR, a fetch is one batch hand-off from `SpannerSplitReader` to Flink's task thread, not one Spanner RPC.
+Reaching either cap leaves the active partition's `ResultSet` open, so the next fetch continues the same streaming read or query.
+Another partition execution, an SDK retry or resume after a stream failure, or a connector wake-up followed by reopening the partition can create another service request; reaching a cap does not.
 The public builder exposes `maxRowsPerFetch` and `maxBytesPerFetch`, and the Table API maps them only for bounded scans.
 The byte estimate uses UTF-8 or payload length for variable values, stable natural widths for fixed values, and recursive sums for arrays and structs.
 An unrecognized scalar or array element type contributes a 64-byte fallback rather than turning an otherwise readable row into a source failure.
