@@ -100,10 +100,11 @@ the conflict was in `docs/adr/README.md`, one row beneath the row the change edi
 **Treat `UNKNOWN` as "ask again", never as a pass** — a check that green-lights its own unanswered
 state is worse than no check.
 
-And when it does come back conflicting: rebase, and then **re-run the verification rather than
-carrying it over**. The rebase pulls in whatever moved, which is by definition what the earlier run
-never compiled or tested against — on #1014 that was another PR's changes to four source files. A
-result reported from before the rebase is a result from a tree that no longer exists.
+When it comes back conflicting, use the conflict-only fast path below only when its completed-review
+preconditions hold. Otherwise follow the ordinary fetch/rebase procedure, run the affected checks,
+and complete the initial review flow. Do not carry an exact-tree test result over a changed
+resolution, but do not rebuild unchanged upstream work locally either. The pull request's merge-ref
+CI owns the build-integration check.
 
 The second of the three is the one that matters most, and it is **a list to read rather than a
 number to interpret**.
@@ -113,6 +114,76 @@ did not intend to remove, stop — do not push, do not "just re-run the squash".
 
 A push may proceed when the deletion list is empty, or when every path in it is a file this change
 genuinely removes and the commit message says so.
+
+## Conflict-only refresh fast path
+
+Use this only to absorb a moved `main`, with no authored fix-up. The latest round-one, round-two,
+and independent-review comments must name the same full HEAD SHA. If any record is missing or names
+a different HEAD SHA, use the ordinary procedure and review loop.
+
+Compare those three comments manually, then paste their agreed HEAD SHA — not the recorded base —
+into `reviewed_head`; the block cannot read PR comments. These are Bash blocks: from fish, enter
+`bash` first. Fetch once, then copy the four full SHAs printed below into the PR refresh note as
+literal `<old-head>`, `<old-base>`, `<new-base>`, and `<pushed-head>` values. Do not use mutable
+remote-tracking names in later comparisons:
+
+```bash
+reviewed_head=0123456789abcdef0123456789abcdef01234567 # replace with the recorded SHA
+git fetch origin || exit 1
+status_output=$(git status --short) || exit 1
+old_head=$(git rev-parse HEAD) || exit 1
+new_base=$(git rev-parse origin/main) || exit 1
+old_base=$(git merge-base "$old_head" "$new_base") || exit 1
+pushed_head=$(git rev-parse '@{upstream}') || exit 1
+test -z "$status_output" || exit 1
+test "$old_head" = "$pushed_head" || exit 1
+test "$old_head" = "$reviewed_head" || exit 1
+printf 'old-head=%s\nold-base=%s\nnew-base=%s\npushed-head=%s\n' \
+  "$old_head" "$old_base" "$new_base" "$pushed_head"
+```
+
+The block verifies that status is empty and `<old-head>`, `<pushed-head>`, and the manually agreed
+`reviewed_head` are identical. The preceding manual comparison establishes the three-comment
+precondition.
+
+Use only those literal SHAs to inspect the upstream delta and rebase:
+
+```bash
+git log --oneline <old-base>..<new-base> || exit 1
+git diff --name-only <old-base>..<new-base> || exit 1
+git diff --name-only <old-base>..<old-head> || exit 1
+git rebase <new-base>
+```
+
+If rebase stops, run `git diff --name-only --diff-filter=U` before resolving and record every path.
+After the rebase, compare the complete patch and path inventory without carrying shell state:
+
+```bash
+git range-diff <old-base>..<old-head> <new-base>..HEAD || exit 1
+old_paths=$(git diff --name-only <old-base>..<old-head>) || exit 1
+new_paths=$(git diff --name-only <new-base>..HEAD) || exit 1
+if [ "$old_paths" != "$new_paths" ]; then
+  printf 'old paths:\n%s\nnew paths:\n%s\n' "$old_paths" "$new_paths" >&2
+  exit 1
+fi
+git diff --diff-filter=D --name-only <new-base>..HEAD || exit 1
+```
+
+For each recorded conflict path, repeat `git range-diff` with `-- <path>` and fail if it cannot run.
+Inspect any upstream commit that touches a PR-owned path or a source on which its behavior, tests,
+public contracts, or factual claims depend.
+
+- If the complete patch, path inventory, and those dependencies are unchanged, retain completed
+  reviews. Run only checks owed by resolved paths, push through the ordinary gate, and wait for
+  current PR merge-ref CI.
+- If a resolution changes behavior, a test or public contract, or a factual claim, it is an
+  authored fix-up. Run affected checks and use the bounded fix-up review defined by the review
+  skills.
+
+Do not run `just verify` merely because the rebase brought already-validated commits from `main`.
+A Markdown conflict gets its documentation checker, a Java conflict gets its affected test or
+module, and a build-input conflict may require the full build. Compatibility-sensitive work still
+runs `just verify-flink 1.20.4`; per-PR CI does not cover it.
 
 ## The fourth check, once the pull request exists
 

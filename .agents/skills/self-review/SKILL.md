@@ -1,6 +1,6 @@
 ---
 name: self-review
-description: Run round one of this repository's mandatory two-round self-review of a draft pull request — does the code do what the description says? Use immediately after `gh pr create --draft`, before asking anyone for review, and again after pushing fix-ups. Covers the three distinct lenses, verifying a finding before acting on it, re-running the mutation batch afterwards, and recording findings *and* deferrals as a PR comment. Round two is a separate skill, `self-review-round-two`, and this round is not finished until that one has run.
+description: Run round one of this repository's mandatory two-round self-review of a draft pull request — does the code do what the description says? Use immediately after `gh pr create --draft` and use its bounded fix-up mode after a narrow repair. A conflict-only base refresh follows `push-pr-branch`. Covers the three distinct lenses, a frozen coverage inventory, verifying findings before acting, and recording findings and deferrals. Round two is a separate skill, `self-review-round-two`.
 ---
 
 # Self-review, round one
@@ -16,6 +16,13 @@ Reaching the draft PR is the trigger. Nothing else needs to happen first, and no
 asking for review, calling the PR ready, marking it ready-for-review — may happen before all three
 rounds have.
 
+The first pass covers the full diff. After a narrow repair, compare the previous and current patch
+series with `git range-diff <previous-base>..<previous-reviewed-SHA> <current-base>..HEAD`, then
+review its changed hunks and affected inventory entries. Do not use `git diff` between the two head
+SHAs: every fix-up is rebased and squashed, so that tree delta also contains intervening `main`
+changes. Restart the full pass only when the repair expands scope or changes a contract beyond the
+recorded finding. A base-only rebase proven unchanged by `push-pr-branch` keeps this round's result.
+
 **Round one asks whether the code does what the description says**, taking the PR description as
 the specification. It is mandatory on every draft PR (root `AGENTS.md` § GitHub workflow;
 `docs/adr/0060`), it applies simplification and efficiency findings rather than correctness ones
@@ -28,19 +35,29 @@ equivalent slash command; use the passes below directly.
 
 ## What to review
 
-The pushed diff of the draft PR, against its merge base:
+Resolve the pull request's actual base once before starting and copy its full SHA into every review
+prompt, command, and record. Use `origin/main` for an ordinary pull request and the parent branch
+for a stacked one; do not let a later fetch change which patch a reviewer reads:
 
 ```bash
-gh pr diff <n>                       # what the reviewer will see
-git diff origin/main...HEAD          # the same thing locally
-gh pr view <n> --json body           # the specification you are reviewing against
+gh pr view <n> --json baseRefName,body # actual base and specification
+git merge-base HEAD origin/<baseRefName> # copy as literal <review-base>
+git diff <review-base>..HEAD             # the pushed patch
 ```
+
+Before the first pass, freeze a coverage inventory in the review record: every changed file or
+published surface, and the behavior, test, public-contract, and factual-claim invariants it owes.
+Each lens reports which inventory entries it checked. Record the reviewed base as well as HEAD, and
+before bounded mode verify both previous objects. Run `git cat-file -e <previous-base>^{commit}` and
+`git cat-file -e <previous-reviewed-SHA>^{commit}`; if either fails, bounded mode refuses and the
+full pass runs. For a narrow fix-up, use the `range-diff` above and recheck only entries affected by
+it.
 
 ## The three lenses, kept apart
 
 One pass asked for "a review" returns much less than three passes asked for different things.
-Take these one at a time, each over the **whole** diff, and do not merge them into a single
-sweep:
+Take these one at a time over the full initial diff, or over the bounded repair delta, and do not
+merge them into a single sweep:
 
 | Lens | What it looks for |
 |---|---|
@@ -84,8 +101,9 @@ is the only thing that catches a broken javadoc link.
 
 ## Record it
 
-Post one PR comment carrying **the findings and the deferrals, with the reason for each
-deferral**. A deferral with no stated reason is the silent deferral wearing a disguise.
+Post one PR comment carrying the full reviewed HEAD and base SHAs, the coverage inventory entries
+checked, **the findings and the deferrals, with the reason for each deferral**. For a fix-up, also
+name the previous reviewed HEAD and base and why the `range-diff` did or did not expand inventory.
 
 Recording is not routing. Routing is the user's (`docs/adr/0061`): a finding outside the issue
 being worked has three outcomes — folded into this change, filed as an issue, or dropped — and
@@ -94,11 +112,13 @@ being folded in.
 
 ## Done when
 
-- [ ] Three lenses run separately over the whole diff
+- [ ] Coverage inventory frozen before the initial review
+- [ ] Three lenses run separately over the full initial diff or bounded repair delta
 - [ ] Every finding verified against the code before it was acted on
 - [ ] Simplification and efficiency findings applied, not only correctness ones
 - [ ] Mutation batch re-run after the fix-ups, opened by a commit
 - [ ] Build and the checkers green again
 - [ ] One PR comment recording findings **and** deferrals with reasons
+- [ ] That PR comment names the full reviewed HEAD and base SHAs
 - [ ] `self-review-round-two` run next, then `independent-review` — this round is not the whole
       obligation

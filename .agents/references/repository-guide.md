@@ -451,6 +451,15 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   diffstat's number — before every push. Nothing downstream reports this: CI passes on a consistent
   revert, "require branches to be up to date" is satisfied by the reverting commit itself, and
   GitHub's "Update branch" cements the deletions rather than undoing them (`docs/adr/0069`)
+- **A conflict-only refresh is not an authored fix-up.** Freeze the old base and head before the
+  rebase, prove that head was pushed and named by every completed review, and use the fast path in
+  `push-pr-branch` to inspect both the upstream delta and whether the complete PR-owned patch
+  changed. An unchanged, unaffected patch keeps its completed reviews and needs no local
+  verification rerun. A conflict resolution runs only the checks and recorded focused review its
+  resolved paths require. A narrow repair uses the bounded review delta; expanded scope or a
+  broader contract change restarts the full review. Current PR merge-ref CI validates build
+  integration without duplicating main's build locally. Compatibility-sensitive Flink 1.x work
+  retains the root guidance's local `just verify-flink 1.20.4` exception.
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
   findings *and the deferrals, with their reasons* as a PR comment; recording is not routing, which
@@ -458,6 +467,13 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   two is `.agents/skills/self-review-round-two/` — the two skills carry the lenses, the
   verify-before-acting rule and the recording format, so neither round depends on a command Claude
   cannot start:
+  - Freeze each round's initial review inventory before its lenses run: changed surfaces and the
+    behavior, test, public-contract, and factual-claim invariants they owe. Every round records which
+    entries it covered. Only after that round finishes its full pass may a narrow fix-up review the
+    `range-diff` between its previous and current base-to-head patch series and affected entries.
+    Record both base and head SHAs and verify that both previous objects remain available. The
+    independent round retains its detached reviewed worktree through Ready. Restart the full
+    inventory when the fix expands scope or changes a contract beyond the finding.
   - **`/code-review` and its alias `/review` are user-invocable only.** Both are marked
     `disable-model-invocation`, which is the documented design and not a local setting: they
     cannot be scheduled either, and a scheduled task naming one reads it as plain text. Ask the

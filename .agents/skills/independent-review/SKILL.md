@@ -1,6 +1,6 @@
 ---
 name: independent-review
-description: "Run the third review round of this repository's pre-review flow — a second model reads the pushed diff without inheriting the framing that wrote it. Use after `self-review-round-two`, after each fix-up push, and before telling anyone a pull request is ready, including when no second model is available, because that is recorded rather than silently skipped. Covers the exact invocation and why each flag is load-bearing, what its findings are and are not, and what a disagreement does."
+description: "Run the third review round of this repository's pre-review flow — a second model reads the initial pushed diff without the framing that wrote it. Use after `self-review-round-two` and before Ready; after a narrow repair, use bounded patch-series `range-diff` instead of reopening untouched work. A conflict-only base refresh follows `push-pr-branch`. Covers invocation, coverage evidence, findings, and disagreements."
 ---
 
 # Independent review
@@ -12,8 +12,12 @@ plan → approval → implement → draft PR → self-review → self-review-rou
   [independent-review] → ask for review
 ```
 
-The trigger is round two finishing, any fix-up push after it, or any turn about to call the PR
-ready.
+The initial trigger is round two finishing or a turn about to call the PR ready. After a narrow
+repair, review `git range-diff <previous-base>..<previous-reviewed-SHA> <current-base>..<sha>` and
+trace only the invariants affected by its changed hunks. A tree diff between rebased head SHAs also
+contains intervening `main` changes and is not the repair. Restart a full-diff review only when the
+repair expands scope or changes a contract beyond the finding. A proven base refresh retains the
+round.
 
 **Both self-review rounds are the same model reviewing its own work.** Subagents widen the reach,
 but each is briefed by the model that wrote the change, from a description that model also wrote.
@@ -53,9 +57,19 @@ description or its comments, and do not read the agent memory stores. Report def
 file:line and a concrete failure scenario.
 ```
 
-`<base>` is `origin/main` for an ordinary branch and the **parent branch** for a stacked one;
-leaving it at `origin/main` makes the reviewer diff the parent's work in as if it were yours, and
-its findings then arrive labelled as defects that predate the change.
+Before launching, copy `<sha>` from `git rev-parse HEAD` and resolve `<base>` once with
+`git merge-base HEAD origin/main` for an ordinary branch, or against the parent branch for a
+stacked one. Substitute both literal full SHAs in the prompt; never pass the mutable ref. Using
+`origin/main` for a stacked PR also makes the reviewer include the parent's work and label it as
+this change's defect.
+
+For a narrow repair after a completed full review, use the same isolation rules but ask for
+`git range-diff <previous-base>..<previous-reviewed-SHA> <current-base>..<sha>`. Keep the previous
+detached review worktree until Ready; if either old object is unavailable, bounded mode refuses and
+the full prompt runs. Require the reviewer to trace each changed hunk into affected callers, tests,
+public contracts, and factual claims and report those surfaces. Do not reopen unrelated hunks. If
+that trace shows expanded scope or a broader contract change, stop bounded mode and run the full
+prompt above.
 
 **Collecting it.** `--background` answers with a job id, and `/codex:status` and `/codex:result`
 both carry `disable-model-invocation: true` — the same flag that disqualifies `/codex:review` below
@@ -155,6 +169,11 @@ happen is the omission going unrecorded.
 
 A PR comment carrying, at minimum:
 
+- **The full reviewed HEAD and base SHAs** — the literal pair resolved before launch and passed to
+  the prompt. Verify that the detached worktree still names that HEAD after collecting the review;
+  a bounded repair also names the previous reviewed HEAD and base.
+- **Coverage** — for the initial review, the changed surfaces and invariants checked; for a bounded
+  repair, the delta and every affected invariant traced from it.
 - **How it was run** — the invocation, the job id, which model, and how long. Every "Done when" box
   below is otherwise self-attested and never reaches the artifact, so a reader cannot tell a clean
   round from one that handed over a PR number.
@@ -182,7 +201,9 @@ way a reader can tell it from one that never ran.
 - [ ] Every finding read against the code before it was acted on, and every rejected one written
       down with its reason
 - [ ] Pre-existing defects distinguished from regressions, and their routing left to the user
-- [ ] If this round changed code: affected tests and the mutation batch re-run, rounds one and two
-      re-run over that change, and then this round again
+- [ ] If this round caused a narrow repair: affected tests re-run, rounds one and two checked the
+      repair delta, and this round reviewed that same delta; a scope-expanding repair restarted the
+      full review
 - [ ] A PR comment recording how it was run as well as what it found — including "it found nothing"
       or "it could not run"
+- [ ] That PR comment names the full reviewed HEAD and base SHAs
